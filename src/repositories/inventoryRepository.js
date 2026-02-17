@@ -1,0 +1,54 @@
+const { supabaseAdmin } = require("../config/supabase");
+const AppError = require("../utils/AppError");
+
+exports.syncInventorySnapshot = async (userId, items) => {
+  const skinIds = items.map((i) => i.skin_id);
+
+  if (!skinIds.length) {
+    const { error: deleteAllError } = await supabaseAdmin
+      .from("inventories")
+      .delete()
+      .eq("user_id", userId);
+    if (deleteAllError) {
+      throw new AppError(deleteAllError.message, 500);
+    }
+    return;
+  }
+
+  const { error: deleteMissingError } = await supabaseAdmin
+    .from("inventories")
+    .delete()
+    .eq("user_id", userId)
+    .not("skin_id", "in", `(${skinIds.join(",")})`);
+
+  if (deleteMissingError) {
+    throw new AppError(deleteMissingError.message, 500);
+  }
+
+  const rows = items.map((i) => ({
+    user_id: userId,
+    skin_id: i.skin_id,
+    quantity: i.quantity,
+    last_synced_at: new Date().toISOString()
+  }));
+
+  const { error } = await supabaseAdmin
+    .from("inventories")
+    .upsert(rows, { onConflict: "user_id,skin_id" });
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+};
+
+exports.getUserHoldings = async (userId) => {
+  const { data, error } = await supabaseAdmin
+    .from("inventories")
+    .select("skin_id, quantity, purchase_price, skins!inner(market_hash_name)")
+    .eq("user_id", userId);
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+  return data || [];
+};
