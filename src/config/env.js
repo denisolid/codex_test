@@ -21,6 +21,14 @@ module.exports = {
   steamInventorySource: process.env.STEAM_INVENTORY_SOURCE || "auto",
   steamInventoryTimeoutMs: Number(process.env.STEAM_INVENTORY_TIMEOUT_MS || 12000),
   marketPriceSource: process.env.MARKET_PRICE_SOURCE || "auto",
+  marketPriceFallbackToMock:
+    process.env.MARKET_PRICE_FALLBACK_TO_MOCK == null
+      ? process.env.MARKET_PRICE_SOURCE !== "steam"
+      : process.env.MARKET_PRICE_FALLBACK_TO_MOCK === "true",
+  marketPriceRateLimitPerSecond: Number(
+    process.env.MARKET_PRICE_RATE_LIMIT_PER_SECOND || 2
+  ),
+  marketPriceCacheTtlMinutes: Number(process.env.MARKET_PRICE_CACHE_TTL_MINUTES || 60),
   steamMarketCurrency: Number(process.env.STEAM_MARKET_CURRENCY || 1),
   steamMarketTimeoutMs: Number(process.env.STEAM_MARKET_TIMEOUT_MS || 10000),
   priceUpdaterIntervalMinutes: Number(process.env.PRICE_UPDATER_INTERVAL_MINUTES || 60),

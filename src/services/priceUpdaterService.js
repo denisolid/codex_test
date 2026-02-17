@@ -1,5 +1,9 @@
 const skinRepo = require("../repositories/skinRepository");
 const priceRepo = require("../repositories/priceHistoryRepository");
+const {
+  marketPriceFallbackToMock,
+  marketPriceCacheTtlMinutes
+} = require("../config/env");
 const priceProviderService = require("./priceProviderService");
 const mockPriceProviderService = require("./mockPriceProviderService");
 
@@ -24,6 +28,19 @@ async function withRetries(fn, retries = 3, baseDelayMs = 300) {
   throw lastErr;
 }
 
+function isFresh(recordedAt, ttlMinutes) {
+  if (!recordedAt || ttlMinutes <= 0) return false;
+  const ts = new Date(recordedAt).getTime();
+  if (Number.isNaN(ts)) return false;
+  return Date.now() - ts <= ttlMinutes * 60 * 1000;
+}
+
+function canUseCachedSource(source) {
+  if (!source) return false;
+  if (marketPriceFallbackToMock) return true;
+  return !String(source).includes("mock");
+}
+
 exports.updateAllSkinPrices = async (options = {}) => {
   const rateLimitPerSecond = Number(options.rateLimitPerSecond || 5);
   const pauseMs = Math.max(Math.floor(1000 / Math.max(rateLimitPerSecond, 1)), 1);
@@ -40,10 +57,24 @@ exports.updateAllSkinPrices = async (options = {}) => {
   }
 
   let updatedCount = 0;
+  let skippedCount = 0;
   let failedCount = 0;
+  const latestBySkin = await priceRepo.getLatestPriceRowsBySkinIds(
+    skins.map((s) => s.id)
+  );
 
   for (const skin of skins) {
     try {
+      const cached = latestBySkin[skin.id];
+      if (
+        cached &&
+        isFresh(cached.recorded_at, marketPriceCacheTtlMinutes) &&
+        canUseCachedSource(cached.source)
+      ) {
+        skippedCount += 1;
+        continue;
+      }
+
       let priced;
       try {
         priced = await withRetries(
@@ -52,6 +83,9 @@ exports.updateAllSkinPrices = async (options = {}) => {
           250
         );
       } catch (_err) {
+        if (!marketPriceFallbackToMock) {
+          throw _err;
+        }
         const fallbackPrice = await withRetries(
           () => mockPriceProviderService.getLatestPrice(skin.market_hash_name),
           3,
@@ -86,7 +120,7 @@ exports.updateAllSkinPrices = async (options = {}) => {
   return {
     ok: true,
     updatedCount,
-    skippedCount: 0,
+    skippedCount,
     failedCount
   };
 };

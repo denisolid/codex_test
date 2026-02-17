@@ -9,7 +9,9 @@ const state = {
   portfolio: null,
   history: [],
   skin: null,
-  error: ""
+  error: "",
+  syncingInventory: false,
+  syncSummary: null
 };
 
 function escapeHtml(value) {
@@ -89,13 +91,63 @@ async function connectSteam(e) {
 }
 
 async function syncInventory() {
+  if (state.syncingInventory) return;
   clearError();
+  state.syncingInventory = true;
+  render();
   try {
-    await api("/inventory/sync", { method: "POST" });
+    const result = await api("/inventory/sync", { method: "POST" });
+    state.syncSummary = result;
     await refreshPortfolio();
   } catch (err) {
     setError(err.message);
+  } finally {
+    state.syncingInventory = false;
+    render();
   }
+}
+
+function renderSyncSummary() {
+  if (!state.syncSummary) return "";
+  const s = state.syncSummary;
+  const unpricedPreview = (s.unpricedItems || [])
+    .slice(0, 4)
+    .map(
+      (x) =>
+        `<li><strong>${escapeHtml(x.marketHashName)}</strong> <span class="muted">(${escapeHtml(x.reason)})</span></li>`
+    )
+    .join("");
+  const excludedPreview = (s.excludedItems || [])
+    .slice(0, 4)
+    .map(
+      (x) =>
+        `<li><strong>${escapeHtml(x.marketHashName)}</strong> <span class="muted">(${escapeHtml(x.reason)})</span></li>`
+    )
+    .join("");
+
+  return `
+    <div class="sync-summary">
+      <p><strong>Last sync:</strong> ${escapeHtml(s.syncedAt || "-")}</p>
+      <p>Source: ${escapeHtml(s.inventorySource || "-")} | Cache hits: ${Number(
+        s.priceCacheHitCount || 0
+      )}</p>
+      <p>Synced: ${Number(s.itemsSynced || 0)} | Priced: ${Number(
+        s.pricedItems || 0
+      )} | Unpriced: ${Number(s.unpricedItemsCount || 0)} | Excluded: ${Number(
+        s.excludedItemsCount || 0
+      )}</p>
+      ${
+        unpricedPreview
+          ? `<p class="muted">Unpriced (first 4):</p><ul class="sync-list">${unpricedPreview}</ul>`
+          : ""
+      }
+      ${
+        excludedPreview
+          ? `<p class="muted">Excluded (first 4):</p><ul class="sync-list">${excludedPreview}</ul>`
+          : ""
+      }
+    </div>
+  `;
 }
 
 async function refreshPortfolio() {
@@ -287,7 +339,19 @@ function renderApp() {
             </label>
             <button type="submit">Connect Steam ID</button>
           </form>
-          <button id="sync-btn">Sync Inventory</button>
+          <button id="sync-btn" ${state.syncingInventory ? "disabled" : ""}>
+            ${
+              state.syncingInventory
+                ? '<span class="loading-inline"><span class="spinner"></span>Syncing inventory...</span>'
+                : "Sync Inventory"
+            }
+          </button>
+          ${
+            state.syncingInventory
+              ? '<p class="muted sync-note">Fetching inventory and market prices. This can take up to a minute.</p>'
+              : ""
+          }
+          ${renderSyncSummary()}
         </article>
 
         <article class="panel">

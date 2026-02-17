@@ -91,12 +91,17 @@ All non-auth routes require:
 
 - Configure in root `.env`:
   - `MARKET_PRICE_SOURCE=auto` (`auto` | `steam` | `mock`)
+  - `MARKET_PRICE_FALLBACK_TO_MOCK=true` (`true` | `false`)
+  - `MARKET_PRICE_RATE_LIMIT_PER_SECOND=2`
+  - `MARKET_PRICE_CACHE_TTL_MINUTES=60`
   - `STEAM_MARKET_CURRENCY=1` (`1` = USD in Steam priceoverview)
   - `STEAM_MARKET_TIMEOUT_MS=10000`
 - Behavior:
   - `steam`: use Steam Market priceoverview only.
   - `mock`: always generate deterministic mock prices.
   - `auto`: try Steam Market first, fallback to mock if unavailable/rate-limited.
+  - Set `MARKET_PRICE_FALLBACK_TO_MOCK=false` for strict real pricing (sync/update fails instead of using fake fallback).
+  - Cache: if latest `price_history` row is newer than `MARKET_PRICE_CACHE_TTL_MINUTES`, sync/update reuses cached price instead of hitting Steam.
 
 ## Price updater
 

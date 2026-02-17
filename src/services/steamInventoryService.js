@@ -1,7 +1,16 @@
 const AppError = require("../utils/AppError");
-const mockPriceProvider = require("./mockPriceProviderService");
 
 const STEAM_IMAGE_BASE = "https://community.akamai.steamstatic.com/economy/image/";
+const ALLOWED_TYPE_NAMES = new Set([
+  "Pistol",
+  "Rifle",
+  "SMG",
+  "Sniper Rifle",
+  "Shotgun",
+  "Machinegun",
+  "Knife",
+  "Gloves"
+]);
 
 function normalizeExterior(name) {
   const m = /\(([^)]+)\)\s*$/.exec(name || "");
@@ -21,7 +30,12 @@ function parseMarketHashName(marketHashName) {
   const skinPart = skinPartRaw || "";
   const exterior = normalizeExterior(skinPart);
   const skinName = exterior
-    ? skinPart.replace(new RegExp(`\\s*\\(${exterior.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)$`), "")
+    ? skinPart.replace(
+        new RegExp(
+          `\\s*\\(${exterior.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\)$`
+        ),
+        ""
+      )
     : skinPart || null;
 
   return {
@@ -31,14 +45,55 @@ function parseMarketHashName(marketHashName) {
   };
 }
 
-function isSkinLikeItem(marketHashName) {
-  return typeof marketHashName === "string" && marketHashName.includes(" | ");
-}
-
 function getRarity(desc) {
-  const tags = Array.isArray(desc.tags) ? desc.tags : [];
+  const tags = Array.isArray(desc?.tags) ? desc.tags : [];
   const rarityTag = tags.find((t) => t.category === "Rarity");
   return rarityTag?.localized_tag_name || rarityTag?.name || null;
+}
+
+function getTypeName(desc) {
+  const tags = Array.isArray(desc?.tags) ? desc.tags : [];
+  const typeTag = tags.find((t) => t.category === "Type");
+  return typeTag?.localized_tag_name || typeTag?.name || null;
+}
+
+function isSkinLikeName(marketHashName) {
+  if (typeof marketHashName !== "string") return false;
+  if (!marketHashName.includes(" | ")) return false;
+
+  const excludedPrefixes = [
+    "Music Kit |",
+    "Sticker |",
+    "Graffiti |",
+    "Sealed Graffiti |",
+    "Patch |",
+    "Pin |"
+  ];
+
+  return !excludedPrefixes.some((p) => marketHashName.startsWith(p));
+}
+
+function classifyDescription(desc) {
+  if (!desc) return { include: false, reason: "missing-description" };
+  if (Number(desc.marketable || 0) !== 1) {
+    return { include: false, reason: "not-marketable" };
+  }
+
+  const marketHashName = desc.market_hash_name;
+  if (!isSkinLikeName(marketHashName)) {
+    return { include: false, reason: "excluded-category" };
+  }
+
+  const typeName = getTypeName(desc);
+  if (!typeName) {
+    return { include: false, reason: "missing-type" };
+  }
+
+  if (!ALLOWED_TYPE_NAMES.has(typeName)) {
+    return { include: false, reason: `unsupported-type:${typeName}` };
+  }
+
+  return { include: true, reason: null };
 }
 
 function buildInventoryUrl(steamId64, startAssetId, count, language) {
@@ -101,6 +156,7 @@ exports.fetchInventory = async (steamId64, options = {}) => {
   const descriptionsByKey = new Map();
   const descriptionByMarketHashName = new Map();
   const quantityByMarketHashName = new Map();
+  const excludedByMarketHashName = new Map();
 
   let startAssetId = null;
   let pages = 0;
@@ -121,8 +177,14 @@ exports.fetchInventory = async (steamId64, options = {}) => {
     for (const asset of payload.assets || []) {
       const key = `${asset.classid}_${asset.instanceid}`;
       const desc = descriptionsByKey.get(key);
-    const marketHashName = desc?.market_hash_name;
-      if (!marketHashName || !isSkinLikeItem(marketHashName)) continue;
+      const marketHashName = desc?.market_hash_name;
+      const cls = classifyDescription(desc);
+      if (!marketHashName || !cls.include) {
+        if (marketHashName && !excludedByMarketHashName.has(marketHashName)) {
+          excludedByMarketHashName.set(marketHashName, cls.reason || "excluded");
+        }
+        continue;
+      }
 
       const qty = Number(asset.amount || 1);
       const current = quantityByMarketHashName.get(marketHashName) || 0;
@@ -140,7 +202,6 @@ exports.fetchInventory = async (steamId64, options = {}) => {
     const desc = descriptionByMarketHashName.get(marketHashName);
     const parsed = parseMarketHashName(marketHashName);
     const imageUrl = desc?.icon_url ? `${STEAM_IMAGE_BASE}${desc.icon_url}` : null;
-    const price = await mockPriceProvider.getLatestPrice(marketHashName);
 
     items.push({
       marketHashName,
@@ -150,9 +211,16 @@ exports.fetchInventory = async (steamId64, options = {}) => {
       rarity: getRarity(desc),
       imageUrl,
       quantity,
-      price
+      price: null
     });
   }
 
-  return items;
+  const excludedItems = Array.from(excludedByMarketHashName.entries()).map(
+    ([marketHashName, reason]) => ({
+      marketHashName,
+      reason
+    })
+  );
+
+  return { items, excludedItems };
 };

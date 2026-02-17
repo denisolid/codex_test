@@ -33,6 +33,30 @@ exports.getLatestPricesBySkinIds = async (skinIds) => {
   return map;
 };
 
+exports.getLatestPriceRowsBySkinIds = async (skinIds) => {
+  if (!skinIds.length) {
+    return {};
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("price_history")
+    .select("skin_id, price, currency, source, recorded_at")
+    .in("skin_id", skinIds)
+    .order("recorded_at", { ascending: false });
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  const map = {};
+  for (const row of data || []) {
+    if (map[row.skin_id] == null) {
+      map[row.skin_id] = row;
+    }
+  }
+  return map;
+};
+
 exports.getLatestPricesBeforeDate = async (skinIds, date) => {
   if (!skinIds.length) {
     return {};
