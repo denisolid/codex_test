@@ -42,6 +42,7 @@ create table if not exists public.inventories (
   user_id uuid not null references public.users(id) on delete cascade,
   skin_id bigint not null references public.skins(id) on delete restrict,
   quantity integer not null default 1 check (quantity > 0),
+  steam_item_ids text[] not null default '{}',
   purchase_price numeric(12,2),
   purchase_currency text not null default 'USD',
   last_synced_at timestamptz not null default now(),

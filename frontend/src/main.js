@@ -185,10 +185,18 @@ function renderPortfolioRows() {
     return `<tr><td colspan="4" class="muted">No holdings yet. Connect Steam and run sync.</td></tr>`;
   }
 
+  const formatSteamItemIdCell = (item) => {
+    const ids = Array.isArray(item.steamItemIds) ? item.steamItemIds : [];
+    if (!ids.length) return "-";
+    if (ids.length === 1) return escapeHtml(ids[0]);
+    return `${escapeHtml(ids[0])} +${ids.length - 1} more`;
+  };
+
   return state.portfolio.items
     .map(
       (item) => `
       <tr>
+        <td>${formatSteamItemIdCell(item)}</td>
         <td>
           <div class="skin-name">${escapeHtml(item.marketHashName)}</div>
         </td>
@@ -237,6 +245,7 @@ function renderSkinDetails() {
   return `
     <div class="skin-card">
       <h3>${escapeHtml(state.skin.market_hash_name)}</h3>
+      <p>Skin ID: <strong>${Number(state.skin.id || 0) || "-"}</strong></p>
       <p>${escapeHtml(state.skin.weapon || "-")} | ${escapeHtml(state.skin.exterior || "-")} | ${escapeHtml(state.skin.rarity || "-")}</p>
       <p>Latest Price: <strong>${latest ? `${formatMoney(latest.price)} ${escapeHtml(latest.currency)}` : "N/A"}</strong></p>
     </div>
@@ -371,7 +380,7 @@ function renderApp() {
           <h2>Holdings</h2>
           <table>
             <thead>
-              <tr><th>Skin</th><th>Qty</th><th>Price</th><th>Value</th></tr>
+              <tr><th>Steam Item ID</th><th>Skin</th><th>Qty</th><th>Price</th><th>Value</th></tr>
             </thead>
             <tbody>${renderPortfolioRows()}</tbody>
           </table>

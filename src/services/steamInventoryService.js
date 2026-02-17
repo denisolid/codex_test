@@ -156,6 +156,7 @@ exports.fetchInventory = async (steamId64, options = {}) => {
   const descriptionsByKey = new Map();
   const descriptionByMarketHashName = new Map();
   const quantityByMarketHashName = new Map();
+  const assetIdsByMarketHashName = new Map();
   const excludedByMarketHashName = new Map();
 
   let startAssetId = null;
@@ -189,6 +190,11 @@ exports.fetchInventory = async (steamId64, options = {}) => {
       const qty = Number(asset.amount || 1);
       const current = quantityByMarketHashName.get(marketHashName) || 0;
       quantityByMarketHashName.set(marketHashName, current + qty);
+      const currentAssetIds = assetIdsByMarketHashName.get(marketHashName) || [];
+      if (asset.assetid) {
+        currentAssetIds.push(String(asset.assetid));
+      }
+      assetIdsByMarketHashName.set(marketHashName, currentAssetIds);
     }
 
     if (!payload.more_items || !payload.last_assetid) {
@@ -211,6 +217,7 @@ exports.fetchInventory = async (steamId64, options = {}) => {
       rarity: getRarity(desc),
       imageUrl,
       quantity,
+      steamItemIds: assetIdsByMarketHashName.get(marketHashName) || [],
       price: null
     });
   }

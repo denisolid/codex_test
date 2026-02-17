@@ -56,6 +56,11 @@ exports.getPortfolio = async (userId) => {
 
     return {
       skinId: h.skin_id,
+      primarySteamItemId:
+        Array.isArray(h.steam_item_ids) && h.steam_item_ids.length
+          ? h.steam_item_ids[0]
+          : null,
+      steamItemIds: Array.isArray(h.steam_item_ids) ? h.steam_item_ids : [],
       marketHashName: h.skins.market_hash_name,
       quantity: h.quantity,
       purchasePrice: h.purchase_price,

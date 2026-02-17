@@ -180,7 +180,8 @@ exports.syncUserInventory = async (userId) => {
     userId,
     pricedItems.map((i) => ({
       skin_id: i.skinId,
-      quantity: i.quantity
+      quantity: i.quantity,
+      steam_item_ids: i.steamItemIds || []
     }))
   );
 

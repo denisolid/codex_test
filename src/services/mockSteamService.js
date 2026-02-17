@@ -18,6 +18,7 @@ exports.fetchInventory = async (steamId64) => {
       rarity: "Classified",
       imageUrl: "https://example.com/ak-redline.png",
       quantity: 1 + (k % 2),
+      steamItemIds: [`mock-ak-${k}`],
       price: 22.5 + k
     },
     {
@@ -28,6 +29,7 @@ exports.fetchInventory = async (steamId64) => {
       rarity: "Covert",
       imageUrl: "https://example.com/awp-asiimov.png",
       quantity: 1,
+      steamItemIds: [`mock-awp-${k}`],
       price: 96 + k
     },
     {
@@ -38,6 +40,7 @@ exports.fetchInventory = async (steamId64) => {
       rarity: "Covert",
       imageUrl: "https://example.com/usp-printstream.png",
       quantity: 2,
+      steamItemIds: [`mock-usp-${k}-1`, `mock-usp-${k}-2`],
       price: 41 + k
     }
   ];
