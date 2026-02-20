@@ -51,6 +51,7 @@ After login, the same `/` page renders the authenticated app view.
 - `GET /portfolio`
 - `GET /portfolio/history`
 - `GET /skins/:id`
+- `GET /skins/by-steam-item/:steamItemId`
 - `GET /transactions`
 - `POST /transactions`
 - `GET /transactions/:id`

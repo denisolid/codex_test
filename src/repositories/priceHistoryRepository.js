@@ -86,7 +86,7 @@ exports.getLatestPricesBeforeDate = async (skinIds, date) => {
 exports.getLatestPriceBySkinId = async (skinId) => {
   const { data, error } = await supabaseAdmin
     .from("price_history")
-    .select("price, currency, recorded_at")
+    .select("price, currency, source, recorded_at")
     .eq("skin_id", skinId)
     .order("recorded_at", { ascending: false })
     .limit(1)

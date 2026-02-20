@@ -9,6 +9,7 @@ const state = {
   portfolio: null,
   history: [],
   skin: null,
+  inspectedSteamItemId: "",
   error: "",
   syncingInventory: false,
   syncSummary: null
@@ -70,6 +71,7 @@ function logout() {
   state.portfolio = null;
   state.history = [];
   state.skin = null;
+  state.inspectedSteamItemId = "";
   localStorage.removeItem("accessToken");
   render();
 }
@@ -169,20 +171,33 @@ async function refreshPortfolio() {
 async function findSkin(e) {
   e.preventDefault();
   clearError();
-  const id = document.querySelector("#skin-id").value.trim();
+  const id = document.querySelector("#steam-item-id").value;
+  await inspectSkinBySteamItemId(id);
+}
+
+async function inspectSkinBySteamItemId(rawId) {
+  const id = String(rawId ?? "").trim();
   if (!id) return;
 
+  if (!/^\d+$/.test(id)) {
+    setError("Steam item ID must contain only digits.");
+    return;
+  }
+
   try {
-    state.skin = await api(`/skins/${id}`);
+    state.skin = await api(`/skins/by-steam-item/${encodeURIComponent(id)}`);
+    state.inspectedSteamItemId = id;
     render();
   } catch (err) {
+    state.skin = null;
+    state.inspectedSteamItemId = "";
     setError(err.message);
   }
 }
 
 function renderPortfolioRows() {
   if (!state.portfolio || !state.portfolio.items || !state.portfolio.items.length) {
-    return `<tr><td colspan="4" class="muted">No holdings yet. Connect Steam and run sync.</td></tr>`;
+    return `<tr><td colspan="6" class="muted">No holdings yet. Connect Steam and run sync.</td></tr>`;
   }
 
   const formatSteamItemIdCell = (item) => {
@@ -203,6 +218,16 @@ function renderPortfolioRows() {
         <td>${item.quantity}</td>
         <td>${formatMoney(item.currentPrice)}</td>
         <td><strong>${formatMoney(item.lineValue)}</strong></td>
+        <td>
+          <button
+            type="button"
+            class="ghost-btn inspect-skin-btn"
+            data-steam-item-id="${escapeHtml(item.primarySteamItemId || "")}"
+            ${item.primarySteamItemId ? "" : "disabled"}
+          >
+            Inspect
+          </button>
+        </td>
       </tr>
     `
     )
@@ -238,16 +263,35 @@ function renderHistoryChart() {
 
 function renderSkinDetails() {
   if (!state.skin) {
-    return `<p class="muted">Search a skin by ID to inspect current and historical pricing.</p>`;
+    return `<p class="muted">Search a skin by Steam item ID to inspect current and historical pricing.</p>`;
   }
 
   const latest = state.skin.latestPrice;
+  const history = Array.isArray(state.skin.priceHistory) ? state.skin.priceHistory : [];
+  const historyMarkup = history.length
+    ? `<ul class="sync-list">${history
+        .slice(0, 10)
+        .map(
+          (row) =>
+            `<li>${escapeHtml(String(row.recorded_at || "").slice(0, 10))}: <strong>${formatMoney(row.price)}</strong> ${escapeHtml(row.currency || "")}</li>`
+        )
+        .join("")}</ul>`
+    : `<p class="muted">No price history yet for this skin.</p>`;
+
   return `
     <div class="skin-card">
       <h3>${escapeHtml(state.skin.market_hash_name)}</h3>
       <p>Skin ID: <strong>${Number(state.skin.id || 0) || "-"}</strong></p>
       <p>${escapeHtml(state.skin.weapon || "-")} | ${escapeHtml(state.skin.exterior || "-")} | ${escapeHtml(state.skin.rarity || "-")}</p>
       <p>Latest Price: <strong>${latest ? `${formatMoney(latest.price)} ${escapeHtml(latest.currency)}` : "N/A"}</strong></p>
+      <p>Price Source: <strong>${latest ? escapeHtml(latest.source || "unknown") : "-"}</strong></p>
+      ${
+        latest && latest.stale
+          ? `<p class="muted">Live refresh failed, showing last known price: ${escapeHtml(latest.staleReason || "unknown reason")}</p>`
+          : ""
+      }
+      <p class="muted">Recent prices:</p>
+      ${historyMarkup}
     </div>
   `;
 }
@@ -366,8 +410,8 @@ function renderApp() {
         <article class="panel">
           <h2>Skin Lookup</h2>
           <form id="skin-form" class="form">
-            <label>Skin ID
-              <input id="skin-id" type="number" min="1" placeholder="1" />
+            <label>Steam Item ID
+              <input id="steam-item-id" inputmode="numeric" pattern="[0-9]+" placeholder="e.g. 35719462921" value="${escapeHtml(state.inspectedSteamItemId)}" />
             </label>
             <button type="submit">Inspect Skin</button>
           </form>
@@ -380,7 +424,7 @@ function renderApp() {
           <h2>Holdings</h2>
           <table>
             <thead>
-              <tr><th>Steam Item ID</th><th>Skin</th><th>Qty</th><th>Price</th><th>Value</th></tr>
+              <tr><th>Steam Item ID</th><th>Skin</th><th>Qty</th><th>Price</th><th>Value</th><th>Actions</th></tr>
             </thead>
             <tbody>${renderPortfolioRows()}</tbody>
           </table>
@@ -401,6 +445,16 @@ function renderApp() {
   document.querySelector("#sync-btn").addEventListener("click", syncInventory);
   document.querySelector("#refresh-btn").addEventListener("click", refreshPortfolio);
   document.querySelector("#skin-form").addEventListener("submit", findSkin);
+  document.querySelectorAll(".inspect-skin-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const steamItemId = btn.getAttribute("data-steam-item-id");
+      const input = document.querySelector("#steam-item-id");
+      if (input) {
+        input.value = String(steamItemId || "");
+      }
+      inspectSkinBySteamItemId(steamItemId);
+    });
+  });
 }
 
 function render() {

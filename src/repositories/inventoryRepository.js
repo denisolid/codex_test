@@ -55,3 +55,19 @@ exports.getUserHoldings = async (userId) => {
   }
   return data || [];
 };
+
+exports.getUserInventoryBySteamItemId = async (userId, steamItemId) => {
+  const { data, error } = await supabaseAdmin
+    .from("inventories")
+    .select("skin_id, steam_item_ids")
+    .eq("user_id", userId)
+    .contains("steam_item_ids", [steamItemId])
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  return data || null;
+};
