@@ -5,9 +5,10 @@ const API_BASE =
 const app = document.querySelector("#app");
 
 const state = {
-  token: localStorage.getItem("accessToken") || "",
+  authenticated: false,
   portfolio: null,
   history: [],
+  alerts: [],
   skin: null,
   inspectedSteamItemId: "",
   error: "",
@@ -44,35 +45,70 @@ function formatPercent(value) {
   return `${sign}${Number(value).toFixed(2)}%`;
 }
 
+function formatNumber(value, digits = 2) {
+  if (value == null || Number.isNaN(Number(value))) return "-";
+  return Number(value).toFixed(digits);
+}
+
+function toTitle(value) {
+  return String(value || "")
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatConfidence(item) {
+  const label = item?.priceConfidenceLabel || "unknown";
+  const score = Number(item?.priceConfidenceScore || 0);
+  return `${toTitle(label)} (${Math.round(score * 100)}%)`;
+}
+
+function formatPriceStatusBadge(status) {
+  const safe = String(status || "unknown").toLowerCase();
+  return `<span class="status-badge ${escapeHtml(safe)}">${escapeHtml(toTitle(safe))}</span>`;
+}
+
+function formatRiskBadge(level) {
+  const safe = String(level || "unknown").toLowerCase();
+  return `<span class="risk-badge ${escapeHtml(safe)}">${escapeHtml(toTitle(safe))}</span>`;
+}
+
 async function api(path, options = {}) {
   const headers = {
     "Content-Type": "application/json",
     ...(options.headers || {})
   };
 
-  if (state.token) {
-    headers.Authorization = `Bearer ${state.token}`;
-  }
-
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
+    credentials: "include",
     headers
   });
 
   const payload = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    state.authenticated = false;
+  }
   if (!res.ok) {
     throw new Error(payload.error || "Request failed");
   }
+
+  state.authenticated = true;
   return payload;
 }
 
-function logout() {
-  state.token = "";
+async function logout() {
+  try {
+    await api("/auth/logout", { method: "POST" });
+  } catch (_err) {
+    // Continue local cleanup even if request fails.
+  }
+
+  state.authenticated = false;
   state.portfolio = null;
   state.history = [];
+  state.alerts = [];
   state.skin = null;
   state.inspectedSteamItemId = "";
-  localStorage.removeItem("accessToken");
   render();
 }
 
@@ -103,6 +139,14 @@ async function syncInventory() {
     await refreshPortfolio();
   } catch (err) {
     setError(err.message);
+    state.alerts = [
+      {
+        severity: "warning",
+        code: "SYNC_FAILED",
+        message: `Inventory sync failed: ${err.message}`
+      },
+      ...(state.alerts || []).filter((a) => a.code !== "SYNC_FAILED")
+    ];
   } finally {
     state.syncingInventory = false;
     render();
@@ -153,7 +197,6 @@ function renderSyncSummary() {
 }
 
 async function refreshPortfolio() {
-  if (!state.token) return;
   clearError();
   try {
     const [portfolio, history] = await Promise.all([
@@ -162,6 +205,7 @@ async function refreshPortfolio() {
     ]);
     state.portfolio = portfolio;
     state.history = history.points || [];
+    state.alerts = Array.isArray(portfolio.alerts) ? portfolio.alerts : [];
     render();
   } catch (err) {
     setError(err.message);
@@ -197,7 +241,7 @@ async function inspectSkinBySteamItemId(rawId) {
 
 function renderPortfolioRows() {
   if (!state.portfolio || !state.portfolio.items || !state.portfolio.items.length) {
-    return `<tr><td colspan="6" class="muted">No holdings yet. Connect Steam and run sync.</td></tr>`;
+    return `<tr><td colspan="8" class="muted">No holdings yet. Connect Steam and run sync.</td></tr>`;
   }
 
   const formatSteamItemIdCell = (item) => {
@@ -217,6 +261,8 @@ function renderPortfolioRows() {
         </td>
         <td>${item.quantity}</td>
         <td>${formatMoney(item.currentPrice)}</td>
+        <td>${formatPriceStatusBadge(item.priceStatus)}</td>
+        <td>${escapeHtml(formatConfidence(item))}</td>
         <td><strong>${formatMoney(item.lineValue)}</strong></td>
         <td>
           <button
@@ -285,6 +331,8 @@ function renderSkinDetails() {
       <p>${escapeHtml(state.skin.weapon || "-")} | ${escapeHtml(state.skin.exterior || "-")} | ${escapeHtml(state.skin.rarity || "-")}</p>
       <p>Latest Price: <strong>${latest ? `${formatMoney(latest.price)} ${escapeHtml(latest.currency)}` : "N/A"}</strong></p>
       <p>Price Source: <strong>${latest ? escapeHtml(latest.source || "unknown") : "-"}</strong></p>
+      <p>Price Status: ${latest ? formatPriceStatusBadge(latest.status) : "-"}</p>
+      <p>Confidence: <strong>${latest ? escapeHtml(formatConfidence(latest)) : "-"}</strong></p>
       ${
         latest && latest.stale
           ? `<p class="muted">Live refresh failed, showing last known price: ${escapeHtml(latest.staleReason || "unknown reason")}</p>`
@@ -293,6 +341,105 @@ function renderSkinDetails() {
       <p class="muted">Recent prices:</p>
       ${historyMarkup}
     </div>
+  `;
+}
+
+function renderAlerts() {
+  if (!Array.isArray(state.alerts) || !state.alerts.length) return "";
+
+  const rows = state.alerts
+    .map((alert) => {
+      const severity = String(alert.severity || "info").toLowerCase();
+      return `<li class="alert-row ${escapeHtml(severity)}">${escapeHtml(
+        alert.message || "Portfolio alert"
+      )}</li>`;
+    })
+    .join("");
+
+  return `
+    <section class="grid">
+      <article class="panel wide">
+        <h2>Alerts</h2>
+        <ul class="alert-list">${rows}</ul>
+      </article>
+    </section>
+  `;
+}
+
+function renderAnalytics() {
+  const analytics = state.portfolio?.analytics;
+  if (!analytics) return "";
+
+  const topGainer = analytics?.leaders?.topGainer || null;
+  const topLoser = analytics?.leaders?.topLoser || null;
+  const breadth = analytics?.breadth || {};
+
+  return `
+    <section class="grid">
+      <article class="panel wide">
+        <h2>Portfolio Analytics</h2>
+        <div class="analytics-grid">
+          <div class="analytics-item">
+            <span>Holdings</span>
+            <strong>${escapeHtml(formatNumber(analytics.holdingsCount, 0))}</strong>
+          </div>
+          <div class="analytics-item">
+            <span>Concentration Risk</span>
+            <strong>${formatRiskBadge(analytics.concentrationRisk)}</strong>
+          </div>
+          <div class="analytics-item">
+            <span>Top 1 Weight</span>
+            <strong>${escapeHtml(formatPercent(analytics.concentrationTop1Percent))}</strong>
+          </div>
+          <div class="analytics-item">
+            <span>Top 3 Weight</span>
+            <strong>${escapeHtml(formatPercent(analytics.concentrationTop3Percent))}</strong>
+          </div>
+          <div class="analytics-item">
+            <span>Effective Holdings</span>
+            <strong>${escapeHtml(formatNumber(analytics.effectiveHoldings))}</strong>
+          </div>
+          <div class="analytics-item">
+            <span>Breadth</span>
+            <strong>${escapeHtml(
+              `${Number(breadth.advancers || 0)}/${Number(breadth.decliners || 0)} (${formatPercent(
+                breadth.advancerRatioPercent
+              )})`
+            )}</strong>
+          </div>
+          <div class="analytics-item">
+            <span>Weighted 7D Move</span>
+            <strong>${escapeHtml(formatPercent(analytics.weightedAverageMove7dPercent))}</strong>
+          </div>
+          <div class="analytics-item">
+            <span>Unpriced / Stale</span>
+            <strong>${escapeHtml(
+              `${Number(state.portfolio?.unpricedItemsCount || 0)} / ${Number(
+                state.portfolio?.staleItemsCount || 0
+              )}`
+            )}</strong>
+          </div>
+        </div>
+        <div class="analytics-leaders">
+          <div>
+            <p class="muted">Top Gainer (7D)</p>
+            <p>
+              <strong>${
+                topGainer ? escapeHtml(topGainer.marketHashName) : "N/A"
+              }</strong>
+              <span class="muted"> ${topGainer ? escapeHtml(formatPercent(topGainer.sevenDayChangePercent)) : "-"}</span>
+            </p>
+          </div>
+          <div>
+            <p class="muted">Top Loser (7D)</p>
+            <p>
+              <strong>${topLoser ? escapeHtml(topLoser.marketHashName) : "N/A"}</strong>
+              <span class="muted"> ${topLoser ? escapeHtml(formatPercent(topLoser.sevenDayChangePercent)) : "-"}</span>
+            </p>
+          </div>
+        </div>
+      </article>
+    </section>
   `;
 }
 
@@ -348,6 +495,7 @@ function renderPublicHome() {
 
 function renderApp() {
   const portfolio = state.portfolio || {};
+  const oneDayTrendClass = Number(portfolio.oneDayChangePercent || 0) >= 0 ? "up" : "down";
   const trendClass = Number(portfolio.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
 
   app.innerHTML = `
@@ -359,6 +507,9 @@ function renderApp() {
           <button id="logout-btn" class="ghost-btn">Logout</button>
         </div>
       </nav>
+      <p class="helper-text">
+        <strong>Refresh</strong> reloads portfolio data from server. <strong>Logout</strong> ends your current session on this browser.
+      </p>
 
       <header class="app-head">
         <div>
@@ -374,6 +525,10 @@ function renderApp() {
             <span>ROI</span>
             <strong>${formatPercent(portfolio.roiPercent)}</strong>
           </article>
+          <article class="kpi-card ${oneDayTrendClass}">
+            <span>24H Change</span>
+            <strong>${formatPercent(portfolio.oneDayChangePercent)}</strong>
+          </article>
           <article class="kpi-card ${trendClass}">
             <span>7D Change</span>
             <strong>${formatPercent(portfolio.sevenDayChangePercent)}</strong>
@@ -382,10 +537,13 @@ function renderApp() {
       </header>
 
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ""}
+      ${renderAlerts()}
+      ${renderAnalytics()}
 
       <section class="grid dashboard-grid">
         <article class="panel">
           <h2>Steam Sync</h2>
+          <p class="helper-text">1) Enter your 17-digit SteamID64 and click <strong>Connect Steam ID</strong> once. 2) Click <strong>Sync Inventory</strong> to import items and latest prices.</p>
           <form id="steam-form" class="form">
             <label>SteamID64
               <input id="steam-id" placeholder="7656119..." />
@@ -409,6 +567,7 @@ function renderApp() {
 
         <article class="panel">
           <h2>Skin Lookup</h2>
+          <p class="helper-text">Paste a Steam Item ID from your holdings and click <strong>Inspect Skin</strong> to see current price and recent history.</p>
           <form id="skin-form" class="form">
             <label>Steam Item ID
               <input id="steam-item-id" inputmode="numeric" pattern="[0-9]+" placeholder="e.g. 35719462921" value="${escapeHtml(state.inspectedSteamItemId)}" />
@@ -422,9 +581,10 @@ function renderApp() {
       <section class="grid">
         <article class="panel wide">
           <h2>Holdings</h2>
+          <p class="helper-text">Use the <strong>Inspect</strong> button in any row to auto-fill that item ID into Skin Lookup.</p>
           <table>
             <thead>
-              <tr><th>Steam Item ID</th><th>Skin</th><th>Qty</th><th>Price</th><th>Value</th><th>Actions</th></tr>
+              <tr><th>Steam Item ID</th><th>Skin</th><th>Qty</th><th>Price</th><th>Status</th><th>Confidence</th><th>Value</th><th>Actions</th></tr>
             </thead>
             <tbody>${renderPortfolioRows()}</tbody>
           </table>
@@ -458,7 +618,7 @@ function renderApp() {
 }
 
 function render() {
-  if (!state.token) {
+  if (!state.authenticated) {
     renderPublicHome();
     return;
   }
@@ -467,6 +627,6 @@ function render() {
 }
 
 render();
-if (state.token) {
-  refreshPortfolio();
-}
+refreshPortfolio().catch(() => {
+  render();
+});

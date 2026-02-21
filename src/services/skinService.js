@@ -3,6 +3,7 @@ const skinRepo = require("../repositories/skinRepository");
 const priceRepo = require("../repositories/priceHistoryRepository");
 const inventoryRepo = require("../repositories/inventoryRepository");
 const priceProviderService = require("./priceProviderService");
+const { derivePriceStatus } = require("../utils/priceStatus");
 
 async function refreshSkinPrice(skin) {
   const priced = await priceProviderService.getPrice(skin.market_hash_name);
@@ -22,6 +23,11 @@ async function refreshSkinPrice(skin) {
     price: priced.price,
     currency: "USD",
     source: `inspect:${priced.source}`,
+    ...derivePriceStatus({
+      price: priced.price,
+      source: `inspect:${priced.source}`,
+      recorded_at: recordedAt
+    }),
     recorded_at: recordedAt
   };
 }
@@ -42,12 +48,26 @@ exports.getSkinDetails = async (skinId) => {
     }
     latestPrice = {
       ...latestPrice,
+      ...derivePriceStatus(latestPrice),
       stale: true,
       staleReason: err.message
     };
   }
 
-  const history = await priceRepo.getHistoryBySkinId(skinId, 30);
+  const historyRaw = await priceRepo.getHistoryBySkinId(skinId, 60);
+  const seenDates = new Set();
+  const history = [];
+
+  for (const row of historyRaw) {
+    const day = String(row.recorded_at || "").slice(0, 10);
+    if (!day || seenDates.has(day)) continue;
+    seenDates.add(day);
+    history.push({
+      ...row,
+      ...derivePriceStatus(row)
+    });
+    if (history.length >= 30) break;
+  }
 
   return {
     ...skin,

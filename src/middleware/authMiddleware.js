@@ -1,16 +1,20 @@
 const { supabaseAdmin } = require("../config/supabase");
 const AppError = require("../utils/AppError");
 const userRepo = require("../repositories/userRepository");
+const { AUTH_COOKIE_NAME } = require("../utils/authCookie");
+const { getCookieValue } = require("../utils/cookies");
 
 module.exports = async (req, _res, next) => {
   try {
     const authHeader = req.headers.authorization || "";
-    const token = authHeader.startsWith("Bearer ")
+    const bearerToken = authHeader.startsWith("Bearer ")
       ? authHeader.slice(7)
       : null;
+    const cookieToken = getCookieValue(req.headers.cookie, AUTH_COOKIE_NAME);
+    const token = bearerToken || cookieToken;
 
     if (!token) {
-      throw new AppError("Missing Bearer token", 401);
+      throw new AppError("Unauthorized", 401);
     }
 
     const { data, error } = await supabaseAdmin.auth.getUser(token);
