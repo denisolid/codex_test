@@ -1,4 +1,4 @@
-# CS2 Skin Portfolio Analyzer (MVP)
+# CS2 Item Portfolio Analyzer (MVP)
 
 Backend MVP implemented with:
 - Node.js + Express
@@ -64,8 +64,32 @@ After login, the same `/` page renders the authenticated app view.
 - `GET /transactions/:id`
 - `PATCH /transactions/:id`
 - `DELETE /transactions/:id`
+- `GET /market/inventory/value`
+- `GET /market/items/:skinId/sell-suggestion`
+- `GET /market/items/:skinId/liquidity`
+- `POST /trade/calculate`
+- `GET /alerts`
+- `POST /alerts`
+- `PATCH /alerts/:id`
+- `DELETE /alerts/:id`
+- `GET /alerts/events`
+- `POST /alerts/check` (requires `x-admin-token` header)
+- `GET /extension/keys`
+- `POST /extension/keys`
+- `DELETE /extension/keys/:id`
+- `GET /extension/inventory/value` (requires `x-extension-api-key`)
+- `GET /extension/items/:skinId/sell-suggestion` (requires `x-extension-api-key`)
+- `POST /extension/trade/calculate` (requires `x-extension-api-key`)
 
 All non-auth routes require authentication via secure `HttpOnly` cookie set by `/auth/login` or `/auth/session`.
+
+Monetary endpoints support optional `?currency=<CODE>` query parameter.
+
+Examples:
+- `GET /api/portfolio?currency=EUR`
+- `GET /api/portfolio/history?currency=GBP`
+- `GET /api/skins/by-steam-item/:steamItemId?currency=UAH`
+- `GET /api/market/inventory/value?currency=PLN`
 
 ## Console commands
 
@@ -77,6 +101,8 @@ All non-auth routes require authentication via secure `HttpOnly` cookie set by `
   - `npm run dev`
 - Run scheduled price updater worker:
   - `npm run worker:prices`
+- Run scheduled alert checker worker:
+  - `npm run worker:alerts`
 - Run tests:
   - `npm test`
 - Build frontend:
@@ -119,7 +145,7 @@ All non-auth routes require authentication via secure `HttpOnly` cookie set by `
 
 ## Price quality and alerts
 
-- Holdings and skin details now expose:
+- Holdings and item details now expose:
   - status: `real`, `cached`, `stale`, `unpriced` (or `mock` in mixed mode)
   - confidence label/score
 - Portfolio endpoint now includes alerts for:
@@ -150,7 +176,7 @@ All non-auth routes require authentication via secure `HttpOnly` cookie set by `
   - `mock`: always generate deterministic mock prices.
   - `auto`: try Steam Market first, fallback to mock if unavailable/rate-limited.
   - Set `MARKET_PRICE_FALLBACK_TO_MOCK=false` for strict real pricing (sync/update fails instead of using fake fallback).
-  - In strict real mode, historical rows with `source` containing `mock` are ignored in portfolio and skin history reads.
+  - In strict real mode, historical rows with `source` containing `mock` are ignored in portfolio and item history reads.
   - Steam requests are queued and retried with backoff+jitter on `429/5xx/timeout`.
   - Cache: if latest `price_history` row is newer than `MARKET_PRICE_CACHE_TTL_MINUTES`, sync/update reuses cached price instead of hitting Steam.
 
@@ -160,3 +186,43 @@ All non-auth routes require authentication via secure `HttpOnly` cookie set by `
   - `PRICE_UPDATER_INTERVAL_MINUTES=60`
   - `PRICE_UPDATER_RATE_LIMIT_PER_SECOND=5`
 - Worker writes hourly/daily snapshot rows into `price_history` with source `scheduled-mock`.
+
+## Trading assistant features
+
+- Real-time inventory valuation:
+  - `GET /api/market/inventory/value`
+  - returns per-item value and net value after default `13%` market commission
+- Quick sell suggestions:
+  - `GET /api/market/items/:skinId/sell-suggestion`
+  - returns `fast_sell`, `balanced`, `max_profit` tiers using lowest listing, 7d average, and liquidity
+- Liquidity score:
+  - `GET /api/market/items/:skinId/liquidity`
+  - score normalized to `0-100` using volume, volatility, and spread
+- Trade profit calculator:
+  - `POST /api/trade/calculate`
+  - returns net profit, ROI, break-even
+- Alerts:
+  - create/list/update/delete via `/api/alerts`
+  - worker executes cron-style checks and writes trigger history to `alert_events`
+- Multi-currency display:
+  - frontend has a currency selector (`USD`, `EUR`, `GBP`, `UAH`, `PLN`, `CZK`)
+  - backend converts USD-based outputs when `?currency=` is provided
+
+## Extension API key flow
+
+- Create/manage keys as authenticated user:
+  - `POST /api/extension/keys`
+  - `GET /api/extension/keys`
+  - `DELETE /api/extension/keys/:id`
+- Use key from extension:
+  - header `x-extension-api-key: <key>`
+  - call `/api/extension/*` endpoints without cookie auth
+
+## New env for trading assistant
+
+- `MARKET_COMMISSION_PERCENT=13`
+- `MARKET_SNAPSHOT_TTL_MINUTES=30`
+- `ALERT_CHECK_INTERVAL_MINUTES=5`
+- `ALERT_CHECK_BATCH_SIZE=250`
+- `DEFAULT_DISPLAY_CURRENCY=USD`
+- `FX_RATES_USD_JSON={"EUR":0.92,"GBP":0.79,"UAH":41.2,"PLN":4.02,"CZK":23.5}`

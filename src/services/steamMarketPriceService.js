@@ -81,22 +81,26 @@ function parsePriceString(value) {
   return Number(n.toFixed(2));
 }
 
-exports.getLatestPrice = async (marketHashName, options = {}) => {
-  const timeoutMs = Number(options.timeoutMs || 10000);
-  const currency = Number(options.currency || 1);
-  const maxRetries = Math.max(
-    Number(options.maxRetries || steamMarketMaxRetries),
-    1
-  );
+function parseIntegerString(value) {
+  if (value == null) return null;
+  const digits = String(value).replace(/[^\d]/g, "");
+  if (!digits) return null;
+  const n = Number(digits);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
 
+function buildMarketOverviewUrl(marketHashName, currency) {
   const params = new URLSearchParams();
   params.set("appid", "730");
   params.set("currency", String(currency));
   params.set("market_hash_name", marketHashName);
+  return `https://steamcommunity.com/market/priceoverview/?${params.toString()}`;
+}
 
-  const url = `https://steamcommunity.com/market/priceoverview/?${params.toString()}`;
-
+async function fetchOverviewWithRetries(url, timeoutMs, maxRetries) {
   let lastErr = null;
+
   for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), timeoutMs);
@@ -121,6 +125,7 @@ exports.getLatestPrice = async (marketHashName, options = {}) => {
         }
         throw err;
       }
+
       if (!res.ok) {
         throw new AppError(`Steam market price failed with status ${res.status}`, 502);
       }
@@ -130,15 +135,7 @@ exports.getLatestPrice = async (marketHashName, options = {}) => {
         throw new AppError("Steam market returned unsuccessful response", 502);
       }
 
-      const price =
-        parsePriceString(payload.lowest_price) ||
-        parsePriceString(payload.median_price);
-
-      if (price == null) {
-        throw new AppError("Steam market returned no parsable price", 502);
-      }
-
-      return price;
+      return payload;
     } catch (err) {
       if (err.name === "AbortError") {
         lastErr = new AppError("Steam market price request timed out", 504);
@@ -164,4 +161,36 @@ exports.getLatestPrice = async (marketHashName, options = {}) => {
   }
 
   throw lastErr || new AppError("Steam market pricing failed", 502);
+}
+
+function parseOverview(payload) {
+  return {
+    lowestPrice: parsePriceString(payload.lowest_price),
+    medianPrice: parsePriceString(payload.median_price),
+    volume: parseIntegerString(payload.volume)
+  };
+}
+
+exports.getPriceOverview = async (marketHashName, options = {}) => {
+  const timeoutMs = Number(options.timeoutMs || 10000);
+  const currency = Number(options.currency || 1);
+  const maxRetries = Math.max(
+    Number(options.maxRetries || steamMarketMaxRetries),
+    1
+  );
+
+  const url = buildMarketOverviewUrl(marketHashName, currency);
+  const payload = await fetchOverviewWithRetries(url, timeoutMs, maxRetries);
+  return parseOverview(payload);
+};
+
+exports.getLatestPrice = async (marketHashName, options = {}) => {
+  const overview = await exports.getPriceOverview(marketHashName, options);
+  const price = overview.lowestPrice || overview.medianPrice;
+
+  if (price == null) {
+    throw new AppError("Steam market returned no parsable price", 502);
+  }
+
+  return price;
 };

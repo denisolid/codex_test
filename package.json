@@ -8,6 +8,7 @@
     "backend:start": "node src/server.js",
     "test": "node --test tests/*.test.js",
     "worker:prices": "node src/workers/priceUpdaterWorker.js",
+    "worker:alerts": "node src/workers/alertCheckerWorker.js",
     "frontend:dev": "npm --prefix frontend run dev",
     "frontend:build": "npm --prefix frontend run build",
     "frontend:preview": "npm --prefix frontend run preview",

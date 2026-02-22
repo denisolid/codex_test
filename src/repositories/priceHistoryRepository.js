@@ -131,6 +131,52 @@ exports.getHistoryBySkinId = async (skinId, limit = 30) => {
   return data || [];
 };
 
+exports.getHistoryBySkinIdSince = async (skinId, sinceDate, limit = 2000) => {
+  const sinceIso =
+    sinceDate instanceof Date ? sinceDate.toISOString() : String(sinceDate);
+
+  const { data, error } = await applyPriceSourceFilter(
+    supabaseAdmin
+      .from("price_history")
+      .select("price, currency, recorded_at")
+      .eq("skin_id", skinId)
+      .gte("recorded_at", sinceIso)
+      .order("recorded_at", { ascending: false })
+      .limit(limit)
+  );
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  return data || [];
+};
+
+exports.getHistoryBySkinIdsSince = async (skinIds, sinceDate, limit = 12000) => {
+  if (!Array.isArray(skinIds) || !skinIds.length) {
+    return [];
+  }
+
+  const sinceIso =
+    sinceDate instanceof Date ? sinceDate.toISOString() : String(sinceDate);
+
+  const { data, error } = await applyPriceSourceFilter(
+    supabaseAdmin
+      .from("price_history")
+      .select("skin_id, price, currency, recorded_at")
+      .in("skin_id", skinIds)
+      .gte("recorded_at", sinceIso)
+      .order("recorded_at", { ascending: false })
+      .limit(limit)
+  );
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  return data || [];
+};
+
 exports.deleteMockPriceRows = async () => {
   const countQuery = await supabaseAdmin
     .from("price_history")

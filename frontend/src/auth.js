@@ -30,7 +30,7 @@ function render(error = "", info = "") {
         <p class="muted">${
           isLogin
             ? "Login to access your trading dashboard."
-            : "Start tracking your skins as a real portfolio."
+            : "Start tracking your CS2 items as a real portfolio."
         }</p>
 
         ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}

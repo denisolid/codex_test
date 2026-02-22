@@ -1,6 +1,9 @@
 const { supabaseAdmin } = require("../config/supabase");
 const AppError = require("../utils/AppError");
 
+const TX_SELECT_FIELDS =
+  "id, skin_id, type, quantity, unit_price, commission_percent, gross_total, net_total, currency, executed_at, created_at";
+
 exports.create = async (userId, payload) => {
   const row = {
     user_id: userId,
@@ -8,6 +11,9 @@ exports.create = async (userId, payload) => {
     type: payload.type,
     quantity: payload.quantity,
     unit_price: payload.unitPrice,
+    commission_percent: payload.commissionPercent,
+    gross_total: payload.grossTotal,
+    net_total: payload.netTotal,
     currency: payload.currency || "USD",
     executed_at: payload.executedAt || new Date().toISOString()
   };
@@ -15,7 +21,7 @@ exports.create = async (userId, payload) => {
   const { data, error } = await supabaseAdmin
     .from("transactions")
     .insert(row)
-    .select("*")
+    .select(TX_SELECT_FIELDS)
     .single();
 
   if (error) {
@@ -27,7 +33,7 @@ exports.create = async (userId, payload) => {
 exports.listByUser = async (userId) => {
   const { data, error } = await supabaseAdmin
     .from("transactions")
-    .select("id, skin_id, type, quantity, unit_price, currency, executed_at, created_at")
+    .select(TX_SELECT_FIELDS)
     .eq("user_id", userId)
     .order("executed_at", { ascending: false });
 
@@ -40,7 +46,7 @@ exports.listByUser = async (userId) => {
 exports.getById = async (userId, id) => {
   const { data, error } = await supabaseAdmin
     .from("transactions")
-    .select("id, skin_id, type, quantity, unit_price, currency, executed_at, created_at")
+    .select(TX_SELECT_FIELDS)
     .eq("user_id", userId)
     .eq("id", id)
     .maybeSingle();
@@ -57,6 +63,11 @@ exports.update = async (userId, id, payload) => {
   if (payload.type != null) updates.type = payload.type;
   if (payload.quantity != null) updates.quantity = payload.quantity;
   if (payload.unitPrice != null) updates.unit_price = payload.unitPrice;
+  if (payload.commissionPercent != null) {
+    updates.commission_percent = payload.commissionPercent;
+  }
+  if (payload.grossTotal != null) updates.gross_total = payload.grossTotal;
+  if (payload.netTotal != null) updates.net_total = payload.netTotal;
   if (payload.currency != null) updates.currency = payload.currency;
   if (payload.executedAt != null) updates.executed_at = payload.executedAt;
 
@@ -65,7 +76,7 @@ exports.update = async (userId, id, payload) => {
     .update(updates)
     .eq("user_id", userId)
     .eq("id", id)
-    .select("id, skin_id, type, quantity, unit_price, currency, executed_at, created_at")
+    .select(TX_SELECT_FIELDS)
     .maybeSingle();
 
   if (error) {
@@ -92,7 +103,7 @@ exports.remove = async (userId, id) => {
 exports.getPositionCostBasisBySkin = async (userId) => {
   const { data, error } = await supabaseAdmin
     .from("transactions")
-    .select("skin_id, type, quantity, unit_price, executed_at, created_at")
+    .select("skin_id, type, quantity, unit_price, net_total, commission_percent, executed_at, created_at")
     .eq("user_id", userId)
     .order("executed_at", { ascending: true })
     .order("created_at", { ascending: true });
@@ -110,7 +121,8 @@ exports.getPositionCostBasisBySkin = async (userId) => {
 
     const pos = state[key];
     const qty = Number(tx.quantity);
-    const value = qty * Number(tx.unit_price);
+    const value =
+      tx.net_total != null ? Number(tx.net_total) : qty * Number(tx.unit_price);
 
     if (tx.type === "buy") {
       pos.quantity += qty;
@@ -131,6 +143,68 @@ exports.getPositionCostBasisBySkin = async (userId) => {
         pos.quantity = 0;
         pos.cost = 0;
       }
+    }
+  }
+
+  return state;
+};
+
+exports.getPnlStateBySkin = async (userId) => {
+  const { data, error } = await supabaseAdmin
+    .from("transactions")
+    .select("skin_id, type, quantity, unit_price, net_total, commission_percent, executed_at, created_at")
+    .eq("user_id", userId)
+    .order("executed_at", { ascending: true })
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  const state = {};
+
+  for (const tx of data || []) {
+    const key = tx.skin_id;
+    if (!state[key]) {
+      state[key] = { quantity: 0, cost: 0, realized: 0 };
+    }
+
+    const pos = state[key];
+    const qty = Number(tx.quantity || 0);
+    if (qty <= 0) {
+      continue;
+    }
+
+    const grossValue = qty * Number(tx.unit_price || 0);
+    const txNetTotal =
+      tx.net_total != null
+        ? Number(tx.net_total)
+        : tx.type === "sell"
+          ? grossValue * (1 - Number(tx.commission_percent || 0) / 100)
+          : grossValue;
+
+    if (tx.type === "buy") {
+      pos.quantity += qty;
+      pos.cost += txNetTotal;
+      continue;
+    }
+
+    if (tx.type !== "sell" || pos.quantity <= 0) {
+      continue;
+    }
+
+    const effectiveQty = Math.min(qty, pos.quantity);
+    const avgCost = pos.cost / pos.quantity;
+    const proceeds = txNetTotal * (effectiveQty / qty);
+    const costRemoved = avgCost * effectiveQty;
+
+    pos.quantity -= effectiveQty;
+    pos.cost -= costRemoved;
+    pos.realized += proceeds - costRemoved;
+
+    if (pos.quantity <= 0) {
+      pos.quantity = 0;
+      pos.cost = 0;
     }
   }
 

@@ -5,10 +5,12 @@ const AppError = require("../utils/AppError");
 exports.getSkinById = asyncHandler(async (req, res) => {
   const skinId = Number(req.params.id);
   if (!Number.isInteger(skinId) || skinId <= 0) {
-    throw new AppError("Invalid skin id", 400);
+    throw new AppError("Invalid item id", 400);
   }
 
-  const skin = await skinService.getSkinDetails(skinId);
+  const skin = await skinService.getSkinDetails(skinId, {
+    currency: req.query.currency
+  });
   res.json(skin);
 });
 
@@ -20,7 +22,8 @@ exports.getSkinBySteamItemId = asyncHandler(async (req, res) => {
 
   const skin = await skinService.getSkinDetailsBySteamItemId(
     req.userId,
-    steamItemId
+    steamItemId,
+    { currency: req.query.currency }
   );
   res.json(skin);
 });

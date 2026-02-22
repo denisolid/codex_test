@@ -1,21 +1,35 @@
 const inventoryRepo = require("../repositories/inventoryRepository");
 const priceRepo = require("../repositories/priceHistoryRepository");
 const txRepo = require("../repositories/transactionRepository");
-const { daysAgoStart } = require("../utils/date");
+const { daysAgoStart, daysAgoEnd } = require("../utils/date");
 const { marketPriceStaleHours } = require("../config/env");
 const { derivePriceStatus } = require("../utils/priceStatus");
 const { buildPortfolioAnalytics } = require("../utils/portfolioAnalytics");
+const {
+  buildDailyClosePriceMap,
+  computeDailyVolatilityPercent,
+  buildManagementClue
+} = require("../utils/portfolioGuidance");
+const { resolveCurrency, convertUsdAmount } = require("./currencyService");
 
 function round2(n) {
   return Number((n || 0).toFixed(2));
 }
 
-exports.getPortfolio = async (userId) => {
+exports.getPortfolio = async (userId, options = {}) => {
+  const displayCurrency = resolveCurrency(options.currency);
+  const txPnlState = await txRepo.getPnlStateBySkin(userId);
+  const realizedProfit = Object.values(txPnlState).reduce(
+    (sum, state) => sum + Number(state.realized || 0),
+    0
+  );
   const holdings = await inventoryRepo.getUserHoldings(userId);
   if (!holdings.length) {
     return {
       totalValue: 0,
       costBasis: 0,
+      realizedProfit: convertUsdAmount(round2(realizedProfit), displayCurrency),
+      unrealizedProfit: 0,
       roiPercent: null,
       oneDayChangePercent: null,
       sevenDayChangePercent: null,
@@ -23,6 +37,12 @@ exports.getPortfolio = async (userId) => {
       staleItemsCount: 0,
       alerts: [],
       analytics: buildPortfolioAnalytics([], 0),
+      managementSummary: {
+        hold: 0,
+        watch: 0,
+        sell: 0
+      },
+      currency: displayCurrency,
       items: []
     };
   }
@@ -31,7 +51,12 @@ exports.getPortfolio = async (userId) => {
   const latestRows = await priceRepo.getLatestPriceRowsBySkinIds(skinIds);
   const prices7d = await priceRepo.getLatestPricesBeforeDate(skinIds, daysAgoStart(7));
   const prices1d = await priceRepo.getLatestPricesBeforeDate(skinIds, daysAgoStart(1));
-  const txCostState = await txRepo.getPositionCostBasisBySkin(userId);
+  const recentHistoryRows = await priceRepo.getHistoryBySkinIdsSince(
+    skinIds,
+    daysAgoStart(45),
+    14000
+  );
+  const dailyPricesBySkin = buildDailyClosePriceMap(recentHistoryRows);
 
   let totalValue = 0;
   let costBasis = 0;
@@ -46,6 +71,9 @@ exports.getPortfolio = async (userId) => {
     const oldPrice = prices7d[h.skin_id] || currentPrice || 0;
     const oneDayPrice = prices1d[h.skin_id] || currentPrice || 0;
     const priceMeta = derivePriceStatus(latestRow);
+    const volatilityDailyPercent = computeDailyVolatilityPercent(
+      dailyPricesBySkin[h.skin_id] || []
+    );
 
     const lineValue = h.quantity * currentPrice;
     const lineValue7d = h.quantity * oldPrice;
@@ -63,7 +91,7 @@ exports.getPortfolio = async (userId) => {
     }
 
     if (h.purchase_price != null) {
-      const state = txCostState[h.skin_id];
+      const state = txPnlState[h.skin_id];
       if (state && state.quantity > 0) {
         const avgCost = state.cost / state.quantity;
         costBasis += h.quantity * avgCost;
@@ -71,7 +99,7 @@ exports.getPortfolio = async (userId) => {
         costBasis += h.quantity * Number(h.purchase_price);
       }
     } else {
-      const state = txCostState[h.skin_id];
+      const state = txPnlState[h.skin_id];
       if (state && state.quantity > 0) {
         const avgCost = state.cost / state.quantity;
         costBasis += h.quantity * avgCost;
@@ -102,7 +130,28 @@ exports.getPortfolio = async (userId) => {
       priceStatus: priceMeta.status,
       priceConfidenceLabel: priceMeta.confidenceLabel,
       priceConfidenceScore: priceMeta.confidenceScore,
+      volatilityDailyPercent,
       lineValue: round2(lineValue)
+    };
+  });
+
+  const itemsWithGuidance = items.map((item) => {
+    const concentrationWeightPercent =
+      totalValue > 0 ? round2((item.lineValue / totalValue) * 100) : 0;
+    const managementClue = buildManagementClue({
+      currentPrice: item.currentPrice,
+      oneDayChangePercent: item.oneDayChangePercent,
+      sevenDayChangePercent: item.sevenDayChangePercent,
+      volatilityDailyPercent: item.volatilityDailyPercent,
+      concentrationWeightPercent,
+      priceConfidenceScore: item.priceConfidenceScore,
+      priceStatus: item.priceStatus
+    });
+
+    return {
+      ...item,
+      concentrationWeightPercent,
+      managementClue
     };
   });
 
@@ -112,7 +161,62 @@ exports.getPortfolio = async (userId) => {
     value7d > 0 ? round2(((totalValue - value7d) / value7d) * 100) : null;
   const oneDayChangePercent =
     value1d > 0 ? round2(((totalValue - value1d) / value1d) * 100) : null;
-  const analytics = buildPortfolioAnalytics(items, totalValue);
+  const analytics = buildPortfolioAnalytics(itemsWithGuidance, totalValue);
+  const unrealizedProfit = totalValue - costBasis;
+  const displayItems = itemsWithGuidance.map((item) => {
+    const clue = item.managementClue || null;
+    const prediction = clue?.prediction || null;
+
+    return {
+      ...item,
+      purchasePrice:
+        item.purchasePrice == null
+          ? null
+          : convertUsdAmount(Number(item.purchasePrice), displayCurrency),
+      currentPrice: convertUsdAmount(item.currentPrice, displayCurrency),
+      oneDayReferencePrice: convertUsdAmount(item.oneDayReferencePrice, displayCurrency),
+      sevenDayReferencePrice: convertUsdAmount(
+        item.sevenDayReferencePrice,
+        displayCurrency
+      ),
+      oneDayLinePnl: convertUsdAmount(item.oneDayLinePnl, displayCurrency),
+      sevenDayLinePnl: convertUsdAmount(item.sevenDayLinePnl, displayCurrency),
+      lineValue: convertUsdAmount(item.lineValue, displayCurrency),
+      managementClue: clue
+        ? {
+            ...clue,
+            prediction: prediction
+              ? {
+                  ...prediction,
+                  expectedPrice: convertUsdAmount(
+                    Number(prediction.expectedPrice || 0),
+                    displayCurrency
+                  ),
+                  rangeLow: convertUsdAmount(Number(prediction.rangeLow || 0), displayCurrency),
+                  rangeHigh: convertUsdAmount(
+                    Number(prediction.rangeHigh || 0),
+                    displayCurrency
+                  ),
+                  currency: displayCurrency
+                }
+              : null
+          }
+        : null,
+      currency: displayCurrency
+    };
+  });
+  const managementSummary = displayItems.reduce(
+    (acc, item) => {
+      const action = String(item.managementClue?.action || "watch").toLowerCase();
+      if (action === "hold" || action === "sell" || action === "watch") {
+        acc[action] += 1;
+      } else {
+        acc.watch += 1;
+      }
+      return acc;
+    },
+    { hold: 0, watch: 0, sell: 0 }
+  );
 
   const alerts = [];
   if (unpricedCount > 0) {
@@ -162,8 +266,10 @@ exports.getPortfolio = async (userId) => {
   }
 
   return {
-    totalValue: round2(totalValue),
-    costBasis: round2(costBasis),
+    totalValue: convertUsdAmount(round2(totalValue), displayCurrency),
+    costBasis: convertUsdAmount(round2(costBasis), displayCurrency),
+    realizedProfit: convertUsdAmount(round2(realizedProfit), displayCurrency),
+    unrealizedProfit: convertUsdAmount(round2(unrealizedProfit), displayCurrency),
     roiPercent,
     oneDayChangePercent,
     sevenDayChangePercent,
@@ -171,31 +277,46 @@ exports.getPortfolio = async (userId) => {
     staleItemsCount: staleCount,
     alerts,
     analytics,
-    items
+    managementSummary,
+    currency: displayCurrency,
+    items: displayItems
   };
 };
 
-exports.getPortfolioHistory = async (userId, days = 7) => {
+exports.getPortfolioHistory = async (userId, days = 7, options = {}) => {
+  const displayCurrency = resolveCurrency(options.currency);
+  const normalizedDays = Math.min(Math.max(Number(days) || 7, 1), 180);
   const holdings = await inventoryRepo.getUserHoldings(userId);
   if (!holdings.length) {
-    return { points: [] };
+    return { currency: displayCurrency, points: [] };
   }
 
   const skinIds = holdings.map((h) => h.skin_id);
+  const latestRows = await priceRepo.getLatestPriceRowsBySkinIds(skinIds);
+  const latestPriceBySkin = {};
+  for (const [skinId, row] of Object.entries(latestRows)) {
+    latestPriceBySkin[Number(skinId)] = Number(row?.price || 0);
+  }
+
   const points = [];
 
-  for (let i = days - 1; i >= 0; i -= 1) {
-    const dt = daysAgoStart(i);
-    const px = await priceRepo.getLatestPricesBeforeDate(skinIds, dt);
+  for (let i = normalizedDays - 1; i >= 0; i -= 1) {
+    const referenceDate = i === 0 ? new Date() : daysAgoEnd(i);
+    const labelDate = daysAgoStart(i);
+    const px = await priceRepo.getLatestPricesBeforeDate(skinIds, referenceDate);
     const total = holdings.reduce(
-      (acc, h) => acc + h.quantity * (px[h.skin_id] || 0),
+      (acc, h) => {
+        const price = px[h.skin_id] ?? latestPriceBySkin[h.skin_id] ?? 0;
+        return acc + h.quantity * price;
+      },
       0
     );
+
     points.push({
-      date: dt.toISOString().slice(0, 10),
-      totalValue: round2(total)
+      date: labelDate.toISOString().slice(0, 10),
+      totalValue: convertUsdAmount(round2(total), displayCurrency)
     });
   }
 
-  return { points };
+  return { currency: displayCurrency, points };
 };
