@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: cs2-portfolio-api
+    env: node
+    plan: free
+    rootDir: .
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FRONTEND_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ADMIN_API_TOKEN
+        sync: false
+      - key: MARKET_PRICE_SOURCE
+        value: auto
+      - key: STEAM_INVENTORY_SOURCE
+        value: auto

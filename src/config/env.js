@@ -19,10 +19,13 @@ function parseCsv(value) {
     .filter(Boolean);
 }
 
-const frontendOrigins = parseCsv(process.env.FRONTEND_ORIGINS);
-if (!frontendOrigins.length && process.env.FRONTEND_ORIGIN) {
-  frontendOrigins.push(process.env.FRONTEND_ORIGIN);
-}
+const frontendOrigins = Array.from(
+  new Set([
+    ...parseCsv(process.env.FRONTEND_URL),
+    ...parseCsv(process.env.FRONTEND_ORIGINS),
+    ...parseCsv(process.env.FRONTEND_ORIGIN)
+  ])
+);
 if (!frontendOrigins.length) {
   frontendOrigins.push("http://localhost:5173");
 }

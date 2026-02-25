@@ -14,7 +14,7 @@
     "frontend:preview": "npm --prefix frontend run preview",
     "dev": "concurrently \"npm run backend:dev\" \"npm run frontend:dev\"",
     "build": "npm run frontend:build",
-    "start": "npm run backend:start"
+    "start": "node src/server.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",

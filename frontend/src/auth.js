@@ -1,8 +1,6 @@
 import "./style.css";
 import { hasSupabaseConfig, supabase } from "./supabaseClient";
-
-const API_BASE =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000/api";
+import { API_URL } from "./config";
 const app = document.querySelector("#app");
 const page = window.location.pathname.endsWith("register.html")
   ? "register"
@@ -74,7 +72,7 @@ async function onSubmit(e) {
 
   try {
     const path = page === "login" ? "/auth/login" : "/auth/register";
-    const res = await fetch(`${API_BASE}${path}`, {
+    const res = await fetch(`${API_URL}${path}`, {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -130,7 +128,7 @@ render();
 
 async function checkExistingSession() {
   try {
-    const res = await fetch(`${API_BASE}/auth/me`, {
+    const res = await fetch(`${API_URL}/auth/me`, {
       credentials: "include"
     });
     if (res.ok) {
