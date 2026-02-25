@@ -226,3 +226,90 @@ Examples:
 - `ALERT_CHECK_BATCH_SIZE=250`
 - `DEFAULT_DISPLAY_CURRENCY=USD`
 - `FX_RATES_USD_JSON={"EUR":0.92,"GBP":0.79,"UAH":41.2,"PLN":4.02,"CZK":23.5}`
+
+## Deployment structure
+
+- Backend: repository root (`src/*`, root `package.json`)
+- Frontend: `frontend/*` (`frontend/package.json`)
+
+## Deploy backend on Render (from GitHub)
+
+Use the included `render.yaml` blueprint, or set values manually.
+
+Manual service settings:
+- Runtime: `Node`
+- Root Directory: repository root
+- Build Command: `npm ci`
+- Start Command: `npm start`
+- Health Check Path: `/health`
+
+Render environment variables:
+- Required:
+  - `SUPABASE_URL`
+  - `SUPABASE_ANON_KEY`
+  - `SUPABASE_SERVICE_ROLE_KEY`
+  - `FRONTEND_URL` (comma-separated allowed origins; include your frontend production URL)
+- Optional:
+  - `ADMIN_API_TOKEN`
+  - `MARKET_PRICE_SOURCE` (default `auto`)
+  - `STEAM_INVENTORY_SOURCE` (default `auto`)
+
+Where to set on Render:
+- `Dashboard -> Web Service -> Environment`
+
+## Deploy frontend on Vercel (from GitHub)
+
+Project settings:
+- Framework preset: `Vite`
+- Root Directory: `frontend`
+- Build Command: `npm run build`
+- Output Directory: `dist`
+
+Frontend environment variables on Vercel:
+- `VITE_API_URL=https://<your-render-service>.onrender.com/api`
+- `VITE_SUPABASE_URL=https://<your-project>.supabase.co`
+- `VITE_SUPABASE_ANON_KEY=<your-anon-key>`
+
+Where to set on Vercel:
+- `Dashboard -> Project -> Settings -> Environment Variables`
+
+## Deploy frontend on Netlify (alternative)
+
+`netlify.toml` is included for this repository.
+
+Netlify environment variables:
+- `VITE_API_URL=https://<your-render-service>.onrender.com/api`
+- `VITE_SUPABASE_URL=https://<your-project>.supabase.co`
+- `VITE_SUPABASE_ANON_KEY=<your-anon-key>`
+
+Where to set on Netlify:
+- `Dashboard -> Site configuration -> Environment variables`
+
+## Connect frontend and backend
+
+1. Deploy backend to Render and copy the public backend URL.
+2. Set frontend `VITE_API_URL` to `${RENDER_URL}/api`.
+3. Set backend `FRONTEND_URL` to your deployed frontend origin(s), for example:
+   - `https://your-app.vercel.app`
+   - `https://your-app.netlify.app`
+   - multiple origins: `https://app.vercel.app,https://staging.vercel.app`
+4. Redeploy both services after env changes.
+
+## Verify deployment
+
+Backend:
+- Open `https://<render-service>.onrender.com/health`
+- Expect `200` with JSON, e.g. `{ "ok": true }`
+
+Frontend:
+- Open deployed frontend URL
+- Login/register and confirm requests are sent to Render API URL
+- Confirm authenticated API calls succeed without CORS errors
+
+## Deployment checklist
+
+1. Supabase migrations applied in production database.
+2. Render env vars are set (especially `SUPABASE_*` and `FRONTEND_URL`).
+3. Vercel/Netlify env vars are set (especially `VITE_API_URL`).
+4. Backend `/health` responds with `200`.
+5. Frontend can call `/api/auth/*` and `/api/portfolio` successfully.

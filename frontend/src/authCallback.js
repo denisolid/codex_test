@@ -1,9 +1,8 @@
 import "./style.css";
 import { hasSupabaseConfig, supabase } from "./supabaseClient";
+import { API_URL } from "./config";
 
 const app = document.querySelector("#app");
-const API_BASE =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000/api";
 
 function render(message, isError = false) {
   app.innerHTML = `
@@ -37,7 +36,7 @@ async function finalize() {
       throw new Error("No access token returned from Google auth");
     }
 
-    const sessionRes = await fetch(`${API_BASE}/auth/session`, {
+    const sessionRes = await fetch(`${API_URL}/auth/session`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",

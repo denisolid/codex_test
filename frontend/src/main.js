@@ -1,7 +1,5 @@
 import "./style.css";
-
-const API_BASE =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000/api";
+import { API_URL } from "./config";
 const app = document.querySelector("#app");
 const SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "UAH", "PLN", "CZK"];
 const CURRENCY_STORAGE_KEY = "cs2sa:selected_currency";
@@ -187,7 +185,7 @@ async function api(path, options = {}) {
     ...(options.headers || {})
   };
 
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(`${API_URL}${path}`, {
     ...options,
     credentials: "include",
     headers
