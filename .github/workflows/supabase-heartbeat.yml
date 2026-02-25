@@ -1,0 +1,55 @@
+name: Supabase Heartbeat
+
+on:
+  schedule:
+    - cron: "0 3 * * 1,4"
+  workflow_dispatch:
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+    steps:
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_ANON_KEY:-}" ]; then
+            echo "Missing required secrets: SUPABASE_URL and/or SUPABASE_ANON_KEY."
+            exit 1
+          fi
+
+      - name: Send heartbeat request
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          base_url="${SUPABASE_URL%/}"
+          endpoint="${base_url}/rest/v1/heartbeat?select=id&limit=1"
+          response_file="$(mktemp)"
+
+          http_code="$(
+            curl --silent --show-error \
+              --output "${response_file}" \
+              --write-out "%{http_code}" \
+              --header "apikey: ${SUPABASE_ANON_KEY}" \
+              --header "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+              "${endpoint}"
+          )"
+
+          if [ "${http_code}" != "200" ]; then
+            echo "Heartbeat failed: expected HTTP 200, got HTTP ${http_code}."
+            cat "${response_file}"
+            exit 1
+          fi
+
+          if ! jq -e 'type == "array" and length > 0 and .[0].id == 1' "${response_file}" >/dev/null; then
+            echo "Heartbeat failed: response is empty or invalid JSON."
+            cat "${response_file}"
+            exit 1
+          fi
+
+          echo "Supabase heartbeat succeeded."

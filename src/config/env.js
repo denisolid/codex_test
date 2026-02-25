@@ -12,9 +12,27 @@ required.forEach((k) => {
   }
 });
 
+function parseCsv(value) {
+  return String(value || "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+const frontendOrigins = parseCsv(process.env.FRONTEND_ORIGINS);
+if (!frontendOrigins.length && process.env.FRONTEND_ORIGIN) {
+  frontendOrigins.push(process.env.FRONTEND_ORIGIN);
+}
+if (!frontendOrigins.length) {
+  frontendOrigins.push("http://localhost:5173");
+}
+
 module.exports = {
   nodeEnv: process.env.NODE_ENV || "development",
   port: Number(process.env.PORT || 4000),
+  frontendOrigin: frontendOrigins[0],
+  frontendOrigins,
+  adminApiToken: process.env.ADMIN_API_TOKEN || "",
   supabaseUrl: process.env.SUPABASE_URL,
   supabaseAnonKey: process.env.SUPABASE_ANON_KEY,
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
@@ -28,11 +46,24 @@ module.exports = {
   marketPriceRateLimitPerSecond: Number(
     process.env.MARKET_PRICE_RATE_LIMIT_PER_SECOND || 2
   ),
+  marketPriceStaleHours: Number(process.env.MARKET_PRICE_STALE_HOURS || 24),
   marketPriceCacheTtlMinutes: Number(process.env.MARKET_PRICE_CACHE_TTL_MINUTES || 60),
   steamMarketCurrency: Number(process.env.STEAM_MARKET_CURRENCY || 1),
   steamMarketTimeoutMs: Number(process.env.STEAM_MARKET_TIMEOUT_MS || 10000),
+  steamMarketMaxRetries: Number(process.env.STEAM_MARKET_MAX_RETRIES || 3),
+  steamMarketRetryBaseMs: Number(process.env.STEAM_MARKET_RETRY_BASE_MS || 350),
+  marketCommissionPercent: Number(process.env.MARKET_COMMISSION_PERCENT || 13),
+  marketSnapshotTtlMinutes: Number(process.env.MARKET_SNAPSHOT_TTL_MINUTES || 30),
+  defaultDisplayCurrency: process.env.DEFAULT_DISPLAY_CURRENCY || "USD",
+  fxRatesUsdJson: process.env.FX_RATES_USD_JSON || "",
+  authRateLimitWindowMs: Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS || 60000),
+  authRateLimitMax: Number(process.env.AUTH_RATE_LIMIT_MAX || 20),
+  syncRateLimitWindowMs: Number(process.env.SYNC_RATE_LIMIT_WINDOW_MS || 60000),
+  syncRateLimitMax: Number(process.env.SYNC_RATE_LIMIT_MAX || 6),
   priceUpdaterIntervalMinutes: Number(process.env.PRICE_UPDATER_INTERVAL_MINUTES || 60),
   priceUpdaterRateLimitPerSecond: Number(
     process.env.PRICE_UPDATER_RATE_LIMIT_PER_SECOND || 5
-  )
+  ),
+  alertCheckIntervalMinutes: Number(process.env.ALERT_CHECK_INTERVAL_MINUTES || 5),
+  alertCheckBatchSize: Number(process.env.ALERT_CHECK_BATCH_SIZE || 250)
 };

@@ -1,0 +1,104 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const path = require("node:path");
+
+process.env.SUPABASE_URL = process.env.SUPABASE_URL || "https://example.supabase.co";
+process.env.SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "anon";
+process.env.SUPABASE_SERVICE_ROLE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY || "service-role";
+
+const middlewarePath = path.resolve(__dirname, "../src/middleware/authMiddleware.js");
+const supabasePath = path.resolve(__dirname, "../src/config/supabase.js");
+const userRepoPath = path.resolve(__dirname, "../src/repositories/userRepository.js");
+
+function primeModule(modulePath, exportsValue) {
+  require.cache[modulePath] = {
+    id: modulePath,
+    filename: modulePath,
+    loaded: true,
+    exports: exportsValue
+  };
+}
+
+function clearModule(modulePath) {
+  delete require.cache[modulePath];
+}
+
+test("auth middleware accepts access token from HttpOnly cookie", async () => {
+  clearModule(middlewarePath);
+  clearModule(supabasePath);
+  clearModule(userRepoPath);
+
+  let seenToken = null;
+  primeModule(supabasePath, {
+    supabaseAdmin: {
+      auth: {
+        getUser: async (token) => {
+          seenToken = token;
+          return {
+            data: { user: { id: "u-1", email: "u1@example.com" } },
+            error: null
+          };
+        }
+      }
+    }
+  });
+
+  let ensured = false;
+  primeModule(userRepoPath, {
+    ensureExists: async () => {
+      ensured = true;
+    }
+  });
+
+  const middleware = require(middlewarePath);
+  const req = { headers: { cookie: "accessToken=cookie-token" } };
+  let nextErr = null;
+
+  await new Promise((resolve) => {
+    middleware(req, {}, (err) => {
+      nextErr = err || null;
+      resolve();
+    });
+  });
+
+  assert.equal(nextErr, null);
+  assert.equal(seenToken, "cookie-token");
+  assert.equal(req.userId, "u-1");
+  assert.equal(ensured, true);
+});
+
+test("auth middleware rejects request when no bearer/cookie token is present", async () => {
+  clearModule(middlewarePath);
+  clearModule(supabasePath);
+  clearModule(userRepoPath);
+
+  primeModule(supabasePath, {
+    supabaseAdmin: {
+      auth: {
+        getUser: async () => ({
+          data: null,
+          error: null
+        })
+      }
+    }
+  });
+  primeModule(userRepoPath, {
+    ensureExists: async () => {}
+  });
+
+  const middleware = require(middlewarePath);
+  const req = { headers: {} };
+  let nextErr = null;
+
+  await new Promise((resolve) => {
+    middleware(req, {}, (err) => {
+      nextErr = err || null;
+      resolve();
+    });
+  });
+
+  assert.ok(nextErr);
+  assert.equal(nextErr.statusCode, 401);
+  assert.equal(nextErr.message, "Unauthorized");
+});

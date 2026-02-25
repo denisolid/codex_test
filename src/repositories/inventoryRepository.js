@@ -29,6 +29,7 @@ exports.syncInventorySnapshot = async (userId, items) => {
     user_id: userId,
     skin_id: i.skin_id,
     quantity: i.quantity,
+    steam_item_ids: i.steam_item_ids || [],
     last_synced_at: new Date().toISOString()
   }));
 
@@ -44,11 +45,29 @@ exports.syncInventorySnapshot = async (userId, items) => {
 exports.getUserHoldings = async (userId) => {
   const { data, error } = await supabaseAdmin
     .from("inventories")
-    .select("skin_id, quantity, purchase_price, skins!inner(market_hash_name)")
+    .select(
+      "skin_id, quantity, steam_item_ids, purchase_price, skins!inner(market_hash_name)"
+    )
     .eq("user_id", userId);
 
   if (error) {
     throw new AppError(error.message, 500);
   }
   return data || [];
+};
+
+exports.getUserInventoryBySteamItemId = async (userId, steamItemId) => {
+  const { data, error } = await supabaseAdmin
+    .from("inventories")
+    .select("skin_id, steam_item_ids")
+    .eq("user_id", userId)
+    .contains("steam_item_ids", [steamItemId])
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  return data || null;
 };

@@ -1,23 +1,13 @@
 const AppError = require("../utils/AppError");
 
 const STEAM_IMAGE_BASE = "https://community.akamai.steamstatic.com/economy/image/";
-const ALLOWED_TYPE_NAMES = new Set([
-  "Pistol",
-  "Rifle",
-  "SMG",
-  "Sniper Rifle",
-  "Shotgun",
-  "Machinegun",
-  "Knife",
-  "Gloves"
-]);
 
 function normalizeExterior(name) {
   const m = /\(([^)]+)\)\s*$/.exec(name || "");
   return m ? m[1] : null;
 }
 
-function parseMarketHashName(marketHashName) {
+function parseMarketHashName(marketHashName, typeName) {
   if (!marketHashName) {
     return {
       weapon: null,
@@ -26,8 +16,18 @@ function parseMarketHashName(marketHashName) {
     };
   }
 
-  const [weaponPart, skinPartRaw] = marketHashName.split(" | ");
-  const skinPart = skinPartRaw || "";
+  const [leftPart, ...rightParts] = marketHashName.split(" | ");
+  const rightPart = rightParts.join(" | ");
+
+  if (!rightPart) {
+    return {
+      weapon: typeName || null,
+      skinName: marketHashName,
+      exterior: null
+    };
+  }
+
+  const skinPart = rightPart || "";
   const exterior = normalizeExterior(skinPart);
   const skinName = exterior
     ? skinPart.replace(
@@ -39,7 +39,7 @@ function parseMarketHashName(marketHashName) {
     : skinPart || null;
 
   return {
-    weapon: weaponPart || null,
+    weapon: leftPart || typeName || null,
     skinName,
     exterior
   };
@@ -57,40 +57,14 @@ function getTypeName(desc) {
   return typeTag?.localized_tag_name || typeTag?.name || null;
 }
 
-function isSkinLikeName(marketHashName) {
-  if (typeof marketHashName !== "string") return false;
-  if (!marketHashName.includes(" | ")) return false;
-
-  const excludedPrefixes = [
-    "Music Kit |",
-    "Sticker |",
-    "Graffiti |",
-    "Sealed Graffiti |",
-    "Patch |",
-    "Pin |"
-  ];
-
-  return !excludedPrefixes.some((p) => marketHashName.startsWith(p));
-}
-
 function classifyDescription(desc) {
   if (!desc) return { include: false, reason: "missing-description" };
   if (Number(desc.marketable || 0) !== 1) {
     return { include: false, reason: "not-marketable" };
   }
 
-  const marketHashName = desc.market_hash_name;
-  if (!isSkinLikeName(marketHashName)) {
-    return { include: false, reason: "excluded-category" };
-  }
-
-  const typeName = getTypeName(desc);
-  if (!typeName) {
-    return { include: false, reason: "missing-type" };
-  }
-
-  if (!ALLOWED_TYPE_NAMES.has(typeName)) {
-    return { include: false, reason: `unsupported-type:${typeName}` };
+  if (!desc.market_hash_name) {
+    return { include: false, reason: "missing-market-hash-name" };
   }
 
   return { include: true, reason: null };
@@ -156,6 +130,7 @@ exports.fetchInventory = async (steamId64, options = {}) => {
   const descriptionsByKey = new Map();
   const descriptionByMarketHashName = new Map();
   const quantityByMarketHashName = new Map();
+  const assetIdsByMarketHashName = new Map();
   const excludedByMarketHashName = new Map();
 
   let startAssetId = null;
@@ -189,6 +164,11 @@ exports.fetchInventory = async (steamId64, options = {}) => {
       const qty = Number(asset.amount || 1);
       const current = quantityByMarketHashName.get(marketHashName) || 0;
       quantityByMarketHashName.set(marketHashName, current + qty);
+      const currentAssetIds = assetIdsByMarketHashName.get(marketHashName) || [];
+      if (asset.assetid) {
+        currentAssetIds.push(String(asset.assetid));
+      }
+      assetIdsByMarketHashName.set(marketHashName, currentAssetIds);
     }
 
     if (!payload.more_items || !payload.last_assetid) {
@@ -200,7 +180,7 @@ exports.fetchInventory = async (steamId64, options = {}) => {
   const items = [];
   for (const [marketHashName, quantity] of quantityByMarketHashName.entries()) {
     const desc = descriptionByMarketHashName.get(marketHashName);
-    const parsed = parseMarketHashName(marketHashName);
+    const parsed = parseMarketHashName(marketHashName, getTypeName(desc));
     const imageUrl = desc?.icon_url ? `${STEAM_IMAGE_BASE}${desc.icon_url}` : null;
 
     items.push({
@@ -211,6 +191,7 @@ exports.fetchInventory = async (steamId64, options = {}) => {
       rarity: getRarity(desc),
       imageUrl,
       quantity,
+      steamItemIds: assetIdsByMarketHashName.get(marketHashName) || [],
       price: null
     });
   }
@@ -223,4 +204,9 @@ exports.fetchInventory = async (steamId64, options = {}) => {
   );
 
   return { items, excludedItems };
+};
+
+exports.__testables = {
+  parseMarketHashName,
+  classifyDescription
 };

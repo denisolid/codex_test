@@ -1,4 +1,4 @@
-const { supabaseAuthClient } = require("../config/supabase");
+const { supabaseAdmin, supabaseAuthClient } = require("../config/supabase");
 const AppError = require("../utils/AppError");
 
 exports.register = async (email, password) => {
@@ -27,7 +27,19 @@ exports.login = async (email, password) => {
 
   return {
     accessToken: data.session.access_token,
-    refreshToken: data.session.refresh_token,
     user: data.user
   };
+};
+
+exports.getUserByAccessToken = async (token) => {
+  if (!token) {
+    throw new AppError("Missing access token", 401);
+  }
+
+  const { data, error } = await supabaseAdmin.auth.getUser(token);
+  if (error || !data || !data.user) {
+    throw new AppError("Invalid access token", 401);
+  }
+
+  return data.user;
 };

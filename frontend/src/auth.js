@@ -8,9 +8,7 @@ const page = window.location.pathname.endsWith("register.html")
   ? "register"
   : "login";
 
-if (localStorage.getItem("accessToken")) {
-  window.location.href = "/";
-}
+checkExistingSession();
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -32,7 +30,7 @@ function render(error = "", info = "") {
         <p class="muted">${
           isLogin
             ? "Login to access your trading dashboard."
-            : "Start tracking your skins as a real portfolio."
+            : "Start tracking your CS2 items as a real portfolio."
         }</p>
 
         ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
@@ -78,6 +76,7 @@ async function onSubmit(e) {
     const path = page === "login" ? "/auth/login" : "/auth/register";
     const res = await fetch(`${API_BASE}${path}`, {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password })
     });
@@ -93,7 +92,6 @@ async function onSubmit(e) {
       return;
     }
 
-    localStorage.setItem("accessToken", payload.accessToken || "");
     window.location.href = "/";
   } catch (_err) {
     render("Network error. Check backend and frontend URLs.");
@@ -129,3 +127,16 @@ async function onGoogleAuth() {
 }
 
 render();
+
+async function checkExistingSession() {
+  try {
+    const res = await fetch(`${API_BASE}/auth/me`, {
+      credentials: "include"
+    });
+    if (res.ok) {
+      window.location.href = "/";
+    }
+  } catch (_err) {
+    // Ignore network errors on initial session check.
+  }
+}

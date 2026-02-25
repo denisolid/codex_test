@@ -1,19 +1,110 @@
 const AppError = require("../utils/AppError");
 const skinRepo = require("../repositories/skinRepository");
 const priceRepo = require("../repositories/priceHistoryRepository");
+const inventoryRepo = require("../repositories/inventoryRepository");
+const priceProviderService = require("./priceProviderService");
+const { derivePriceStatus } = require("../utils/priceStatus");
+const { resolveCurrency, convertUsdAmount } = require("./currencyService");
 
-exports.getSkinDetails = async (skinId) => {
+async function refreshSkinPrice(skin) {
+  const priced = await priceProviderService.getPrice(skin.market_hash_name);
+  const recordedAt = new Date().toISOString();
+
+  await priceRepo.insertPriceRows([
+    {
+      skin_id: skin.id,
+      price: priced.price,
+      currency: "USD",
+      source: `inspect:${priced.source}`,
+      recorded_at: recordedAt
+    }
+  ]);
+
+  return {
+    price: priced.price,
+    currency: "USD",
+    source: `inspect:${priced.source}`,
+    ...derivePriceStatus({
+      price: priced.price,
+      source: `inspect:${priced.source}`,
+      recorded_at: recordedAt
+    }),
+    recorded_at: recordedAt
+  };
+}
+
+exports.getSkinDetails = async (skinId, options = {}) => {
+  const displayCurrency = resolveCurrency(options.currency);
   const skin = await skinRepo.getById(skinId);
   if (!skin) {
-    throw new AppError("Skin not found", 404);
+    throw new AppError("Item not found", 404);
   }
 
-  const latestPrice = await priceRepo.getLatestPriceBySkinId(skinId);
-  const history = await priceRepo.getHistoryBySkinId(skinId, 30);
+  let latestPrice = await priceRepo.getLatestPriceBySkinId(skinId);
+
+  try {
+    latestPrice = await refreshSkinPrice(skin);
+  } catch (err) {
+    if (!latestPrice) {
+      throw new AppError(`Failed to fetch live item price: ${err.message}`, 502);
+    }
+    latestPrice = {
+      ...latestPrice,
+      ...derivePriceStatus(latestPrice),
+      stale: true,
+      staleReason: err.message
+    };
+  }
+
+  const latestPriceConverted = latestPrice
+    ? {
+        ...latestPrice,
+        price: convertUsdAmount(Number(latestPrice.price || 0), displayCurrency),
+        currency: displayCurrency
+      }
+    : null;
+
+  const sixMonthsAgo = new Date();
+  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+  const historyRaw = await priceRepo.getHistoryBySkinIdSince(
+    skinId,
+    sixMonthsAgo,
+    4000
+  );
+  const seenDates = new Set();
+  const history = [];
+
+  for (const row of historyRaw) {
+    const day = String(row.recorded_at || "").slice(0, 10);
+    if (!day || seenDates.has(day)) continue;
+    seenDates.add(day);
+    history.push({
+      ...row,
+      price: convertUsdAmount(Number(row.price || 0), displayCurrency),
+      currency: displayCurrency,
+      ...derivePriceStatus(row)
+    });
+    if (history.length >= 185) break;
+  }
 
   return {
     ...skin,
-    latestPrice,
+    latestPrice: latestPriceConverted,
+    currency: displayCurrency,
     priceHistory: history
   };
+};
+
+exports.getSkinDetailsBySteamItemId = async (userId, steamItemId, options = {}) => {
+  const inventoryItem = await inventoryRepo.getUserInventoryBySteamItemId(
+    userId,
+    steamItemId
+  );
+
+  if (!inventoryItem) {
+    throw new AppError("Steam item ID not found in your holdings", 404);
+  }
+
+  return exports.getSkinDetails(Number(inventoryItem.skin_id), options);
 };

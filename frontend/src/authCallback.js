@@ -2,6 +2,8 @@ import "./style.css";
 import { hasSupabaseConfig, supabase } from "./supabaseClient";
 
 const app = document.querySelector("#app");
+const API_BASE =
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000/api";
 
 function render(message, isError = false) {
   app.innerHTML = `
@@ -35,7 +37,18 @@ async function finalize() {
       throw new Error("No access token returned from Google auth");
     }
 
-    localStorage.setItem("accessToken", token);
+    const sessionRes = await fetch(`${API_BASE}/auth/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ accessToken: token })
+    });
+
+    if (!sessionRes.ok) {
+      const payload = await sessionRes.json().catch(() => ({}));
+      throw new Error(payload.error || "Failed to create authenticated session");
+    }
+
     window.location.href = "/";
   } catch (err) {
     render(err.message || "Google authentication failed", true);
