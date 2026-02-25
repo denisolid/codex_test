@@ -25,7 +25,11 @@ module.exports = async (req, _res, next) => {
     req.userId = data.user.id;
     req.authUser = data.user;
 
-    await userRepo.ensureExists(data.user.id, data.user.email);
+    const userProfile = await userRepo.getById(data.user.id);
+    if (!userProfile) {
+      throw new AppError("Unauthorized", 401, "USER_NOT_FOUND");
+    }
+
     next();
   } catch (err) {
     next(err);

@@ -30,11 +30,22 @@ if (!frontendOrigins.length) {
   frontendOrigins.push("http://localhost:5173");
 }
 
+function joinUrl(base, path) {
+  const cleanBase = String(base || "").replace(/\/+$/, "");
+  const cleanPath = String(path || "").startsWith("/") ? path : `/${path}`;
+  return `${cleanBase}${cleanPath}`;
+}
+
+const authEmailRedirectTo =
+  process.env.AUTH_EMAIL_REDIRECT_TO ||
+  joinUrl(frontendOrigins[0], "/login.html?confirmed=1");
+
 module.exports = {
   nodeEnv: process.env.NODE_ENV || "development",
   port: Number(process.env.PORT || 4000),
   frontendOrigin: frontendOrigins[0],
   frontendOrigins,
+  authEmailRedirectTo,
   adminApiToken: process.env.ADMIN_API_TOKEN || "",
   supabaseUrl: process.env.SUPABASE_URL,
   supabaseAnonKey: process.env.SUPABASE_ANON_KEY,
