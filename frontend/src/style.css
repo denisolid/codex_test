@@ -53,6 +53,22 @@ body {
   flex-wrap: wrap;
 }
 
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 280px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.75);
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .tab-strip {
   display: flex;
   gap: 8px;

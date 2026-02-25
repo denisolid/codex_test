@@ -7,6 +7,11 @@ const { setAuthCookie, clearAuthCookie } = require("../utils/authCookie");
 exports.register = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
   const data = await authService.register(email, password);
+
+  if (data?.user?.id && data?.user?.email) {
+    await userRepo.ensureExists(data.user.id, data.user.email);
+  }
+
   res.status(201).json(data);
 });
 
@@ -25,6 +30,12 @@ exports.createSession = asyncHandler(async (req, res) => {
   res.json({ user });
 });
 
+exports.resendConfirmation = asyncHandler(async (req, res) => {
+  const { email } = req.body;
+  const result = await authService.resendConfirmation(email);
+  res.json(result);
+});
+
 exports.logout = asyncHandler(async (_req, res) => {
   clearAuthCookie(res);
   res.status(204).send();
@@ -33,6 +44,10 @@ exports.logout = asyncHandler(async (_req, res) => {
 exports.me = [
   authMiddleware,
   asyncHandler(async (req, res) => {
-    res.json({ user: req.authUser });
+    const emailConfirmed = Boolean(
+      req.authUser?.email_confirmed_at || req.authUser?.confirmed_at
+    );
+
+    res.json({ user: req.authUser, emailConfirmed });
   })
 ];

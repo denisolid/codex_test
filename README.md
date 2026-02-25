@@ -12,6 +12,7 @@ Backend MVP implemented with:
 1. Copy `.env.example` to `.env` and fill Supabase values.
    - for local frontend, keep `FRONTEND_ORIGIN=http://localhost:5173`
    - set `FRONTEND_ORIGINS` for production allowlist (comma-separated)
+   - set `AUTH_EMAIL_REDIRECT_TO` so confirmation emails return to your login page
    - set `ADMIN_API_TOKEN` if you want to use admin maintenance endpoints
 2. Run SQL from `supabase/schema.sql` in Supabase SQL editor.
 3. Frontend env:
@@ -49,6 +50,7 @@ After login, the same `/` page renders the authenticated app view.
 
 - `POST /auth/register`
 - `POST /auth/login`
+- `POST /auth/resend-confirmation`
 - `POST /auth/session`
 - `POST /auth/logout`
 - `GET /auth/me`
@@ -127,6 +129,7 @@ Examples:
 - Configure in root `.env`:
   - `FRONTEND_ORIGIN=http://localhost:5173`
   - `FRONTEND_ORIGINS=http://localhost:5173`
+  - `AUTH_EMAIL_REDIRECT_TO=http://localhost:5173/login.html?confirmed=1`
   - `AUTH_RATE_LIMIT_WINDOW_MS=60000`
   - `AUTH_RATE_LIMIT_MAX=20`
   - `SYNC_RATE_LIMIT_WINDOW_MS=60000`
@@ -249,6 +252,7 @@ Render environment variables:
   - `SUPABASE_ANON_KEY`
   - `SUPABASE_SERVICE_ROLE_KEY`
   - `FRONTEND_URL` (comma-separated allowed origins; include your frontend production URL)
+  - `AUTH_EMAIL_REDIRECT_TO` (for example `https://your-app.vercel.app/login.html?confirmed=1`)
 - Optional:
   - `ADMIN_API_TOKEN`
   - `MARKET_PRICE_SOURCE` (default `auto`)

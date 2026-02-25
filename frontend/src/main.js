@@ -15,7 +15,9 @@ function normalizeCurrencyCode(value) {
 }
 
 const state = {
+  sessionBooting: true,
   authenticated: false,
+  authProfile: null,
   portfolio: null,
   history: [],
   transactions: [],
@@ -111,6 +113,26 @@ function clearError() {
   state.error = "";
 }
 
+function getHeaderEmailLabel() {
+  const email = String(state.authProfile?.email || "").trim();
+  if (!email) return "Signed in";
+  if (email.length <= 32) return email;
+  return `${email.slice(0, 29)}...`;
+}
+
+function buildAuthProfile(payload) {
+  const user = payload?.user || null;
+  if (!user) return null;
+
+  const explicit = payload?.emailConfirmed;
+  const fallback = Boolean(user.email_confirmed_at || user.confirmed_at);
+
+  return {
+    email: String(user.email || ""),
+    emailConfirmed: typeof explicit === "boolean" ? explicit : fallback
+  };
+}
+
 function formatMoney(amount, currencyCode = state.currency) {
   const value = Number(amount || 0);
   const code = normalizeCurrencyCode(currencyCode);
@@ -194,6 +216,7 @@ async function api(path, options = {}) {
   const payload = await res.json().catch(() => ({}));
   if (res.status === 401) {
     state.authenticated = false;
+    state.authProfile = null;
   }
   if (!res.ok) {
     throw new Error(payload.error || "Request failed");
@@ -492,6 +515,7 @@ async function logout() {
   }
 
   state.authenticated = false;
+  state.authProfile = null;
   state.portfolio = null;
   state.history = [];
   state.transactions = [];
@@ -592,16 +616,21 @@ function renderSyncSummary() {
   `;
 }
 
-async function refreshPortfolio() {
+async function refreshPortfolio(options = {}) {
+  const { silent = false } = options;
   clearError();
   try {
-    const [portfolio, history, txPayload, alertsPayload, eventsPayload] = await Promise.all([
-      api(withCurrency("/portfolio")),
-      api(withCurrency(`/portfolio/history?days=${state.historyDays}`)),
-      api("/transactions"),
-      api("/alerts").catch(() => ({ items: [] })),
-      api("/alerts/events?limit=50").catch(() => ({ items: [] }))
-    ]);
+    const [mePayload, portfolio, history, txPayload, alertsPayload, eventsPayload] =
+      await Promise.all([
+        api("/auth/me"),
+        api(withCurrency("/portfolio")),
+        api(withCurrency(`/portfolio/history?days=${state.historyDays}`)),
+        api("/transactions"),
+        api("/alerts").catch(() => ({ items: [] })),
+        api("/alerts/events?limit=50").catch(() => ({ items: [] }))
+      ]);
+
+    state.authProfile = buildAuthProfile(mePayload);
     state.portfolio = portfolio;
     state.history = history.points || [];
     state.transactions = Array.isArray(txPayload?.items) ? txPayload.items : [];
@@ -632,8 +661,12 @@ async function refreshPortfolio() {
     state.transactionsView.page = clampInt(state.transactionsView.page, 1, maxTxPages);
 
     render();
+    return true;
   } catch (err) {
-    setError(err.message);
+    if (!silent) {
+      setError(err.message);
+    }
+    return false;
   }
 }
 
@@ -1899,6 +1932,22 @@ function renderAlerts() {
   `;
 }
 
+function renderAuthNotices() {
+  if (!state.authenticated) return "";
+
+  if (state.authProfile?.emailConfirmed === false) {
+    const safeEmail = escapeHtml(state.authProfile.email || "your account");
+    return `
+      <div class="error">
+        Email for <strong>${safeEmail}</strong> is not confirmed.
+        Check your inbox and click the confirmation link.
+      </div>
+    `;
+  }
+
+  return "";
+}
+
 function renderManagementSummary() {
   const summary = state.portfolio?.managementSummary;
   if (!summary) return "";
@@ -2387,11 +2436,25 @@ function renderPublicHome() {
   `;
 }
 
+function renderSessionBoot() {
+  app.innerHTML = `
+    <main class="layout auth-layout">
+      <article class="panel auth-panel">
+        <p class="eyebrow">CS2 Portfolio Analyzer</p>
+        <h1>Loading your session</h1>
+        <p class="muted">Please wait while we securely restore your account state.</p>
+      </article>
+    </main>
+  `;
+}
+
 function renderApp() {
   const portfolio = state.portfolio || {};
   const oneDayTrendClass = Number(portfolio.oneDayChangePercent || 0) >= 0 ? "up" : "down";
   const trendClass = Number(portfolio.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
   const holdingsPage = getFilteredHoldings();
+  const userEmailTitle = String(state.authProfile?.email || "").trim();
+  const userEmailLabel = getHeaderEmailLabel();
   const currencyOptions = SUPPORTED_CURRENCIES.map(
     (code) => `<option value="${code}" ${code === state.currency ? "selected" : ""}>${code}</option>`
   ).join("");
@@ -2544,6 +2607,9 @@ function renderApp() {
       <nav class="topbar">
         <div class="brand">CS2 Portfolio Analyzer</div>
         <div class="top-actions">
+          <span class="user-chip" title="${escapeHtml(userEmailTitle)}">${escapeHtml(
+    userEmailLabel
+  )}</span>
           <label class="currency-picker">
             Currency
             <select id="currency-select">${currencyOptions}</select>
@@ -2583,6 +2649,7 @@ function renderApp() {
       </header>
 
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ""}
+      ${renderAuthNotices()}
       ${tabContent}
     </main>
   `;
@@ -2772,6 +2839,11 @@ function renderApp() {
 }
 
 function render() {
+  if (state.sessionBooting) {
+    renderSessionBoot();
+    return;
+  }
+
   if (!state.authenticated) {
     renderPublicHome();
     return;
@@ -2780,7 +2852,14 @@ function render() {
   renderApp();
 }
 
-render();
-refreshPortfolio().catch(() => {
+async function bootstrapSession() {
+  render();
+  await refreshPortfolio({ silent: true });
+  state.sessionBooting = false;
+  render();
+}
+
+bootstrapSession().catch(() => {
+  state.sessionBooting = false;
   render();
 });

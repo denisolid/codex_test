@@ -44,11 +44,11 @@ test("auth middleware accepts access token from HttpOnly cookie", async () => {
     }
   });
 
-  let ensured = false;
   primeModule(userRepoPath, {
-    ensureExists: async () => {
-      ensured = true;
-    }
+    getById: async (id) => ({
+      id,
+      email: "u1@example.com"
+    })
   });
 
   const middleware = require(middlewarePath);
@@ -65,7 +65,6 @@ test("auth middleware accepts access token from HttpOnly cookie", async () => {
   assert.equal(nextErr, null);
   assert.equal(seenToken, "cookie-token");
   assert.equal(req.userId, "u-1");
-  assert.equal(ensured, true);
 });
 
 test("auth middleware rejects request when no bearer/cookie token is present", async () => {
@@ -84,11 +83,47 @@ test("auth middleware rejects request when no bearer/cookie token is present", a
     }
   });
   primeModule(userRepoPath, {
-    ensureExists: async () => {}
+    getById: async () => null
   });
 
   const middleware = require(middlewarePath);
   const req = { headers: {} };
+  let nextErr = null;
+
+  await new Promise((resolve) => {
+    middleware(req, {}, (err) => {
+      nextErr = err || null;
+      resolve();
+    });
+  });
+
+  assert.ok(nextErr);
+  assert.equal(nextErr.statusCode, 401);
+  assert.equal(nextErr.message, "Unauthorized");
+});
+
+test("auth middleware rejects request when user profile was deleted", async () => {
+  clearModule(middlewarePath);
+  clearModule(supabasePath);
+  clearModule(userRepoPath);
+
+  primeModule(supabasePath, {
+    supabaseAdmin: {
+      auth: {
+        getUser: async () => ({
+          data: { user: { id: "u-2", email: "u2@example.com" } },
+          error: null
+        })
+      }
+    }
+  });
+
+  primeModule(userRepoPath, {
+    getById: async () => null
+  });
+
+  const middleware = require(middlewarePath);
+  const req = { headers: { cookie: "accessToken=valid-token" } };
   let nextErr = null;
 
   await new Promise((resolve) => {
