@@ -25,6 +25,12 @@ exports.createSession = asyncHandler(async (req, res) => {
   res.json({ user });
 });
 
+exports.resendConfirmation = asyncHandler(async (req, res) => {
+  const { email } = req.body;
+  const result = await authService.resendConfirmation(email);
+  res.json(result);
+});
+
 exports.logout = asyncHandler(async (_req, res) => {
   clearAuthCookie(res);
   res.status(204).send();

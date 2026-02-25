@@ -49,6 +49,7 @@ After login, the same `/` page renders the authenticated app view.
 
 - `POST /auth/register`
 - `POST /auth/login`
+- `POST /auth/resend-confirmation`
 - `POST /auth/session`
 - `POST /auth/logout`
 - `GET /auth/me`

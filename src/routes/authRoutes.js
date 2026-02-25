@@ -12,6 +12,7 @@ const authRateLimiter = createRateLimiter({
 router.post("/register", authRateLimiter, ctrl.register);
 router.post("/login", authRateLimiter, ctrl.login);
 router.post("/session", authRateLimiter, ctrl.createSession);
+router.post("/resend-confirmation", authRateLimiter, ctrl.resendConfirmation);
 router.post("/logout", authRateLimiter, ctrl.logout);
 router.get("/me", authRateLimiter, ctrl.me);
 

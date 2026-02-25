@@ -43,3 +43,23 @@ exports.getUserByAccessToken = async (token) => {
 
   return data.user;
 };
+
+exports.resendConfirmation = async (email) => {
+  if (!email) {
+    throw new AppError("Email is required", 400);
+  }
+
+  const { error } = await supabaseAuthClient.auth.resend({
+    type: "signup",
+    email
+  });
+
+  if (error) {
+    throw new AppError(error.message, 400);
+  }
+
+  return {
+    message:
+      "If this account exists, a confirmation email has been sent. Check inbox and spam."
+  };
+};
