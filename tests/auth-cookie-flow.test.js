@@ -10,6 +10,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY =
 const middlewarePath = path.resolve(__dirname, "../src/middleware/authMiddleware.js");
 const supabasePath = path.resolve(__dirname, "../src/config/supabase.js");
 const userRepoPath = path.resolve(__dirname, "../src/repositories/userRepository.js");
+const appTokenPath = path.resolve(__dirname, "../src/utils/appSessionToken.js");
 
 function primeModule(modulePath, exportsValue) {
   require.cache[modulePath] = {
@@ -136,4 +137,54 @@ test("auth middleware rejects request when user profile was deleted", async () =
   assert.ok(nextErr);
   assert.equal(nextErr.statusCode, 401);
   assert.equal(nextErr.message, "Unauthorized");
+});
+
+test("auth middleware accepts app session token for Steam auth flow", async () => {
+  clearModule(middlewarePath);
+  clearModule(supabasePath);
+  clearModule(userRepoPath);
+  clearModule(appTokenPath);
+
+  primeModule(supabasePath, {
+    supabaseAdmin: {
+      auth: {
+        getUser: async () => {
+          throw new Error("supabase should not be called for app token");
+        }
+      }
+    }
+  });
+
+  primeModule(userRepoPath, {
+    getById: async () => ({
+      id: "steam-user-1",
+      email: "steam_76561198000000000@steam.local",
+      steam_id64: "76561198000000000",
+      display_name: "Steam Player",
+      avatar_url: "https://cdn.example/avatar.jpg"
+    })
+  });
+
+  const { createAppSessionToken } = require(appTokenPath);
+  const token = createAppSessionToken({
+    sub: "steam-user-1",
+    email: "steam_76561198000000000@steam.local",
+    provider: "steam"
+  });
+
+  const middleware = require(middlewarePath);
+  const req = { headers: { cookie: `accessToken=${encodeURIComponent(token)}` } };
+  let nextErr = null;
+
+  await new Promise((resolve) => {
+    middleware(req, {}, (err) => {
+      nextErr = err || null;
+      resolve();
+    });
+  });
+
+  assert.equal(nextErr, null);
+  assert.equal(req.userId, "steam-user-1");
+  assert.equal(req.authProvider, "app");
+  assert.equal(req.authUser?.user_metadata?.provider, "steam");
 });

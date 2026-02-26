@@ -40,12 +40,25 @@ const authEmailRedirectTo =
   process.env.AUTH_EMAIL_REDIRECT_TO ||
   joinUrl(frontendOrigins[0], "/login.html?confirmed=1");
 
+const apiPublicUrl =
+  String(process.env.API_PUBLIC_URL || process.env.BACKEND_URL || "").trim() || "";
+
+const appAuthSecret = String(
+  process.env.APP_AUTH_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || ""
+).trim();
+if (!appAuthSecret) {
+  throw new Error("Missing env var: APP_AUTH_SECRET");
+}
+
 module.exports = {
   nodeEnv: process.env.NODE_ENV || "development",
   port: Number(process.env.PORT || 4000),
   frontendOrigin: frontendOrigins[0],
   frontendOrigins,
+  apiPublicUrl,
   authEmailRedirectTo,
+  appAuthSecret,
+  steamWebApiKey: String(process.env.STEAM_WEB_API_KEY || "").trim(),
   adminApiToken: process.env.ADMIN_API_TOKEN || "",
   supabaseUrl: process.env.SUPABASE_URL,
   supabaseAnonKey: process.env.SUPABASE_ANON_KEY,

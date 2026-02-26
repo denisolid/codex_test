@@ -1,6 +1,8 @@
+const crypto = require("node:crypto");
 const { supabaseAdmin, supabaseAuthClient } = require("../config/supabase");
-const { authEmailRedirectTo } = require("../config/env");
+const { authEmailRedirectTo, appAuthSecret } = require("../config/env");
 const AppError = require("../utils/AppError");
+const userRepo = require("../repositories/userRepository");
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -25,6 +27,31 @@ function validatePassword(password) {
     );
   }
   return String(password);
+}
+
+function validateSteamId64(steamId64) {
+  const safeSteamId64 = String(steamId64 || "").trim();
+  if (!/^\d{17}$/.test(safeSteamId64)) {
+    throw new AppError("Invalid Steam ID", 400, "INVALID_STEAM_ID");
+  }
+  return safeSteamId64;
+}
+
+function buildSteamEmail(steamId64) {
+  return `steam_${steamId64}@steam.local`;
+}
+
+function buildSteamPassword(steamId64) {
+  const digest = crypto
+    .createHmac("sha256", appAuthSecret)
+    .update(`steam-login:${steamId64}`)
+    .digest("hex");
+
+  return `Steam!${digest}`;
+}
+
+function isDuplicateUserError(message) {
+  return /already\s+registered|duplicate|unique/i.test(String(message || ""));
 }
 
 function isEmailNotConfirmedMessage(message) {
@@ -161,5 +188,78 @@ exports.resendConfirmation = async (email) => {
   return {
     message:
       "If this account exists and is not confirmed, a confirmation link has been sent. Check inbox and spam."
+  };
+};
+
+exports.loginWithSteam = async (steamId64, profile = {}) => {
+  const safeSteamId64 = validateSteamId64(steamId64);
+  const steamEmail = buildSteamEmail(safeSteamId64);
+  const steamPassword = buildSteamPassword(safeSteamId64);
+
+  let profileRow = await userRepo.getBySteamId64(safeSteamId64);
+
+  if (!profileRow) {
+    const createPayload = {
+      email: steamEmail,
+      password: steamPassword,
+      email_confirm: true,
+      user_metadata: {
+        provider: "steam",
+        steam_id64: safeSteamId64
+      }
+    };
+
+    const { data, error } = await supabaseAdmin.auth.admin.createUser(createPayload);
+    if (error && !isDuplicateUserError(error.message)) {
+      throw new AppError("Unable to create Steam account", 500, "STEAM_ACCOUNT_CREATE_FAILED");
+    }
+
+    const authUser = data?.user;
+    if (authUser?.id) {
+      await userRepo.ensureExists(authUser.id, steamEmail);
+      profileRow = await userRepo.updateSteamProfileById(authUser.id, {
+        steamId64: safeSteamId64,
+        displayName: profile.displayName,
+        avatarUrl: profile.avatarUrl
+      });
+    }
+  }
+
+  if (!profileRow) {
+    const { data, error } = await supabaseAuthClient.auth.signInWithPassword({
+      email: steamEmail,
+      password: steamPassword
+    });
+
+    if (error || !data?.user?.id) {
+      throw new AppError("Steam login failed", 401, "STEAM_LOGIN_FAILED");
+    }
+
+    await userRepo.ensureExists(data.user.id, steamEmail);
+    profileRow = await userRepo.updateSteamProfileById(data.user.id, {
+      steamId64: safeSteamId64,
+      displayName: profile.displayName,
+      avatarUrl: profile.avatarUrl
+    });
+  } else {
+    profileRow = await userRepo.updateSteamProfileById(profileRow.id, {
+      displayName: profile.displayName,
+      avatarUrl: profile.avatarUrl
+    });
+  }
+
+  const responseEmail = profileRow.email || steamEmail;
+
+  return {
+    user: {
+      id: profileRow.id,
+      email: responseEmail,
+      user_metadata: {
+        provider: "steam",
+        steam_id64: safeSteamId64,
+        display_name: profileRow.display_name || null,
+        avatar_url: profileRow.avatar_url || null
+      }
+    }
   };
 };

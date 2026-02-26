@@ -13,6 +13,9 @@ Backend MVP implemented with:
    - for local frontend, keep `FRONTEND_ORIGIN=http://localhost:5173`
    - set `FRONTEND_ORIGINS` for production allowlist (comma-separated)
    - set `AUTH_EMAIL_REDIRECT_TO` so confirmation emails return to your login page
+   - set `API_PUBLIC_URL` to your backend public URL (for Steam callback URL generation)
+   - set `APP_AUTH_SECRET` to a long random secret
+   - optional: set `STEAM_WEB_API_KEY` to enrich Steam profile name/avatar
    - set `ADMIN_API_TOKEN` if you want to use admin maintenance endpoints
 2. Run SQL from `supabase/schema.sql` in Supabase SQL editor.
 3. Frontend env:
@@ -46,12 +49,22 @@ After login, the same `/` page renders the authenticated app view.
    - `VITE_SUPABASE_URL=...`
    - `VITE_SUPABASE_ANON_KEY=...`
 
+## Steam Login setup (OpenID)
+
+- Frontend starts Steam login with `GET /api/auth/steam/start`.
+- Steam returns to backend callback `GET /api/auth/steam/callback`.
+- Backend then redirects to frontend callback page and establishes session.
+- Ensure `API_PUBLIC_URL` is set correctly in backend `.env` (example: `https://your-api.onrender.com`).
+- Optional: set `STEAM_WEB_API_KEY` for persona/avatar data from Steam Web API.
+
 ## Endpoints
 
 - `POST /auth/register`
 - `POST /auth/login`
 - `POST /auth/resend-confirmation`
 - `POST /auth/session`
+- `GET /auth/steam/start`
+- `GET /auth/steam/callback`
 - `POST /auth/logout`
 - `GET /auth/me`
 - `POST /admin/prices/cleanup-mock` (requires `x-admin-token` header)
@@ -83,7 +96,7 @@ After login, the same `/` page renders the authenticated app view.
 - `GET /extension/items/:skinId/sell-suggestion` (requires `x-extension-api-key`)
 - `POST /extension/trade/calculate` (requires `x-extension-api-key`)
 
-All non-auth routes require authentication via secure `HttpOnly` cookie set by `/auth/login` or `/auth/session`.
+All non-auth routes require authentication via secure `HttpOnly` cookie (set by `/auth/login`, `/auth/session`, or Steam callback) or `Authorization: Bearer <token>`.
 
 Monetary endpoints support optional `?currency=<CODE>` query parameter.
 
