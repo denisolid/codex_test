@@ -1,5 +1,6 @@
 import "./style.css";
 import { API_URL } from "./config";
+import { clearAuthToken, withAuthHeaders } from "./authToken";
 const app = document.querySelector("#app");
 const SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "UAH", "PLN", "CZK"];
 const CURRENCY_STORAGE_KEY = "cs2sa:selected_currency";
@@ -202,10 +203,10 @@ function formatManagementClue(clue) {
 }
 
 async function api(path, options = {}) {
-  const headers = {
+  const headers = withAuthHeaders({
     "Content-Type": "application/json",
     ...(options.headers || {})
-  };
+  });
 
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
@@ -215,6 +216,7 @@ async function api(path, options = {}) {
 
   const payload = await res.json().catch(() => ({}));
   if (res.status === 401) {
+    clearAuthToken();
     state.authenticated = false;
     state.authProfile = null;
   }
@@ -514,6 +516,7 @@ async function logout() {
     // Continue local cleanup even if request fails.
   }
 
+  clearAuthToken();
   state.authenticated = false;
   state.authProfile = null;
   state.portfolio = null;

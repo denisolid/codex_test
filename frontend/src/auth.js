@@ -1,6 +1,11 @@
 import "./style.css";
 import { hasSupabaseConfig, supabase } from "./supabaseClient";
 import { API_URL } from "./config";
+import {
+  clearAuthToken,
+  setAuthToken,
+  withAuthHeaders
+} from "./authToken";
 
 const app = document.querySelector("#app");
 const page = window.location.pathname.endsWith("register.html")
@@ -176,7 +181,7 @@ async function onSubmit(e) {
     const res = await fetch(`${API_URL}${path}`, {
       method: "POST",
       credentials: "include",
-      headers: { "Content-Type": "application/json" },
+      headers: withAuthHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ email, password })
     });
     const payload = await res.json().catch(() => ({}));
@@ -216,6 +221,10 @@ async function onSubmit(e) {
       }
       window.location.href = `/login.html?${params.toString()}`;
       return;
+    }
+
+    if (payload?.accessToken) {
+      setAuthToken(payload.accessToken);
     }
 
     window.location.href = "/";
@@ -281,7 +290,7 @@ async function onResendConfirmation() {
     const res = await fetch(`${API_URL}/auth/resend-confirmation`, {
       method: "POST",
       credentials: "include",
-      headers: { "Content-Type": "application/json" },
+      headers: withAuthHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ email: pendingConfirmationEmail })
     });
     const payload = await res.json().catch(() => ({}));
@@ -357,10 +366,16 @@ render();
 async function checkExistingSession() {
   try {
     const res = await fetch(`${API_URL}/auth/me`, {
-      credentials: "include"
+      credentials: "include",
+      headers: withAuthHeaders()
     });
     if (res.ok) {
       window.location.href = "/";
+      return;
+    }
+
+    if (res.status === 401) {
+      clearAuthToken();
     }
   } catch (_err) {
     // Ignore network errors on initial session check.
