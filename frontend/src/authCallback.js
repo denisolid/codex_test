@@ -23,6 +23,8 @@ async function finalize() {
     const urlParams = new URLSearchParams(window.location.search);
     const hashToken = String(hashParams.get("accessToken") || "").trim();
     const steamError = String(urlParams.get("error") || "").trim();
+    const linkedSteam = urlParams.get("linkedSteam") === "1";
+    const merged = urlParams.get("merged") === "1";
 
     if (hashToken) {
       setAuthToken(hashToken);
@@ -31,12 +33,26 @@ async function finalize() {
       return;
     }
 
+    if (linkedSteam) {
+      const target = new URL("/", window.location.origin);
+      target.searchParams.set("linkedSteam", "1");
+      if (merged) {
+        target.searchParams.set("merged", "1");
+      }
+      window.location.href = target.toString();
+      return;
+    }
+
     if (steamError) {
       const messageByCode = {
         steam_login_cancelled: "Steam login cancelled. Please try again.",
         steam_verify_failed: "Steam login verification failed. Please retry.",
         steam_auth_failed: "Steam login failed. Please retry.",
-        steam_account_create_failed: "Could not create Steam account. Try again later."
+        steam_account_create_failed: "Could not create Steam account. Try again later.",
+        steam_link_state_missing: "Steam link session expired. Start linking again from settings.",
+        steam_link_state_invalid: "Invalid Steam link session. Start linking again.",
+        steam_link_failed: "Steam account linking failed. Please retry.",
+        steam_already_linked: "This Steam account is already linked to another user."
       };
       throw new Error(messageByCode[steamError] || "Steam login failed.");
     }

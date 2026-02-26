@@ -65,9 +65,12 @@ After login, the same `/` page renders the authenticated app view.
 - `POST /auth/session`
 - `GET /auth/steam/start`
 - `GET /auth/steam/callback`
+- `GET /auth/steam/link/start`
+- `GET /auth/steam/link/callback`
 - `POST /auth/logout`
 - `GET /auth/me`
 - `POST /admin/prices/cleanup-mock` (requires `x-admin-token` header)
+- `GET /admin/metrics/steam-link-rate` (requires `x-admin-token` header)
 - `PATCH /users/me/steam`
 - `POST /inventory/sync`
 - `GET /portfolio`
@@ -97,6 +100,25 @@ After login, the same `/` page renders the authenticated app view.
 - `POST /extension/trade/calculate` (requires `x-extension-api-key`)
 
 All non-auth routes require authentication via secure `HttpOnly` cookie (set by `/auth/login`, `/auth/session`, or Steam callback) or `Authorization: Bearer <token>`.
+
+## Steam account linking and merge rules
+
+- Existing users can link Steam from the **Settings** tab.
+- Linking flow:
+  - frontend redirects to `/api/auth/steam/link/start`
+  - backend verifies Steam identity in `/api/auth/steam/link/callback`
+- Duplicate prevention:
+  - if Steam is already linked to another normal account, linking is blocked (`STEAM_ALREADY_LINKED`).
+  - if Steam is linked to an auto-created Steam-only account (`steam_<id>@steam.local`), link is transferred to the current account.
+
+## Steam linking success metric
+
+- Endpoint: `GET /api/admin/metrics/steam-link-rate?windowDays=30`
+- Header: `x-admin-token: <ADMIN_API_TOKEN>`
+- Response fields:
+  - `activeUsers`
+  - `linkedActiveUsers`
+  - `linkedPercent`
 
 Monetary endpoints support optional `?currency=<CODE>` query parameter.
 

@@ -1,6 +1,6 @@
 import "./style.css";
 import { API_URL } from "./config";
-import { clearAuthToken, withAuthHeaders } from "./authToken";
+import { clearAuthToken, getAuthToken, withAuthHeaders } from "./authToken";
 const app = document.querySelector("#app");
 const SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "UAH", "PLN", "CZK"];
 const CURRENCY_STORAGE_KEY = "cs2sa:selected_currency";
@@ -92,7 +92,8 @@ const state = {
     loading: false,
     inventoryValue: null,
     autoLoaded: false
-  }
+  },
+  accountNotice: ""
 };
 
 function escapeHtml(value) {
@@ -121,16 +122,44 @@ function getHeaderEmailLabel() {
   return `${email.slice(0, 29)}...`;
 }
 
+function buildSteamAuthStartUrl(mode = "login") {
+  const steamMode = String(mode || "login").toLowerCase();
+  const path = steamMode === "link" ? "/auth/steam/link/start" : "/auth/steam/start";
+  const url = new URL(`${API_URL}${path}`);
+  const next = `${window.location.origin}/auth-callback.html`;
+  url.searchParams.set("next", next);
+
+  // Linking uses a backend redirect flow where custom auth headers cannot be attached.
+  // Include bearer token as fallback for browsers that block cross-site cookies.
+  if (steamMode === "link") {
+    const token = getAuthToken();
+    if (token) {
+      url.searchParams.set("accessToken", token);
+    }
+  }
+
+  return url.toString();
+}
+
 function buildAuthProfile(payload) {
   const user = payload?.user || null;
   if (!user) return null;
 
+  const profile = payload?.profile || {};
+  const metadata = user?.user_metadata || {};
   const explicit = payload?.emailConfirmed;
   const fallback = Boolean(user.email_confirmed_at || user.confirmed_at);
+  const steamId64 = String(profile.steamId64 || metadata.steam_id64 || "").trim();
 
   return {
     email: String(user.email || ""),
-    emailConfirmed: typeof explicit === "boolean" ? explicit : fallback
+    emailConfirmed: typeof explicit === "boolean" ? explicit : fallback,
+    steamId64: steamId64 || null,
+    steamLinked: Boolean(steamId64) || Boolean(profile.linkedSteam),
+    steamDisplayName:
+      String(profile.displayName || metadata.display_name || "").trim() || null,
+    steamAvatarUrl: String(profile.avatarUrl || metadata.avatar_url || "").trim() || null,
+    provider: String(profile.provider || metadata.provider || "").trim() || "email"
   };
 }
 
@@ -532,6 +561,7 @@ async function logout() {
   state.marketTab.autoLoaded = false;
   state.inspectedSteamItemId = "";
   state.tradeCalc.result = null;
+  state.accountNotice = "";
   render();
 }
 
@@ -1938,9 +1968,14 @@ function renderAlerts() {
 function renderAuthNotices() {
   if (!state.authenticated) return "";
 
+  const infoNotice = state.accountNotice
+    ? `<div class="info">${escapeHtml(state.accountNotice)}</div>`
+    : "";
+
   if (state.authProfile?.emailConfirmed === false) {
     const safeEmail = escapeHtml(state.authProfile.email || "your account");
     return `
+      ${infoNotice}
       <div class="error">
         Email for <strong>${safeEmail}</strong> is not confirmed.
         Check your inbox and click the confirmation link.
@@ -1948,7 +1983,7 @@ function renderAuthNotices() {
     `;
   }
 
-  return "";
+  return infoNotice;
 }
 
 function renderManagementSummary() {
@@ -2061,7 +2096,8 @@ function renderTabNav() {
     { id: "portfolio", label: "Portfolio" },
     { id: "trades", label: "Trades" },
     { id: "alerts", label: "Alerts" },
-    { id: "market", label: "Market" }
+    { id: "market", label: "Market" },
+    { id: "settings", label: "Settings" }
   ];
 
   return `
@@ -2389,12 +2425,55 @@ function renderMarketTab() {
   `;
 }
 
+function renderSettingsTab() {
+  const profile = state.authProfile || {};
+  const steamLinked = Boolean(profile.steamLinked);
+  const steamLinkUrl = buildSteamAuthStartUrl("link");
+  const providerLabel = toTitle(profile.provider || "email");
+
+  return `
+    <section class="grid">
+      <article class="panel wide">
+        <h2>Account Settings</h2>
+        <p class="helper-text">Use Steam linking to connect your existing email account with Steam login and avoid duplicate profiles.</p>
+        <div class="sub-kpi-grid">
+          <article class="sub-kpi-card">
+            <span>Login Provider</span>
+            <strong>${escapeHtml(providerLabel)}</strong>
+          </article>
+          <article class="sub-kpi-card">
+            <span>Steam Status</span>
+            <strong>${steamLinked ? "Linked" : "Not linked"}</strong>
+          </article>
+          <article class="sub-kpi-card">
+            <span>SteamID64</span>
+            <strong>${escapeHtml(profile.steamId64 || "-")}</strong>
+          </article>
+        </div>
+        <p class="muted">
+          ${steamLinked
+            ? "Steam login is connected to this account. You can relink to switch or refresh profile data."
+            : "No Steam account linked yet. Link now to enable Steam sign-in and one-account access."}
+        </p>
+        <div class="row">
+          <a class="link-btn" href="${escapeHtml(steamLinkUrl)}">
+            ${steamLinked ? "Relink Steam Account" : "Link Steam Account"}
+          </a>
+        </div>
+      </article>
+    </section>
+  `;
+}
+
 function renderPublicHome() {
+  const steamStartUrl = buildSteamAuthStartUrl("login");
+
   app.innerHTML = `
     <main class="layout">
       <nav class="topbar">
         <div class="brand">CS2 Portfolio Analyzer</div>
         <div class="top-actions">
+          <a class="link-btn ghost" href="${escapeHtml(steamStartUrl)}">Login with Steam</a>
           <a class="link-btn ghost" href="/login.html">Login</a>
           <a class="link-btn" href="/register.html">Start Free</a>
         </div>
@@ -2406,6 +2485,7 @@ function renderPublicHome() {
           <h1>See your CS2 items like a real portfolio, not a random inventory list.</h1>
           <p class="hero-copy">Connect Steam, sync your inventory (skins, cases, stickers, music kits, and more), and instantly track value, ROI, and 7-day movement in one focused dashboard.</p>
           <div class="hero-actions">
+            <a class="link-btn ghost" href="${escapeHtml(steamStartUrl)}">Continue with Steam</a>
             <a class="link-btn" href="/register.html">Create Account</a>
             <a class="link-btn ghost" href="/login.html">I already have an account</a>
           </div>
@@ -2603,7 +2683,9 @@ function renderApp() {
         ? tradesContent
         : state.activeTab === "alerts"
           ? renderAlertsCenter()
-          : renderMarketTab();
+          : state.activeTab === "market"
+            ? renderMarketTab()
+            : renderSettingsTab();
 
   app.innerHTML = `
     <main class="layout">
@@ -2855,7 +2937,22 @@ function render() {
   renderApp();
 }
 
+function hydrateAppNoticesFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const linkedSteam = params.get("linkedSteam") === "1";
+  const merged = params.get("merged") === "1";
+
+  if (!linkedSteam) return;
+
+  state.accountNotice = merged
+    ? "Steam account linked. Existing Steam-only profile was merged into this account."
+    : "Steam account linked successfully.";
+
+  window.history.replaceState({}, "", "/");
+}
+
 async function bootstrapSession() {
+  hydrateAppNoticesFromUrl();
   render();
   await refreshPortfolio({ silent: true });
   state.sessionBooting = false;
