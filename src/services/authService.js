@@ -5,9 +5,14 @@ const AppError = require("../utils/AppError");
 const userRepo = require("../repositories/userRepository");
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const STEAM_MANAGED_EMAIL_REGEX = /^steam_\d{17}@steam\.local$/i;
 
 function normalizeEmail(email) {
   return String(email || "").trim().toLowerCase();
+}
+
+function isSteamManagedEmail(email) {
+  return STEAM_MANAGED_EMAIL_REGEX.test(normalizeEmail(email));
 }
 
 function validateEmail(email) {
@@ -48,6 +53,27 @@ function buildSteamPassword(steamId64) {
     .digest("hex");
 
   return `Steam!${digest}`;
+}
+
+function normalizeSteamProfile(profile = {}) {
+  return {
+    displayName: String(profile.displayName || "").trim() || null,
+    avatarUrl: String(profile.avatarUrl || "").trim() || null
+  };
+}
+
+function toAuthUserFromProfileRow(profileRow, steamId64) {
+  const safeSteamId64 = validateSteamId64(steamId64);
+  return {
+    id: profileRow.id,
+    email: profileRow.email || buildSteamEmail(safeSteamId64),
+    user_metadata: {
+      provider: "steam",
+      steam_id64: safeSteamId64,
+      display_name: profileRow.display_name || null,
+      avatar_url: profileRow.avatar_url || null
+    }
+  };
 }
 
 function isDuplicateUserError(message) {
@@ -193,6 +219,7 @@ exports.resendConfirmation = async (email) => {
 
 exports.loginWithSteam = async (steamId64, profile = {}) => {
   const safeSteamId64 = validateSteamId64(steamId64);
+  const safeProfile = normalizeSteamProfile(profile);
   const steamEmail = buildSteamEmail(safeSteamId64);
   const steamPassword = buildSteamPassword(safeSteamId64);
 
@@ -219,8 +246,8 @@ exports.loginWithSteam = async (steamId64, profile = {}) => {
       await userRepo.ensureExists(authUser.id, steamEmail);
       profileRow = await userRepo.updateSteamProfileById(authUser.id, {
         steamId64: safeSteamId64,
-        displayName: profile.displayName,
-        avatarUrl: profile.avatarUrl
+        displayName: safeProfile.displayName,
+        avatarUrl: safeProfile.avatarUrl
       });
     }
   }
@@ -238,28 +265,65 @@ exports.loginWithSteam = async (steamId64, profile = {}) => {
     await userRepo.ensureExists(data.user.id, steamEmail);
     profileRow = await userRepo.updateSteamProfileById(data.user.id, {
       steamId64: safeSteamId64,
-      displayName: profile.displayName,
-      avatarUrl: profile.avatarUrl
-    });
-  } else {
-    profileRow = await userRepo.updateSteamProfileById(profileRow.id, {
-      displayName: profile.displayName,
-      avatarUrl: profile.avatarUrl
+      displayName: safeProfile.displayName,
+      avatarUrl: safeProfile.avatarUrl
     });
   }
 
-  const responseEmail = profileRow.email || steamEmail;
+  if (!profileRow?.id) {
+    throw new AppError("Steam login failed", 401, "STEAM_LOGIN_FAILED");
+  }
 
+  const linkResult = await exports.linkSteamToUser(
+    profileRow.id,
+    safeSteamId64,
+    safeProfile
+  );
   return {
-    user: {
-      id: profileRow.id,
-      email: responseEmail,
-      user_metadata: {
-        provider: "steam",
-        steam_id64: safeSteamId64,
-        display_name: profileRow.display_name || null,
-        avatar_url: profileRow.avatar_url || null
-      }
-    }
+    user: linkResult.user
   };
 };
+
+exports.linkSteamToUser = async (userId, steamId64, profile = {}) => {
+  const safeUserId = String(userId || "").trim();
+  const safeSteamId64 = validateSteamId64(steamId64);
+  const safeProfile = normalizeSteamProfile(profile);
+
+  const currentUser = await userRepo.getById(safeUserId);
+  if (!currentUser) {
+    throw new AppError("User not found", 404, "USER_NOT_FOUND");
+  }
+
+  let mergedFromUserId = null;
+  const steamOwner = await userRepo.getBySteamId64(safeSteamId64);
+
+  if (steamOwner && steamOwner.id !== safeUserId) {
+    const canMerge =
+      isSteamManagedEmail(steamOwner.email) && !isSteamManagedEmail(currentUser.email);
+
+    if (!canMerge) {
+      throw new AppError(
+        "This Steam account is already linked to another user.",
+        409,
+        "STEAM_ALREADY_LINKED"
+      );
+    }
+
+    await userRepo.mergeUserData(steamOwner.id, safeUserId);
+    await userRepo.updateSteamProfileById(steamOwner.id, { steamId64: null });
+    mergedFromUserId = steamOwner.id;
+  }
+
+  const updated = await userRepo.updateSteamProfileById(safeUserId, {
+    steamId64: safeSteamId64,
+    displayName: safeProfile.displayName,
+    avatarUrl: safeProfile.avatarUrl
+  });
+
+  return {
+    mergedFromUserId,
+    user: toAuthUserFromProfileRow(updated, safeSteamId64)
+  };
+};
+
+exports.isSteamManagedEmail = isSteamManagedEmail;

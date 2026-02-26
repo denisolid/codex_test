@@ -14,6 +14,8 @@ router.post("/login", authRateLimiter, ctrl.login);
 router.post("/session", authRateLimiter, ctrl.createSession);
 router.get("/steam/start", authRateLimiter, ctrl.steamStart);
 router.get("/steam/callback", authRateLimiter, ctrl.steamCallback);
+router.get("/steam/link/start", authRateLimiter, ctrl.steamLinkStart);
+router.get("/steam/link/callback", authRateLimiter, ctrl.steamLinkCallback);
 router.post("/resend-confirmation", authRateLimiter, ctrl.resendConfirmation);
 router.post("/logout", authRateLimiter, ctrl.logout);
 router.get("/me", authRateLimiter, ctrl.me);
