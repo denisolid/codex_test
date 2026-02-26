@@ -19,7 +19,7 @@ exports.login = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
   const data = await authService.login(email, password);
   setAuthCookie(res, data.accessToken);
-  res.json({ user: data.user });
+  res.json({ user: data.user, accessToken: data.accessToken });
 });
 
 exports.createSession = asyncHandler(async (req, res) => {
@@ -27,7 +27,7 @@ exports.createSession = asyncHandler(async (req, res) => {
   const user = await authService.getUserByAccessToken(accessToken);
   await userRepo.ensureExists(user.id, user.email);
   setAuthCookie(res, accessToken);
-  res.json({ user });
+  res.json({ user, accessToken });
 });
 
 exports.resendConfirmation = asyncHandler(async (req, res) => {

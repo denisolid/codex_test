@@ -1,6 +1,7 @@
 import "./style.css";
 import { hasSupabaseConfig, supabase } from "./supabaseClient";
 import { API_URL } from "./config";
+import { setAuthToken, withAuthHeaders } from "./authToken";
 
 const app = document.querySelector("#app");
 
@@ -38,16 +39,17 @@ async function finalize() {
 
     const sessionRes = await fetch(`${API_URL}/auth/session`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: withAuthHeaders({ "Content-Type": "application/json" }),
       credentials: "include",
       body: JSON.stringify({ accessToken: token })
     });
+    const payload = await sessionRes.json().catch(() => ({}));
 
     if (!sessionRes.ok) {
-      const payload = await sessionRes.json().catch(() => ({}));
       throw new Error(payload.error || "Failed to create authenticated session");
     }
 
+    setAuthToken(payload?.accessToken || token);
     window.location.href = "/";
   } catch (err) {
     render(err.message || "Google authentication failed", true);
