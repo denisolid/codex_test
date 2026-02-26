@@ -140,6 +140,9 @@ function render(
         <button id="google-auth-btn" class="google-btn" type="button" ${
           authSubmitInFlight ? "disabled" : ""
         }>Continue with Google</button>
+        <button id="steam-auth-btn" class="google-btn" type="button" ${
+          authSubmitInFlight ? "disabled" : ""
+        }>Continue with Steam</button>
 
         <div class="auth-links muted">
           <a href="/">Back to home</a>
@@ -158,6 +161,9 @@ function render(
   document
     .querySelector("#google-auth-btn")
     .addEventListener("click", onGoogleAuth);
+  document
+    .querySelector("#steam-auth-btn")
+    .addEventListener("click", onSteamAuth);
 
   if (isLogin && showResendConfirmation) {
     document
@@ -272,6 +278,14 @@ async function onGoogleAuth() {
     authSubmitInFlight = false;
     render();
   }
+}
+
+function onSteamAuth() {
+  if (authSubmitInFlight) return;
+
+  const next = `${window.location.origin}/auth-callback.html`;
+  const url = `${API_URL}/auth/steam/start?next=${encodeURIComponent(next)}`;
+  window.location.href = url;
 }
 
 async function onResendConfirmation() {

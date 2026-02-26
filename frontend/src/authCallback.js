@@ -19,6 +19,28 @@ function render(message, isError = false) {
 
 async function finalize() {
   try {
+    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const urlParams = new URLSearchParams(window.location.search);
+    const hashToken = String(hashParams.get("accessToken") || "").trim();
+    const steamError = String(urlParams.get("error") || "").trim();
+
+    if (hashToken) {
+      setAuthToken(hashToken);
+      window.history.replaceState({}, "", "/auth-callback.html");
+      window.location.href = "/";
+      return;
+    }
+
+    if (steamError) {
+      const messageByCode = {
+        steam_login_cancelled: "Steam login cancelled. Please try again.",
+        steam_verify_failed: "Steam login verification failed. Please retry.",
+        steam_auth_failed: "Steam login failed. Please retry.",
+        steam_account_create_failed: "Could not create Steam account. Try again later."
+      };
+      throw new Error(messageByCode[steamError] || "Steam login failed.");
+    }
+
     if (!hasSupabaseConfig || !supabase) {
       throw new Error(
         "Google auth not configured. Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY"

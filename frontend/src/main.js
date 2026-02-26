@@ -2463,11 +2463,6 @@ function renderApp() {
   ).join("");
 
   const portfolioContent = `
-    ${renderAlerts()}
-    ${renderAnalytics()}
-    ${renderPnlSummary()}
-    ${renderManagementSummary()}
-
     <section class="grid dashboard-grid">
       <article class="panel">
         <h2>Steam Sync</h2>
@@ -2505,6 +2500,11 @@ function renderApp() {
         ${renderSkinDetails()}
       </article>
     </section>
+
+    ${renderAlerts()}
+    ${renderAnalytics()}
+    ${renderPnlSummary()}
+    ${renderManagementSummary()}
 
     <section class="grid">
       <article class="panel wide">
