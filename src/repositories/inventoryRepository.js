@@ -71,3 +71,30 @@ exports.getUserInventoryBySteamItemId = async (userId, steamItemId) => {
 
   return data || null;
 };
+
+exports.getHoldingsByUserIds = async (userIds) => {
+  const safeIds = Array.from(
+    new Set(
+      (Array.isArray(userIds) ? userIds : [])
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (!safeIds.length) {
+    return [];
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("inventories")
+    .select(
+      "user_id, skin_id, quantity, steam_item_ids, skins!inner(market_hash_name)"
+    )
+    .in("user_id", safeIds);
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  return data || [];
+};

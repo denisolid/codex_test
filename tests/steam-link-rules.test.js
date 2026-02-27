@@ -25,19 +25,24 @@ function clearModule(modulePath) {
   delete require.cache[modulePath];
 }
 
-function buildSupabaseStub() {
+function buildSupabaseStub(overrides = {}) {
+  const {
+    createUser = async () => ({ data: null, error: null }),
+    signInWithPassword = async () => ({ data: null, error: null })
+  } = overrides;
+
   return {
     supabaseAdmin: {
       auth: {
         admin: {
-          createUser: async () => ({ data: null, error: null })
+          createUser
         },
         getUser: async () => ({ data: null, error: null })
       }
     },
     supabaseAuthClient: {
       auth: {
-        signInWithPassword: async () => ({ data: null, error: null })
+        signInWithPassword
       }
     }
   };
@@ -151,4 +156,140 @@ test("linkSteamToUser rejects linking when steam id belongs to another non-steam
       return true;
     }
   );
+});
+
+test("loginWithSteam marks new Steam signup for onboarding", async () => {
+  clearModule(authServicePath);
+  clearModule(userRepoPath);
+  clearModule(supabasePath);
+
+  const users = {};
+
+  primeModule(
+    supabasePath,
+    buildSupabaseStub({
+      createUser: async () => ({
+        data: {
+          user: {
+            id: "new-steam-user"
+          }
+        },
+        error: null
+      }),
+      signInWithPassword: async () => {
+        throw new Error("signInWithPassword should not be called for new Steam user");
+      }
+    })
+  );
+  primeModule(userRepoPath, {
+    getById: async (id) => users[id] || null,
+    getBySteamId64: async (steamId64) =>
+      Object.values(users).find((row) => row.steam_id64 === steamId64) || null,
+    ensureExists: async (id, email) => {
+      if (!users[id]) {
+        users[id] = {
+          id,
+          email,
+          steam_id64: null,
+          display_name: null,
+          avatar_url: null
+        };
+      }
+    },
+    mergeUserData: async () => {},
+    updateSteamProfileById: async (id, updates = {}) => {
+      if (!users[id]) {
+        users[id] = {
+          id,
+          email: `steam_${updates.steamId64}@steam.local`,
+          steam_id64: null,
+          display_name: null,
+          avatar_url: null
+        };
+      }
+      const row = users[id];
+
+      if (Object.prototype.hasOwnProperty.call(updates, "steamId64")) {
+        row.steam_id64 = updates.steamId64 == null ? null : String(updates.steamId64);
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "displayName")) {
+        row.display_name = updates.displayName || null;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "avatarUrl")) {
+        row.avatar_url = updates.avatarUrl || null;
+      }
+
+      return { ...row };
+    }
+  });
+
+  const authService = require(authServicePath);
+  const result = await authService.loginWithSteam("76561198000000000", {
+    displayName: "Fresh Steam User",
+    avatarUrl: "https://new.example/avatar.jpg"
+  });
+
+  assert.equal(result.isNewSteamUser, true);
+  assert.equal(result.user.id, "new-steam-user");
+  assert.equal(users["new-steam-user"].steam_id64, "76561198000000000");
+});
+
+test("loginWithSteam does not mark onboarding for existing Steam account", async () => {
+  clearModule(authServicePath);
+  clearModule(userRepoPath);
+  clearModule(supabasePath);
+
+  const users = {
+    "existing-steam-user": {
+      id: "existing-steam-user",
+      email: "steam_76561198000000000@steam.local",
+      steam_id64: "76561198000000000",
+      display_name: "Existing",
+      avatar_url: "https://old.example/avatar.jpg"
+    }
+  };
+  let createUserCalled = false;
+
+  primeModule(
+    supabasePath,
+    buildSupabaseStub({
+      createUser: async () => {
+        createUserCalled = true;
+        return { data: null, error: null };
+      }
+    })
+  );
+  primeModule(userRepoPath, {
+    getById: async (id) => users[id] || null,
+    getBySteamId64: async (steamId64) =>
+      Object.values(users).find((row) => row.steam_id64 === steamId64) || null,
+    ensureExists: async () => {},
+    mergeUserData: async () => {},
+    updateSteamProfileById: async (id, updates = {}) => {
+      const row = users[id];
+      if (!row) return null;
+
+      if (Object.prototype.hasOwnProperty.call(updates, "steamId64")) {
+        row.steam_id64 = updates.steamId64 == null ? null : String(updates.steamId64);
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "displayName")) {
+        row.display_name = updates.displayName || null;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "avatarUrl")) {
+        row.avatar_url = updates.avatarUrl || null;
+      }
+
+      return { ...row };
+    }
+  });
+
+  const authService = require(authServicePath);
+  const result = await authService.loginWithSteam("76561198000000000", {
+    displayName: "Existing User",
+    avatarUrl: "https://new.example/avatar.jpg"
+  });
+
+  assert.equal(createUserCalled, false);
+  assert.equal(result.isNewSteamUser, false);
+  assert.equal(result.user.id, "existing-steam-user");
 });

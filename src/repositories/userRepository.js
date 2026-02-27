@@ -56,6 +56,52 @@ exports.getByEmail = async (email) => {
   return data || null;
 };
 
+exports.getByIds = async (ids = []) => {
+  const safeIds = Array.from(
+    new Set(
+      (Array.isArray(ids) ? ids : [])
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (!safeIds.length) {
+    return [];
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("users")
+    .select(
+      "id, email, display_name, avatar_url, steam_id64, public_portfolio_enabled, ownership_alerts_enabled, created_at, updated_at"
+    )
+    .in("id", safeIds);
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  return data || [];
+};
+
+exports.listPublicSteamUsers = async (limit = 200) => {
+  const normalizedLimit = Math.min(Math.max(Number(limit) || 200, 1), 2000);
+  const { data, error } = await supabaseAdmin
+    .from("users")
+    .select(
+      "id, display_name, avatar_url, steam_id64, public_portfolio_enabled, ownership_alerts_enabled"
+    )
+    .not("steam_id64", "is", null)
+    .eq("public_portfolio_enabled", true)
+    .order("updated_at", { ascending: false })
+    .limit(normalizedLimit);
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  return data || [];
+};
+
 exports.ensureExists = async (id, email) => {
   const { error } = await supabaseAdmin
     .from("users")
@@ -108,6 +154,35 @@ exports.updateSteamProfileById = async (id, updates = {}) => {
 
 exports.updateSteamId = async (id, steamId64) => {
   return exports.updateSteamProfileById(id, { steamId64 });
+};
+
+exports.updatePreferencesById = async (id, updates = {}) => {
+  const patch = {};
+
+  if (hasOwn(updates, "publicPortfolioEnabled")) {
+    patch.public_portfolio_enabled = Boolean(updates.publicPortfolioEnabled);
+  }
+
+  if (hasOwn(updates, "ownershipAlertsEnabled")) {
+    patch.ownership_alerts_enabled = Boolean(updates.ownershipAlertsEnabled);
+  }
+
+  if (!Object.keys(patch).length) {
+    return exports.getById(id);
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("users")
+    .update(patch)
+    .eq("id", id)
+    .select("*")
+    .single();
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  return data;
 };
 
 exports.mergeUserData = async (fromUserId, toUserId) => {

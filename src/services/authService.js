@@ -222,6 +222,7 @@ exports.loginWithSteam = async (steamId64, profile = {}) => {
   const safeProfile = normalizeSteamProfile(profile);
   const steamEmail = buildSteamEmail(safeSteamId64);
   const steamPassword = buildSteamPassword(safeSteamId64);
+  let createdSteamUser = false;
 
   let profileRow = await userRepo.getBySteamId64(safeSteamId64);
 
@@ -243,6 +244,7 @@ exports.loginWithSteam = async (steamId64, profile = {}) => {
 
     const authUser = data?.user;
     if (authUser?.id) {
+      createdSteamUser = true;
       await userRepo.ensureExists(authUser.id, steamEmail);
       profileRow = await userRepo.updateSteamProfileById(authUser.id, {
         steamId64: safeSteamId64,
@@ -280,7 +282,8 @@ exports.loginWithSteam = async (steamId64, profile = {}) => {
     safeProfile
   );
   return {
-    user: linkResult.user
+    user: linkResult.user,
+    isNewSteamUser: createdSteamUser
   };
 };
 

@@ -11,5 +11,7 @@ router.use("/market", require("./marketRoutes"));
 router.use("/trade", require("./tradeRoutes"));
 router.use("/alerts", require("./alertRoutes"));
 router.use("/extension", require("./extensionRoutes"));
+router.use("/social", require("./socialRoutes"));
+router.use("/public", require("./publicRoutes"));
 
 module.exports = router;

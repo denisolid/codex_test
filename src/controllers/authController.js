@@ -17,15 +17,30 @@ const { getCookieValue } = require("../utils/cookies");
 const AppError = require("../utils/AppError");
 const { frontendOrigin, frontendOrigins, apiPublicUrl } = require("../config/env");
 
-function resolveApiOrigin(req) {
-  if (apiPublicUrl) {
-    return String(apiPublicUrl).replace(/\/+$/, "");
+function parseHostname(hostRaw) {
+  try {
+    return new URL(`http://${String(hostRaw || "").trim()}`).hostname;
+  } catch (_err) {
+    return "";
   }
+}
 
+function isLocalHostname(hostname) {
+  const safe = String(hostname || "").trim().toLowerCase();
+  return safe === "localhost" || safe === "127.0.0.1" || safe === "::1" || safe === "0.0.0.0";
+}
+
+function resolveApiOrigin(req) {
   const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
   const protocol = forwardedProto || req.protocol || "http";
   const host = req.get("host");
-  return `${protocol}://${host}`;
+  const requestOrigin = `${protocol}://${host}`;
+
+  if (apiPublicUrl && !isLocalHostname(parseHostname(host))) {
+    return String(apiPublicUrl).replace(/\/+$/, "");
+  }
+
+  return requestOrigin;
 }
 
 function resolveFrontendTarget(nextRaw) {
@@ -190,7 +205,14 @@ exports.steamCallback = asyncHandler(async (req, res) => {
     setAuthCookie(res, accessToken);
 
     const redirectUrl = new URL(target);
-    redirectUrl.hash = `accessToken=${encodeURIComponent(accessToken)}&provider=steam`;
+    const hashParams = new URLSearchParams({
+      accessToken,
+      provider: "steam"
+    });
+    if (data.isNewSteamUser) {
+      hashParams.set("steamOnboarding", "1");
+    }
+    redirectUrl.hash = hashParams.toString();
     res.redirect(302, redirectUrl.toString());
   } catch (err) {
     const code = String(err?.code || "steam_auth_failed").toLowerCase();
@@ -272,6 +294,8 @@ exports.me = [
         displayName: profileRow?.display_name || metadata.display_name || null,
         avatarUrl: profileRow?.avatar_url || metadata.avatar_url || null,
         linkedSteam: Boolean(steamId64),
+        publicPortfolioEnabled: profileRow?.public_portfolio_enabled !== false,
+        ownershipAlertsEnabled: profileRow?.ownership_alerts_enabled !== false,
         provider:
           metadata.provider ||
           (Boolean(steamId64) ? "steam" : "email")

@@ -22,6 +22,9 @@ async function finalize() {
     const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     const urlParams = new URLSearchParams(window.location.search);
     const hashToken = String(hashParams.get("accessToken") || "").trim();
+    const steamOnboarding =
+      hashParams.get("steamOnboarding") === "1" ||
+      urlParams.get("steamOnboarding") === "1";
     const steamError = String(urlParams.get("error") || "").trim();
     const linkedSteam = urlParams.get("linkedSteam") === "1";
     const merged = urlParams.get("merged") === "1";
@@ -29,7 +32,11 @@ async function finalize() {
     if (hashToken) {
       setAuthToken(hashToken);
       window.history.replaceState({}, "", "/auth-callback.html");
-      window.location.href = "/";
+      const target = new URL("/", window.location.origin);
+      if (steamOnboarding) {
+        target.searchParams.set("steamOnboarding", "1");
+      }
+      window.location.href = target.toString();
       return;
     }
 
@@ -48,6 +55,8 @@ async function finalize() {
         steam_login_cancelled: "Steam login cancelled. Please try again.",
         steam_verify_failed: "Steam login verification failed. Please retry.",
         steam_auth_failed: "Steam login failed. Please retry.",
+        steam_login_failed:
+          "Steam login could not complete for this account. Check APP_AUTH_SECRET consistency between environments.",
         steam_account_create_failed: "Could not create Steam account. Try again later.",
         steam_link_state_missing: "Steam link session expired. Start linking again from settings.",
         steam_link_state_invalid: "Invalid Steam link session. Start linking again.",
