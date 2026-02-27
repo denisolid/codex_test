@@ -72,7 +72,7 @@ exports.getByIds = async (ids = []) => {
   const { data, error } = await supabaseAdmin
     .from("users")
     .select(
-      "id, email, display_name, avatar_url, steam_id64, public_portfolio_enabled, ownership_alerts_enabled, created_at, updated_at"
+      "id, email, display_name, avatar_url, steam_id64, public_portfolio_enabled, ownership_alerts_enabled, plan_tier, billing_status, plan_seats, plan_started_at, created_at, updated_at"
     )
     .in("id", safeIds);
 
@@ -88,7 +88,7 @@ exports.listPublicSteamUsers = async (limit = 200) => {
   const { data, error } = await supabaseAdmin
     .from("users")
     .select(
-      "id, display_name, avatar_url, steam_id64, public_portfolio_enabled, ownership_alerts_enabled"
+      "id, display_name, avatar_url, steam_id64, public_portfolio_enabled, ownership_alerts_enabled, plan_tier, plan_seats"
     )
     .not("steam_id64", "is", null)
     .eq("public_portfolio_enabled", true)
@@ -150,6 +150,69 @@ exports.updateSteamProfileById = async (id, updates = {}) => {
   }
 
   return data;
+};
+
+exports.updatePlanById = async (id, updates = {}) => {
+  const patch = {};
+  if (hasOwn(updates, "planTier")) {
+    patch.plan_tier = String(updates.planTier || "").trim().toLowerCase() || "free";
+  }
+  if (hasOwn(updates, "billingStatus")) {
+    patch.billing_status = String(updates.billingStatus || "").trim().toLowerCase() || "inactive";
+  }
+  if (hasOwn(updates, "planSeats")) {
+    patch.plan_seats = Math.max(Number(updates.planSeats) || 1, 1);
+  }
+  if (hasOwn(updates, "planStartedAt")) {
+    patch.plan_started_at = updates.planStartedAt || null;
+  }
+
+  if (!Object.keys(patch).length) {
+    return exports.getById(id);
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("users")
+    .update(patch)
+    .eq("id", id)
+    .select("*")
+    .single();
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  return data;
+};
+
+exports.insertPlanChangeEvent = async (payload = {}) => {
+  const row = {
+    user_id: payload.userId,
+    old_plan_tier: payload.oldPlanTier,
+    new_plan_tier: payload.newPlanTier,
+    changed_by: payload.changedBy || "self_service"
+  };
+
+  const { error } = await supabaseAdmin.from("plan_change_events").insert(row);
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+};
+
+exports.listPlanChangeEventsByUser = async (userId, limit = 50) => {
+  const normalizedLimit = Math.min(Math.max(Number(limit) || 50, 1), 500);
+  const { data, error } = await supabaseAdmin
+    .from("plan_change_events")
+    .select("id, old_plan_tier, new_plan_tier, changed_by, created_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(normalizedLimit);
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  return data || [];
 };
 
 exports.updateSteamId = async (id, steamId64) => {
