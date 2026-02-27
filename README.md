@@ -54,6 +54,7 @@ After login, the same `/` page renders the authenticated app view.
 - Frontend starts Steam login with `GET /api/auth/steam/start`.
 - Steam returns to backend callback `GET /api/auth/steam/callback`.
 - Backend then redirects to frontend callback page and establishes session.
+- After first Steam signup, onboarding lands on portfolio with SteamID already connected and a sync-now prompt.
 - Ensure `API_PUBLIC_URL` is set correctly in backend `.env` (example: `https://your-api.onrender.com`).
 - Optional: set `STEAM_WEB_API_KEY` for persona/avatar data from Steam Web API.
 
@@ -71,8 +72,15 @@ After login, the same `/` page renders the authenticated app view.
 - `GET /auth/me`
 - `POST /admin/prices/cleanup-mock` (requires `x-admin-token` header)
 - `GET /admin/metrics/steam-link-rate` (requires `x-admin-token` header)
+- `GET /admin/metrics/growth` (requires `x-admin-token` header)
 - `PATCH /users/me/steam`
 - `POST /inventory/sync`
+- `GET /public/u/:steamId64`
+- `GET /social/watchlist`
+- `POST /social/watchlist`
+- `DELETE /social/watchlist/:steamId64`
+- `GET /social/leaderboard`
+- `PATCH /social/settings`
 - `GET /portfolio`
 - `GET /portfolio/history`
 - `GET /skins/:id`
@@ -91,6 +99,8 @@ After login, the same `/` page renders the authenticated app view.
 - `PATCH /alerts/:id`
 - `DELETE /alerts/:id`
 - `GET /alerts/events`
+- `GET /alerts/ownership-events`
+- `PATCH /alerts/ownership-settings`
 - `POST /alerts/check` (requires `x-admin-token` header)
 - `GET /extension/keys`
 - `POST /extension/keys`
@@ -111,6 +121,22 @@ All non-auth routes require authentication via secure `HttpOnly` cookie (set by 
   - if Steam is already linked to another normal account, linking is blocked (`STEAM_ALREADY_LINKED`).
   - if Steam is linked to an auto-created Steam-only account (`steam_<id>@steam.local`), link is transferred to the current account.
 
+## Phase 4 social features
+
+- Public portfolio page is available at `/u/:steamId64` in frontend and powered by `GET /api/public/u/:steamId64`.
+- Social watchlist endpoints let users follow Steam profiles and build a private watchlist:
+  - `GET /api/social/watchlist`
+  - `POST /api/social/watchlist` with `{ "steamId64": "..." }`
+  - `DELETE /api/social/watchlist/:steamId64`
+- Leaderboard endpoint:
+  - `GET /api/social/leaderboard?scope=global|watchlist&limit=25`
+- Public profile setting:
+  - `PATCH /api/social/settings` with `{ "publicPortfolioEnabled": true|false }`
+- Ownership-change alerts:
+  - `GET /api/alerts/ownership-events`
+  - `PATCH /api/alerts/ownership-settings` with `{ "enabled": true|false }`
+  - Inventory sync now reports ownership delta summary (`ownershipChangesCount`, `ownershipChanges`).
+
 ## Steam linking success metric
 
 - Endpoint: `GET /api/admin/metrics/steam-link-rate?windowDays=30`
@@ -119,6 +145,15 @@ All non-auth routes require authentication via secure `HttpOnly` cookie (set by 
   - `activeUsers`
   - `linkedActiveUsers`
   - `linkedPercent`
+
+## Growth metrics (retention, shares, referrals)
+
+- Endpoint: `GET /api/admin/metrics/growth?windowDays=30`
+- Header: `x-admin-token: <ADMIN_API_TOKEN>`
+- Response fields:
+  - `newUsers`
+  - `retention.d7` and `retention.d30`
+  - `growth.shares` and `growth.referrals`
 
 Monetary endpoints support optional `?currency=<CODE>` query parameter.
 

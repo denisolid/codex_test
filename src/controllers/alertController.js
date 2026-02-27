@@ -30,6 +30,16 @@ exports.listEvents = asyncHandler(async (req, res) => {
   res.json({ items: events });
 });
 
+exports.listOwnershipEvents = asyncHandler(async (req, res) => {
+  const events = await alertService.listOwnershipEvents(req.userId, req.query.limit);
+  res.json({ items: events });
+});
+
+exports.updateOwnershipSettings = asyncHandler(async (req, res) => {
+  const result = await alertService.updateOwnershipAlertSettings(req.userId, req.body || {});
+  res.json(result);
+});
+
 exports.checkNow = asyncHandler(async (req, res) => {
   const result = await alertService.checkAlertsNow({ limit: req.body?.limit });
   res.json(result);

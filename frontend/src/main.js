@@ -24,6 +24,7 @@ const state = {
   transactions: [],
   alertsFeed: [],
   alertEvents: [],
+  ownershipAlertEvents: [],
   marketInsight: null,
   alerts: [],
   skin: null,
@@ -93,7 +94,21 @@ const state = {
     inventoryValue: null,
     autoLoaded: false
   },
-  accountNotice: ""
+  accountNotice: "",
+  steamOnboardingPending: false,
+  social: {
+    scope: "global",
+    watchlist: [],
+    leaderboard: [],
+    newSteamId: "",
+    loading: false
+  },
+  publicPage: {
+    steamId64: null,
+    loading: false,
+    payload: null,
+    error: ""
+  }
 };
 
 function escapeHtml(value) {
@@ -141,6 +156,13 @@ function buildSteamAuthStartUrl(mode = "login") {
   return url.toString();
 }
 
+function getPublicSteamIdFromPath() {
+  const match = String(window.location.pathname || "")
+    .trim()
+    .match(/^\/u\/(\d{17})\/?$/i);
+  return match ? match[1] : null;
+}
+
 function buildAuthProfile(payload) {
   const user = payload?.user || null;
   if (!user) return null;
@@ -159,6 +181,8 @@ function buildAuthProfile(payload) {
     steamDisplayName:
       String(profile.displayName || metadata.display_name || "").trim() || null,
     steamAvatarUrl: String(profile.avatarUrl || metadata.avatar_url || "").trim() || null,
+    publicPortfolioEnabled: profile.publicPortfolioEnabled !== false,
+    ownershipAlertsEnabled: profile.ownershipAlertsEnabled !== false,
     provider: String(profile.provider || metadata.provider || "").trim() || "email"
   };
 }
@@ -554,6 +578,7 @@ async function logout() {
   state.alerts = [];
   state.alertsFeed = [];
   state.alertEvents = [];
+  state.ownershipAlertEvents = [];
   state.skin = null;
   state.marketInsight = null;
   resetAlertForm();
@@ -562,23 +587,12 @@ async function logout() {
   state.inspectedSteamItemId = "";
   state.tradeCalc.result = null;
   state.accountNotice = "";
+  state.steamOnboardingPending = false;
+  state.social.watchlist = [];
+  state.social.leaderboard = [];
+  state.social.newSteamId = "";
+  state.social.loading = false;
   render();
-}
-
-async function connectSteam(e) {
-  e.preventDefault();
-  clearError();
-  const steamId64 = document.querySelector("#steam-id").value.trim();
-
-  try {
-    await api("/users/me/steam", {
-      method: "PATCH",
-      body: JSON.stringify({ steamId64 })
-    });
-    await refreshPortfolio();
-  } catch (err) {
-    setError(err.message);
-  }
 }
 
 async function syncInventory() {
@@ -589,6 +603,10 @@ async function syncInventory() {
   try {
     const result = await api("/inventory/sync", { method: "POST" });
     state.syncSummary = result;
+    if (state.steamOnboardingPending) {
+      state.accountNotice = "Inventory synced successfully. Your portfolio is ready.";
+      state.steamOnboardingPending = false;
+    }
     await refreshPortfolio();
   } catch (err) {
     setError(err.message);
@@ -623,6 +641,15 @@ function renderSyncSummary() {
         `<li><strong>${escapeHtml(x.marketHashName)}</strong> <span class="muted">(${escapeHtml(x.reason)})</span></li>`
     )
     .join("");
+  const ownershipPreview = (s.ownershipChanges || [])
+    .slice(0, 4)
+    .map(
+      (x) =>
+        `<li><strong>${escapeHtml(x.marketHashName)}</strong> <span class="muted">${escapeHtml(
+          toTitle(x.changeType)
+        )}: ${Number(x.previousQuantity || 0)} -> ${Number(x.newQuantity || 0)}</span></li>`
+    )
+    .join("");
 
   return `
     <div class="sync-summary">
@@ -634,7 +661,12 @@ function renderSyncSummary() {
         s.pricedItems || 0
       )} | Unpriced: ${Number(s.unpricedItemsCount || 0)} | Excluded: ${Number(
         s.excludedItemsCount || 0
-      )}</p>
+      )} | Ownership changes: ${Number(s.ownershipChangesCount || 0)}</p>
+      ${
+        ownershipPreview
+          ? `<p class="muted">Ownership changes (first 4):</p><ul class="sync-list">${ownershipPreview}</ul>`
+          : ""
+      }
       ${
         unpricedPreview
           ? `<p class="muted">Unpriced (first 4):</p><ul class="sync-list">${unpricedPreview}</ul>`
@@ -653,14 +685,33 @@ async function refreshPortfolio(options = {}) {
   const { silent = false } = options;
   clearError();
   try {
-    const [mePayload, portfolio, history, txPayload, alertsPayload, eventsPayload] =
+    const [
+      mePayload,
+      portfolio,
+      history,
+      txPayload,
+      alertsPayload,
+      eventsPayload,
+      ownershipEventsPayload,
+      watchlistPayload,
+      leaderboardPayload
+    ] =
       await Promise.all([
         api("/auth/me"),
         api(withCurrency("/portfolio")),
         api(withCurrency(`/portfolio/history?days=${state.historyDays}`)),
         api("/transactions"),
         api("/alerts").catch(() => ({ items: [] })),
-        api("/alerts/events?limit=50").catch(() => ({ items: [] }))
+        api("/alerts/events?limit=50").catch(() => ({ items: [] })),
+        api("/alerts/ownership-events?limit=50").catch(() => ({ items: [] })),
+        api(withCurrency("/social/watchlist")).catch(() => ({ items: [] })),
+        api(
+          withCurrency(
+            `/social/leaderboard?scope=${encodeURIComponent(
+              state.social.scope || "global"
+            )}&limit=25`
+          )
+        ).catch(() => ({ items: [] }))
       ]);
 
     state.authProfile = buildAuthProfile(mePayload);
@@ -669,6 +720,15 @@ async function refreshPortfolio(options = {}) {
     state.transactions = Array.isArray(txPayload?.items) ? txPayload.items : [];
     state.alertsFeed = Array.isArray(alertsPayload?.items) ? alertsPayload.items : [];
     state.alertEvents = Array.isArray(eventsPayload?.items) ? eventsPayload.items : [];
+    state.ownershipAlertEvents = Array.isArray(ownershipEventsPayload?.items)
+      ? ownershipEventsPayload.items
+      : [];
+    state.social.watchlist = Array.isArray(watchlistPayload?.items)
+      ? watchlistPayload.items
+      : [];
+    state.social.leaderboard = Array.isArray(leaderboardPayload?.items)
+      ? leaderboardPayload.items
+      : [];
     state.alerts = Array.isArray(portfolio.alerts) ? portfolio.alerts : [];
     state.marketTab.autoLoaded = false;
     hydrateTabDefaults();
@@ -700,6 +760,197 @@ async function refreshPortfolio(options = {}) {
       setError(err.message);
     }
     return false;
+  }
+}
+
+async function refreshSocialData(options = {}) {
+  const { silent = false } = options;
+  state.social.loading = true;
+  if (!silent) {
+    clearError();
+  }
+  render();
+
+  try {
+    const [watchlistPayload, leaderboardPayload] = await Promise.all([
+      api(withCurrency("/social/watchlist")),
+      api(
+        withCurrency(
+          `/social/leaderboard?scope=${encodeURIComponent(
+            state.social.scope || "global"
+          )}&limit=25`
+        )
+      )
+    ]);
+
+    state.social.watchlist = Array.isArray(watchlistPayload?.items)
+      ? watchlistPayload.items
+      : [];
+    state.social.leaderboard = Array.isArray(leaderboardPayload?.items)
+      ? leaderboardPayload.items
+      : [];
+  } catch (err) {
+    if (!silent) {
+      setError(err.message);
+    }
+  } finally {
+    state.social.loading = false;
+    render();
+  }
+}
+
+async function addWatchlistEntry(e) {
+  e.preventDefault();
+  const steamId64 = String(state.social.newSteamId || "").trim();
+  if (!/^\d{17}$/.test(steamId64)) {
+    setError("SteamID64 must be exactly 17 digits.");
+    return;
+  }
+
+  clearError();
+  state.social.loading = true;
+  render();
+
+  try {
+    await api("/social/watchlist", {
+      method: "POST",
+      body: JSON.stringify({ steamId64 })
+    });
+    state.social.newSteamId = "";
+    await refreshSocialData({ silent: true });
+  } catch (err) {
+    setError(err.message);
+    state.social.loading = false;
+    render();
+  }
+}
+
+async function removeWatchlistEntry(steamId64) {
+  const safeSteamId64 = String(steamId64 || "").trim();
+  if (!safeSteamId64) return;
+
+  clearError();
+  state.social.loading = true;
+  render();
+
+  try {
+    await api(`/social/watchlist/${encodeURIComponent(safeSteamId64)}`, {
+      method: "DELETE"
+    });
+    await refreshSocialData({ silent: true });
+  } catch (err) {
+    setError(err.message);
+    state.social.loading = false;
+    render();
+  }
+}
+
+async function toggleWatchFromLeaderboard(steamId64, isWatching) {
+  if (isWatching) {
+    await removeWatchlistEntry(steamId64);
+    return;
+  }
+
+  clearError();
+  state.social.loading = true;
+  render();
+
+  try {
+    await api("/social/watchlist", {
+      method: "POST",
+      body: JSON.stringify({ steamId64: String(steamId64 || "").trim() })
+    });
+    await refreshSocialData({ silent: true });
+  } catch (err) {
+    setError(err.message);
+    state.social.loading = false;
+    render();
+  }
+}
+
+async function updatePublicPortfolioSettings(e) {
+  e.preventDefault();
+  clearError();
+  const enabled = Boolean(document.querySelector("#public-portfolio-enabled")?.checked);
+
+  try {
+    await api("/social/settings", {
+      method: "PATCH",
+      body: JSON.stringify({ publicPortfolioEnabled: enabled })
+    });
+    await refreshPortfolio({ silent: true });
+    state.accountNotice = enabled
+      ? "Public portfolio enabled. Your /u/SteamID page is now visible."
+      : "Public portfolio disabled.";
+    render();
+  } catch (err) {
+    setError(err.message);
+  }
+}
+
+async function updateOwnershipAlertSettings(e) {
+  e.preventDefault();
+  clearError();
+  const enabled = Boolean(document.querySelector("#ownership-alerts-enabled")?.checked);
+
+  try {
+    await api("/alerts/ownership-settings", {
+      method: "PATCH",
+      body: JSON.stringify({ enabled })
+    });
+    await refreshPortfolio({ silent: true });
+    state.accountNotice = enabled
+      ? "Ownership-change alerts enabled."
+      : "Ownership-change alerts disabled.";
+    render();
+  } catch (err) {
+    setError(err.message);
+  }
+}
+
+async function loadPublicPortfolio(options = {}) {
+  const { silent = false } = options;
+  const steamId64 = state.publicPage.steamId64;
+  if (!steamId64) return false;
+
+  if (!silent) {
+    clearError();
+  }
+
+  state.publicPage.loading = true;
+  state.publicPage.error = "";
+  if (!silent) {
+    render();
+  }
+
+  try {
+    const path = withCurrency(
+      `/public/u/${encodeURIComponent(steamId64)}?historyDays=30${
+        window.location.search ? `&${window.location.search.slice(1)}` : ""
+      }`
+    );
+    const res = await fetch(`${API_URL}${path}`, {
+      credentials: "include",
+      headers: withAuthHeaders({
+        "Content-Type": "application/json"
+      })
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(payload.error || "Request failed");
+    }
+    state.publicPage.payload = payload;
+    state.publicPage.error = "";
+    return true;
+  } catch (err) {
+    state.publicPage.payload = null;
+    state.publicPage.error = err.message || "Could not load public portfolio.";
+    return false;
+  } finally {
+    state.publicPage.loading = false;
+    if (!silent) {
+      render();
+    }
   }
 }
 
@@ -1246,7 +1497,7 @@ async function calculateExitWhatIf(e) {
 function renderPortfolioRows() {
   const { items } = getFilteredHoldings();
   if (!items.length) {
-    return `<tr><td colspan="9" class="muted">No holdings yet. Connect Steam and run sync.</td></tr>`;
+    return `<tr><td colspan="9" class="muted">No holdings yet. Link Steam and run sync.</td></tr>`;
   }
 
   const formatSteamItemIdCell = (item) => {
@@ -2096,6 +2347,7 @@ function renderTabNav() {
     { id: "portfolio", label: "Portfolio" },
     { id: "trades", label: "Trades" },
     { id: "alerts", label: "Alerts" },
+    { id: "social", label: "Social" },
     { id: "market", label: "Market" },
     { id: "settings", label: "Settings" }
   ];
@@ -2124,6 +2376,9 @@ function renderAlertsCenter() {
   const alertOptions = buildHoldingOptions(state.alertForm.skinId);
   const alertRows = Array.isArray(state.alertsFeed) ? state.alertsFeed : [];
   const eventRows = Array.isArray(state.alertEvents) ? state.alertEvents : [];
+  const ownershipRows = Array.isArray(state.ownershipAlertEvents)
+    ? state.ownershipAlertEvents
+    : [];
   const isEditMode = state.alertForm.mode === "edit" && state.alertForm.alertId;
 
   const configuredMarkup = alertRows.length
@@ -2216,6 +2471,38 @@ function renderAlertsCenter() {
     `
     : '<p class="muted">No alert triggers yet.</p>';
 
+  const ownershipMarkup = ownershipRows.length
+    ? `
+      <table>
+        <thead>
+          <tr><th>When</th><th>Item</th><th>Change</th><th>Qty</th><th>Est. Value Delta</th></tr>
+        </thead>
+        <tbody>
+          ${ownershipRows
+            .slice(0, 30)
+            .map(
+              (event) => `
+                <tr>
+                  <td>${escapeHtml(String(event.createdAt || event.syncedAt || "").slice(0, 19).replace("T", " "))}</td>
+                  <td>${escapeHtml(event.marketHashName || `Skin #${event.skinId}`)}</td>
+                  <td>${escapeHtml(toTitle(event.changeType || "-"))}</td>
+                  <td>${Number(event.previousQuantity || 0)} -> ${Number(event.newQuantity || 0)} (${Number(
+                event.quantityDelta || 0
+              ) > 0 ? "+" : ""}${Number(event.quantityDelta || 0)})</td>
+                  <td>${
+                    event.estimatedValueDelta == null
+                      ? "-"
+                      : formatMoney(event.estimatedValueDelta, event.currency || "USD")
+                  }</td>
+                </tr>
+              `
+            )
+            .join("")}
+        </tbody>
+      </table>
+    `
+    : '<p class="muted">No ownership-change events yet. Run inventory sync after Steam changes.</p>';
+
   return `
     <section class="grid">
       <article class="panel wide">
@@ -2274,6 +2561,143 @@ function renderAlertsCenter() {
       <article class="panel wide">
         <h2>Recent Alert Events</h2>
         ${eventsMarkup}
+      </article>
+      <article class="panel wide">
+        <h2>Ownership Change Events</h2>
+        ${ownershipMarkup}
+      </article>
+    </section>
+  `;
+}
+
+function renderSocialTab() {
+  const watchRows = Array.isArray(state.social.watchlist) ? state.social.watchlist : [];
+  const boardRows = Array.isArray(state.social.leaderboard) ? state.social.leaderboard : [];
+  const watchlistBySteamId = new Set(
+    watchRows.map((row) => String(row.steamId64 || "").trim()).filter(Boolean)
+  );
+
+  const watchlistMarkup = watchRows.length
+    ? `
+      <table>
+        <thead>
+          <tr><th>Player</th><th>Value</th><th>Holdings</th><th>Followers</th><th>Views/Referrals (30D)</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+          ${watchRows
+            .map(
+              (row) => `
+                <tr>
+                  <td>
+                    <strong>${escapeHtml(row.displayName || row.steamId64 || "-")}</strong>
+                    <div class="muted"><code>${escapeHtml(row.steamId64 || "-")}</code></div>
+                  </td>
+                  <td>${formatMoney(row.totalValue, row.currency || state.currency)}</td>
+                  <td>${Number(row.holdingsCount || 0)} (${Number(row.uniqueItems || 0)} unique)</td>
+                  <td>${Number(row.followers || 0)}</td>
+                  <td>${Number(row.views30d || 0)} / ${Number(row.referrals30d || 0)}</td>
+                  <td>
+                    <div class="row">
+                      <a class="link-btn ghost" href="/u/${encodeURIComponent(
+                        row.steamId64 || ""
+                      )}" target="_blank" rel="noreferrer">Open</a>
+                      <button type="button" class="ghost-btn watch-remove-btn" data-steam-id="${escapeHtml(
+                        row.steamId64 || ""
+                      )}">Remove</button>
+                    </div>
+                  </td>
+                </tr>
+              `
+            )
+            .join("")}
+        </tbody>
+      </table>
+    `
+    : '<p class="muted">No watchlist entries yet. Add a SteamID64 to follow public portfolios.</p>';
+
+  const leaderboardMarkup = boardRows.length
+    ? `
+      <table>
+        <thead>
+          <tr><th>Rank</th><th>Player</th><th>Value</th><th>Holdings</th><th>Followers</th><th>Views/Referrals (30D)</th><th>Action</th></tr>
+        </thead>
+        <tbody>
+          ${boardRows
+            .map((row) => {
+              const steamId64 = String(row.steamId64 || "").trim();
+              const isWatching =
+                watchlistBySteamId.has(steamId64) || Boolean(row.inWatchlist);
+
+              return `
+                <tr>
+                  <td>#${Number(row.rank || 0)}</td>
+                  <td>
+                    <strong>${escapeHtml(row.displayName || steamId64 || "-")}</strong>
+                    <div class="muted"><code>${escapeHtml(steamId64 || "-")}</code></div>
+                  </td>
+                  <td>${formatMoney(row.totalValue, row.currency || state.currency)}</td>
+                  <td>${Number(row.holdingsCount || 0)} (${Number(row.uniqueItems || 0)} unique)</td>
+                  <td>${Number(row.followers || 0)}</td>
+                  <td>${Number(row.views30d || 0)} / ${Number(row.referrals30d || 0)}</td>
+                  <td>
+                    <div class="row">
+                      <a class="link-btn ghost" href="/u/${encodeURIComponent(
+                        steamId64
+                      )}" target="_blank" rel="noreferrer">Open</a>
+                      <button
+                        type="button"
+                        class="ghost-btn leaderboard-watch-btn"
+                        data-steam-id="${escapeHtml(steamId64)}"
+                        data-watching="${isWatching ? "1" : "0"}"
+                      >
+                        ${isWatching ? "Unwatch" : "Watch"}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              `;
+            })
+            .join("")}
+        </tbody>
+      </table>
+    `
+    : '<p class="muted">No leaderboard data for this scope yet.</p>';
+
+  return `
+    <section class="grid">
+      <article class="panel wide">
+        <h2>Friends & Watchlist</h2>
+        <p class="helper-text">Track other Steam portfolios by SteamID64 and open share pages instantly.</p>
+        <form id="social-watch-form" class="trade-calc-grid">
+          <label>SteamID64
+            <input
+              id="social-watch-steam-id"
+              inputmode="numeric"
+              pattern="[0-9]{17}"
+              placeholder="7656119..."
+              value="${escapeHtml(state.social.newSteamId || "")}"
+            />
+          </label>
+          <button type="submit" ${state.social.loading ? "disabled" : ""}>
+            ${state.social.loading ? "Saving..." : "Add to Watchlist"}
+          </button>
+        </form>
+        ${watchlistMarkup}
+      </article>
+      <article class="panel wide">
+        <h2>Leaderboard</h2>
+        <form id="social-board-form" class="trade-calc-grid">
+          <label>Scope
+            <select id="social-scope" ${state.social.loading ? "disabled" : ""}>
+              <option value="global" ${state.social.scope === "global" ? "selected" : ""}>Global Public</option>
+              <option value="watchlist" ${state.social.scope === "watchlist" ? "selected" : ""}>My Watchlist</option>
+            </select>
+          </label>
+          <button type="submit" ${state.social.loading ? "disabled" : ""}>
+            ${state.social.loading ? "Refreshing..." : "Refresh Leaderboard"}
+          </button>
+        </form>
+        ${leaderboardMarkup}
       </article>
     </section>
   `;
@@ -2430,6 +2854,11 @@ function renderSettingsTab() {
   const steamLinked = Boolean(profile.steamLinked);
   const steamLinkUrl = buildSteamAuthStartUrl("link");
   const providerLabel = toTitle(profile.provider || "email");
+  const publicPortfolioEnabled = profile.publicPortfolioEnabled !== false;
+  const ownershipAlertsEnabled = profile.ownershipAlertsEnabled !== false;
+  const publicUrl = steamLinked
+    ? `${window.location.origin}/u/${encodeURIComponent(profile.steamId64 || "")}`
+    : "";
 
   return `
     <section class="grid">
@@ -2460,8 +2889,156 @@ function renderSettingsTab() {
             ${steamLinked ? "Relink Steam Account" : "Link Steam Account"}
           </a>
         </div>
+        ${
+          steamLinked
+            ? `<p class="helper-text">Public URL: <a href="${escapeHtml(publicUrl)}" target="_blank" rel="noreferrer">${escapeHtml(
+                publicUrl
+              )}</a></p>`
+            : ""
+        }
+      </article>
+      <article class="panel wide">
+        <h2>Growth & Visibility</h2>
+        <form id="public-settings-form" class="form">
+          <label>
+            Public portfolio page enabled
+            <input id="public-portfolio-enabled" type="checkbox" ${
+              publicPortfolioEnabled ? "checked" : ""
+            } ${steamLinked ? "" : "disabled"} />
+          </label>
+          <button type="submit" ${steamLinked ? "" : "disabled"}>Save Public Profile Setting</button>
+        </form>
+        <form id="ownership-settings-form" class="form">
+          <label>
+            Ownership-change alerts enabled
+            <input id="ownership-alerts-enabled" type="checkbox" ${
+              ownershipAlertsEnabled ? "checked" : ""
+            } />
+          </label>
+          <button type="submit">Save Ownership Alert Setting</button>
+        </form>
       </article>
     </section>
+  `;
+}
+
+function renderPublicPortfolioPage() {
+  const steamStartUrl = buildSteamAuthStartUrl("login");
+  const page = state.publicPage || {};
+  const payload = page.payload || {};
+  const profile = payload.profile || {};
+  const portfolio = payload.portfolio || {};
+  const historyPoints = Array.isArray(payload?.history?.points) ? payload.history.points : [];
+  const items = Array.isArray(portfolio.items) ? portfolio.items : [];
+  const historyPreview = historyPoints.slice(-10);
+
+  const historyMarkup = historyPreview.length
+    ? `<ul class="sync-list">${historyPreview
+        .map(
+          (point) =>
+            `<li>${escapeHtml(point.date)}: <strong>${formatMoney(
+              point.totalValue,
+              portfolio.currency || state.currency
+            )}</strong></li>`
+        )
+        .join("")}</ul>`
+    : '<p class="muted">No history points yet.</p>';
+
+  const holdingsMarkup = items.length
+    ? `
+      <table>
+        <thead>
+          <tr><th>Item</th><th>Qty</th><th>Price</th><th>7D %</th><th>Value</th></tr>
+        </thead>
+        <tbody>
+          ${items
+            .slice(0, 30)
+            .map(
+              (item) => `
+                <tr>
+                  <td>${escapeHtml(item.marketHashName)}</td>
+                  <td>${Number(item.quantity || 0)}</td>
+                  <td>${formatMoney(item.currentPrice, portfolio.currency || state.currency)}</td>
+                  <td>${formatPercent(item.sevenDayChangePercent)}</td>
+                  <td>${formatMoney(item.lineValue, portfolio.currency || state.currency)}</td>
+                </tr>
+              `
+            )
+            .join("")}
+        </tbody>
+      </table>
+    `
+    : '<p class="muted">No public holdings available yet.</p>';
+
+  app.innerHTML = `
+    <main class="layout">
+      <nav class="topbar">
+        <div class="brand">CS2 Portfolio Analyzer</div>
+        <div class="top-actions">
+          <a class="link-btn ghost" href="${escapeHtml(steamStartUrl)}">Login with Steam</a>
+          <a class="link-btn ghost" href="/login.html">Login</a>
+          <a class="link-btn" href="/register.html">Start Free</a>
+        </div>
+      </nav>
+      <section class="grid">
+        <article class="panel wide">
+          <p class="eyebrow">Public Portfolio</p>
+          ${
+            page.loading
+              ? "<h1>Loading profile...</h1>"
+              : page.error
+                ? `<h1>Could not load profile</h1><div class="error">${escapeHtml(
+                    page.error
+                  )}</div>`
+                : `<h1>${escapeHtml(profile.displayName || `Steam ${profile.steamId64 || ""}`)}</h1>`
+          }
+          ${
+            page.error
+              ? '<p class="muted">This profile may be private, missing, or temporarily unavailable.</p>'
+              : `<p class="helper-text">SteamID64: <code>${escapeHtml(
+                  profile.steamId64 || "-"
+                )}</code></p>`
+          }
+          ${
+            !page.loading && !page.error
+              ? `<div class="sub-kpi-grid">
+                  <article class="sub-kpi-card">
+                    <span>Total Value</span>
+                    <strong>${formatMoney(
+                      portfolio.totalValue,
+                      portfolio.currency || state.currency
+                    )}</strong>
+                  </article>
+                  <article class="sub-kpi-card">
+                    <span>24H Change</span>
+                    <strong>${formatPercent(portfolio.oneDayChangePercent)}</strong>
+                  </article>
+                  <article class="sub-kpi-card">
+                    <span>7D Change</span>
+                    <strong>${formatPercent(portfolio.sevenDayChangePercent)}</strong>
+                  </article>
+                </div>`
+              : ""
+          }
+        </article>
+      </section>
+      ${
+        !page.loading && !page.error
+          ? `
+          <section class="grid">
+            <article class="panel wide">
+              <h2>Public Holdings</h2>
+              ${holdingsMarkup}
+            </article>
+            <article class="panel wide">
+              <h2>30-Day Value Trend</h2>
+              ${historyMarkup}
+            </article>
+          </section>
+        `
+          : ""
+      }
+    </main>
   `;
 }
 
@@ -2531,6 +3108,67 @@ function renderSessionBoot() {
   `;
 }
 
+function renderSteamSyncPanel() {
+  const profile = state.authProfile || {};
+  const steamLinked = Boolean(profile.steamLinked);
+  const steamLinkUrl = buildSteamAuthStartUrl("link");
+
+  if (!steamLinked) {
+    return `
+      <article class="panel">
+        <h2>Steam Sync</h2>
+        <p class="helper-text">Link Steam once to auto-connect your SteamID and unlock one-click inventory sync.</p>
+        <div class="row">
+          <a class="link-btn" href="${escapeHtml(steamLinkUrl)}">Link Steam Account</a>
+        </div>
+        <p class="muted sync-note">After linking, return here and sync inventory instantly.</p>
+      </article>
+    `;
+  }
+
+  const onboardingNotice = state.steamOnboardingPending
+    ? `<div class="info"><strong>You're connected, click sync now.</strong> We will import your inventory and latest prices in one step.</div>`
+    : "";
+
+  return `
+    <article class="panel">
+      <h2>Steam Sync</h2>
+      <p class="helper-text">SteamID is connected from your login. Click <strong>Sync Inventory</strong> to import items and refresh market prices.</p>
+      ${onboardingNotice}
+      <div class="sub-kpi-grid">
+        <article class="sub-kpi-card">
+          <span>Steam Status</span>
+          <strong>Connected</strong>
+        </article>
+        <article class="sub-kpi-card">
+          <span>Persona</span>
+          <strong>${escapeHtml(profile.steamDisplayName || "Steam account")}</strong>
+        </article>
+        <article class="sub-kpi-card">
+          <span>SteamID64</span>
+          <strong>${escapeHtml(profile.steamId64 || "-")}</strong>
+        </article>
+      </div>
+      <div class="row">
+        <button id="sync-btn" ${state.syncingInventory ? "disabled" : ""}>
+          ${
+            state.syncingInventory
+              ? '<span class="loading-inline"><span class="spinner"></span>Syncing inventory...</span>'
+              : "Sync Inventory"
+          }
+        </button>
+        <a class="link-btn ghost" href="${escapeHtml(steamLinkUrl)}">Relink Steam</a>
+      </div>
+      ${
+        state.syncingInventory
+          ? '<p class="muted sync-note">Fetching inventory and market prices. This can take up to a minute.</p>'
+          : ""
+      }
+      ${renderSyncSummary()}
+    </article>
+  `;
+}
+
 function renderApp() {
   const portfolio = state.portfolio || {};
   const oneDayTrendClass = Number(portfolio.oneDayChangePercent || 0) >= 0 ? "up" : "down";
@@ -2544,29 +3182,7 @@ function renderApp() {
 
   const portfolioContent = `
     <section class="grid dashboard-grid">
-      <article class="panel">
-        <h2>Steam Sync</h2>
-        <p class="helper-text">1) Enter your 17-digit SteamID64 and click <strong>Connect Steam ID</strong> once. 2) Click <strong>Sync Inventory</strong> to import items and latest prices.</p>
-        <form id="steam-form" class="form">
-          <label>SteamID64
-            <input id="steam-id" placeholder="7656119..." />
-          </label>
-          <button type="submit">Connect Steam ID</button>
-        </form>
-        <button id="sync-btn" ${state.syncingInventory ? "disabled" : ""}>
-          ${
-            state.syncingInventory
-              ? '<span class="loading-inline"><span class="spinner"></span>Syncing inventory...</span>'
-              : "Sync Inventory"
-          }
-        </button>
-        ${
-          state.syncingInventory
-            ? '<p class="muted sync-note">Fetching inventory and market prices. This can take up to a minute.</p>'
-            : ""
-        }
-        ${renderSyncSummary()}
-      </article>
+      ${renderSteamSyncPanel()}
 
       <article class="panel">
         <h2>Item Lookup</h2>
@@ -2683,9 +3299,11 @@ function renderApp() {
         ? tradesContent
         : state.activeTab === "alerts"
           ? renderAlertsCenter()
-          : state.activeTab === "market"
-            ? renderMarketTab()
-            : renderSettingsTab();
+          : state.activeTab === "social"
+            ? renderSocialTab()
+            : state.activeTab === "market"
+              ? renderMarketTab()
+              : renderSettingsTab();
 
   app.innerHTML = `
     <main class="layout">
@@ -2772,7 +3390,6 @@ function renderApp() {
   });
 
   if (state.activeTab === "portfolio") {
-    document.querySelector("#steam-form")?.addEventListener("submit", connectSteam);
     document.querySelector("#sync-btn")?.addEventListener("click", syncInventory);
     document.querySelector("#skin-form")?.addEventListener("submit", findSkin);
     document.querySelector("#exit-whatif-form")?.addEventListener("submit", calculateExitWhatIf);
@@ -2891,6 +3508,36 @@ function renderApp() {
     });
   }
 
+  if (state.activeTab === "social") {
+    document.querySelector("#social-watch-form")?.addEventListener("submit", addWatchlistEntry);
+    document.querySelector("#social-watch-steam-id")?.addEventListener("input", (event) => {
+      state.social.newSteamId = event.target.value;
+    });
+    document.querySelector("#social-board-form")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await refreshSocialData();
+    });
+    document.querySelector("#social-scope")?.addEventListener("change", async (event) => {
+      state.social.scope = String(event.target.value || "global");
+      await refreshSocialData();
+    });
+
+    document.querySelectorAll(".watch-remove-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        removeWatchlistEntry(btn.getAttribute("data-steam-id"));
+      });
+    });
+
+    document.querySelectorAll(".leaderboard-watch-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        toggleWatchFromLeaderboard(
+          btn.getAttribute("data-steam-id"),
+          btn.getAttribute("data-watching") === "1"
+        );
+      });
+    });
+  }
+
   if (state.activeTab === "market") {
     const syncCommissionFrom = (el) => {
       if (!el) return;
@@ -2921,6 +3568,15 @@ function renderApp() {
       refreshMarketInventoryValue();
     }
   }
+
+  if (state.activeTab === "settings") {
+    document
+      .querySelector("#public-settings-form")
+      ?.addEventListener("submit", updatePublicPortfolioSettings);
+    document
+      .querySelector("#ownership-settings-form")
+      ?.addEventListener("submit", updateOwnershipAlertSettings);
+  }
 }
 
 function render() {
@@ -2930,7 +3586,11 @@ function render() {
   }
 
   if (!state.authenticated) {
-    renderPublicHome();
+    if (state.publicPage.steamId64) {
+      renderPublicPortfolioPage();
+    } else {
+      renderPublicHome();
+    }
     return;
   }
 
@@ -2941,20 +3601,33 @@ function hydrateAppNoticesFromUrl() {
   const params = new URLSearchParams(window.location.search);
   const linkedSteam = params.get("linkedSteam") === "1";
   const merged = params.get("merged") === "1";
+  const steamOnboarding = params.get("steamOnboarding") === "1";
 
-  if (!linkedSteam) return;
+  if (!linkedSteam && !steamOnboarding) return;
 
-  state.accountNotice = merged
-    ? "Steam account linked. Existing Steam-only profile was merged into this account."
-    : "Steam account linked successfully.";
+  if (linkedSteam) {
+    state.accountNotice = merged
+      ? "Steam account linked. Existing Steam-only profile was merged into this account."
+      : "Steam account linked successfully.";
+  }
+
+  if (steamOnboarding) {
+    state.activeTab = "portfolio";
+    state.steamOnboardingPending = true;
+    state.accountNotice = "Steam connected successfully. You're connected, click sync now.";
+  }
 
   window.history.replaceState({}, "", "/");
 }
 
 async function bootstrapSession() {
+  state.publicPage.steamId64 = getPublicSteamIdFromPath();
   hydrateAppNoticesFromUrl();
   render();
-  await refreshPortfolio({ silent: true });
+  const restoredSession = await refreshPortfolio({ silent: true });
+  if (!restoredSession && state.publicPage.steamId64) {
+    await loadPublicPortfolio({ silent: true });
+  }
   state.sessionBooting = false;
   render();
 }

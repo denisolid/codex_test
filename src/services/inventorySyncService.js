@@ -2,6 +2,7 @@ const AppError = require("../utils/AppError");
 const userRepo = require("../repositories/userRepository");
 const skinRepo = require("../repositories/skinRepository");
 const inventoryRepo = require("../repositories/inventoryRepository");
+const ownershipAlertRepo = require("../repositories/ownershipAlertRepository");
 const priceRepo = require("../repositories/priceHistoryRepository");
 const {
   steamInventorySource,
@@ -85,6 +86,8 @@ exports.syncUserInventory = async (userId) => {
     throw new AppError("Connect Steam ID first", 400);
   }
 
+  const previousHoldings = await inventoryRepo.getUserHoldings(userId);
+
   const {
     items,
     excludedItems: inventoryExcludedItems = [],
@@ -109,8 +112,14 @@ exports.syncUserInventory = async (userId) => {
     upsertedSkins.map((skin) => [skin.market_hash_name, skin.id])
   );
 
+  const priceLookupSkinIds = Array.from(
+    new Set([
+      ...upsertedSkins.map((s) => Number(s.id)),
+      ...previousHoldings.map((row) => Number(row.skin_id))
+    ])
+  );
   const latestPriceBySkinId = await priceRepo.getLatestPriceRowsBySkinIds(
-    upsertedSkins.map((s) => s.id)
+    priceLookupSkinIds
   );
 
   const pricedItems = [];
@@ -196,6 +205,94 @@ exports.syncUserInventory = async (userId) => {
       }))
   );
 
+  const syncedAt = new Date().toISOString();
+  const previousBySkinId = previousHoldings.reduce((acc, row) => {
+    acc[Number(row.skin_id)] = {
+      quantity: Number(row.quantity || 0),
+      marketHashName: row?.skins?.market_hash_name || `Skin #${row.skin_id}`
+    };
+    return acc;
+  }, {});
+  const currentBySkinId = pricedItems.reduce((acc, row) => {
+    const skinId = Number(row.skinId);
+    if (!acc[skinId]) {
+      acc[skinId] = {
+        quantity: 0,
+        marketHashName: row.marketHashName || `Skin #${skinId}`,
+        price: row.price == null ? null : Number(row.price)
+      };
+    }
+
+    acc[skinId].quantity += Number(row.quantity || 0);
+    if (acc[skinId].price == null && row.price != null) {
+      acc[skinId].price = Number(row.price);
+    }
+    return acc;
+  }, {});
+
+  const skinIds = Array.from(
+    new Set([
+      ...Object.keys(previousBySkinId).map(Number),
+      ...Object.keys(currentBySkinId).map(Number)
+    ])
+  );
+
+  const ownershipChanges = skinIds
+    .map((skinId) => {
+      const previous = previousBySkinId[skinId] || {
+        quantity: 0,
+        marketHashName: `Skin #${skinId}`
+      };
+      const current = currentBySkinId[skinId] || {
+        quantity: 0,
+        marketHashName: previous.marketHashName,
+        price: null
+      };
+
+      const previousQuantity = Number(previous.quantity || 0);
+      const newQuantity = Number(current.quantity || 0);
+      if (previousQuantity === newQuantity) {
+        return null;
+      }
+
+      const quantityDelta = newQuantity - previousQuantity;
+      const changeType =
+        previousQuantity === 0 && newQuantity > 0
+          ? "acquired"
+          : previousQuantity > 0 && newQuantity === 0
+            ? "disposed"
+            : quantityDelta > 0
+              ? "increased"
+              : "decreased";
+
+      const rowPrice =
+        current.price != null
+          ? Number(current.price)
+          : latestPriceBySkinId[skinId]?.price != null
+            ? Number(latestPriceBySkinId[skinId].price)
+            : null;
+      const estimatedValueDelta =
+        rowPrice == null ? null : Number((quantityDelta * rowPrice).toFixed(2));
+
+      return {
+        skinId,
+        marketHashName: current.marketHashName || previous.marketHashName,
+        changeType,
+        previousQuantity,
+        newQuantity,
+        quantityDelta,
+        estimatedValueDelta,
+        currency: "USD",
+        syncedAt
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => Math.abs(Number(b.quantityDelta || 0)) - Math.abs(Number(a.quantityDelta || 0)));
+
+  if (user.ownership_alerts_enabled !== false && ownershipChanges.length) {
+    await ownershipAlertRepo.insertEvents(userId, ownershipChanges);
+  }
+
   const unpricedItems = pricedItems
     .filter((i) => i.price == null)
     .map((i) => ({
@@ -215,6 +312,8 @@ exports.syncUserInventory = async (userId) => {
     priceFetchedCount: pricedItems.length - cacheHitCount,
     inventorySource: source,
     priceSource: marketPriceFallbackToMock ? "mixed" : "strict-real",
-    syncedAt: new Date().toISOString()
+    ownershipChangesCount: ownershipChanges.length,
+    ownershipChanges: ownershipChanges.slice(0, 20),
+    syncedAt
   };
 };

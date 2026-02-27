@@ -1,6 +1,8 @@
 const AppError = require("../utils/AppError");
 const alertRepo = require("../repositories/alertRepository");
+const ownershipAlertRepo = require("../repositories/ownershipAlertRepository");
 const skinRepo = require("../repositories/skinRepository");
+const userRepo = require("../repositories/userRepository");
 const priceRepo = require("../repositories/priceHistoryRepository");
 const { alertCheckBatchSize } = require("../config/env");
 
@@ -242,6 +244,38 @@ exports.listAlertEvents = async (userId, limit = 100) => {
     changePercent: row.change_percent,
     triggeredAt: row.triggered_at
   }));
+};
+
+exports.listOwnershipEvents = async (userId, limit = 100) => {
+  const rows = await ownershipAlertRepo.listByUser(userId, limit);
+  return rows.map((row) => ({
+    id: row.id,
+    skinId: row.skin_id,
+    marketHashName: row.market_hash_name,
+    changeType: row.change_type,
+    previousQuantity: row.previous_quantity,
+    newQuantity: row.new_quantity,
+    quantityDelta: row.quantity_delta,
+    estimatedValueDelta: row.estimated_value_delta,
+    currency: row.currency || "USD",
+    syncedAt: row.synced_at,
+    createdAt: row.created_at
+  }));
+};
+
+exports.updateOwnershipAlertSettings = async (userId, payload = {}) => {
+  const enabled = payload?.enabled;
+  if (typeof enabled !== "boolean") {
+    throw new AppError("enabled must be boolean", 400);
+  }
+
+  const updated = await userRepo.updatePreferencesById(userId, {
+    ownershipAlertsEnabled: enabled
+  });
+
+  return {
+    ownershipAlertsEnabled: Boolean(updated?.ownership_alerts_enabled)
+  };
 };
 
 exports.checkAlertsNow = async (options = {}) => {
