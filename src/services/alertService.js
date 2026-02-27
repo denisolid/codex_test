@@ -4,6 +4,7 @@ const ownershipAlertRepo = require("../repositories/ownershipAlertRepository");
 const skinRepo = require("../repositories/skinRepository");
 const userRepo = require("../repositories/userRepository");
 const priceRepo = require("../repositories/priceHistoryRepository");
+const planService = require("./planService");
 const { alertCheckBatchSize } = require("../config/env");
 
 function round2(n) {
@@ -123,6 +124,24 @@ function isOnCooldown(lastTriggeredAt, cooldownMinutes, nowMs) {
 
 exports.createAlert = async (userId, payload) => {
   validateAlertPayload(payload, false);
+  const { planTier, entitlements } = await planService.getUserPlanProfile(userId);
+  const currentAlertsCount = await alertRepo.countByUser(userId);
+  if (currentAlertsCount >= Number(entitlements.maxAlerts || 0)) {
+    throw new AppError(
+      `Alert limit reached for ${planTier} plan (${entitlements.maxAlerts}). Upgrade to unlock more alerts.`,
+      402,
+      "PLAN_UPGRADE_REQUIRED"
+    );
+  }
+
+  if (planTier === "free" && payload.cooldownMinutes != null && payload.cooldownMinutes < 30) {
+    throw new AppError(
+      "Free plan minimum cooldown is 30 minutes. Upgrade for tighter alert cadence.",
+      402,
+      "PLAN_UPGRADE_REQUIRED"
+    );
+  }
+
   await ensureSkinExists(payload.skinId);
 
   const targetPrice =
@@ -174,6 +193,19 @@ exports.updateAlert = async (userId, id, payload) => {
   const existing = await alertRepo.getById(userId, alertId);
   if (!existing) {
     throw new AppError("Alert not found", 404);
+  }
+
+  const { planTier } = await planService.getUserPlanProfile(userId);
+  const nextCooldownMinutes =
+    payload.cooldownMinutes !== undefined
+      ? Number(payload.cooldownMinutes)
+      : Number(existing.cooldown_minutes || 0);
+  if (planTier === "free" && nextCooldownMinutes < 30) {
+    throw new AppError(
+      "Free plan minimum cooldown is 30 minutes. Upgrade for tighter alert cadence.",
+      402,
+      "PLAN_UPGRADE_REQUIRED"
+    );
   }
 
   const nextSkinId =

@@ -18,6 +18,12 @@ create table if not exists public.users (
   steam_id64 text unique,
   public_portfolio_enabled boolean not null default true,
   ownership_alerts_enabled boolean not null default true,
+  plan_tier text not null default 'free' check (plan_tier in ('free', 'pro', 'team')),
+  billing_status text not null default 'inactive' check (
+    billing_status in ('inactive', 'trialing', 'active', 'past_due', 'canceled')
+  ),
+  plan_seats integer not null default 1 check (plan_seats > 0),
+  plan_started_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint steam_id64_format_chk check (
@@ -207,6 +213,18 @@ create table if not exists public.public_portfolio_views (
 create index if not exists idx_public_portfolio_views_owner_time
   on public.public_portfolio_views(owner_user_id, viewed_at desc);
 
+create table if not exists public.plan_change_events (
+  id bigserial primary key,
+  user_id uuid not null references public.users(id) on delete cascade,
+  old_plan_tier text not null check (old_plan_tier in ('free', 'pro', 'team')),
+  new_plan_tier text not null check (new_plan_tier in ('free', 'pro', 'team')),
+  changed_by text not null default 'self_service',
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_plan_change_events_user_time
+  on public.plan_change_events(user_id, created_at desc);
+
 create or replace function public.handle_new_auth_user()
 returns trigger
 language plpgsql
@@ -238,6 +256,7 @@ alter table public.extension_api_keys enable row level security;
 alter table public.watchlists enable row level security;
 alter table public.ownership_alert_events enable row level security;
 alter table public.public_portfolio_views enable row level security;
+alter table public.plan_change_events enable row level security;
 
 create policy "users_select_own"
 on public.users for select
@@ -295,3 +314,7 @@ using (auth.uid() = user_id);
 create policy "public_portfolio_views_read_own"
 on public.public_portfolio_views for select
 using (auth.uid() = owner_user_id);
+
+create policy "plan_change_events_read_own"
+on public.plan_change_events for select
+using (auth.uid() = user_id);

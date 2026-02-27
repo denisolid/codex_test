@@ -42,6 +42,19 @@ exports.listByUser = async (userId) => {
   return data || [];
 };
 
+exports.countByUser = async (userId) => {
+  const { count, error } = await supabaseAdmin
+    .from("price_alerts")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userId);
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  return Number(count || 0);
+};
+
 exports.getById = async (userId, id) => {
   const { data, error } = await supabaseAdmin
     .from("price_alerts")

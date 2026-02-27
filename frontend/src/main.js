@@ -108,6 +108,15 @@ const state = {
     loading: false,
     payload: null,
     error: ""
+  },
+  backtest: {
+    days: "90",
+    loading: false,
+    result: null
+  },
+  teamDashboard: {
+    loading: false,
+    payload: null
   }
 };
 
@@ -183,6 +192,11 @@ function buildAuthProfile(payload) {
     steamAvatarUrl: String(profile.avatarUrl || metadata.avatar_url || "").trim() || null,
     publicPortfolioEnabled: profile.publicPortfolioEnabled !== false,
     ownershipAlertsEnabled: profile.ownershipAlertsEnabled !== false,
+    planTier: String(profile.planTier || "free").toLowerCase(),
+    billingStatus: String(profile.billingStatus || "inactive").toLowerCase(),
+    planSeats: Number(profile.planSeats || 1),
+    planStartedAt: profile.planStartedAt || null,
+    entitlements: profile.entitlements || null,
     provider: String(profile.provider || metadata.provider || "").trim() || "email"
   };
 }
@@ -592,6 +606,11 @@ async function logout() {
   state.social.leaderboard = [];
   state.social.newSteamId = "";
   state.social.loading = false;
+  state.backtest.days = "90";
+  state.backtest.loading = false;
+  state.backtest.result = null;
+  state.teamDashboard.loading = false;
+  state.teamDashboard.payload = null;
   render();
 }
 
@@ -902,6 +921,111 @@ async function updateOwnershipAlertSettings(e) {
     state.accountNotice = enabled
       ? "Ownership-change alerts enabled."
       : "Ownership-change alerts disabled.";
+    render();
+  } catch (err) {
+    setError(err.message);
+  }
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function downloadCsv(path, filename) {
+  clearError();
+  const res = await fetch(`${API_URL}${path}`, {
+    credentials: "include",
+    headers: withAuthHeaders({})
+  });
+
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || "CSV export failed");
+  }
+
+  const blob = await res.blob();
+  downloadBlob(blob, filename);
+}
+
+async function exportPortfolioCsv() {
+  try {
+    await downloadCsv(withCurrency("/portfolio/export.csv"), "portfolio-export.csv");
+  } catch (err) {
+    setError(err.message);
+  }
+}
+
+async function exportTransactionsCsv() {
+  try {
+    await downloadCsv("/transactions/export.csv", "transactions-export.csv");
+  } catch (err) {
+    setError(err.message);
+  }
+}
+
+async function runPortfolioBacktest(e) {
+  e.preventDefault();
+  clearError();
+  const days = clampInt(state.backtest.days, 7, 1095);
+  state.backtest.days = String(days);
+  state.backtest.loading = true;
+  render();
+
+  try {
+    const result = await api(withCurrency(`/portfolio/backtest?days=${days}`));
+    state.backtest.result = result;
+  } catch (err) {
+    setError(err.message);
+  } finally {
+    state.backtest.loading = false;
+    render();
+  }
+}
+
+async function refreshTeamDashboard(options = {}) {
+  const { silent = false } = options;
+  if (!silent) {
+    clearError();
+  }
+  state.teamDashboard.loading = true;
+  render();
+
+  try {
+    const payload = await api(withCurrency("/team/dashboard"));
+    state.teamDashboard.payload = payload;
+  } catch (err) {
+    if (!silent) {
+      setError(err.message);
+    }
+    state.teamDashboard.payload = null;
+  } finally {
+    state.teamDashboard.loading = false;
+    render();
+  }
+}
+
+async function updatePlanTier(planTier) {
+  clearError();
+  try {
+    await api("/monetization/plan", {
+      method: "PATCH",
+      body: JSON.stringify({ planTier })
+    });
+    await refreshPortfolio({ silent: true });
+    if (String(planTier || "").toLowerCase() === "team") {
+      await refreshTeamDashboard({ silent: true });
+    } else {
+      state.teamDashboard.loading = false;
+      state.teamDashboard.payload = null;
+    }
+    state.accountNotice = `Plan updated to ${toTitle(planTier)}.`;
     render();
   } catch (err) {
     setError(err.message);
@@ -2265,6 +2389,129 @@ function renderManagementSummary() {
   `;
 }
 
+function renderAdvancedAnalytics() {
+  const profile = state.authProfile || {};
+  const advanced = state.portfolio?.advancedAnalytics;
+  if (!advanced) {
+    if (profile.planTier === "free") {
+      return `
+        <section class="grid">
+          <article class="panel wide">
+            <h2>Advanced Analytics (Pro)</h2>
+            <p class="muted">Upgrade to Pro to unlock VaR, tail risk, and deeper portfolio quality diagnostics.</p>
+          </article>
+        </section>
+      `;
+    }
+    return "";
+  }
+
+  return `
+    <section class="grid">
+      <article class="panel wide">
+        <h2>Advanced Analytics</h2>
+        <div class="analytics-grid">
+          <div class="analytics-item">
+            <span>Price Quality Score</span>
+            <strong>${escapeHtml(formatPercent(advanced.priceQualityScore))}</strong>
+          </div>
+          <div class="analytics-item">
+            <span>Median Daily Volatility</span>
+            <strong>${escapeHtml(formatPercent(advanced.medianVolatilityDailyPercent))}</strong>
+          </div>
+          <div class="analytics-item">
+            <span>Tail Risk 7D (P10)</span>
+            <strong>${escapeHtml(formatPercent(advanced.tailRisk7dPercentP10))}</strong>
+          </div>
+          <div class="analytics-item">
+            <span>Estimated VaR 95% 1D</span>
+            <strong>${escapeHtml(formatPercent(advanced.estimatedVar95OneDayPercent))}</strong>
+          </div>
+          <div class="analytics-item">
+            <span>Top 10 Weight</span>
+            <strong>${escapeHtml(formatPercent(advanced.top10WeightPercent))}</strong>
+          </div>
+          <div class="analytics-item">
+            <span>Positions Over 2%</span>
+            <strong>${escapeHtml(formatNumber(advanced.diversifiedPositionsOver2Percent, 0))}</strong>
+          </div>
+        </div>
+      </article>
+    </section>
+  `;
+}
+
+function renderBacktestPanel() {
+  const profile = state.authProfile || {};
+  const entitlements = profile.entitlements || {};
+  const canBacktest = Boolean(entitlements.backtesting);
+  const result = state.backtest.result;
+
+  if (!canBacktest) {
+    return `
+      <section class="grid">
+        <article class="panel wide">
+          <h2>Historical Backtesting (Pro)</h2>
+          <p class="muted">Upgrade to Pro to run historical portfolio backtests and risk metrics.</p>
+        </article>
+      </section>
+    `;
+  }
+
+  const metrics = result?.metrics || {};
+
+  return `
+    <section class="grid">
+      <article class="panel wide">
+        <h2>Historical Backtesting</h2>
+        <form id="backtest-form" class="trade-calc-grid">
+          <label>Days
+            <input id="backtest-days" type="number" min="7" max="1095" value="${escapeHtml(
+              state.backtest.days
+            )}" />
+          </label>
+          <button type="submit" ${state.backtest.loading ? "disabled" : ""}>
+            ${state.backtest.loading ? "Running..." : "Run Backtest"}
+          </button>
+          <button
+            type="button"
+            class="ghost-btn"
+            id="export-portfolio-btn"
+          >
+            Export Portfolio CSV
+          </button>
+        </form>
+        ${
+          result
+            ? `
+          <div class="sub-kpi-grid">
+            <article class="sub-kpi-card"><span>Total Return</span><strong>${formatPercent(
+              metrics.totalReturnPercent
+            )}</strong></article>
+            <article class="sub-kpi-card"><span>Annualized Return</span><strong>${formatPercent(
+              metrics.annualizedReturnPercent
+            )}</strong></article>
+            <article class="sub-kpi-card"><span>Max Drawdown</span><strong>${formatPercent(
+              metrics.maxDrawdownPercent
+            )}</strong></article>
+            <article class="sub-kpi-card"><span>Daily Volatility</span><strong>${formatPercent(
+              metrics.volatilityDailyPercent
+            )}</strong></article>
+            <article class="sub-kpi-card"><span>Win Rate</span><strong>${formatPercent(
+              metrics.winRatePercent
+            )}</strong></article>
+            <article class="sub-kpi-card"><span>Period</span><strong>${escapeHtml(
+              `${Number(result.days || 0)} days`
+            )}</strong></article>
+          </div>
+        `
+            : '<p class="muted">Run a backtest to compute return and risk statistics.</p>'
+        }
+      </article>
+    </section>
+  `;
+}
+
 function renderAnalytics() {
   const analytics = state.portfolio?.analytics;
   if (!analytics) return "";
@@ -2342,12 +2589,101 @@ function renderAnalytics() {
   `;
 }
 
+function renderTeamTab() {
+  const profile = state.authProfile || {};
+  const isTeam = String(profile.planTier || "free") === "team";
+  const data = state.teamDashboard.payload;
+
+  if (!isTeam) {
+    return `
+      <section class="grid">
+        <article class="panel wide">
+          <h2>Team / Creator Dashboard</h2>
+          <p class="muted">This dashboard is available on Team plan for larger inventories and creator operations.</p>
+        </article>
+      </section>
+    `;
+  }
+
+  if (state.teamDashboard.loading) {
+    return `
+      <section class="grid">
+        <article class="panel wide">
+          <h2>Team / Creator Dashboard</h2>
+          <p class="muted">Loading team dashboard...</p>
+        </article>
+      </section>
+    `;
+  }
+
+  if (!data) {
+    return `
+      <section class="grid">
+        <article class="panel wide">
+          <h2>Team / Creator Dashboard</h2>
+          <div class="row">
+            <button id="team-refresh-btn" type="button" class="ghost-btn">Refresh Team Metrics</button>
+          </div>
+          <p class="muted">No dashboard snapshot yet. Click refresh to load team and creator KPIs.</p>
+        </article>
+      </section>
+    `;
+  }
+
+  const summary = data?.summary || {};
+  const creator = data?.creatorMetrics || {};
+  const ops = data?.operations || {};
+  const breakdown = ops.ownershipBreakdown || {};
+
+  return `
+    <section class="grid">
+      <article class="panel wide">
+        <h2>Team / Creator Dashboard</h2>
+        <div class="row">
+          <button id="team-refresh-btn" type="button" class="ghost-btn">Refresh Team Metrics</button>
+        </div>
+        <div class="sub-kpi-grid">
+          <article class="sub-kpi-card"><span>Total Value</span><strong>${formatMoney(
+            summary.totalValue,
+            data?.currency || state.currency
+          )}</strong></article>
+          <article class="sub-kpi-card"><span>Holdings</span><strong>${formatNumber(
+            summary.holdingsCount,
+            0
+          )}</strong></article>
+          <article class="sub-kpi-card"><span>Top 5 Weight</span><strong>${formatPercent(
+            summary.top5WeightPercent
+          )}</strong></article>
+          <article class="sub-kpi-card"><span>Followers</span><strong>${formatNumber(
+            creator.followers,
+            0
+          )}</strong></article>
+          <article class="sub-kpi-card"><span>Views / Referrals (30D)</span><strong>${escapeHtml(
+            `${Number(creator.views30d || 0)} / ${Number(creator.referrals30d || 0)}`
+          )}</strong></article>
+          <article class="sub-kpi-card"><span>Unpriced / Stale</span><strong>${escapeHtml(
+            `${formatPercent(summary.unpricedRatioPercent)} / ${formatPercent(summary.staleRatioPercent)}`
+          )}</strong></article>
+        </div>
+        <p class="helper-text">
+          Ownership changes (last 50 sync events): Acquired ${Number(
+            breakdown.acquired || 0
+          )}, Increased ${Number(breakdown.increased || 0)}, Decreased ${Number(
+            breakdown.decreased || 0
+          )}, Disposed ${Number(breakdown.disposed || 0)}.
+        </p>
+      </article>
+    </section>
+  `;
+}
+
 function renderTabNav() {
   const tabs = [
     { id: "portfolio", label: "Portfolio" },
     { id: "trades", label: "Trades" },
     { id: "alerts", label: "Alerts" },
     { id: "social", label: "Social" },
+    { id: "team", label: "Team" },
     { id: "market", label: "Market" },
     { id: "settings", label: "Settings" }
   ];
@@ -2856,6 +3192,8 @@ function renderSettingsTab() {
   const providerLabel = toTitle(profile.provider || "email");
   const publicPortfolioEnabled = profile.publicPortfolioEnabled !== false;
   const ownershipAlertsEnabled = profile.ownershipAlertsEnabled !== false;
+  const planTier = String(profile.planTier || "free").toLowerCase();
+  const entitlements = profile.entitlements || {};
   const publicUrl = steamLinked
     ? `${window.location.origin}/u/${encodeURIComponent(profile.steamId64 || "")}`
     : "";
@@ -2917,6 +3255,56 @@ function renderSettingsTab() {
           </label>
           <button type="submit">Save Ownership Alert Setting</button>
         </form>
+      </article>
+      <article class="panel wide">
+        <h2>Plan & Monetization</h2>
+        <div class="sub-kpi-grid">
+          <article class="sub-kpi-card">
+            <span>Current Plan</span>
+            <strong>${escapeHtml(toTitle(planTier))}</strong>
+          </article>
+          <article class="sub-kpi-card">
+            <span>Billing Status</span>
+            <strong>${escapeHtml(toTitle(profile.billingStatus || "inactive"))}</strong>
+          </article>
+          <article class="sub-kpi-card">
+            <span>Seats</span>
+            <strong>${escapeHtml(formatNumber(profile.planSeats || 1, 0))}</strong>
+          </article>
+        </div>
+        <p class="helper-text">
+          Entitlements: Alerts ${Number(entitlements.maxAlerts || 0)}, History up to ${Number(
+            entitlements.maxHistoryDays || 30
+          )} days, CSV export ${entitlements.csvExport ? "enabled" : "disabled"}, Backtesting ${
+            entitlements.backtesting ? "enabled" : "disabled"
+          }.
+        </p>
+        <div class="row">
+          <button
+            type="button"
+            class="ghost-btn plan-switch-btn"
+            data-plan-tier="free"
+            ${planTier === "free" ? "disabled" : ""}
+          >
+            Switch to Free
+          </button>
+          <button
+            type="button"
+            class="ghost-btn plan-switch-btn"
+            data-plan-tier="pro"
+            ${planTier === "pro" ? "disabled" : ""}
+          >
+            Switch to Pro
+          </button>
+          <button
+            type="button"
+            class="ghost-btn plan-switch-btn"
+            data-plan-tier="team"
+            ${planTier === "team" ? "disabled" : ""}
+          >
+            Switch to Team
+          </button>
+        </div>
       </article>
     </section>
   `;
@@ -3199,8 +3587,10 @@ function renderApp() {
 
     ${renderAlerts()}
     ${renderAnalytics()}
+    ${renderAdvancedAnalytics()}
     ${renderPnlSummary()}
     ${renderManagementSummary()}
+    ${renderBacktestPanel()}
 
     <section class="grid">
       <article class="panel wide">
@@ -3288,6 +3678,15 @@ function renderApp() {
   `;
 
   const tradesContent = `
+    <section class="grid">
+      <article class="panel wide">
+        <h2>Transaction Exports</h2>
+        <p class="helper-text">Export transaction history as CSV for bookkeeping, tax workflows, and back-office analytics.</p>
+        <div class="row">
+          <button id="export-transactions-btn" type="button">Export Transactions CSV</button>
+        </div>
+      </article>
+    </section>
     ${renderTransactionManager()}
     ${renderTradeCalculator()}
   `;
@@ -3301,9 +3700,11 @@ function renderApp() {
           ? renderAlertsCenter()
           : state.activeTab === "social"
             ? renderSocialTab()
-            : state.activeTab === "market"
-              ? renderMarketTab()
-              : renderSettingsTab();
+            : state.activeTab === "team"
+              ? renderTeamTab()
+              : state.activeTab === "market"
+                ? renderMarketTab()
+                : renderSettingsTab();
 
   app.innerHTML = `
     <main class="layout">
@@ -3361,11 +3762,19 @@ function renderApp() {
   document.querySelector("#refresh-btn").addEventListener("click", refreshPortfolio);
 
   document.querySelectorAll(".tab-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       const tab = btn.getAttribute("data-tab");
       if (!tab || tab === state.activeTab) return;
       state.activeTab = tab;
       render();
+      if (
+        tab === "team" &&
+        String(state.authProfile?.planTier || "free").toLowerCase() === "team" &&
+        !state.teamDashboard.loading &&
+        !state.teamDashboard.payload
+      ) {
+        await refreshTeamDashboard({ silent: true });
+      }
     });
   });
 
@@ -3393,6 +3802,11 @@ function renderApp() {
     document.querySelector("#sync-btn")?.addEventListener("click", syncInventory);
     document.querySelector("#skin-form")?.addEventListener("submit", findSkin);
     document.querySelector("#exit-whatif-form")?.addEventListener("submit", calculateExitWhatIf);
+    document.querySelector("#backtest-form")?.addEventListener("submit", runPortfolioBacktest);
+    document.querySelector("#backtest-days")?.addEventListener("input", (event) => {
+      state.backtest.days = String(event.target.value || "");
+    });
+    document.querySelector("#export-portfolio-btn")?.addEventListener("click", exportPortfolioCsv);
 
     document.querySelector("#holdings-search")?.addEventListener("input", (event) => {
       state.holdingsView.q = event.target.value;
@@ -3447,6 +3861,7 @@ function renderApp() {
     document.querySelector("#tx-form")?.addEventListener("submit", submitTransaction);
     document.querySelector("#tx-csv-form")?.addEventListener("submit", importTransactionsCsv);
     document.querySelector("#trade-calc-form")?.addEventListener("submit", calculateTrade);
+    document.querySelector("#export-transactions-btn")?.addEventListener("click", exportTransactionsCsv);
     document.querySelector("#tx-search")?.addEventListener("input", (event) => {
       state.transactionsView.q = event.target.value;
       state.transactionsView.page = 1;
@@ -3576,6 +3991,19 @@ function renderApp() {
     document
       .querySelector("#ownership-settings-form")
       ?.addEventListener("submit", updateOwnershipAlertSettings);
+    document.querySelectorAll(".plan-switch-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const planTier = String(btn.getAttribute("data-plan-tier") || "").trim();
+        if (!planTier) return;
+        updatePlanTier(planTier);
+      });
+    });
+  }
+
+  if (state.activeTab === "team") {
+    document.querySelector("#team-refresh-btn")?.addEventListener("click", () => {
+      refreshTeamDashboard();
+    });
   }
 }
 

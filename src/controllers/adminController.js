@@ -226,3 +226,54 @@ exports.getGrowthMetrics = asyncHandler(async (req, res) => {
     }
   });
 });
+
+exports.getFreeToPaidConversion = asyncHandler(async (req, res) => {
+  const windowDays = parseWindowDays(req.query.windowDays, 30);
+  const sinceIso = new Date(
+    Date.now() - windowDays * 24 * 60 * 60 * 1000
+  ).toISOString();
+
+  const createdWithinWindow = String(req.query.createdWithinWindow || "true") !== "false";
+
+  let query = supabaseAdmin
+    .from("users")
+    .select("id, plan_tier, created_at");
+  if (createdWithinWindow) {
+    query = query.gte("created_at", sinceIso);
+  }
+  query = query.limit(20000);
+
+  const { data, error } = await query;
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  const rows = data || [];
+  const breakdown = rows.reduce(
+    (acc, row) => {
+      const planTier = String(row.plan_tier || "free").trim().toLowerCase();
+      if (planTier === "pro") acc.pro += 1;
+      else if (planTier === "team") acc.team += 1;
+      else acc.free += 1;
+      return acc;
+    },
+    { free: 0, pro: 0, team: 0 }
+  );
+
+  const paidUsers = Number(breakdown.pro + breakdown.team);
+  const totalUsers = Number(rows.length);
+  const conversionPercent = totalUsers
+    ? Number(((paidUsers / totalUsers) * 100).toFixed(2))
+    : 0;
+
+  res.json({
+    ok: true,
+    windowDays,
+    since: sinceIso,
+    createdWithinWindow,
+    totalUsers,
+    paidUsers,
+    conversionPercent,
+    breakdown
+  });
+});

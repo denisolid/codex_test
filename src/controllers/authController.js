@@ -13,6 +13,7 @@ const {
   verifyAppSessionToken
 } = require("../utils/appSessionToken");
 const steamAuthService = require("../services/steamAuthService");
+const planService = require("../services/planService");
 const { getCookieValue } = require("../utils/cookies");
 const AppError = require("../utils/AppError");
 const { frontendOrigin, frontendOrigins, apiPublicUrl } = require("../config/env");
@@ -280,6 +281,8 @@ exports.me = [
     const profileRow = await userRepo.getById(req.userId);
     const metadata = req.authUser?.user_metadata || {};
     const steamId64 = profileRow?.steam_id64 || metadata.steam_id64 || null;
+    const planTier = planService.normalizePlanTier(profileRow?.plan_tier);
+    const entitlements = planService.getEntitlements(planTier);
 
     const emailConfirmed =
       req.authProvider === "app"
@@ -296,6 +299,11 @@ exports.me = [
         linkedSteam: Boolean(steamId64),
         publicPortfolioEnabled: profileRow?.public_portfolio_enabled !== false,
         ownershipAlertsEnabled: profileRow?.ownership_alerts_enabled !== false,
+        planTier,
+        billingStatus: profileRow?.billing_status || "inactive",
+        planSeats: Number(profileRow?.plan_seats || 1),
+        planStartedAt: profileRow?.plan_started_at || null,
+        entitlements,
         provider:
           metadata.provider ||
           (Boolean(steamId64) ? "steam" : "email")

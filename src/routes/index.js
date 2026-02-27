@@ -13,5 +13,7 @@ router.use("/alerts", require("./alertRoutes"));
 router.use("/extension", require("./extensionRoutes"));
 router.use("/social", require("./socialRoutes"));
 router.use("/public", require("./publicRoutes"));
+router.use("/monetization", require("./monetizationRoutes"));
+router.use("/team", require("./teamRoutes"));
 
 module.exports = router;
