@@ -4462,12 +4462,13 @@ function render() {
     return;
   }
 
+  if (state.publicPage.steamId64) {
+    renderPublicPortfolioPage();
+    return;
+  }
+
   if (!state.authenticated) {
-    if (state.publicPage.steamId64) {
-      renderPublicPortfolioPage();
-    } else {
-      renderPublicHome();
-    }
+    renderPublicHome();
     return;
   }
 
@@ -4501,9 +4502,10 @@ async function bootstrapSession() {
   state.publicPage.steamId64 = getPublicSteamIdFromPath();
   hydrateAppNoticesFromUrl();
   render();
-  const restoredSession = await refreshPortfolio({ silent: true });
-  if (!restoredSession && state.publicPage.steamId64) {
+  if (state.publicPage.steamId64) {
     await loadPublicPortfolio({ silent: true });
+  } else {
+    await refreshPortfolio({ silent: true });
   }
   state.sessionBooting = false;
   render();
