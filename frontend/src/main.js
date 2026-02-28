@@ -29,7 +29,7 @@ const state = {
   alerts: [],
   skin: null,
   inspectedSteamItemId: "",
-  activeTab: "portfolio",
+  activeTab: "dashboard",
   historyDays: 7,
   holdingsView: {
     q: "",
@@ -119,6 +119,9 @@ const state = {
     payload: null
   }
 };
+
+const holdingsValueMemory = new Map();
+const metricCounterMemory = new Map();
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -225,6 +228,164 @@ function formatPercent(value) {
 function formatNumber(value, digits = 2) {
   if (value == null || Number.isNaN(Number(value))) return "-";
   return Number(value).toFixed(digits);
+}
+
+function formatSignedMoney(amount, currencyCode = state.currency) {
+  const value = Number(amount || 0);
+  if (!Number.isFinite(value)) return "-";
+  const prefix = value > 0 ? "+" : "";
+  return `${prefix}${formatMoney(value, currencyCode)}`;
+}
+
+function buildPortfolioSignals() {
+  const analytics = state.portfolio?.analytics || {};
+  const holdingsCount = Number(
+    analytics.holdingsCount || state.portfolio?.items?.length || 0
+  );
+  const staleItems = Number(state.portfolio?.staleItemsCount || 0);
+  const unpricedItems = Number(state.portfolio?.unpricedItemsCount || 0);
+  const liquidItems = Math.max(holdingsCount - staleItems - unpricedItems, 0);
+  const liquidityScore =
+    holdingsCount > 0 ? Math.round((liquidItems / holdingsCount) * 100) : null;
+  const liquidityBand =
+    liquidityScore == null
+      ? "unknown"
+      : liquidityScore >= 85
+        ? "high"
+        : liquidityScore >= 60
+          ? "medium"
+          : "low";
+
+  const baseRiskScore =
+    analytics.concentrationRisk === "high"
+      ? 78
+      : analytics.concentrationRisk === "medium"
+        ? 58
+        : 34;
+  const breadthPenalty =
+    analytics?.breadth?.advancerRatioPercent == null
+      ? 0
+      : Math.max(0, 50 - Number(analytics.breadth.advancerRatioPercent || 0)) * 0.24;
+  const riskScore = Math.min(100, Math.round(baseRiskScore + breadthPenalty));
+  const riskBand = riskScore >= 70 ? "high" : riskScore >= 45 ? "medium" : "low";
+
+  return {
+    holdingsCount,
+    staleItems,
+    unpricedItems,
+    liquidityScore,
+    liquidityBand,
+    riskScore,
+    riskBand
+  };
+}
+
+function getHoldingsSortDirection(field) {
+  const current = String(state.holdingsView.sort || "value_desc");
+  if (field === "name") {
+    if (current === "name_asc") return "asc";
+    if (current === "name_desc") return "desc";
+    return "none";
+  }
+  if (field === "qty") {
+    if (current === "qty_asc") return "asc";
+    if (current === "qty_desc") return "desc";
+    return "none";
+  }
+  if (field === "change") {
+    if (current === "change_asc") return "asc";
+    if (current === "change_desc") return "desc";
+    return "none";
+  }
+  if (field === "value" || field === "price") {
+    if (current === "value_asc") return "asc";
+    if (current === "value_desc") return "desc";
+    return "none";
+  }
+  return "none";
+}
+
+function getNextHoldingsSort(field) {
+  const direction = getHoldingsSortDirection(field);
+  if (field === "name") {
+    return direction === "desc" ? "name_asc" : "name_desc";
+  }
+  if (field === "qty") {
+    return direction === "desc" ? "qty_asc" : "qty_desc";
+  }
+  if (field === "change") {
+    return direction === "desc" ? "change_asc" : "change_desc";
+  }
+  if (field === "value" || field === "price") {
+    return direction === "desc" ? "value_asc" : "value_desc";
+  }
+  return "value_desc";
+}
+
+function renderHoldingsSortButton(label, field) {
+  const direction = getHoldingsSortDirection(field);
+  const arrow = direction === "asc" ? "\u2191" : direction === "desc" ? "\u2193" : "\u2195";
+  const active = direction !== "none" ? "active" : "";
+
+  return `
+    <button
+      type="button"
+      class="table-sort-btn holdings-sort-btn ${active}"
+      data-sort-next="${escapeHtml(getNextHoldingsSort(field))}"
+      aria-label="Sort by ${escapeHtml(label)}"
+    >
+      ${escapeHtml(label)} <span class="sort-indicator">${arrow}</span>
+    </button>
+  `;
+}
+
+function formatCounterValue(value, format = "number", currencyCode = state.currency) {
+  if (format === "money") return formatMoney(value, currencyCode);
+  if (format === "percent") return formatPercent(value);
+  if (format === "integer") return formatNumber(value, 0);
+  return formatNumber(value, 2);
+}
+
+function animateMetricCounters() {
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+
+  document.querySelectorAll("[data-count-to]").forEach((node, index) => {
+    const target = Number(node.getAttribute("data-count-to"));
+    if (!Number.isFinite(target)) return;
+
+    const format = String(node.getAttribute("data-count-format") || "number");
+    const currencyCode = normalizeCurrencyCode(
+      node.getAttribute("data-count-currency") || state.currency
+    );
+    const key = String(node.getAttribute("data-count-key") || `metric-${index}`);
+    const hasPrevious = metricCounterMemory.has(key);
+    const previous = hasPrevious ? Number(metricCounterMemory.get(key)) : target * 0.85;
+
+    if (Math.abs(previous - target) < 0.01) {
+      node.textContent = formatCounterValue(target, format, currencyCode);
+      metricCounterMemory.set(key, target);
+      return;
+    }
+
+    const duration = 560;
+    const startAt = performance.now();
+    const startValue = Number.isFinite(previous) ? previous : target;
+
+    const step = (now) => {
+      const t = Math.min((now - startAt) / duration, 1);
+      const eased = 1 - (1 - t) ** 3;
+      const value = startValue + (target - startValue) * eased;
+      node.textContent = formatCounterValue(value, format, currencyCode);
+      if (t < 1) {
+        requestAnimationFrame(step);
+      } else {
+        node.textContent = formatCounterValue(target, format, currencyCode);
+      }
+    };
+
+    metricCounterMemory.set(key, target);
+    requestAnimationFrame(step);
+  });
 }
 
 function toTitle(value) {
@@ -1621,7 +1782,7 @@ async function calculateExitWhatIf(e) {
 function renderPortfolioRows() {
   const { items } = getFilteredHoldings();
   if (!items.length) {
-    return `<tr><td colspan="9" class="muted">No holdings yet. Link Steam and run sync.</td></tr>`;
+    return `<tr><td colspan="10" class="muted">No holdings yet. Link Steam and run sync.</td></tr>`;
   }
 
   const formatSteamItemIdCell = (item) => {
@@ -1632,41 +1793,66 @@ function renderPortfolioRows() {
   };
 
   return items
-    .map(
-      (item) => `
-      <tr>
-        <td>${formatSteamItemIdCell(item)}</td>
-        <td>
-          <div class="skin-name">${escapeHtml(item.marketHashName)}</div>
-        </td>
-        <td>${item.quantity}</td>
-        <td>${formatMoney(item.currentPrice)}</td>
-        <td title="Source: ${escapeHtml(item.currentPriceSource || "-")}">${formatPriceStatusBadge(item.priceStatus)}</td>
-        <td>${escapeHtml(formatConfidence(item))}</td>
-        <td>${formatManagementClue(item.managementClue)}</td>
-        <td><strong>${formatMoney(item.lineValue)}</strong></td>
-        <td>
-          <button
-            type="button"
-            class="ghost-btn inspect-skin-btn"
-            data-steam-item-id="${escapeHtml(item.primarySteamItemId || "")}"
-            ${item.primarySteamItemId ? "" : "disabled"}
-          >
-            Inspect
-          </button>
-        </td>
-      </tr>
-    `
-    )
+    .map((item) => {
+      const skinId = Number(item.skinId || 0);
+      const lineValue = Number(item.lineValue || 0);
+      const prevLineValue = holdingsValueMemory.get(skinId);
+      const flashClass =
+        Number.isFinite(prevLineValue) && Math.abs(prevLineValue - lineValue) >= 0.01
+          ? lineValue >= prevLineValue
+            ? "flash-up"
+            : "flash-down"
+          : "";
+      holdingsValueMemory.set(skinId, lineValue);
+
+      const oneDayClass = Number(item.oneDayChangePercent || 0) >= 0 ? "up" : "down";
+      const sevenDayClass = Number(item.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
+
+      return `
+        <tr class="holding-row">
+          <td class="mono-cell">${formatSteamItemIdCell(item)}</td>
+          <td>
+            <div class="skin-name">${escapeHtml(item.marketHashName)}</div>
+            <small class="muted">${escapeHtml(formatConfidence(item))}</small>
+          </td>
+          <td>${item.quantity}</td>
+          <td><span class="price-cell">${formatMoney(item.currentPrice)}</span></td>
+          <td><span class="pnl-chip ${oneDayClass}">${formatPercent(item.oneDayChangePercent)}</span></td>
+          <td><span class="pnl-chip ${sevenDayClass}">${formatPercent(item.sevenDayChangePercent)}</span></td>
+          <td title="Source: ${escapeHtml(item.currentPriceSource || "-")}">${formatPriceStatusBadge(item.priceStatus)}</td>
+          <td>${formatManagementClue(item.managementClue)}</td>
+          <td>
+            <strong class="line-value ${flashClass}">${formatMoney(item.lineValue)}</strong>
+          </td>
+          <td>
+            <button
+              type="button"
+              class="ghost-btn inspect-skin-btn"
+              data-steam-item-id="${escapeHtml(item.primarySteamItemId || "")}"
+              ${item.primarySteamItemId ? "" : "disabled"}
+            >
+              Inspect
+            </button>
+          </td>
+        </tr>
+      `;
+    })
     .join("");
 }
 
 function renderHistoryChart() {
-  if (!state.history.length) {
+  const points = (Array.isArray(state.history) ? state.history : [])
+    .map((point) => ({
+      date: String(point.date || ""),
+      value: Number(point.totalValue || 0)
+    }))
+    .filter((point) => point.date && Number.isFinite(point.value));
+
+  if (!points.length) {
     return `<p class="muted">No history yet. Sync inventory to create data points.</p>`;
   }
 
-  const values = state.history.map((p) => Number(p.totalValue || 0));
+  const values = points.map((point) => point.value);
   const max = Math.max(...values, 1);
   const min = Math.min(...values, 0);
   const first = Number(values[0] || 0);
@@ -1674,6 +1860,49 @@ function renderHistoryChart() {
   const change = last - first;
   const trendClass = change >= 0 ? "up" : "down";
   const ranges = [7, 30, 90, 180];
+  const currencyCode = state.portfolio?.currency || state.currency;
+
+  const viewWidth = 920;
+  const viewHeight = 280;
+  const padX = 52;
+  const padY = 24;
+  const plotWidth = viewWidth - padX * 2;
+  const plotHeight = viewHeight - padY * 2;
+  const valueRange = Math.max(max - min, 0.01);
+
+  const coords = points.map((point, index) => {
+    const x =
+      points.length === 1
+        ? padX + plotWidth / 2
+        : padX + (index / (points.length - 1)) * plotWidth;
+    const y = padY + ((max - point.value) / valueRange) * plotHeight;
+    return { x, y };
+  });
+
+  const linePoints = coords
+    .map((coord) => `${coord.x.toFixed(2)},${coord.y.toFixed(2)}`)
+    .join(" ");
+  const areaPath = `M ${coords[0].x.toFixed(2)},${(viewHeight - padY).toFixed(2)} L ${coords
+    .map((coord) => `${coord.x.toFixed(2)},${coord.y.toFixed(2)}`)
+    .join(" L ")} L ${coords[coords.length - 1].x.toFixed(2)},${(viewHeight - padY).toFixed(
+    2
+  )} Z`;
+
+  const yTicks = [max, max - valueRange / 2, min].map((value) => ({
+    value,
+    y: padY + ((max - value) / valueRange) * plotHeight
+  }));
+
+  const midIndex = Math.floor(coords.length / 2);
+  const xTicks = [
+    { x: coords[0].x, label: points[0].date },
+    { x: coords[midIndex].x, label: points[midIndex].date },
+    { x: coords[coords.length - 1].x, label: points[points.length - 1].date }
+  ];
+  const uniqueXTicks = xTicks.filter(
+    (tick, index, list) =>
+      list.findIndex((candidate) => candidate.label === tick.label) === index
+  );
 
   return `
     <div class="history-toolbar">
@@ -1694,40 +1923,162 @@ function renderHistoryChart() {
       </div>
       <div class="history-summary ${trendClass}">
         <span>Range change</span>
-        <strong>${formatMoney(change, state.portfolio?.currency || state.currency)} (${formatPercent(
+        <strong>${formatSignedMoney(change, currencyCode)} (${formatPercent(
     first > 0 ? (change / first) * 100 : null
   )})</strong>
       </div>
       <div class="history-summary">
         <span>Min/Max</span>
-        <strong>${formatMoney(min, state.portfolio?.currency || state.currency)} - ${formatMoney(
-    max,
-    state.portfolio?.currency || state.currency
-  )}</strong>
+        <strong>${formatMoney(min, currencyCode)} - ${formatMoney(max, currencyCode)}</strong>
       </div>
     </div>
-    <div class="mini-chart" title="Portfolio total value by day">
-      ${state.history
-        .map((point) => {
-          const value = Number(point.totalValue || 0);
-          const width = Math.max((value / max) * 100, 4);
-          const date = escapeHtml(point.date);
-          const label = `${date}: ${formatMoney(
-            value,
-            state.portfolio?.currency || state.currency
-          )}`;
-          return `
-            <div class="chart-row" title="${escapeHtml(label)}">
-              <span>${date}</span>
-              <div class="bar-wrap">
-                <div class="bar" style="width:${width}%" aria-label="${escapeHtml(label)}"></div>
-              </div>
-              <strong>${formatMoney(value, state.portfolio?.currency || state.currency)}</strong>
-            </div>
-          `;
-        })
-        .join("")}
+    <div class="performance-chart-shell">
+      <svg class="value-chart performance-chart" viewBox="0 0 ${viewWidth} ${viewHeight}" role="img" aria-label="Portfolio value performance chart">
+        ${yTicks
+          .map(
+            (tick) => `
+              <line x1="${padX}" y1="${tick.y.toFixed(2)}" x2="${viewWidth - padX}" y2="${tick.y.toFixed(
+                2
+              )}" class="value-chart-grid" />
+              <text x="${(padX - 8).toFixed(2)}" y="${(tick.y + 4).toFixed(2)}" text-anchor="end" class="value-chart-label">${escapeHtml(
+                formatMoney(tick.value, currencyCode)
+              )}</text>
+            `
+          )
+          .join("")}
+        <line x1="${padX}" y1="${padY}" x2="${padX}" y2="${viewHeight - padY}" class="value-chart-axis" />
+        <line x1="${padX}" y1="${viewHeight - padY}" x2="${viewWidth - padX}" y2="${viewHeight - padY}" class="value-chart-axis" />
+        <path d="${areaPath}" class="value-chart-area" />
+        <polyline class="value-chart-line" points="${linePoints}" />
+        <circle cx="${coords[coords.length - 1].x.toFixed(2)}" cy="${coords[
+    coords.length - 1
+  ].y.toFixed(2)}" r="4" class="value-chart-dot" />
+        ${uniqueXTicks
+          .map(
+            (tick) => `
+              <line x1="${tick.x.toFixed(2)}" y1="${(viewHeight - padY).toFixed(
+                2
+              )}" x2="${tick.x.toFixed(2)}" y2="${(viewHeight - padY + 4).toFixed(
+                2
+              )}" class="value-chart-axis" />
+              <text x="${tick.x.toFixed(2)}" y="${(viewHeight - padY + 18).toFixed(2)}" text-anchor="middle" class="value-chart-label">${escapeHtml(
+                tick.label
+              )}</text>
+            `
+          )
+          .join("")}
+      </svg>
+      <div class="value-chart-meta">
+        <span>Points: <strong>${points.length}</strong></span>
+        <span>Latest: <strong>${formatMoney(last, currencyCode)}</strong></span>
+        <span>Peak: <strong>${formatMoney(max, currencyCode)}</strong></span>
+        <span>Floor: <strong>${formatMoney(min, currencyCode)}</strong></span>
+        <span class="${trendClass}">Momentum: <strong>${formatPercent(
+    first > 0 ? (change / first) * 100 : null
+  )}</strong></span>
+      </div>
     </div>
+  `;
+}
+
+function renderDashboardHero() {
+  const portfolio = state.portfolio || {};
+  const currencyCode = portfolio.currency || state.currency;
+  const totalValue = Number(portfolio.totalValue || 0);
+  const sevenDay = Number(portfolio.sevenDayChangePercent || 0);
+  const oneDay = Number(portfolio.oneDayChangePercent || 0);
+  const roi = Number(portfolio.roiPercent || 0);
+  const sevenDayClass = sevenDay >= 0 ? "up" : "down";
+  const oneDayClass = oneDay >= 0 ? "up" : "down";
+  const signal = buildPortfolioSignals();
+
+  return `
+    <section class="grid">
+      <article class="panel wide hero-panel">
+        <div class="hero-shell">
+          <div>
+            <p class="eyebrow">CS2 Trading Command</p>
+            <h1>Portfolio Performance Center</h1>
+            <p class="hero-copy">
+              High-signal view of value, momentum, liquidity quality, and concentration risk.
+              Built to keep decision latency low during volatile market windows.
+            </p>
+            <div class="hero-actions">
+              <button type="button" class="ghost-btn tab-jump-btn" data-tab-target="portfolio">Open Holdings</button>
+              <button type="button" class="ghost-btn tab-jump-btn" data-tab-target="alerts">Open Alerts</button>
+              <button type="button" class="ghost-btn tab-jump-btn" data-tab-target="trades">Open Transactions</button>
+            </div>
+          </div>
+          <div class="hero-metric-stack">
+            <article class="hero-metric metric-glow">
+              <span>Total Portfolio Value</span>
+              <strong
+                class="metric-number"
+                data-count-key="hero-total-value"
+                data-count-format="money"
+                data-count-currency="${escapeHtml(currencyCode)}"
+                data-count-to="${totalValue}"
+              >
+                ${formatMoney(totalValue, currencyCode)}
+              </strong>
+            </article>
+            <article class="hero-metric hero-performance ${sevenDayClass}">
+              <span>7D Performance</span>
+              <strong
+                class="metric-number"
+                data-count-key="hero-seven-day"
+                data-count-format="percent"
+                data-count-to="${sevenDay}"
+              >
+                ${formatPercent(sevenDay)}
+              </strong>
+              <small>
+                24H:
+                <span class="pnl-text ${oneDayClass}">
+                  ${formatPercent(oneDay)}
+                </span>
+                | ROI:
+                <span class="pnl-text ${roi >= 0 ? "up" : "down"}">${formatPercent(roi)}</span>
+              </small>
+            </article>
+            <div class="hero-stat-grid">
+              <article class="hero-stat">
+                <span>Liquidity</span>
+                <strong
+                  class="metric-number"
+                  data-count-key="hero-liquidity-score"
+                  data-count-format="integer"
+                  data-count-to="${Number(signal.liquidityScore || 0)}"
+                >
+                  ${signal.liquidityScore == null ? "-" : signal.liquidityScore}
+                </strong>
+                <small>/100</small>
+              </article>
+              <article class="hero-stat">
+                <span>Risk</span>
+                <strong
+                  class="metric-number"
+                  data-count-key="hero-risk-score"
+                  data-count-format="integer"
+                  data-count-to="${Number(signal.riskScore || 0)}"
+                >
+                  ${signal.riskScore}
+                </strong>
+                <small>/100</small>
+              </article>
+              <article class="hero-stat">
+                <span>Unpriced</span>
+                <strong>${signal.unpricedItems}</strong>
+              </article>
+              <article class="hero-stat">
+                <span>Stale</span>
+                <strong>${signal.staleItems}</strong>
+              </article>
+            </div>
+          </div>
+        </div>
+      </article>
+    </section>
   `;
 }
 
@@ -2519,19 +2870,86 @@ function renderAnalytics() {
   const topGainer = analytics?.leaders?.topGainer || null;
   const topLoser = analytics?.leaders?.topLoser || null;
   const breadth = analytics?.breadth || {};
+  const signal = buildPortfolioSignals();
+  const liquidityScore = signal.liquidityScore == null ? 0 : signal.liquidityScore;
+  const liquidityLabel =
+    signal.liquidityBand === "high"
+      ? "High Liquidity"
+      : signal.liquidityBand === "medium"
+        ? "Medium Liquidity"
+        : signal.liquidityBand === "low"
+          ? "Low Liquidity"
+          : "No Data";
+  const riskLabel =
+    signal.riskBand === "high"
+      ? "Elevated Risk"
+      : signal.riskBand === "medium"
+        ? "Balanced Risk"
+        : "Controlled Risk";
 
   return `
     <section class="grid">
-      <article class="panel wide">
-        <h2>Portfolio Analytics</h2>
+      <article class="panel">
+        <h2>Top Movers</h2>
+        <div class="movers-grid">
+          <div class="mover-card up">
+            <span>Top Gainer</span>
+            <strong>${topGainer ? escapeHtml(topGainer.marketHashName) : "N/A"}</strong>
+            <p>${topGainer ? escapeHtml(formatPercent(topGainer.sevenDayChangePercent)) : "-"}</p>
+            <small>${topGainer ? formatMoney(topGainer.lineValue, state.portfolio?.currency || state.currency) : ""}</small>
+          </div>
+          <div class="mover-card down">
+            <span>Top Loser</span>
+            <strong>${topLoser ? escapeHtml(topLoser.marketHashName) : "N/A"}</strong>
+            <p>${topLoser ? escapeHtml(formatPercent(topLoser.sevenDayChangePercent)) : "-"}</p>
+            <small>${topLoser ? formatMoney(topLoser.lineValue, state.portfolio?.currency || state.currency) : ""}</small>
+          </div>
+        </div>
+      </article>
+      <article class="panel">
+        <h2>Liquidity Score</h2>
+        <div class="signal-score ${escapeHtml(signal.liquidityBand)}">
+          <strong
+            class="metric-number"
+            data-count-key="liquidity-score"
+            data-count-format="integer"
+            data-count-to="${liquidityScore}"
+          >
+            ${liquidityScore}
+          </strong>
+          <span>/100</span>
+        </div>
+        <p class="helper-text">${escapeHtml(liquidityLabel)} based on priced inventory freshness.</p>
+        <p class="muted">
+          Ready: ${signal.holdingsCount - signal.staleItems - signal.unpricedItems} /
+          ${signal.holdingsCount} items
+        </p>
+      </article>
+      <article class="panel">
+        <h2>Risk Score</h2>
+        <div class="signal-score ${escapeHtml(signal.riskBand)}">
+          <strong
+            class="metric-number"
+            data-count-key="risk-score"
+            data-count-format="integer"
+            data-count-to="${signal.riskScore}"
+          >
+            ${signal.riskScore}
+          </strong>
+          <span>/100</span>
+        </div>
+        <p class="helper-text">${escapeHtml(riskLabel)} from concentration and breadth pressure.</p>
+        <p class="muted">
+          Concentration ${formatRiskBadge(analytics.concentrationRisk)} |
+          Breadth ${escapeHtml(formatPercent(breadth.advancerRatioPercent))}
+        </p>
+      </article>
+      <article class="panel">
+        <h2>Portfolio Structure</h2>
         <div class="analytics-grid">
           <div class="analytics-item">
             <span>Holdings</span>
             <strong>${escapeHtml(formatNumber(analytics.holdingsCount, 0))}</strong>
-          </div>
-          <div class="analytics-item">
-            <span>Concentration Risk</span>
-            <strong>${formatRiskBadge(analytics.concentrationRisk)}</strong>
           </div>
           <div class="analytics-item">
             <span>Top 1 Weight</span>
@@ -2546,14 +2964,6 @@ function renderAnalytics() {
             <strong>${escapeHtml(formatNumber(analytics.effectiveHoldings))}</strong>
           </div>
           <div class="analytics-item">
-            <span>Breadth</span>
-            <strong>${escapeHtml(
-              `${Number(breadth.advancers || 0)}/${Number(breadth.decliners || 0)} (${formatPercent(
-                breadth.advancerRatioPercent
-              )})`
-            )}</strong>
-          </div>
-          <div class="analytics-item">
             <span>Weighted 7D Move</span>
             <strong>${escapeHtml(formatPercent(analytics.weightedAverageMove7dPercent))}</strong>
           </div>
@@ -2564,24 +2974,6 @@ function renderAnalytics() {
                 state.portfolio?.staleItemsCount || 0
               )}`
             )}</strong>
-          </div>
-        </div>
-        <div class="analytics-leaders">
-          <div>
-            <p class="muted">Top Gainer (7D)</p>
-            <p>
-              <strong>${
-                topGainer ? escapeHtml(topGainer.marketHashName) : "N/A"
-              }</strong>
-              <span class="muted"> ${topGainer ? escapeHtml(formatPercent(topGainer.sevenDayChangePercent)) : "-"}</span>
-            </p>
-          </div>
-          <div>
-            <p class="muted">Top Loser (7D)</p>
-            <p>
-              <strong>${topLoser ? escapeHtml(topLoser.marketHashName) : "N/A"}</strong>
-              <span class="muted"> ${topLoser ? escapeHtml(formatPercent(topLoser.sevenDayChangePercent)) : "-"}</span>
-            </p>
           </div>
         </div>
       </article>
@@ -2679,31 +3071,33 @@ function renderTeamTab() {
 
 function renderTabNav() {
   const tabs = [
-    { id: "portfolio", label: "Portfolio" },
-    { id: "trades", label: "Trades" },
-    { id: "alerts", label: "Alerts" },
-    { id: "social", label: "Social" },
-    { id: "team", label: "Team" },
-    { id: "market", label: "Market" },
-    { id: "settings", label: "Settings" }
+    { id: "dashboard", label: "Dashboard", hint: "Performance" },
+    { id: "portfolio", label: "Portfolio", hint: "Holdings" },
+    { id: "alerts", label: "Alerts", hint: "Triggers" },
+    { id: "trades", label: "Transactions", hint: "Buys/Sells" },
+    { id: "social", label: "Watchlist", hint: "Community" },
+    { id: "market", label: "Market", hint: "Pricing" },
+    { id: "team", label: "Team", hint: "Creator Ops" },
+    { id: "settings", label: "Settings", hint: "Account" }
   ];
 
   return `
-    <div class="tab-strip">
+    <nav class="sidebar-nav">
       ${tabs
         .map(
           (tab) => `
           <button
             type="button"
-            class="ghost-btn tab-btn ${state.activeTab === tab.id ? "active" : ""}"
+            class="ghost-btn tab-btn sidebar-nav-item ${state.activeTab === tab.id ? "active" : ""}"
             data-tab="${tab.id}"
           >
-            ${escapeHtml(tab.label)}
+            <span>${escapeHtml(tab.label)}</span>
+            <small>${escapeHtml(tab.hint)}</small>
           </button>
         `
         )
         .join("")}
-    </div>
+    </nav>
   `;
 }
 
@@ -3564,38 +3958,54 @@ function renderApp() {
   const holdingsPage = getFilteredHoldings();
   const userEmailTitle = String(state.authProfile?.email || "").trim();
   const userEmailLabel = getHeaderEmailLabel();
+  const currencyCode = portfolio.currency || state.currency;
+  const topValue = Number(portfolio.totalValue || 0);
+  const top7d = Number(portfolio.sevenDayChangePercent || 0);
+  const top24h = Number(portfolio.oneDayChangePercent || 0);
+
   const currencyOptions = SUPPORTED_CURRENCIES.map(
     (code) => `<option value="${code}" ${code === state.currency ? "selected" : ""}>${code}</option>`
   ).join("");
+
+  const dashboardContent = `
+    ${renderDashboardHero()}
+    <section class="grid">
+      <article class="panel wide">
+        <h2>${state.historyDays === 180 ? "6-Month" : `${state.historyDays}-Day`} Performance Chart</h2>
+        ${renderHistoryChart()}
+      </article>
+    </section>
+    ${renderAnalytics()}
+    ${renderAlerts()}
+    ${renderPnlSummary()}
+    ${renderManagementSummary()}
+    ${renderAdvancedAnalytics()}
+    ${renderBacktestPanel()}
+  `;
 
   const portfolioContent = `
     <section class="grid dashboard-grid">
       ${renderSteamSyncPanel()}
 
       <article class="panel">
-        <h2>Item Lookup</h2>
-        <p class="helper-text">Paste a Steam Item ID from your holdings and click <strong>Inspect Item</strong> to see current price, per-item trade timeline, and exit what-if.</p>
+        <h2>Position Inspector</h2>
+        <p class="helper-text">Paste a Steam Item ID to inspect current pricing, full item history, and scenario exits before placing a listing.</p>
         <form id="skin-form" class="form">
           <label>Steam Item ID
             <input id="steam-item-id" inputmode="numeric" pattern="[0-9]+" placeholder="e.g. 35719462921" value="${escapeHtml(state.inspectedSteamItemId)}" />
           </label>
-          <button type="submit">Inspect Item</button>
+          <button type="submit">Inspect Position</button>
         </form>
         ${renderSkinDetails()}
       </article>
     </section>
 
-    ${renderAlerts()}
-    ${renderAnalytics()}
-    ${renderAdvancedAnalytics()}
-    ${renderPnlSummary()}
-    ${renderManagementSummary()}
-    ${renderBacktestPanel()}
-
     <section class="grid">
       <article class="panel wide">
-        <h2>Holdings</h2>
-        <p class="helper-text">Filter and sort positions. <strong>Clue</strong> combines momentum, volatility, concentration, and a short-term projection to suggest hold/watch/sell.</p>
+        <h2>Portfolio Holdings</h2>
+        <p class="helper-text">
+          Fast table for active decisions. Sort by value, change, quantity, or confidence signal and inspect a position in one click.
+        </p>
         <div class="list-toolbar">
           <label>Search
             <input id="holdings-search" placeholder="item name or steam item id" value="${escapeHtml(
@@ -3614,7 +4024,7 @@ function renderApp() {
                 .join("")}
             </select>
           </label>
-          <label>Sort
+          <label>Signal Sort
             <select id="holdings-sort">
               <option value="value_desc" ${state.holdingsView.sort === "value_desc" ? "selected" : ""}>Value high to low</option>
               <option value="value_asc" ${state.holdingsView.sort === "value_asc" ? "selected" : ""}>Value low to high</option>
@@ -3641,12 +4051,25 @@ function renderApp() {
             </select>
           </label>
         </div>
-        <table>
-          <thead>
-            <tr><th>Steam Item ID</th><th>Item</th><th>Qty</th><th>Price</th><th>Status</th><th>Confidence</th><th>Clue</th><th>Value</th><th>Actions</th></tr>
-          </thead>
-          <tbody>${renderPortfolioRows()}</tbody>
-        </table>
+        <div class="table-wrap">
+          <table class="portfolio-table">
+            <thead>
+              <tr>
+                <th>Steam Item ID</th>
+                <th>${renderHoldingsSortButton("Item", "name")}</th>
+                <th>${renderHoldingsSortButton("Qty", "qty")}</th>
+                <th>${renderHoldingsSortButton("Price", "price")}</th>
+                <th>24H</th>
+                <th>${renderHoldingsSortButton("7D", "change")}</th>
+                <th>Status</th>
+                <th>Signal</th>
+                <th>${renderHoldingsSortButton("Value", "value")}</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>${renderPortfolioRows()}</tbody>
+          </table>
+        </div>
         <div class="pagination-bar">
           <button
             type="button"
@@ -3668,13 +4091,6 @@ function renderApp() {
         </div>
       </article>
     </section>
-
-    <section class="grid">
-      <article class="panel wide">
-        <h2>${state.historyDays === 180 ? "6-Month" : `${state.historyDays}-Day`} Portfolio History</h2>
-        ${renderHistoryChart()}
-      </article>
-    </section>
   `;
 
   const tradesContent = `
@@ -3692,8 +4108,10 @@ function renderApp() {
   `;
 
   const tabContent =
-    state.activeTab === "portfolio"
-      ? portfolioContent
+    state.activeTab === "dashboard"
+      ? dashboardContent
+      : state.activeTab === "portfolio"
+        ? portfolioContent
       : state.activeTab === "trades"
         ? tradesContent
         : state.activeTab === "alerts"
@@ -3707,54 +4125,63 @@ function renderApp() {
                 : renderSettingsTab();
 
   app.innerHTML = `
-    <main class="layout">
-      <nav class="topbar">
-        <div class="brand">CS2 Portfolio Analyzer</div>
-        <div class="top-actions">
+    <main class="layout app-shell">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div class="brand">CS2 Portfolio Analyzer</div>
+          <p class="muted sidebar-copy">Premium dark trading interface</p>
+        </div>
+        ${renderTabNav()}
+        <div class="sidebar-footer">
           <span class="user-chip" title="${escapeHtml(userEmailTitle)}">${escapeHtml(
     userEmailLabel
   )}</span>
-          <label class="currency-picker">
-            Currency
-            <select id="currency-select">${currencyOptions}</select>
-          </label>
-          <button id="refresh-btn" class="ghost-btn">Refresh</button>
-          <button id="logout-btn" class="ghost-btn">Logout</button>
+          <div class="row sidebar-actions">
+            <button id="refresh-btn" class="ghost-btn">Refresh</button>
+            <button id="logout-btn" class="ghost-btn">Logout</button>
+          </div>
         </div>
-      </nav>
-      <p class="helper-text">
-        <strong>Refresh</strong> reloads portfolio data from server. <strong>Logout</strong> ends your current session on this browser.
-      </p>
-      ${renderTabNav()}
+      </aside>
+      <section class="app-main">
+        <header class="topbar premium-topbar">
+          <div class="topbar-metrics">
+            <article class="topbar-metric metric-glow">
+              <span>Portfolio Value</span>
+              <strong
+                class="metric-number"
+                data-count-key="topbar-total-value"
+                data-count-format="money"
+                data-count-currency="${escapeHtml(currencyCode)}"
+                data-count-to="${topValue}"
+              >
+                ${formatMoney(topValue, currencyCode)}
+              </strong>
+            </article>
+            <article class="topbar-metric ${trendClass}">
+              <span>7D Change</span>
+              <strong
+                class="metric-number"
+                data-count-key="topbar-seven-day"
+                data-count-format="percent"
+                data-count-to="${top7d}"
+              >
+                ${formatPercent(top7d)}
+              </strong>
+              <small class="pnl-text ${oneDayTrendClass}">24H ${formatPercent(top24h)}</small>
+            </article>
+          </div>
+          <div class="top-actions">
+            <label class="currency-picker">
+              Currency
+              <select id="currency-select">${currencyOptions}</select>
+            </label>
+          </div>
+        </header>
 
-      <header class="app-head">
-        <div>
-          <p class="eyebrow">Dashboard</p>
-          <h1>Your CS2 item analytics hub</h1>
-        </div>
-        <div class="kpi-grid">
-          <article class="kpi-card">
-            <span>Total Value</span>
-            <strong>${formatMoney(portfolio.totalValue, portfolio.currency || state.currency)}</strong>
-          </article>
-          <article class="kpi-card">
-            <span>ROI</span>
-            <strong>${formatPercent(portfolio.roiPercent)}</strong>
-          </article>
-          <article class="kpi-card ${oneDayTrendClass}">
-            <span>24H Change</span>
-            <strong>${formatPercent(portfolio.oneDayChangePercent)}</strong>
-          </article>
-          <article class="kpi-card ${trendClass}">
-            <span>7D Change</span>
-            <strong>${formatPercent(portfolio.sevenDayChangePercent)}</strong>
-          </article>
-        </div>
-      </header>
-
-      ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ""}
-      ${renderAuthNotices()}
-      ${tabContent}
+        ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ""}
+        ${renderAuthNotices()}
+        ${tabContent}
+      </section>
     </main>
   `;
 
@@ -3778,6 +4205,15 @@ function renderApp() {
     });
   });
 
+  document.querySelectorAll(".tab-jump-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const target = btn.getAttribute("data-tab-target");
+      if (!target || target === state.activeTab) return;
+      state.activeTab = target;
+      render();
+    });
+  });
+
   document.querySelector("#currency-select")?.addEventListener("change", async (event) => {
     const nextCurrency = normalizeCurrencyCode(event.target.value);
     if (nextCurrency === state.currency) return;
@@ -3798,7 +4234,7 @@ function renderApp() {
     }
   });
 
-  if (state.activeTab === "portfolio") {
+  if (state.activeTab === "dashboard" || state.activeTab === "portfolio") {
     document.querySelector("#sync-btn")?.addEventListener("click", syncInventory);
     document.querySelector("#skin-form")?.addEventListener("submit", findSkin);
     document.querySelector("#exit-whatif-form")?.addEventListener("submit", calculateExitWhatIf);
@@ -3821,6 +4257,17 @@ function renderApp() {
     document.querySelector("#holdings-sort")?.addEventListener("change", (event) => {
       state.holdingsView.sort = event.target.value;
       render();
+    });
+    document.querySelectorAll(".holdings-sort-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const nextSort = String(btn.getAttribute("data-sort-next") || "value_desc");
+        state.holdingsView.sort = nextSort;
+        const sortSelect = document.querySelector("#holdings-sort");
+        if (sortSelect) {
+          sortSelect.value = nextSort;
+        }
+        render();
+      });
     });
     document.querySelector("#holdings-page-size")?.addEventListener("change", (event) => {
       state.holdingsView.pageSize = clampInt(event.target.value, 1, 200);
@@ -4005,6 +4452,8 @@ function renderApp() {
       refreshTeamDashboard();
     });
   }
+
+  animateMetricCounters();
 }
 
 function render() {
@@ -4040,7 +4489,7 @@ function hydrateAppNoticesFromUrl() {
   }
 
   if (steamOnboarding) {
-    state.activeTab = "portfolio";
+    state.activeTab = "dashboard";
     state.steamOnboardingPending = true;
     state.accountNotice = "Steam connected successfully. You're connected, click sync now.";
   }
