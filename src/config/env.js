@@ -73,6 +73,10 @@ module.exports = {
   marketPriceRateLimitPerSecond: Number(
     process.env.MARKET_PRICE_RATE_LIMIT_PER_SECOND || 2
   ),
+  skinEnrichmentMaxAgeDays: Number(process.env.SKIN_ENRICHMENT_MAX_AGE_DAYS || 14),
+  defaultSkinImageUrl:
+    process.env.DEFAULT_SKIN_IMAGE_URL ||
+    "https://community.akamai.steamstatic.com/public/images/apps/730/header.jpg",
   marketPriceStaleHours: Number(process.env.MARKET_PRICE_STALE_HOURS || 24),
   marketPriceCacheTtlMinutes: Number(process.env.MARKET_PRICE_CACHE_TTL_MINUTES || 60),
   steamMarketCurrency: Number(process.env.STEAM_MARKET_CURRENCY || 1),
@@ -83,6 +87,17 @@ module.exports = {
   marketSnapshotTtlMinutes: Number(process.env.MARKET_SNAPSHOT_TTL_MINUTES || 30),
   defaultDisplayCurrency: process.env.DEFAULT_DISPLAY_CURRENCY || "USD",
   fxRatesUsdJson: process.env.FX_RATES_USD_JSON || "",
+  fxRatesSource:
+    process.env.FX_RATES_SOURCE || (process.env.NODE_ENV === "production" ? "live" : "static"),
+  fxRatesApiUrl:
+    process.env.FX_RATES_API_URL || "https://open.er-api.com/v6/latest/USD",
+  fxRatesRefreshMinutes: Number(process.env.FX_RATES_REFRESH_MINUTES || 30),
+  fxRatesRequestTimeoutMs: Number(process.env.FX_RATES_REQUEST_TIMEOUT_MS || 2500),
+  fxRatesFailureCooldownSeconds: Number(
+    process.env.FX_RATES_FAILURE_COOLDOWN_SECONDS || 120
+  ),
+  steamMarketPriceStrategy:
+    process.env.STEAM_MARKET_PRICE_STRATEGY || "balanced",
   authRateLimitWindowMs: Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS || 60000),
   authRateLimitMax: Number(process.env.AUTH_RATE_LIMIT_MAX || 20),
   syncRateLimitWindowMs: Number(process.env.SYNC_RATE_LIMIT_WINDOW_MS || 60000),
@@ -92,5 +107,10 @@ module.exports = {
     process.env.PRICE_UPDATER_RATE_LIMIT_PER_SECOND || 5
   ),
   alertCheckIntervalMinutes: Number(process.env.ALERT_CHECK_INTERVAL_MINUTES || 5),
-  alertCheckBatchSize: Number(process.env.ALERT_CHECK_BATCH_SIZE || 250)
+  alertCheckBatchSize: Number(process.env.ALERT_CHECK_BATCH_SIZE || 250),
+  traderModePriceUsd: Number(process.env.TRADER_MODE_PRICE_USD || 29),
+  traderModeMockCheckoutEnabled:
+    process.env.TRADER_MODE_MOCK_CHECKOUT_ENABLED == null
+      ? true
+      : process.env.TRADER_MODE_MOCK_CHECKOUT_ENABLED === "true"
 };

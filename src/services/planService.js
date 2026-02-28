@@ -43,6 +43,16 @@ const PLAN_ENTITLEMENTS = {
   }
 };
 
+const TRADER_MODE_ENTITLEMENT_OVERRIDES = {
+  maxAlerts: 25,
+  maxHistoryDays: 365,
+  maxBacktestDays: 365,
+  maxCsvRows: 10000,
+  advancedAnalytics: true,
+  csvExport: true,
+  backtesting: true
+};
+
 function normalizePlanTier(planTier) {
   const safe = String(planTier || "").trim().toLowerCase();
   if (safe in PLAN_ORDER) {
@@ -66,9 +76,39 @@ exports.normalizePlanTier = normalizePlanTier;
 exports.isAtLeast = isAtLeast;
 exports.isPaidPlan = (planTier) => normalizePlanTier(planTier) !== "free";
 
-exports.getEntitlements = (planTier) => {
+exports.getEntitlements = (planTier, options = {}) => {
   const safe = normalizePlanTier(planTier);
-  return PLAN_ENTITLEMENTS[safe] || PLAN_ENTITLEMENTS.free;
+  const traderModeUnlocked = Boolean(options.traderModeUnlocked);
+  const base = { ...(PLAN_ENTITLEMENTS[safe] || PLAN_ENTITLEMENTS.free) };
+
+  if (traderModeUnlocked) {
+    base.maxAlerts = Math.max(
+      Number(base.maxAlerts || 0),
+      Number(TRADER_MODE_ENTITLEMENT_OVERRIDES.maxAlerts)
+    );
+    base.maxHistoryDays = Math.max(
+      Number(base.maxHistoryDays || 0),
+      Number(TRADER_MODE_ENTITLEMENT_OVERRIDES.maxHistoryDays)
+    );
+    base.maxBacktestDays = Math.max(
+      Number(base.maxBacktestDays || 0),
+      Number(TRADER_MODE_ENTITLEMENT_OVERRIDES.maxBacktestDays)
+    );
+    base.maxCsvRows = Math.max(
+      Number(base.maxCsvRows || 0),
+      Number(TRADER_MODE_ENTITLEMENT_OVERRIDES.maxCsvRows)
+    );
+    base.advancedAnalytics =
+      Boolean(base.advancedAnalytics) ||
+      Boolean(TRADER_MODE_ENTITLEMENT_OVERRIDES.advancedAnalytics);
+    base.csvExport =
+      Boolean(base.csvExport) || Boolean(TRADER_MODE_ENTITLEMENT_OVERRIDES.csvExport);
+    base.backtesting =
+      Boolean(base.backtesting) || Boolean(TRADER_MODE_ENTITLEMENT_OVERRIDES.backtesting);
+  }
+
+  base.traderModeUnlocked = traderModeUnlocked;
+  return base;
 };
 
 exports.getUserPlanProfile = async (userId) => {
@@ -78,10 +118,14 @@ exports.getUserPlanProfile = async (userId) => {
   }
 
   const planTier = normalizePlanTier(user.plan_tier);
+  const traderModeUnlocked = Boolean(user.trader_mode_unlocked);
   return {
     user,
     planTier,
-    entitlements: exports.getEntitlements(planTier)
+    traderModeUnlocked,
+    traderModeUnlockedAt: user.trader_mode_unlocked_at || null,
+    traderModeUnlockSource: user.trader_mode_unlock_source || null,
+    entitlements: exports.getEntitlements(planTier, { traderModeUnlocked })
   };
 };
 

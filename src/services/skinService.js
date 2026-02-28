@@ -4,7 +4,11 @@ const priceRepo = require("../repositories/priceHistoryRepository");
 const inventoryRepo = require("../repositories/inventoryRepository");
 const priceProviderService = require("./priceProviderService");
 const { derivePriceStatus } = require("../utils/priceStatus");
-const { resolveCurrency, convertUsdAmount } = require("./currencyService");
+const {
+  resolveCurrency,
+  convertUsdAmount,
+  ensureFreshFxRates
+} = require("./currencyService");
 
 async function refreshSkinPrice(skin) {
   const priced = await priceProviderService.getPrice(skin.market_hash_name);
@@ -34,6 +38,7 @@ async function refreshSkinPrice(skin) {
 }
 
 exports.getSkinDetails = async (skinId, options = {}) => {
+  await ensureFreshFxRates();
   const displayCurrency = resolveCurrency(options.currency);
   const skin = await skinRepo.getById(skinId);
   if (!skin) {

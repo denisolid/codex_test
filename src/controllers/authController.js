@@ -282,7 +282,10 @@ exports.me = [
     const metadata = req.authUser?.user_metadata || {};
     const steamId64 = profileRow?.steam_id64 || metadata.steam_id64 || null;
     const planTier = planService.normalizePlanTier(profileRow?.plan_tier);
-    const entitlements = planService.getEntitlements(planTier);
+    const traderModeUnlocked = Boolean(profileRow?.trader_mode_unlocked);
+    const entitlements = planService.getEntitlements(planTier, {
+      traderModeUnlocked
+    });
 
     const emailConfirmed =
       req.authProvider === "app"
@@ -303,6 +306,9 @@ exports.me = [
         billingStatus: profileRow?.billing_status || "inactive",
         planSeats: Number(profileRow?.plan_seats || 1),
         planStartedAt: profileRow?.plan_started_at || null,
+        traderModeUnlocked,
+        traderModeUnlockedAt: profileRow?.trader_mode_unlocked_at || null,
+        traderModeUnlockSource: profileRow?.trader_mode_unlock_source || null,
         entitlements,
         provider:
           metadata.provider ||

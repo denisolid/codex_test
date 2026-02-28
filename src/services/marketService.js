@@ -4,7 +4,11 @@ const priceRepo = require("../repositories/priceHistoryRepository");
 const skinRepo = require("../repositories/skinRepository");
 const snapshotRepo = require("../repositories/marketSnapshotRepository");
 const steamMarketPriceService = require("./steamMarketPriceService");
-const { resolveCurrency, convertUsdAmount } = require("./currencyService");
+const {
+  resolveCurrency,
+  convertUsdAmount,
+  ensureFreshFxRates
+} = require("./currencyService");
 const {
   marketCommissionPercent,
   marketSnapshotTtlMinutes
@@ -203,6 +207,7 @@ async function getOrRefreshSnapshot(skinId) {
 }
 
 exports.getInventoryValuation = async (userId, options = {}) => {
+  await ensureFreshFxRates();
   const displayCurrency = resolveCurrency(options.currency);
   const holdings = await inventoryRepo.getUserHoldings(userId);
   const commissionPercent = clamp(
@@ -266,6 +271,7 @@ exports.getInventoryValuation = async (userId, options = {}) => {
 };
 
 exports.getQuickSellSuggestion = async (skinId, options = {}) => {
+  await ensureFreshFxRates();
   const displayCurrency = resolveCurrency(options.currency);
   const normalizedSkinId = Number(skinId);
   if (!Number.isInteger(normalizedSkinId) || normalizedSkinId <= 0) {

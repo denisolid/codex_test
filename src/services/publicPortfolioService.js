@@ -2,6 +2,7 @@ const AppError = require("../utils/AppError");
 const userRepo = require("../repositories/userRepository");
 const publicViewRepo = require("../repositories/publicPortfolioViewRepository");
 const portfolioService = require("./portfolioService");
+const { ensureFreshFxRates } = require("./currencyService");
 
 function validateSteamId64(steamId64) {
   const safeSteamId64 = String(steamId64 || "").trim();
@@ -16,6 +17,10 @@ function sanitizePublicItems(items = []) {
     skinId: item.skinId,
     primarySteamItemId: item.primarySteamItemId || null,
     marketHashName: item.marketHashName,
+    rarity: item.rarity || "Consumer Grade",
+    rarityColor: item.rarityColor || null,
+    imageUrl: item.imageUrl || null,
+    imageUrlLarge: item.imageUrlLarge || item.imageUrl || null,
     quantity: item.quantity,
     currentPrice: item.currentPrice,
     currency: item.currency,
@@ -43,6 +48,7 @@ function sanitizePublicPortfolio(portfolio = {}) {
 }
 
 exports.getBySteamId64 = async (steamId64, options = {}) => {
+  await ensureFreshFxRates();
   const safeSteamId64 = validateSteamId64(steamId64);
   const user = await userRepo.getBySteamId64(safeSteamId64);
 

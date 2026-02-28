@@ -24,6 +24,9 @@ create table if not exists public.users (
   ),
   plan_seats integer not null default 1 check (plan_seats > 0),
   plan_started_at timestamptz,
+  trader_mode_unlocked boolean not null default false,
+  trader_mode_unlocked_at timestamptz,
+  trader_mode_unlock_source text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint steam_id64_format_chk check (
@@ -42,9 +45,19 @@ create table if not exists public.skins (
   skin_name text,
   exterior text,
   rarity text,
+  rarity_color text,
   image_url text,
-  created_at timestamptz not null default now()
+  image_url_large text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
+
+create trigger trg_skins_updated_at
+before update on public.skins
+for each row execute function public.set_updated_at();
+
+create index if not exists idx_skins_rarity on public.skins(rarity);
+create index if not exists idx_skins_updated_at on public.skins(updated_at desc);
 
 create table if not exists public.inventories (
   id bigserial primary key,
@@ -225,6 +238,19 @@ create table if not exists public.plan_change_events (
 create index if not exists idx_plan_change_events_user_time
   on public.plan_change_events(user_id, created_at desc);
 
+create table if not exists public.trader_mode_unlock_events (
+  id bigserial primary key,
+  user_id uuid not null references public.users(id) on delete cascade,
+  action text not null check (action in ('unlocked', 'locked')),
+  source text not null default 'admin_toggle',
+  changed_by text not null default 'system',
+  note text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_trader_mode_unlock_events_user_time
+  on public.trader_mode_unlock_events(user_id, created_at desc);
+
 create or replace function public.handle_new_auth_user()
 returns trigger
 language plpgsql
@@ -257,6 +283,7 @@ alter table public.watchlists enable row level security;
 alter table public.ownership_alert_events enable row level security;
 alter table public.public_portfolio_views enable row level security;
 alter table public.plan_change_events enable row level security;
+alter table public.trader_mode_unlock_events enable row level security;
 
 create policy "users_select_own"
 on public.users for select
@@ -317,4 +344,8 @@ using (auth.uid() = owner_user_id);
 
 create policy "plan_change_events_read_own"
 on public.plan_change_events for select
+using (auth.uid() = user_id);
+
+create policy "trader_mode_unlock_events_read_own"
+on public.trader_mode_unlock_events for select
 using (auth.uid() = user_id);

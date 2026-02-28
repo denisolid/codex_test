@@ -12,7 +12,11 @@ const {
   computeDailyVolatilityPercent,
   buildManagementClue
 } = require("../utils/portfolioGuidance");
-const { resolveCurrency, convertUsdAmount } = require("./currencyService");
+const {
+  resolveCurrency,
+  convertUsdAmount,
+  ensureFreshFxRates
+} = require("./currencyService");
 
 function round2(n) {
   return Number((n || 0).toFixed(2));
@@ -90,6 +94,7 @@ function buildAdvancedAnalytics(items = [], totalValue = 0) {
 }
 
 exports.getPortfolio = async (userId, options = {}) => {
+  await ensureFreshFxRates();
   const displayCurrency = resolveCurrency(options.currency);
   const planTier = planService.normalizePlanTier(options.planTier);
   const entitlements = options.entitlements || planService.getEntitlements(planTier);
@@ -192,6 +197,10 @@ exports.getPortfolio = async (userId, options = {}) => {
           : null,
       steamItemIds: Array.isArray(h.steam_item_ids) ? h.steam_item_ids : [],
       marketHashName: h.skins.market_hash_name,
+      rarity: h?.skins?.rarity || "Consumer Grade",
+      rarityColor: h?.skins?.rarity_color || null,
+      imageUrl: h?.skins?.image_url || null,
+      imageUrlLarge: h?.skins?.image_url_large || h?.skins?.image_url || null,
       quantity: h.quantity,
       purchasePrice: h.purchase_price,
       currentPrice,
@@ -366,6 +375,7 @@ exports.getPortfolio = async (userId, options = {}) => {
 };
 
 exports.getPortfolioHistory = async (userId, days = 7, options = {}) => {
+  await ensureFreshFxRates();
   const displayCurrency = resolveCurrency(options.currency);
   const maxHistoryDays = Math.max(Number(options.maxHistoryDays || 180), 1);
   const normalizedDays = Math.min(Math.max(Number(days) || 7, 1), maxHistoryDays);
@@ -405,6 +415,7 @@ exports.getPortfolioHistory = async (userId, days = 7, options = {}) => {
 };
 
 exports.getPortfolioBacktest = async (userId, options = {}) => {
+  await ensureFreshFxRates();
   const displayCurrency = resolveCurrency(options.currency);
   const planTier = planService.normalizePlanTier(options.planTier);
   const entitlements = options.entitlements || planService.getEntitlements(planTier);

@@ -235,8 +235,8 @@ Examples:
 ## Steam price reliability
 
 - Configure in root `.env`:
-  - `MARKET_PRICE_SOURCE=auto` (`auto` | `steam` | `mock`)
-  - `MARKET_PRICE_FALLBACK_TO_MOCK=true` (`true` | `false`)
+  - `MARKET_PRICE_SOURCE=steam` (`auto` | `steam` | `mock`)
+  - `MARKET_PRICE_FALLBACK_TO_MOCK=false` (`true` | `false`)
   - `MARKET_PRICE_RATE_LIMIT_PER_SECOND=2`
   - `MARKET_PRICE_STALE_HOURS=24`
   - `MARKET_PRICE_CACHE_TTL_MINUTES=60`
@@ -244,11 +244,13 @@ Examples:
   - `STEAM_MARKET_TIMEOUT_MS=10000`
   - `STEAM_MARKET_MAX_RETRIES=3`
   - `STEAM_MARKET_RETRY_BASE_MS=350`
+  - `STEAM_MARKET_PRICE_STRATEGY=balanced` (`lowest` | `median` | `balanced`)
 - Behavior:
   - `steam`: use Steam Market priceoverview only.
   - `mock`: always generate deterministic mock prices.
   - `auto`: try Steam Market first, fallback to mock if unavailable/rate-limited.
   - Set `MARKET_PRICE_FALLBACK_TO_MOCK=false` for strict real pricing (sync/update fails instead of using fake fallback).
+  - `STEAM_MARKET_PRICE_STRATEGY=balanced` blends `lowest_price` and `median_price` and prefers median on thin books/outliers for more realistic valuation.
   - In strict real mode, historical rows with `source` containing `mock` are ignored in portfolio and item history reads.
   - Steam requests are queued and retried with backoff+jitter on `429/5xx/timeout`.
   - Cache: if latest `price_history` row is newer than `MARKET_PRICE_CACHE_TTL_MINUTES`, sync/update reuses cached price instead of hitting Steam.
@@ -280,6 +282,7 @@ Examples:
 - Multi-currency display:
   - frontend has a currency selector (`USD`, `EUR`, `GBP`, `UAH`, `PLN`, `CZK`)
   - backend converts USD-based outputs when `?currency=` is provided
+  - FX rates support live refresh with static fallback if provider is unavailable
 
 ## Extension API key flow
 
@@ -299,6 +302,11 @@ Examples:
 - `ALERT_CHECK_BATCH_SIZE=250`
 - `DEFAULT_DISPLAY_CURRENCY=USD`
 - `FX_RATES_USD_JSON={"EUR":0.92,"GBP":0.79,"UAH":41.2,"PLN":4.02,"CZK":23.5}`
+- `FX_RATES_SOURCE=live` (`live` | `static`)
+- `FX_RATES_API_URL=https://open.er-api.com/v6/latest/USD`
+- `FX_RATES_REFRESH_MINUTES=30`
+- `FX_RATES_REQUEST_TIMEOUT_MS=2500`
+- `FX_RATES_FAILURE_COOLDOWN_SECONDS=120`
 
 ## Deployment structure
 
