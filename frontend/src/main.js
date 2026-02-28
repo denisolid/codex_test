@@ -1893,6 +1893,7 @@ function renderPortfolioRows() {
             <div class="table-item-cell">
               <img
                 class="table-item-thumb"
+                style="--rarity-color: ${rarityTheme.color};"
                 src="${escapeHtml(itemImageUrl)}"
                 alt="${escapeHtml(item.marketHashName || "CS2 item")}"
                 loading="lazy"
@@ -3840,6 +3841,7 @@ function renderPublicPortfolioPage() {
                     <div class="table-item-cell">
                       <img
                         class="table-item-thumb"
+                        style="--rarity-color: ${rarityTheme.color};"
                         src="${escapeHtml(getItemImageUrl(item))}"
                         alt="${escapeHtml(item.marketHashName || "CS2 item")}"
                         loading="lazy"
