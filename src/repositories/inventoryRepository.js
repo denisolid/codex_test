@@ -46,7 +46,7 @@ exports.getUserHoldings = async (userId) => {
   const { data, error } = await supabaseAdmin
     .from("inventories")
     .select(
-      "skin_id, quantity, steam_item_ids, purchase_price, skins!inner(market_hash_name)"
+      "skin_id, quantity, steam_item_ids, purchase_price, skins!inner(market_hash_name, rarity, rarity_color, image_url, image_url_large)"
     )
     .eq("user_id", userId);
 
@@ -88,7 +88,7 @@ exports.getHoldingsByUserIds = async (userIds) => {
   const { data, error } = await supabaseAdmin
     .from("inventories")
     .select(
-      "user_id, skin_id, quantity, steam_item_ids, skins!inner(market_hash_name)"
+      "user_id, skin_id, quantity, steam_item_ids, skins!inner(market_hash_name, rarity, rarity_color, image_url, image_url_large)"
     )
     .in("user_id", safeIds);
 

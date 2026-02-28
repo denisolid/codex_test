@@ -1,6 +1,8 @@
 import "./style.css";
 import { API_URL } from "./config";
 import { clearAuthToken, getAuthToken, withAuthHeaders } from "./authToken";
+import { getRarityColor, normalizeRarity } from "./rarity";
+import { renderSkinCard, renderSkinCardSkeleton } from "./components/skinCard";
 const app = document.querySelector("#app");
 const SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "UAH", "PLN", "CZK"];
 const CURRENCY_STORAGE_KEY = "cs2sa:selected_currency";
@@ -20,6 +22,7 @@ const state = {
   authenticated: false,
   authProfile: null,
   portfolio: null,
+  portfolioLoading: false,
   history: [],
   transactions: [],
   alertsFeed: [],
@@ -408,6 +411,23 @@ function formatPriceStatusBadge(status) {
 function formatRiskBadge(level) {
   const safe = String(level || "unknown").toLowerCase();
   return `<span class="risk-badge ${escapeHtml(safe)}">${escapeHtml(toTitle(safe))}</span>`;
+}
+
+function getItemRarityTheme(item = {}) {
+  const rarity = normalizeRarity(item.rarity, item.marketHashName);
+  const color = getRarityColor(item.rarity, item.marketHashName, item.rarityColor);
+  return { rarity, color };
+}
+
+function getItemImageUrl(item = {}) {
+  const candidates = [item.imageUrlLarge, item.imageUrl];
+  for (const candidate of candidates) {
+    const raw = String(candidate || "").trim();
+    if (/^https?:\/\//i.test(raw)) {
+      return raw;
+    }
+  }
+  return "https://community.akamai.steamstatic.com/public/images/apps/730/header.jpg";
 }
 
 function formatManagementClue(clue) {
@@ -864,6 +884,11 @@ function renderSyncSummary() {
 async function refreshPortfolio(options = {}) {
   const { silent = false } = options;
   clearError();
+  state.portfolioLoading = true;
+  if (!silent) {
+    render();
+  }
+
   try {
     const [
       mePayload,
@@ -932,13 +957,24 @@ async function refreshPortfolio(options = {}) {
       1
     );
     state.transactionsView.page = clampInt(state.transactionsView.page, 1, maxTxPages);
-
-    render();
     return true;
   } catch (err) {
     if (!silent) {
       setError(err.message);
     }
+    return false;
+  } finally {
+    state.portfolioLoading = false;
+    render();
+  }
+}
+
+async function refreshAuthProfile() {
+  try {
+    const mePayload = await api("/auth/me");
+    state.authProfile = buildAuthProfile(mePayload);
+    return true;
+  } catch (_err) {
     return false;
   }
 }
@@ -1779,7 +1815,47 @@ async function calculateExitWhatIf(e) {
   }
 }
 
+function renderPortfolioCardGrid() {
+  if (state.portfolioLoading) {
+    return `
+      <div class="portfolio-cards-grid">
+        ${Array.from({ length: 8 }, (_, idx) => renderSkinCardSkeleton(idx)).join("")}
+      </div>
+    `;
+  }
+
+  const { items } = getFilteredHoldings();
+  if (!items.length) {
+    return `<p class="muted">No holdings yet. Sync inventory to populate your portfolio cards.</p>`;
+  }
+
+  return `
+    <div class="portfolio-cards-grid">
+      ${items
+        .map((item) =>
+          renderSkinCard(item, {
+            escapeHtml,
+            formatMoney
+          })
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 function renderPortfolioRows() {
+  if (state.portfolioLoading) {
+    return Array.from({ length: 6 }, (_, idx) => idx)
+      .map(
+        (idx) => `
+          <tr class="holding-row is-skeleton" data-skeleton-index="${idx}">
+            <td colspan="10"><div class="table-row-skeleton"></div></td>
+          </tr>
+        `
+      )
+      .join("");
+  }
+
   const { items } = getFilteredHoldings();
   if (!items.length) {
     return `<tr><td colspan="10" class="muted">No holdings yet. Link Steam and run sync.</td></tr>`;
@@ -1807,13 +1883,31 @@ function renderPortfolioRows() {
 
       const oneDayClass = Number(item.oneDayChangePercent || 0) >= 0 ? "up" : "down";
       const sevenDayClass = Number(item.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
+      const rarityTheme = getItemRarityTheme(item);
+      const itemImageUrl = getItemImageUrl(item);
 
       return `
         <tr class="holding-row">
           <td class="mono-cell">${formatSteamItemIdCell(item)}</td>
           <td>
-            <div class="skin-name">${escapeHtml(item.marketHashName)}</div>
-            <small class="muted">${escapeHtml(formatConfidence(item))}</small>
+            <div class="table-item-cell">
+              <img
+                class="table-item-thumb"
+                src="${escapeHtml(itemImageUrl)}"
+                alt="${escapeHtml(item.marketHashName || "CS2 item")}"
+                loading="lazy"
+                onerror="this.onerror=null;this.src='https://community.akamai.steamstatic.com/public/images/apps/730/header.jpg';"
+              />
+              <div class="table-item-info">
+                <div class="skin-name">${escapeHtml(item.marketHashName)}</div>
+                <div class="table-item-subline">
+                  <span class="rarity-tag" style="--rarity-color: ${rarityTheme.color};">
+                    ${escapeHtml(rarityTheme.rarity)}
+                  </span>
+                  <small class="muted">${escapeHtml(formatConfidence(item))}</small>
+                </div>
+              </div>
+            </div>
           </td>
           <td>${item.quantity}</td>
           <td><span class="price-cell">${formatMoney(item.currentPrice)}</span></td>
@@ -3710,6 +3804,9 @@ function renderPublicPortfolioPage() {
   const payload = page.payload || {};
   const profile = payload.profile || {};
   const portfolio = payload.portfolio || {};
+  const isSignedIn = Boolean(state.authenticated);
+  const userEmailTitle = String(state.authProfile?.email || "").trim();
+  const userEmailLabel = getHeaderEmailLabel();
   const historyPoints = Array.isArray(payload?.history?.points) ? payload.history.points : [];
   const items = Array.isArray(portfolio.items) ? portfolio.items : [];
   const historyPreview = historyPoints.slice(-10);
@@ -3735,17 +3832,36 @@ function renderPublicPortfolioPage() {
         <tbody>
           ${items
             .slice(0, 30)
-            .map(
-              (item) => `
+            .map((item) => {
+              const rarityTheme = getItemRarityTheme(item);
+              return `
                 <tr>
-                  <td>${escapeHtml(item.marketHashName)}</td>
+                  <td>
+                    <div class="table-item-cell">
+                      <img
+                        class="table-item-thumb"
+                        src="${escapeHtml(getItemImageUrl(item))}"
+                        alt="${escapeHtml(item.marketHashName || "CS2 item")}"
+                        loading="lazy"
+                        onerror="this.onerror=null;this.src='https://community.akamai.steamstatic.com/public/images/apps/730/header.jpg';"
+                      />
+                      <div class="table-item-info">
+                        <div class="skin-name">${escapeHtml(item.marketHashName)}</div>
+                        <div class="table-item-subline">
+                          <span class="rarity-tag" style="--rarity-color: ${rarityTheme.color};">
+                            ${escapeHtml(rarityTheme.rarity)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </td>
                   <td>${Number(item.quantity || 0)}</td>
                   <td>${formatMoney(item.currentPrice, portfolio.currency || state.currency)}</td>
                   <td>${formatPercent(item.sevenDayChangePercent)}</td>
                   <td>${formatMoney(item.lineValue, portfolio.currency || state.currency)}</td>
                 </tr>
-              `
-            )
+              `;
+            })
             .join("")}
         </tbody>
       </table>
@@ -3757,9 +3873,20 @@ function renderPublicPortfolioPage() {
       <nav class="topbar">
         <div class="brand">CS2 Portfolio Analyzer</div>
         <div class="top-actions">
-          <a class="link-btn ghost" href="${escapeHtml(steamStartUrl)}">Login with Steam</a>
-          <a class="link-btn ghost" href="/login.html">Login</a>
-          <a class="link-btn" href="/register.html">Start Free</a>
+          ${
+            isSignedIn
+              ? `
+                <span class="user-chip" title="${escapeHtml(userEmailTitle)}">${escapeHtml(
+                  userEmailLabel
+                )}</span>
+                <a class="link-btn ghost" href="/">Back to Dashboard</a>
+              `
+              : `
+                <a class="link-btn ghost" href="${escapeHtml(steamStartUrl)}">Login with Steam</a>
+                <a class="link-btn ghost" href="/login.html">Login</a>
+                <a class="link-btn" href="/register.html">Start Free</a>
+              `
+          }
         </div>
       </nav>
       <section class="grid">
@@ -3826,15 +3953,29 @@ function renderPublicPortfolioPage() {
 
 function renderPublicHome() {
   const steamStartUrl = buildSteamAuthStartUrl("login");
+  const isSignedIn = Boolean(state.authenticated);
+  const userEmailTitle = String(state.authProfile?.email || "").trim();
+  const userEmailLabel = getHeaderEmailLabel();
 
   app.innerHTML = `
     <main class="layout">
       <nav class="topbar">
         <div class="brand">CS2 Portfolio Analyzer</div>
         <div class="top-actions">
-          <a class="link-btn ghost" href="${escapeHtml(steamStartUrl)}">Login with Steam</a>
-          <a class="link-btn ghost" href="/login.html">Login</a>
-          <a class="link-btn" href="/register.html">Start Free</a>
+          ${
+            isSignedIn
+              ? `
+                <span class="user-chip" title="${escapeHtml(userEmailTitle)}">${escapeHtml(
+                  userEmailLabel
+                )}</span>
+                <a class="link-btn ghost" href="/">Back to Dashboard</a>
+              `
+              : `
+                <a class="link-btn ghost" href="${escapeHtml(steamStartUrl)}">Login with Steam</a>
+                <a class="link-btn ghost" href="/login.html">Login</a>
+                <a class="link-btn" href="/register.html">Start Free</a>
+              `
+          }
         </div>
       </nav>
 
@@ -4004,8 +4145,14 @@ function renderApp() {
       <article class="panel wide">
         <h2>Portfolio Holdings</h2>
         <p class="helper-text">
-          Fast table for active decisions. Sort by value, change, quantity, or confidence signal and inspect a position in one click.
+          Premium marketplace tiles for quick scanning plus an execution table for sorting and trade decisions.
         </p>
+        <div class="portfolio-cards-section">
+          <h3 class="portfolio-subheading">Marketplace Tiles</h3>
+          ${renderPortfolioCardGrid()}
+        </div>
+        <div class="portfolio-table-section">
+          <h3 class="portfolio-subheading">Execution Table</h3>
         <div class="list-toolbar">
           <label>Search
             <input id="holdings-search" placeholder="item name or steam item id" value="${escapeHtml(
@@ -4069,6 +4216,7 @@ function renderApp() {
             </thead>
             <tbody>${renderPortfolioRows()}</tbody>
           </table>
+        </div>
         </div>
         <div class="pagination-bar">
           <button
@@ -4503,7 +4651,10 @@ async function bootstrapSession() {
   hydrateAppNoticesFromUrl();
   render();
   if (state.publicPage.steamId64) {
-    await loadPublicPortfolio({ silent: true });
+    await Promise.all([
+      loadPublicPortfolio({ silent: true }),
+      refreshAuthProfile()
+    ]);
   } else {
     await refreshPortfolio({ silent: true });
   }

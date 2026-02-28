@@ -2,7 +2,8 @@ const AppError = require("../utils/AppError");
 const {
   marketPriceRateLimitPerSecond,
   steamMarketMaxRetries,
-  steamMarketRetryBaseMs
+  steamMarketRetryBaseMs,
+  steamMarketPriceStrategy
 } = require("../config/env");
 
 let queue = Promise.resolve();
@@ -171,6 +172,47 @@ function parseOverview(payload) {
   };
 }
 
+function pickLatestPriceFromOverview(overview, strategyInput) {
+  const strategy = String(strategyInput || steamMarketPriceStrategy || "balanced")
+    .trim()
+    .toLowerCase();
+  const lowest = Number(overview?.lowestPrice);
+  const median = Number(overview?.medianPrice);
+  const volume = Number(overview?.volume);
+
+  const hasLowest = Number.isFinite(lowest) && lowest >= 0;
+  const hasMedian = Number.isFinite(median) && median >= 0;
+
+  if (!hasLowest && !hasMedian) {
+    return null;
+  }
+
+  if (strategy === "lowest") {
+    return hasLowest ? lowest : median;
+  }
+
+  if (strategy === "median") {
+    return hasMedian ? median : lowest;
+  }
+
+  // Balanced strategy aims at executable fair value:
+  // use median for thin books or obvious low-side outliers.
+  if (hasLowest && hasMedian) {
+    if (Number.isFinite(volume) && volume < 3) {
+      return median;
+    }
+
+    const ratio = median > 0 ? lowest / median : 1;
+    if (ratio < 0.82) {
+      return median;
+    }
+
+    return Number((lowest * 0.45 + median * 0.55).toFixed(2));
+  }
+
+  return hasMedian ? median : lowest;
+}
+
 exports.getPriceOverview = async (marketHashName, options = {}) => {
   const timeoutMs = Number(options.timeoutMs || 10000);
   const currency = Number(options.currency || 1);
@@ -186,11 +228,18 @@ exports.getPriceOverview = async (marketHashName, options = {}) => {
 
 exports.getLatestPrice = async (marketHashName, options = {}) => {
   const overview = await exports.getPriceOverview(marketHashName, options);
-  const price = overview.lowestPrice || overview.medianPrice;
+  const price = pickLatestPriceFromOverview(overview, options.priceStrategy);
 
   if (price == null) {
     throw new AppError("Steam market returned no parsable price", 502);
   }
 
   return price;
+};
+
+exports.__testables = {
+  parsePriceString,
+  parseIntegerString,
+  parseOverview,
+  pickLatestPriceFromOverview
 };

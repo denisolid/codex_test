@@ -89,7 +89,8 @@ test("social leaderboard ranks by portfolio value and marks watchlist membership
   });
   primeModule(currencyServicePath, {
     resolveCurrency: () => "USD",
-    convertUsdAmount: (value) => Number(value || 0)
+    convertUsdAmount: (value) => Number(value || 0),
+    ensureFreshFxRates: async () => ({ ok: true, source: "mock-test" })
   });
 
   const socialService = require(socialServicePath);
@@ -108,7 +109,13 @@ test("social leaderboard ranks by portfolio value and marks watchlist membership
 });
 
 test("public portfolio service rejects hidden public profile", async () => {
-  [publicServicePath, userRepoPath, portfolioServicePath, viewsRepoPath].forEach(clearModule);
+  [
+    publicServicePath,
+    userRepoPath,
+    portfolioServicePath,
+    viewsRepoPath,
+    currencyServicePath
+  ].forEach(clearModule);
 
   primeModule(userRepoPath, {
     getBySteamId64: async () => ({

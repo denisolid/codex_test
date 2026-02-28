@@ -4,7 +4,11 @@ const watchlistRepo = require("../repositories/watchlistRepository");
 const inventoryRepo = require("../repositories/inventoryRepository");
 const priceRepo = require("../repositories/priceHistoryRepository");
 const publicViewRepo = require("../repositories/publicPortfolioViewRepository");
-const { resolveCurrency, convertUsdAmount } = require("./currencyService");
+const {
+  resolveCurrency,
+  convertUsdAmount,
+  ensureFreshFxRates
+} = require("./currencyService");
 
 function validateSteamId64(steamId64) {
   const safeSteamId64 = String(steamId64 || "").trim();
@@ -96,6 +100,7 @@ async function resolveTargetUserBySteamId(steamId64, currentUserId) {
 }
 
 exports.listWatchlist = async (userId, options = {}) => {
+  await ensureFreshFxRates();
   const displayCurrency = resolveCurrency(options.currency);
   const rows = await watchlistRepo.listByUser(userId);
   const targetIds = rows.map((row) => String(row.target_user_id || "").trim()).filter(Boolean);
@@ -185,6 +190,7 @@ exports.removeFromWatchlist = async (userId, steamId64) => {
 };
 
 exports.getLeaderboard = async (userId, options = {}) => {
+  await ensureFreshFxRates();
   const displayCurrency = resolveCurrency(options.currency);
   const scope = String(options.scope || "global").toLowerCase();
   const limit = normalizeLimit(options.limit, 20, 100);

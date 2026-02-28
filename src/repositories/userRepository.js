@@ -72,7 +72,7 @@ exports.getByIds = async (ids = []) => {
   const { data, error } = await supabaseAdmin
     .from("users")
     .select(
-      "id, email, display_name, avatar_url, steam_id64, public_portfolio_enabled, ownership_alerts_enabled, plan_tier, billing_status, plan_seats, plan_started_at, created_at, updated_at"
+      "id, email, display_name, avatar_url, steam_id64, public_portfolio_enabled, ownership_alerts_enabled, plan_tier, billing_status, plan_seats, plan_started_at, trader_mode_unlocked, trader_mode_unlocked_at, trader_mode_unlock_source, created_at, updated_at"
     )
     .in("id", safeIds);
 
@@ -185,6 +185,37 @@ exports.updatePlanById = async (id, updates = {}) => {
   return data;
 };
 
+exports.updateTraderModeById = async (id, updates = {}) => {
+  const patch = {};
+  if (hasOwn(updates, "traderModeUnlocked")) {
+    patch.trader_mode_unlocked = Boolean(updates.traderModeUnlocked);
+  }
+  if (hasOwn(updates, "traderModeUnlockedAt")) {
+    patch.trader_mode_unlocked_at = updates.traderModeUnlockedAt || null;
+  }
+  if (hasOwn(updates, "traderModeUnlockSource")) {
+    patch.trader_mode_unlock_source =
+      String(updates.traderModeUnlockSource || "").trim() || null;
+  }
+
+  if (!Object.keys(patch).length) {
+    return exports.getById(id);
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("users")
+    .update(patch)
+    .eq("id", id)
+    .select("*")
+    .single();
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  return data;
+};
+
 exports.insertPlanChangeEvent = async (payload = {}) => {
   const row = {
     user_id: payload.userId,
@@ -204,6 +235,37 @@ exports.listPlanChangeEventsByUser = async (userId, limit = 50) => {
   const { data, error } = await supabaseAdmin
     .from("plan_change_events")
     .select("id, old_plan_tier, new_plan_tier, changed_by, created_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(normalizedLimit);
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  return data || [];
+};
+
+exports.insertTraderModeUnlockEvent = async (payload = {}) => {
+  const row = {
+    user_id: payload.userId,
+    action: payload.action,
+    source: payload.source || "admin_toggle",
+    changed_by: payload.changedBy || "system",
+    note: payload.note || null
+  };
+
+  const { error } = await supabaseAdmin.from("trader_mode_unlock_events").insert(row);
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+};
+
+exports.listTraderModeUnlockEventsByUser = async (userId, limit = 50) => {
+  const normalizedLimit = Math.min(Math.max(Number(limit) || 50, 1), 500);
+  const { data, error } = await supabaseAdmin
+    .from("trader_mode_unlock_events")
+    .select("id, action, source, changed_by, note, created_at")
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
     .limit(normalizedLimit);

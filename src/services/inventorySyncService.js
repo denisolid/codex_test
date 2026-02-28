@@ -15,6 +15,7 @@ const priceProviderService = require("./priceProviderService");
 const mockPriceProviderService = require("./mockPriceProviderService");
 const mockSteamService = require("./mockSteamService");
 const steamInventoryService = require("./steamInventoryService");
+const { enrichInventoryItems } = require("./itemEnrichmentService");
 
 function sleep(ms) {
   return new Promise((resolve) => {
@@ -97,16 +98,21 @@ exports.syncUserInventory = async (userId) => {
     throw new AppError("No CS2 inventory items found", 404);
   }
 
-  const upsertedSkins = await skinRepo.upsertSkins(
-    items.map((i) => ({
-      market_hash_name: i.marketHashName,
-      weapon: i.weapon,
-      skin_name: i.skinName,
-      exterior: i.exterior,
-      rarity: i.rarity,
-      image_url: i.imageUrl
-    }))
+  const existingSkins = await skinRepo.getByMarketHashNames(
+    items.map((item) => item.marketHashName)
   );
+  const existingSkinByName = Object.fromEntries(
+    (Array.isArray(existingSkins) ? existingSkins : []).map((skin) => [
+      skin.market_hash_name,
+      skin
+    ])
+  );
+  const { enrichedItems, skinRows } = enrichInventoryItems(items, existingSkinByName);
+
+  const upsertedSkins = await skinRepo.upsertSkins(skinRows);
+  if (!upsertedSkins.length) {
+    throw new AppError("Failed to upsert inventory skin metadata", 500);
+  }
 
   const skinMap = Object.fromEntries(
     upsertedSkins.map((skin) => [skin.market_hash_name, skin.id])
@@ -129,8 +135,15 @@ exports.syncUserInventory = async (userId) => {
   );
   let cacheHitCount = 0;
 
-  for (const item of items) {
-    const skinId = skinMap[item.marketHashName];
+  for (const item of enrichedItems) {
+    const skinId = Number(skinMap[item.marketHashName] || 0);
+    if (!skinId) {
+      throw new AppError(
+        `Missing skin id for ${item.marketHashName}`,
+        500,
+        "SKIN_UPSERT_INCONSISTENT"
+      );
+    }
     const cached = latestPriceBySkinId[skinId];
     if (
       cached &&

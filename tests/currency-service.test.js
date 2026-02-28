@@ -22,3 +22,18 @@ test("currency service exposes supported currencies list", () => {
   assert.ok(codes.includes("USD"));
   assert.ok(codes.includes("EUR"));
 });
+
+test("currency service merges live rates payload with static fallbacks", () => {
+  const map = currencyService.__testables.sanitizeLiveRates({
+    result: "success",
+    rates: {
+      EUR: 0.95,
+      GBP: 0.81
+    }
+  });
+
+  assert.equal(map.USD, 1);
+  assert.equal(map.EUR, 0.95);
+  assert.equal(map.GBP, 0.81);
+  assert.ok(Number.isFinite(map.UAH));
+});

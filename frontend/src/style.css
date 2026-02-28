@@ -1,4 +1,5 @@
 :root {
+  --master-bg-image: url("/master-background.jpg");
   --bg-main: #0f0f12;
   --bg-elevated: #141821;
   --bg-soft: #171c27;
@@ -55,10 +56,16 @@ body {
   margin: 0;
   color: var(--text);
   font-family: "Space Grotesk", "Segoe UI", sans-serif;
-  background:
+  background-color: #0b0d14;
+  background-image:
+    linear-gradient(160deg, rgba(8, 9, 16, 0.9) 0%, rgba(8, 11, 18, 0.86) 45%, rgba(7, 9, 15, 0.9) 100%),
     radial-gradient(1000px 520px at 80% -8%, rgba(127, 93, 255, 0.24), transparent 62%),
     radial-gradient(740px 440px at 8% -12%, rgba(46, 139, 255, 0.22), transparent 58%),
-    linear-gradient(160deg, #0c0d12 0%, #0f1017 45%, #0a0f18 100%);
+    var(--master-bg-image);
+  background-size: 100% 100%, 1000px 520px, 740px 440px, cover;
+  background-position: center, 80% -8%, 8% -12%, center top;
+  background-repeat: no-repeat, no-repeat, no-repeat, no-repeat;
+  background-attachment: fixed, fixed, fixed, fixed;
 }
 
 .layout {
@@ -744,6 +751,190 @@ button:disabled,
   line-height: 1.5;
 }
 
+.portfolio-cards-section {
+  margin: 14px 0 20px;
+}
+
+.portfolio-table-section {
+  margin-top: 8px;
+}
+
+.portfolio-subheading {
+  margin: 0 0 10px;
+  color: var(--text-dim);
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.portfolio-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(165px, 1fr));
+  gap: 12px;
+}
+
+.portfolio-skin-card {
+  --rarity-color: #7f8ba5;
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--rarity-color) 44%, transparent);
+  background:
+    radial-gradient(
+      80% 130% at 50% -18%,
+      color-mix(in srgb, var(--rarity-color) 26%, transparent),
+      transparent 62%
+    ),
+    linear-gradient(180deg, rgba(16, 22, 35, 0.96), rgba(10, 13, 21, 0.94));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 0 0 1px color-mix(in srgb, var(--rarity-color) 22%, transparent),
+    0 15px 26px rgba(4, 7, 16, 0.52),
+    0 0 24px color-mix(in srgb, var(--rarity-color) 20%, transparent);
+  transition: transform 180ms ease, box-shadow 190ms ease, border-color 190ms ease;
+}
+
+.portfolio-skin-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 42%);
+}
+
+.portfolio-skin-card:hover {
+  transform: translateY(-3px);
+  border-color: color-mix(in srgb, var(--rarity-color) 70%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 0 1px color-mix(in srgb, var(--rarity-color) 36%, transparent),
+    0 20px 34px rgba(4, 7, 16, 0.62),
+    0 0 34px color-mix(in srgb, var(--rarity-color) 35%, transparent);
+}
+
+.portfolio-skin-card-media {
+  position: relative;
+  min-height: 128px;
+  display: grid;
+  place-items: center;
+  padding: 16px 12px 10px;
+}
+
+.portfolio-skin-card-hex {
+  position: absolute;
+  width: 108px;
+  aspect-ratio: 1;
+  background: color-mix(in srgb, var(--rarity-color) 26%, transparent);
+  clip-path: polygon(24% 6%, 76% 6%, 97% 50%, 76% 94%, 24% 94%, 3% 50%);
+  opacity: 0.2;
+  filter: blur(0.4px);
+}
+
+.portfolio-skin-card-media img {
+  position: relative;
+  width: min(124px, 100%);
+  height: 82px;
+  object-fit: contain;
+  z-index: 1;
+  filter:
+    drop-shadow(0 6px 16px rgba(0, 0, 0, 0.52))
+    drop-shadow(0 0 12px color-mix(in srgb, var(--rarity-color) 34%, transparent));
+}
+
+.portfolio-skin-card-body {
+  padding: 0 10px 11px;
+  display: grid;
+  gap: 9px;
+}
+
+.portfolio-skin-card-name {
+  margin: 0;
+  font-size: 0.81rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: #dce8ff;
+  min-height: 2.2em;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.portfolio-skin-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.portfolio-skin-card-value {
+  font-size: 0.79rem;
+  font-weight: 700;
+  color: #d1def7;
+}
+
+.rarity-tag {
+  --rarity-color: #7f8ba5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.67rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--rarity-color) 82%, #ffffff 18%);
+  border: 1px solid color-mix(in srgb, var(--rarity-color) 56%, transparent);
+  background:
+    linear-gradient(
+      130deg,
+      color-mix(in srgb, var(--rarity-color) 30%, transparent),
+      rgba(10, 14, 23, 0.74)
+    );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 0 16px color-mix(in srgb, var(--rarity-color) 18%, transparent);
+  white-space: nowrap;
+}
+
+.portfolio-skin-card.is-skeleton {
+  border-color: rgba(124, 148, 194, 0.3);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 12px 22px rgba(4, 7, 16, 0.48);
+}
+
+.portfolio-skin-card.is-skeleton .portfolio-skin-card-hex {
+  background: rgba(120, 144, 190, 0.16);
+}
+
+.skeleton-line {
+  height: 10px;
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(116, 139, 185, 0.18),
+      rgba(157, 179, 222, 0.34),
+      rgba(116, 139, 185, 0.18)
+    );
+  background-size: 220% 100%;
+  animation: shimmer 1.2s ease-in-out infinite;
+}
+
+.skeleton-line.w-90 {
+  width: 90%;
+}
+
+.skeleton-line.w-40 {
+  width: 40%;
+}
+
+.skeleton-line.w-30 {
+  width: 30%;
+}
+
 .bullet-list {
   margin: 8px 0 0;
   padding-left: 18px;
@@ -790,6 +981,55 @@ thead th {
 
 .holding-row:hover {
   background: rgba(46, 139, 255, 0.08);
+}
+
+.holding-row.is-skeleton:hover {
+  background: transparent;
+}
+
+.table-row-skeleton {
+  height: 18px;
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(116, 139, 185, 0.2),
+      rgba(157, 179, 222, 0.34),
+      rgba(116, 139, 185, 0.2)
+    );
+  background-size: 210% 100%;
+  animation: shimmer 1.15s ease-in-out infinite;
+}
+
+.table-item-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 220px;
+}
+
+.table-item-thumb {
+  width: 44px;
+  height: 34px;
+  border-radius: 8px;
+  object-fit: contain;
+  border: 1px solid rgba(134, 157, 206, 0.35);
+  background: rgba(8, 11, 18, 0.9);
+  flex: 0 0 auto;
+}
+
+.table-item-info {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.table-item-subline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .table-sort-btn {
@@ -1267,6 +1507,15 @@ a:hover {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
   }
 }
 
