@@ -77,6 +77,10 @@ const state = {
     marketInsight: null,
     exitWhatIf: createExitWhatIfState()
   },
+  tabSwitch: {
+    loading: false,
+    target: ""
+  },
   activeTab: "dashboard",
   historyDays: 7,
   holdingsView: {
@@ -171,6 +175,7 @@ const state = {
 const holdingsValueMemory = new Map();
 const metricCounterMemory = new Map();
 let delegatedAppEventsBound = false;
+let tabSwitchTicket = 0;
 
 function debounce(fn, waitMs = 100) {
   let timer = null;
@@ -962,20 +967,39 @@ async function refreshVisibleMarketComparisons() {
 
 async function handleTabSwitch(tab) {
   if (!tab || tab === state.activeTab) return;
+  const ticket = ++tabSwitchTicket;
+  const target = String(tab || "");
+  const requiresLoad =
+    target === "portfolio" ||
+    (target === "team" &&
+      String(state.authProfile?.planTier || "free").toLowerCase() === "team" &&
+      !state.teamDashboard.loading &&
+      !state.teamDashboard.payload);
+
   state.activeTab = tab;
+  state.tabSwitch.target = target;
+  state.tabSwitch.loading = requiresLoad;
   render();
 
-  if (tab === "portfolio") {
-    runUiTask(() => refreshVisibleMarketComparisons());
-  }
+  try {
+    if (target === "portfolio") {
+      await refreshVisibleMarketComparisons();
+    }
 
-  if (
-    tab === "team" &&
-    String(state.authProfile?.planTier || "free").toLowerCase() === "team" &&
-    !state.teamDashboard.loading &&
-    !state.teamDashboard.payload
-  ) {
-    await refreshTeamDashboard({ silent: true });
+    if (
+      target === "team" &&
+      String(state.authProfile?.planTier || "free").toLowerCase() === "team" &&
+      !state.teamDashboard.loading &&
+      !state.teamDashboard.payload
+    ) {
+      await refreshTeamDashboard({ silent: true });
+    }
+  } finally {
+    if (ticket === tabSwitchTicket) {
+      state.tabSwitch.loading = false;
+      state.tabSwitch.target = "";
+      render();
+    }
   }
 }
 
@@ -1031,14 +1055,14 @@ function onAppClick(event) {
   if (button?.matches(".tab-btn")) {
     event.preventDefault();
     const tab = button.getAttribute("data-tab");
-    runUiTask(() => handleTabSwitch(tab));
+    handleTabSwitch(tab).catch((err) => setError(err.message || "Request failed"));
     return;
   }
 
   if (button?.matches(".tab-jump-btn")) {
     event.preventDefault();
     const tab = button.getAttribute("data-tab-target");
-    runUiTask(() => handleTabSwitch(tab));
+    handleTabSwitch(tab).catch((err) => setError(err.message || "Request failed"));
     return;
   }
 
@@ -1442,6 +1466,8 @@ async function logout() {
   state.inspectModal.skin = null;
   state.inspectModal.marketInsight = null;
   state.inspectModal.exitWhatIf = createExitWhatIfState();
+  state.tabSwitch.loading = false;
+  state.tabSwitch.target = "";
   state.exitWhatIf = createExitWhatIfState();
   resetAlertForm();
   state.marketTab.inventoryValue = null;
@@ -5252,7 +5278,7 @@ function renderApp() {
 
   app.innerHTML = `
     <main class="layout app-shell">
-      <aside class="sidebar">
+      <aside class="sidebar ${state.tabSwitch.loading ? "is-tab-loading" : ""}">
         <div class="sidebar-header">
           <div class="brand">CS2 Portfolio Analyzer</div>
           <p class="muted sidebar-copy">Premium dark trading interface</p>
@@ -5303,6 +5329,13 @@ function renderApp() {
             </label>
           </div>
         </header>
+        ${
+          state.tabSwitch.loading
+            ? `<div class="tab-switch-indicator" role="status" aria-live="polite">Loading ${escapeHtml(
+                toTitle(state.tabSwitch.target || state.activeTab || "tab")
+              )}...</div>`
+            : ""
+        }
 
         ${
           state.error
