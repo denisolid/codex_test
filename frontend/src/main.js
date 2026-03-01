@@ -2532,6 +2532,7 @@ function renderMarketComparisonPanel(item) {
   const perMarketMarkup = comparison.perMarket
     .map((row) => {
       const isAvailable = Boolean(row?.available);
+      const unavailableReason = String(row?.unavailableReason || "").trim();
       const listingLink = row?.url
         ? `<a class="link-btn ghost market-open-link" href="${escapeHtml(
             row.url
@@ -2546,6 +2547,11 @@ function renderMarketComparisonPanel(item) {
               isAvailable ? formatRelativeTime(row.updatedAt) : "No data"
             )}</small>
           </div>
+          ${
+            !isAvailable && unavailableReason
+              ? `<p class="muted">${escapeHtml(unavailableReason)}</p>`
+              : ""
+          }
           <p>Gross: <strong>${
             isAvailable ? formatMoney(row.grossPrice, row.currency || state.currency) : "-"
           }</strong></p>

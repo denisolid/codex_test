@@ -20,7 +20,8 @@ const {
   marketCompareCacheTtlMinutes,
   marketCompareConcurrency,
   marketCompareTimeoutMs,
-  marketCompareMaxRetries
+  marketCompareMaxRetries,
+  csfloatApiKey
 } = require("../config/env");
 
 const SOURCE_ORDER = Object.freeze(["steam", "skinport", "csfloat", "dmarket"]);
@@ -53,7 +54,7 @@ function isFreshTimestamp(isoValue, ttlMinutes) {
   return Date.now() - ts <= Math.max(Number(ttlMinutes || CACHE_TTL_MINUTES), 1) * 60 * 1000;
 }
 
-function toUnavailable(source, currency) {
+function toUnavailable(source, currency, unavailableReason = null) {
   return {
     source,
     grossPrice: null,
@@ -63,8 +64,18 @@ function toUnavailable(source, currency) {
     url: null,
     updatedAt: null,
     confidence: "low",
-    available: false
+    available: false,
+    unavailableReason: unavailableReason
+      ? String(unavailableReason || "").trim()
+      : null
   };
+}
+
+function getUnavailableReasonForSource(source) {
+  if (source === "csfloat" && !String(csfloatApiKey || "").trim()) {
+    return "Missing CSFloat API key";
+  }
+  return null;
 }
 
 function normalizeItems(items = []) {
@@ -211,6 +222,9 @@ function buildFeeSummary() {
 async function fetchLiveMarketData(itemsBySource = {}, displayCurrency, options = {}) {
   const result = {};
   const rowsToStore = [];
+  const fetchCurrency = String(options.fetchCurrency || "USD")
+    .trim()
+    .toUpperCase();
 
   for (const source of SOURCE_ORDER) {
     const adapter = ADAPTERS[source];
@@ -222,7 +236,7 @@ async function fetchLiveMarketData(itemsBySource = {}, displayCurrency, options 
     }
 
     const byName = await adapter.batchGetPrices(sourceItems, {
-      currency: displayCurrency,
+      currency: fetchCurrency,
       concurrency: Math.max(Number(options.concurrency || marketCompareConcurrency || 4), 1),
       timeoutMs: Number(options.timeoutMs || marketCompareTimeoutMs || 9000),
       maxRetries: Number(options.maxRetries || marketCompareMaxRetries || 3)
@@ -420,6 +434,7 @@ exports.compareItems = async (items = [], options = {}) => {
     );
     if (hasPending) {
       liveBySource = await fetchLiveMarketData(staleItemsBySource, displayCurrency, {
+        fetchCurrency: "USD",
         concurrency: options.concurrency,
         timeoutMs: options.timeoutMs,
         maxRetries: options.maxRetries
@@ -467,7 +482,11 @@ exports.compareItems = async (items = [], options = {}) => {
         }
       }
 
-      return toUnavailable(source, displayCurrency);
+      return toUnavailable(
+        source,
+        displayCurrency,
+        getUnavailableReasonForSource(source)
+      );
     });
 
     const bestBuy = pickBestBuy(perMarket);
