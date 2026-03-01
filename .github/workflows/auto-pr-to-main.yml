@@ -1,0 +1,76 @@
+name: Auto PR To Main
+
+on:
+  push:
+    branches:
+      - market-analysis
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  create-or-update-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create or update pull request
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const headBranch = "market-analysis";
+            const baseBranch = "main";
+            const title = "Auto PR: market-analysis -> main";
+            const body = [
+              "This pull request is managed automatically by `.github/workflows/auto-pr-to-main.yml`.",
+              "",
+              `Source branch: \`${headBranch}\``,
+              `Target branch: \`${baseBranch}\``,
+              `Last commit: \`${context.sha}\``
+            ].join("\n");
+
+            const openPulls = await github.paginate(github.rest.pulls.list, {
+              owner,
+              repo,
+              state: "open",
+              head: `${owner}:${headBranch}`,
+              base: baseBranch,
+              per_page: 100
+            });
+
+            if (openPulls.length > 0) {
+              const existing = openPulls[0];
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: existing.number,
+                title,
+                body
+              });
+              core.info(`Updated existing PR #${existing.number}`);
+              return;
+            }
+
+            try {
+              const created = await github.rest.pulls.create({
+                owner,
+                repo,
+                title,
+                head: headBranch,
+                base: baseBranch,
+                body,
+                maintainer_can_modify: true
+              });
+              core.info(`Created PR #${created.data.number}: ${created.data.html_url}`);
+            } catch (error) {
+              const message = String(error?.message || "");
+              const noDiff = error?.status === 422 && message.includes("No commits between");
+              if (noDiff) {
+                core.info("No commits between source and target branches. Nothing to open.");
+                return;
+              }
+              throw error;
+            }
