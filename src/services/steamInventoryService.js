@@ -2,6 +2,12 @@ const AppError = require("../utils/AppError");
 
 const STEAM_IMAGE_BASE = "https://community.akamai.steamstatic.com/economy/image/";
 
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function normalizeExterior(name) {
   const m = /\(([^)]+)\)\s*$/.exec(name || "");
   return m ? m[1] : null;
@@ -120,12 +126,48 @@ async function fetchPage(url, timeoutMs) {
   }
 }
 
+function shouldRetrySteamInventory(err) {
+  const status =
+    Number(err?.statusCode || err?.status || err?.httpStatus || err?.response?.status || 0) ||
+    0;
+  return status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+function computeRetryDelayMs(baseDelayMs, attempt) {
+  const expDelay = baseDelayMs * Math.pow(2, attempt);
+  const jitter = Math.floor(Math.random() * Math.max(Math.floor(baseDelayMs / 3), 1));
+  return expDelay + jitter;
+}
+
+async function fetchPageWithRetries(url, options = {}) {
+  const timeoutMs = Number(options.timeoutMs || 12000);
+  const maxRetries = Math.max(Number(options.maxRetries || 0), 0);
+  const retryBaseMs = Math.max(Number(options.retryBaseMs || 1200), 100);
+
+  let lastError = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      return await fetchPage(url, timeoutMs);
+    } catch (err) {
+      lastError = err;
+      if (!shouldRetrySteamInventory(err) || attempt === maxRetries) {
+        throw err;
+      }
+      await sleep(computeRetryDelayMs(retryBaseMs, attempt));
+    }
+  }
+
+  throw lastError;
+}
+
 exports.fetchInventory = async (steamId64, options = {}) => {
   const timeoutMs = Number(options.timeoutMs || 12000);
   const requestedPageSize = Number(options.pageSize || 2000);
   const pageSize = Math.min(Math.max(requestedPageSize, 1), 2000);
   const maxPages = Number(options.maxPages || 20);
   const language = options.language || "english";
+  const maxRetries = Number(options.maxRetries || 0);
+  const retryBaseMs = Number(options.retryBaseMs || 1200);
 
   const descriptionsByKey = new Map();
   const descriptionByMarketHashName = new Map();
@@ -138,7 +180,11 @@ exports.fetchInventory = async (steamId64, options = {}) => {
 
   while (pages < maxPages) {
     const url = buildInventoryUrl(steamId64, startAssetId, pageSize, language);
-    const payload = await fetchPage(url, timeoutMs);
+    const payload = await fetchPageWithRetries(url, {
+      timeoutMs,
+      maxRetries,
+      retryBaseMs
+    });
     pages += 1;
 
     for (const desc of payload.descriptions || []) {

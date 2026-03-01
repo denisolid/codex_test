@@ -79,6 +79,10 @@ module.exports = {
     "auto"
   ),
   steamInventoryTimeoutMs: Number(process.env.STEAM_INVENTORY_TIMEOUT_MS || 12000),
+  steamInventoryMaxRetries: Number(process.env.STEAM_INVENTORY_MAX_RETRIES || 3),
+  steamInventoryRetryBaseMs: Number(
+    process.env.STEAM_INVENTORY_RETRY_BASE_MS || 1200
+  ),
   marketPriceSource: normalizeEnum(
     process.env.MARKET_PRICE_SOURCE,
     ["auto", "steam", "mock"],
