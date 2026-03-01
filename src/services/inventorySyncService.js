@@ -7,6 +7,7 @@ const priceRepo = require("../repositories/priceHistoryRepository");
 const {
   steamInventorySource,
   steamInventoryTimeoutMs,
+  marketPriceSource,
   marketPriceFallbackToMock,
   marketPriceRateLimitPerSecond,
   marketPriceCacheTtlMinutes
@@ -324,6 +325,10 @@ exports.syncUserInventory = async (userId) => {
     priceCacheHitCount: cacheHitCount,
     priceFetchedCount: pricedItems.length - cacheHitCount,
     inventorySource: source,
+    configuredInventorySource: steamInventorySource,
+    configuredMarketPriceSource: marketPriceSource,
+    configuredMarketPriceFallbackToMock: Boolean(marketPriceFallbackToMock),
+    steamId64: String(user.steam_id64 || ""),
     priceSource: marketPriceFallbackToMock ? "mixed" : "strict-real",
     ownershipChangesCount: ownershipChanges.length,
     ownershipChanges: ownershipChanges.slice(0, 20),

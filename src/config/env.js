@@ -19,6 +19,16 @@ function parseCsv(value) {
     .filter(Boolean);
 }
 
+function normalizeEnum(value, allowed, fallback) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (allowed.includes(normalized)) {
+    return normalized;
+  }
+  return fallback;
+}
+
 const frontendOrigins = Array.from(
   new Set([
     ...parseCsv(process.env.FRONTEND_URL),
@@ -63,9 +73,17 @@ module.exports = {
   supabaseUrl: process.env.SUPABASE_URL,
   supabaseAnonKey: process.env.SUPABASE_ANON_KEY,
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
-  steamInventorySource: process.env.STEAM_INVENTORY_SOURCE || "auto",
+  steamInventorySource: normalizeEnum(
+    process.env.STEAM_INVENTORY_SOURCE,
+    ["auto", "real", "mock"],
+    "auto"
+  ),
   steamInventoryTimeoutMs: Number(process.env.STEAM_INVENTORY_TIMEOUT_MS || 12000),
-  marketPriceSource: process.env.MARKET_PRICE_SOURCE || "auto",
+  marketPriceSource: normalizeEnum(
+    process.env.MARKET_PRICE_SOURCE,
+    ["auto", "steam", "mock"],
+    "auto"
+  ),
   marketPriceFallbackToMock:
     process.env.MARKET_PRICE_FALLBACK_TO_MOCK == null
       ? process.env.MARKET_PRICE_SOURCE !== "steam"
