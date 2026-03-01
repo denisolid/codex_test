@@ -92,8 +92,8 @@ exports.upsertRows = async (rows = []) => {
         currency: String(row.currency || "USD")
           .trim()
           .toUpperCase(),
-        gross_price: Number(grossPrice.toFixed(2)),
-        net_price: Number(netPrice.toFixed(2)),
+        gross_price: Number(grossPrice.toFixed(4)),
+        net_price: Number(netPrice.toFixed(4)),
         url: row.url ? String(row.url) : null,
         fetched_at: row.fetched_at || row.updatedAt || new Date().toISOString(),
         raw: row.raw || null

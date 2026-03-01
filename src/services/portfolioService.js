@@ -313,9 +313,9 @@ exports.getPortfolio = async (userId, options = {}) => {
     const fallbackCurrentPrice = convertUsdAmount(item.currentPrice, displayCurrency);
     const fallbackLineValue = convertUsdAmount(item.lineValue, displayCurrency);
     const effectiveCurrentPrice =
-      selectedUnitPrice > 0 ? round2(selectedUnitPrice) : fallbackCurrentPrice;
+      selectedUnitPrice > 0 ? selectedUnitPrice : fallbackCurrentPrice;
     const effectiveLineValue =
-      selectedLineValue > 0 ? round2(selectedLineValue) : fallbackLineValue;
+      selectedLineValue > 0 ? selectedLineValue : fallbackLineValue;
 
     return {
       ...item,

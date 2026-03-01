@@ -1,4 +1,10 @@
-import { defaultSkinImage, getRarityTheme } from "../rarity";
+import {
+  defaultCaseImage,
+  defaultSkinImage,
+  getRarityTheme,
+  isCaseLikeItem,
+  resolveItemImageUrl
+} from "../rarity";
 
 const fallbackEscape = (value) =>
   String(value ?? "")
@@ -7,17 +13,6 @@ const fallbackEscape = (value) =>
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
-
-function getImageUrl(item = {}) {
-  const candidates = [item.imageUrlLarge, item.imageUrl, defaultSkinImage];
-  for (const candidate of candidates) {
-    const raw = String(candidate || "").trim();
-    if (/^https?:\/\//i.test(raw)) {
-      return raw;
-    }
-  }
-  return defaultSkinImage;
-}
 
 function formatSourceLabel(value) {
   const raw = String(value || "").trim().toLowerCase();
@@ -33,7 +28,8 @@ export function renderSkinCard(item = {}, helpers = {}) {
   const escapeHtml = helpers.escapeHtml || fallbackEscape;
   const formatMoney = helpers.formatMoney || ((value) => String(value ?? "0"));
   const { rarity, color } = getRarityTheme(item);
-  const imageUrl = getImageUrl(item);
+  const imageUrl = resolveItemImageUrl(item);
+  const fallbackImage = isCaseLikeItem(item) ? defaultCaseImage : defaultSkinImage;
   const unitPriceMarkup =
     item.currentPrice == null
       ? "-"
@@ -49,7 +45,7 @@ export function renderSkinCard(item = {}, helpers = {}) {
           src="${escapeHtml(imageUrl)}"
           alt="${escapeHtml(item.marketHashName || "CS2 item")}" 
           loading="lazy"
-          onerror="this.onerror=null;this.src='${escapeHtml(defaultSkinImage)}';"
+          onerror="this.onerror=null;this.src='${escapeHtml(fallbackImage)}';"
         />
       </div>
       <div class="portfolio-skin-card-body">

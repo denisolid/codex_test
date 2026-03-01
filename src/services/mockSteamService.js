@@ -1,3 +1,9 @@
+const { defaultSkinImageUrl } = require("../config/env");
+
+const DEFAULT_MOCK_IMAGE =
+  String(defaultSkinImageUrl || "").trim() ||
+  "https://community.akamai.steamstatic.com/public/images/apps/730/header.jpg";
+
 function seededOffset(steamId64, mod) {
   let acc = 0;
   for (let i = 0; i < steamId64.length; i += 1) {
@@ -16,7 +22,7 @@ exports.fetchInventory = async (steamId64) => {
       skinName: "Redline",
       exterior: "Field-Tested",
       rarity: "Classified",
-      imageUrl: "https://example.com/ak-redline.png",
+      imageUrl: DEFAULT_MOCK_IMAGE,
       quantity: 1 + (k % 2),
       steamItemIds: [`mock-ak-${k}`],
       price: 22.5 + k
@@ -27,7 +33,7 @@ exports.fetchInventory = async (steamId64) => {
       skinName: "Asiimov",
       exterior: "Battle-Scarred",
       rarity: "Covert",
-      imageUrl: "https://example.com/awp-asiimov.png",
+      imageUrl: DEFAULT_MOCK_IMAGE,
       quantity: 1,
       steamItemIds: [`mock-awp-${k}`],
       price: 96 + k
@@ -38,7 +44,7 @@ exports.fetchInventory = async (steamId64) => {
       skinName: "Printstream",
       exterior: "Minimal Wear",
       rarity: "Covert",
-      imageUrl: "https://example.com/usp-printstream.png",
+      imageUrl: DEFAULT_MOCK_IMAGE,
       quantity: 2,
       steamItemIds: [`mock-usp-${k}-1`, `mock-usp-${k}-2`],
       price: 41 + k
@@ -49,7 +55,7 @@ exports.fetchInventory = async (steamId64) => {
       skinName: "Dragon Lore",
       exterior: "Holo",
       rarity: "Remarkable",
-      imageUrl: "https://example.com/sticker-dragon-lore-holo.png",
+      imageUrl: DEFAULT_MOCK_IMAGE,
       quantity: 1,
       steamItemIds: [`mock-sticker-${k}`],
       price: 58 + k
@@ -60,7 +66,7 @@ exports.fetchInventory = async (steamId64) => {
       skinName: "Scarlxrd, CHAIN$AW.LXADXUT.",
       exterior: null,
       rarity: "High Grade",
-      imageUrl: "https://example.com/music-kit-scarlxrd.png",
+      imageUrl: DEFAULT_MOCK_IMAGE,
       quantity: 1,
       steamItemIds: [`mock-music-${k}`],
       price: 5 + k
@@ -71,7 +77,7 @@ exports.fetchInventory = async (steamId64) => {
       skinName: "Revolution Case",
       exterior: null,
       rarity: "Base Grade",
-      imageUrl: "https://example.com/revolution-case.png",
+      imageUrl: DEFAULT_MOCK_IMAGE,
       quantity: 2,
       steamItemIds: [`mock-case-${k}-1`, `mock-case-${k}-2`],
       price: 0.65 + k * 0.03
@@ -82,7 +88,7 @@ exports.fetchInventory = async (steamId64) => {
       skinName: "Fracture Case",
       exterior: null,
       rarity: "Base Grade",
-      imageUrl: "https://example.com/fracture-case.png",
+      imageUrl: DEFAULT_MOCK_IMAGE,
       quantity: 3,
       steamItemIds: [
         `mock-fracture-case-${k}-1`,
@@ -97,7 +103,7 @@ exports.fetchInventory = async (steamId64) => {
       skinName: "Prisma 2 Case",
       exterior: null,
       rarity: "Base Grade",
-      imageUrl: "https://example.com/prisma-2-case.png",
+      imageUrl: DEFAULT_MOCK_IMAGE,
       quantity: 4,
       steamItemIds: [
         `mock-prisma2-case-${k}-1`,
@@ -113,7 +119,7 @@ exports.fetchInventory = async (steamId64) => {
       skinName: "Operation Breakout Case Key",
       exterior: null,
       rarity: "Base Grade",
-      imageUrl: "https://example.com/case-key.png",
+      imageUrl: DEFAULT_MOCK_IMAGE,
       quantity: 1,
       steamItemIds: [`mock-key-${k}`],
       price: 8.1 + k * 0.2
