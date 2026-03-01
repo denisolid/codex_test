@@ -1,7 +1,10 @@
+const { nodeEnv } = require("../config/env");
+
 module.exports = (err, _req, res, _next) => {
   const status = err.statusCode || 500;
+  const exposeMessage = status < 500 || nodeEnv !== "production";
   const payload = {
-    error: err.message || "Internal Server Error"
+    error: exposeMessage ? err.message || "Request failed" : "Internal Server Error"
   };
 
   if (err.code) {

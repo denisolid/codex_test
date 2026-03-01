@@ -6,6 +6,7 @@ import { renderSkinCard, renderSkinCardSkeleton } from "./components/skinCard";
 const app = document.querySelector("#app");
 const SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "UAH", "PLN", "CZK"];
 const CURRENCY_STORAGE_KEY = "cs2sa:selected_currency";
+const SEARCH_RENDER_DEBOUNCE_MS = 120;
 
 function normalizeCurrencyCode(value) {
   const code = String(value || "")
@@ -125,6 +126,22 @@ const state = {
 
 const holdingsValueMemory = new Map();
 const metricCounterMemory = new Map();
+let delegatedAppEventsBound = false;
+
+function debounce(fn, waitMs = 100) {
+  let timer = null;
+  return (...args) => {
+    if (timer) {
+      clearTimeout(timer);
+    }
+    timer = setTimeout(() => {
+      timer = null;
+      fn(...args);
+    }, waitMs);
+  };
+}
+
+const debouncedRender = debounce(() => render(), SEARCH_RENDER_DEBOUNCE_MS);
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -757,6 +774,414 @@ function hydrateTabDefaults() {
   }
 }
 
+function runUiTask(task) {
+  Promise.resolve()
+    .then(task)
+    .catch((err) => {
+      const message = String(err?.message || "Request failed");
+      setError(message);
+    });
+}
+
+function syncMarketCommissionFromElement(el) {
+  if (!el) return;
+  const value = String(el.value || "");
+  state.marketTab.commissionPercent = value;
+  const primary = document.querySelector("#market-commission");
+  const inline = document.querySelector("#market-commission-inline");
+  if (primary && primary !== el) primary.value = value;
+  if (inline && inline !== el) inline.value = value;
+}
+
+async function handleCurrencySelectChange(nextCurrency) {
+  if (nextCurrency === state.currency) return;
+
+  state.currency = nextCurrency;
+  try {
+    localStorage.setItem(CURRENCY_STORAGE_KEY, nextCurrency);
+  } catch (_err) {
+    // Ignore storage write errors.
+  }
+  state.marketTab.inventoryValue = null;
+  state.marketTab.autoLoaded = false;
+  state.marketInsight = null;
+
+  await refreshPortfolio();
+  if (state.inspectedSteamItemId) {
+    await inspectSkinBySteamItemId(state.inspectedSteamItemId);
+  }
+}
+
+async function handleTabSwitch(tab) {
+  if (!tab || tab === state.activeTab) return;
+  state.activeTab = tab;
+  render();
+
+  if (
+    tab === "team" &&
+    String(state.authProfile?.planTier || "free").toLowerCase() === "team" &&
+    !state.teamDashboard.loading &&
+    !state.teamDashboard.payload
+  ) {
+    await refreshTeamDashboard({ silent: true });
+  }
+}
+
+function onAppClick(event) {
+  if (!app) return;
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) return;
+
+  const button = target.closest("button");
+
+  if (button?.matches("#logout-btn")) {
+    event.preventDefault();
+    runUiTask(() => logout());
+    return;
+  }
+
+  if (button?.matches("#refresh-btn")) {
+    event.preventDefault();
+    runUiTask(() => refreshPortfolio());
+    return;
+  }
+
+  if (button?.matches(".tab-btn")) {
+    event.preventDefault();
+    const tab = button.getAttribute("data-tab");
+    runUiTask(() => handleTabSwitch(tab));
+    return;
+  }
+
+  if (button?.matches(".tab-jump-btn")) {
+    event.preventDefault();
+    const tab = button.getAttribute("data-tab-target");
+    runUiTask(() => handleTabSwitch(tab));
+    return;
+  }
+
+  if (button?.matches("#sync-btn")) {
+    event.preventDefault();
+    runUiTask(() => syncInventory());
+    return;
+  }
+
+  if (button?.matches(".holdings-sort-btn")) {
+    event.preventDefault();
+    const nextSort = String(button.getAttribute("data-sort-next") || "value_desc");
+    state.holdingsView.sort = nextSort;
+    const sortSelect = document.querySelector("#holdings-sort");
+    if (sortSelect) {
+      sortSelect.value = nextSort;
+    }
+    render();
+    return;
+  }
+
+  if (button?.matches(".holdings-page-btn")) {
+    event.preventDefault();
+    state.holdingsView.page = clampInt(
+      button.getAttribute("data-page"),
+      1,
+      Math.max(getFilteredHoldings().pages, 1)
+    );
+    render();
+    return;
+  }
+
+  if (button?.matches(".history-range-btn")) {
+    event.preventDefault();
+    const days = clampInt(button.getAttribute("data-history-days"), 1, 180);
+    if (days === state.historyDays) return;
+    state.historyDays = days;
+    runUiTask(() => refreshPortfolio());
+    return;
+  }
+
+  if (button?.matches(".inspect-skin-btn")) {
+    event.preventDefault();
+    const steamItemId = button.getAttribute("data-steam-item-id");
+    const input = document.querySelector("#steam-item-id");
+    if (input) {
+      input.value = String(steamItemId || "");
+    }
+    runUiTask(() => inspectSkinBySteamItemId(steamItemId));
+    return;
+  }
+
+  if (button?.matches("#export-portfolio-btn")) {
+    event.preventDefault();
+    runUiTask(() => exportPortfolioCsv());
+    return;
+  }
+
+  if (button?.matches("#export-transactions-btn")) {
+    event.preventDefault();
+    runUiTask(() => exportTransactionsCsv());
+    return;
+  }
+
+  if (button?.matches(".tx-page-btn")) {
+    event.preventDefault();
+    state.transactionsView.page = clampInt(
+      button.getAttribute("data-page"),
+      1,
+      Math.max(getFilteredTransactions().pages, 1)
+    );
+    render();
+    return;
+  }
+
+  if (button?.matches(".tx-delete-btn")) {
+    event.preventDefault();
+    const txId = button.getAttribute("data-tx-id");
+    if (!txId) return;
+    runUiTask(() => removeTransaction(txId));
+    return;
+  }
+
+  if (button?.matches(".alert-edit-btn")) {
+    event.preventDefault();
+    startEditAlert(button.getAttribute("data-alert-id"));
+    return;
+  }
+
+  if (button?.matches(".alert-toggle-btn")) {
+    event.preventDefault();
+    runUiTask(() =>
+      toggleAlertEnabled(
+        button.getAttribute("data-alert-id"),
+        button.getAttribute("data-enabled") === "true"
+      )
+    );
+    return;
+  }
+
+  if (button?.matches(".alert-delete-btn")) {
+    event.preventDefault();
+    runUiTask(() => removeAlert(button.getAttribute("data-alert-id")));
+    return;
+  }
+
+  if (button?.matches("#alert-cancel-btn")) {
+    event.preventDefault();
+    cancelEditAlert();
+    return;
+  }
+
+  if (button?.matches(".watch-remove-btn")) {
+    event.preventDefault();
+    runUiTask(() => removeWatchlistEntry(button.getAttribute("data-steam-id")));
+    return;
+  }
+
+  if (button?.matches(".leaderboard-watch-btn")) {
+    event.preventDefault();
+    runUiTask(() =>
+      toggleWatchFromLeaderboard(
+        button.getAttribute("data-steam-id"),
+        button.getAttribute("data-watching") === "1"
+      )
+    );
+    return;
+  }
+
+  if (button?.matches(".plan-switch-btn")) {
+    event.preventDefault();
+    const planTier = String(button.getAttribute("data-plan-tier") || "").trim();
+    if (!planTier) return;
+    runUiTask(() => updatePlanTier(planTier));
+    return;
+  }
+
+  if (button?.matches("#team-refresh-btn")) {
+    event.preventDefault();
+    runUiTask(() => refreshTeamDashboard());
+  }
+}
+
+function onAppInput(event) {
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) return;
+
+  if (target.matches("#backtest-days")) {
+    state.backtest.days = String(target.value || "");
+    return;
+  }
+
+  if (target.matches("#holdings-search")) {
+    state.holdingsView.q = target.value;
+    state.holdingsView.page = 1;
+    debouncedRender();
+    return;
+  }
+
+  if (target.matches("#tx-search")) {
+    state.transactionsView.q = target.value;
+    state.transactionsView.page = 1;
+    debouncedRender();
+    return;
+  }
+
+  if (target.matches("#social-watch-steam-id")) {
+    state.social.newSteamId = target.value;
+    return;
+  }
+
+  if (target.matches("#market-commission, #market-commission-inline")) {
+    syncMarketCommissionFromElement(target);
+  }
+}
+
+function onAppChange(event) {
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) return;
+
+  if (target.matches("#currency-select")) {
+    const nextCurrency = normalizeCurrencyCode(target.value);
+    runUiTask(() => handleCurrencySelectChange(nextCurrency));
+    return;
+  }
+
+  if (target.matches("#holdings-status")) {
+    state.holdingsView.status = target.value;
+    state.holdingsView.page = 1;
+    render();
+    return;
+  }
+
+  if (target.matches("#holdings-sort")) {
+    state.holdingsView.sort = target.value;
+    render();
+    return;
+  }
+
+  if (target.matches("#holdings-page-size")) {
+    state.holdingsView.pageSize = clampInt(target.value, 1, 200);
+    state.holdingsView.page = 1;
+    render();
+    return;
+  }
+
+  if (target.matches("#tx-filter-type")) {
+    state.transactionsView.type = target.value;
+    state.transactionsView.page = 1;
+    render();
+    return;
+  }
+
+  if (target.matches("#tx-sort")) {
+    state.transactionsView.sort = target.value;
+    render();
+    return;
+  }
+
+  if (target.matches("#tx-page-size")) {
+    state.transactionsView.pageSize = clampInt(target.value, 1, 200);
+    state.transactionsView.page = 1;
+    render();
+    return;
+  }
+
+  if (target.matches("#social-scope")) {
+    state.social.scope = String(target.value || "global");
+    runUiTask(() => refreshSocialData());
+  }
+}
+
+function onAppSubmit(event) {
+  const form = event.target instanceof HTMLFormElement ? event.target : null;
+  if (!form) return;
+
+  if (form.id === "skin-form") {
+    event.preventDefault();
+    runUiTask(() => findSkin(event));
+    return;
+  }
+
+  if (form.id === "exit-whatif-form") {
+    event.preventDefault();
+    runUiTask(() => calculateExitWhatIf(event));
+    return;
+  }
+
+  if (form.id === "backtest-form") {
+    event.preventDefault();
+    runUiTask(() => runPortfolioBacktest(event));
+    return;
+  }
+
+  if (form.id === "tx-form") {
+    event.preventDefault();
+    runUiTask(() => submitTransaction(event));
+    return;
+  }
+
+  if (form.id === "tx-csv-form") {
+    event.preventDefault();
+    runUiTask(() => importTransactionsCsv(event));
+    return;
+  }
+
+  if (form.id === "trade-calc-form") {
+    event.preventDefault();
+    runUiTask(() => calculateTrade(event));
+    return;
+  }
+
+  if (form.id === "alert-form") {
+    event.preventDefault();
+    runUiTask(() => submitAlertForm(event));
+    return;
+  }
+
+  if (form.id === "social-watch-form") {
+    event.preventDefault();
+    runUiTask(() => addWatchlistEntry(event));
+    return;
+  }
+
+  if (form.id === "social-board-form") {
+    event.preventDefault();
+    runUiTask(() => refreshSocialData());
+    return;
+  }
+
+  if (form.id === "market-inventory-form") {
+    event.preventDefault();
+    runUiTask(() => submitMarketInventoryRefresh(event));
+    return;
+  }
+
+  if (form.id === "market-item-form") {
+    event.preventDefault();
+    runUiTask(() => submitMarketAnalyze(event));
+    return;
+  }
+
+  if (form.id === "public-settings-form") {
+    event.preventDefault();
+    runUiTask(() => updatePublicPortfolioSettings(event));
+    return;
+  }
+
+  if (form.id === "ownership-settings-form") {
+    event.preventDefault();
+    runUiTask(() => updateOwnershipAlertSettings(event));
+  }
+}
+
+function ensureAppEventDelegation() {
+  if (!app || delegatedAppEventsBound) return;
+
+  app.addEventListener("click", onAppClick);
+  app.addEventListener("input", onAppInput);
+  app.addEventListener("change", onAppChange);
+  app.addEventListener("submit", onAppSubmit);
+
+  delegatedAppEventsBound = true;
+}
+
 async function logout() {
   try {
     await api("/auth/logout", { method: "POST" });
@@ -935,6 +1360,18 @@ async function refreshPortfolio(options = {}) {
       ? leaderboardPayload.items
       : [];
     state.alerts = Array.isArray(portfolio.alerts) ? portfolio.alerts : [];
+
+    const liveSkinIds = new Set(
+      (Array.isArray(portfolio?.items) ? portfolio.items : [])
+        .map((item) => Number(item?.skinId))
+        .filter((id) => Number.isInteger(id) && id > 0)
+    );
+    for (const skinId of holdingsValueMemory.keys()) {
+      if (!liveSkinIds.has(Number(skinId))) {
+        holdingsValueMemory.delete(skinId);
+      }
+    }
+
     state.marketTab.autoLoaded = false;
     hydrateTabDefaults();
 
@@ -1826,7 +2263,7 @@ function renderPortfolioCardGrid() {
 
   const { items } = getFilteredHoldings();
   if (!items.length) {
-    return `<p class="muted">No holdings yet. Sync inventory to populate your portfolio cards.</p>`;
+    return `<p class="empty-state">No holdings yet. Sync inventory to populate your portfolio cards.</p>`;
   }
 
   return `
@@ -1858,7 +2295,7 @@ function renderPortfolioRows() {
 
   const { items } = getFilteredHoldings();
   if (!items.length) {
-    return `<tr><td colspan="10" class="muted">No holdings yet. Link Steam and run sync.</td></tr>`;
+    return `<tr><td colspan="10" class="muted empty-table-cell">No holdings yet. Link Steam and run sync.</td></tr>`;
   }
 
   const formatSteamItemIdCell = (item) => {
@@ -1944,7 +2381,7 @@ function renderHistoryChart() {
     .filter((point) => point.date && Number.isFinite(point.value));
 
   if (!points.length) {
-    return `<p class="muted">No history yet. Sync inventory to create data points.</p>`;
+    return `<p class="empty-state">No history yet. Sync inventory to create data points.</p>`;
   }
 
   const values = points.map((point) => point.value);
@@ -2296,7 +2733,7 @@ function renderTransactionManager() {
           `;
         })
         .join("")
-    : '<tr><td colspan="8" class="muted">No buy/sell transactions yet.</td></tr>';
+    : '<tr><td colspan="8" class="muted empty-table-cell">No buy/sell transactions yet.</td></tr>';
 
   const csvSummary = state.csvImport.summary;
   const csvSummaryMarkup = csvSummary
@@ -2449,7 +2886,7 @@ function renderSkinValueGraph(historyRows) {
     .sort((a, b) => a.date.localeCompare(b.date));
 
   if (!points.length) {
-    return `<p class="muted">No historical values to graph yet.</p>`;
+    return `<p class="empty-state">No historical values to graph yet.</p>`;
   }
 
   const values = points.map((p) => p.value);
@@ -2790,14 +3227,16 @@ function renderAuthNotices() {
   if (!state.authenticated) return "";
 
   const infoNotice = state.accountNotice
-    ? `<div class="info">${escapeHtml(state.accountNotice)}</div>`
+    ? `<div class="info" role="status" aria-live="polite">${escapeHtml(
+        state.accountNotice
+      )}</div>`
     : "";
 
   if (state.authProfile?.emailConfirmed === false) {
     const safeEmail = escapeHtml(state.authProfile.email || "your account");
     return `
       ${infoNotice}
-      <div class="error">
+      <div class="error" role="alert" aria-live="assertive">
         Email for <strong>${safeEmail}</strong> is not confirmed.
         Check your inbox and click the confirmation link.
       </div>
@@ -3898,7 +4337,7 @@ function renderPublicPortfolioPage() {
             page.loading
               ? "<h1>Loading profile...</h1>"
               : page.error
-                ? `<h1>Could not load profile</h1><div class="error">${escapeHtml(
+                ? `<h1>Could not load profile</h1><div class="error" role="alert" aria-live="assertive">${escapeHtml(
                     page.error
                   )}</div>`
                 : `<h1>${escapeHtml(profile.displayName || `Steam ${profile.steamId64 || ""}`)}</h1>`
@@ -4052,7 +4491,7 @@ function renderSteamSyncPanel() {
   }
 
   const onboardingNotice = state.steamOnboardingPending
-    ? `<div class="info"><strong>You're connected, click sync now.</strong> We will import your inventory and latest prices in one step.</div>`
+    ? `<div class="info" role="status" aria-live="polite"><strong>You're connected, click sync now.</strong> We will import your inventory and latest prices in one step.</div>`
     : "";
 
   return `
@@ -4328,279 +4767,28 @@ function renderApp() {
           </div>
         </header>
 
-        ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ""}
+        ${
+          state.error
+            ? `<div class="error" role="alert" aria-live="assertive">${escapeHtml(
+                state.error
+              )}</div>`
+            : ""
+        }
         ${renderAuthNotices()}
         ${tabContent}
       </section>
     </main>
   `;
 
-  document.querySelector("#logout-btn").addEventListener("click", logout);
-  document.querySelector("#refresh-btn").addEventListener("click", refreshPortfolio);
+  ensureAppEventDelegation();
 
-  document.querySelectorAll(".tab-btn").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const tab = btn.getAttribute("data-tab");
-      if (!tab || tab === state.activeTab) return;
-      state.activeTab = tab;
-      render();
-      if (
-        tab === "team" &&
-        String(state.authProfile?.planTier || "free").toLowerCase() === "team" &&
-        !state.teamDashboard.loading &&
-        !state.teamDashboard.payload
-      ) {
-        await refreshTeamDashboard({ silent: true });
-      }
-    });
-  });
-
-  document.querySelectorAll(".tab-jump-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const target = btn.getAttribute("data-tab-target");
-      if (!target || target === state.activeTab) return;
-      state.activeTab = target;
-      render();
-    });
-  });
-
-  document.querySelector("#currency-select")?.addEventListener("change", async (event) => {
-    const nextCurrency = normalizeCurrencyCode(event.target.value);
-    if (nextCurrency === state.currency) return;
-
-    state.currency = nextCurrency;
-    localStorage.setItem(CURRENCY_STORAGE_KEY, nextCurrency);
-    state.marketTab.inventoryValue = null;
-    state.marketTab.autoLoaded = false;
-    state.marketInsight = null;
-
-    try {
-      await refreshPortfolio();
-      if (state.inspectedSteamItemId) {
-        await inspectSkinBySteamItemId(state.inspectedSteamItemId);
-      }
-    } catch (err) {
-      setError(err.message);
-    }
-  });
-
-  if (state.activeTab === "dashboard" || state.activeTab === "portfolio") {
-    document.querySelector("#sync-btn")?.addEventListener("click", syncInventory);
-    document.querySelector("#skin-form")?.addEventListener("submit", findSkin);
-    document.querySelector("#exit-whatif-form")?.addEventListener("submit", calculateExitWhatIf);
-    document.querySelector("#backtest-form")?.addEventListener("submit", runPortfolioBacktest);
-    document.querySelector("#backtest-days")?.addEventListener("input", (event) => {
-      state.backtest.days = String(event.target.value || "");
-    });
-    document.querySelector("#export-portfolio-btn")?.addEventListener("click", exportPortfolioCsv);
-
-    document.querySelector("#holdings-search")?.addEventListener("input", (event) => {
-      state.holdingsView.q = event.target.value;
-      state.holdingsView.page = 1;
-      render();
-    });
-    document.querySelector("#holdings-status")?.addEventListener("change", (event) => {
-      state.holdingsView.status = event.target.value;
-      state.holdingsView.page = 1;
-      render();
-    });
-    document.querySelector("#holdings-sort")?.addEventListener("change", (event) => {
-      state.holdingsView.sort = event.target.value;
-      render();
-    });
-    document.querySelectorAll(".holdings-sort-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const nextSort = String(btn.getAttribute("data-sort-next") || "value_desc");
-        state.holdingsView.sort = nextSort;
-        const sortSelect = document.querySelector("#holdings-sort");
-        if (sortSelect) {
-          sortSelect.value = nextSort;
-        }
-        render();
-      });
-    });
-    document.querySelector("#holdings-page-size")?.addEventListener("change", (event) => {
-      state.holdingsView.pageSize = clampInt(event.target.value, 1, 200);
-      state.holdingsView.page = 1;
-      render();
-    });
-    document.querySelectorAll(".holdings-page-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        state.holdingsView.page = clampInt(
-          btn.getAttribute("data-page"),
-          1,
-          Math.max(getFilteredHoldings().pages, 1)
-        );
-        render();
-      });
-    });
-    document.querySelectorAll(".history-range-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const days = clampInt(btn.getAttribute("data-history-days"), 1, 180);
-        if (days === state.historyDays) return;
-        state.historyDays = days;
-        await refreshPortfolio();
-      });
-    });
-    document.querySelectorAll(".inspect-skin-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const steamItemId = btn.getAttribute("data-steam-item-id");
-        const input = document.querySelector("#steam-item-id");
-        if (input) {
-          input.value = String(steamItemId || "");
-        }
-        inspectSkinBySteamItemId(steamItemId);
-      });
-    });
-  }
-
-  if (state.activeTab === "trades") {
-    document.querySelector("#tx-form")?.addEventListener("submit", submitTransaction);
-    document.querySelector("#tx-csv-form")?.addEventListener("submit", importTransactionsCsv);
-    document.querySelector("#trade-calc-form")?.addEventListener("submit", calculateTrade);
-    document.querySelector("#export-transactions-btn")?.addEventListener("click", exportTransactionsCsv);
-    document.querySelector("#tx-search")?.addEventListener("input", (event) => {
-      state.transactionsView.q = event.target.value;
-      state.transactionsView.page = 1;
-      render();
-    });
-    document.querySelector("#tx-filter-type")?.addEventListener("change", (event) => {
-      state.transactionsView.type = event.target.value;
-      state.transactionsView.page = 1;
-      render();
-    });
-    document.querySelector("#tx-sort")?.addEventListener("change", (event) => {
-      state.transactionsView.sort = event.target.value;
-      render();
-    });
-    document.querySelector("#tx-page-size")?.addEventListener("change", (event) => {
-      state.transactionsView.pageSize = clampInt(event.target.value, 1, 200);
-      state.transactionsView.page = 1;
-      render();
-    });
-    document.querySelectorAll(".tx-page-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        state.transactionsView.page = clampInt(
-          btn.getAttribute("data-page"),
-          1,
-          Math.max(getFilteredTransactions().pages, 1)
-        );
-        render();
-      });
-    });
-    document.querySelectorAll(".tx-delete-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const txId = btn.getAttribute("data-tx-id");
-        if (!txId) return;
-        removeTransaction(txId);
-      });
-    });
-  }
-
-  if (state.activeTab === "alerts") {
-    document.querySelector("#alert-form")?.addEventListener("submit", submitAlertForm);
-    document.querySelector("#alert-cancel-btn")?.addEventListener("click", cancelEditAlert);
-    document.querySelectorAll(".alert-edit-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        startEditAlert(btn.getAttribute("data-alert-id"));
-      });
-    });
-    document.querySelectorAll(".alert-toggle-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        toggleAlertEnabled(
-          btn.getAttribute("data-alert-id"),
-          btn.getAttribute("data-enabled") === "true"
-        );
-      });
-    });
-    document.querySelectorAll(".alert-delete-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        removeAlert(btn.getAttribute("data-alert-id"));
-      });
-    });
-  }
-
-  if (state.activeTab === "social") {
-    document.querySelector("#social-watch-form")?.addEventListener("submit", addWatchlistEntry);
-    document.querySelector("#social-watch-steam-id")?.addEventListener("input", (event) => {
-      state.social.newSteamId = event.target.value;
-    });
-    document.querySelector("#social-board-form")?.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      await refreshSocialData();
-    });
-    document.querySelector("#social-scope")?.addEventListener("change", async (event) => {
-      state.social.scope = String(event.target.value || "global");
-      await refreshSocialData();
-    });
-
-    document.querySelectorAll(".watch-remove-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        removeWatchlistEntry(btn.getAttribute("data-steam-id"));
-      });
-    });
-
-    document.querySelectorAll(".leaderboard-watch-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        toggleWatchFromLeaderboard(
-          btn.getAttribute("data-steam-id"),
-          btn.getAttribute("data-watching") === "1"
-        );
-      });
-    });
-  }
-
-  if (state.activeTab === "market") {
-    const syncCommissionFrom = (el) => {
-      if (!el) return;
-      const value = String(el.value || "");
-      state.marketTab.commissionPercent = value;
-      const primary = document.querySelector("#market-commission");
-      const inline = document.querySelector("#market-commission-inline");
-      if (primary && primary !== el) primary.value = value;
-      if (inline && inline !== el) inline.value = value;
-    };
-
-    const marketCommission = document.querySelector("#market-commission");
-    const marketCommissionInline = document.querySelector("#market-commission-inline");
-    marketCommission?.addEventListener("input", () => syncCommissionFrom(marketCommission));
-    marketCommissionInline?.addEventListener("input", () =>
-      syncCommissionFrom(marketCommissionInline)
-    );
-    document
-      .querySelector("#market-inventory-form")
-      ?.addEventListener("submit", submitMarketInventoryRefresh);
-    document.querySelector("#market-item-form")?.addEventListener("submit", submitMarketAnalyze);
-
-    if (
-      !state.marketTab.inventoryValue &&
-      !state.marketTab.loading &&
-      !state.marketTab.autoLoaded
-    ) {
-      refreshMarketInventoryValue();
-    }
-  }
-
-  if (state.activeTab === "settings") {
-    document
-      .querySelector("#public-settings-form")
-      ?.addEventListener("submit", updatePublicPortfolioSettings);
-    document
-      .querySelector("#ownership-settings-form")
-      ?.addEventListener("submit", updateOwnershipAlertSettings);
-    document.querySelectorAll(".plan-switch-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const planTier = String(btn.getAttribute("data-plan-tier") || "").trim();
-        if (!planTier) return;
-        updatePlanTier(planTier);
-      });
-    });
-  }
-
-  if (state.activeTab === "team") {
-    document.querySelector("#team-refresh-btn")?.addEventListener("click", () => {
-      refreshTeamDashboard();
-    });
+  if (
+    state.activeTab === "market" &&
+    !state.marketTab.inventoryValue &&
+    !state.marketTab.loading &&
+    !state.marketTab.autoLoaded
+  ) {
+    runUiTask(() => refreshMarketInventoryValue());
   }
 
   animateMetricCounters();

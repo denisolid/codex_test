@@ -110,8 +110,20 @@ function render(
             : "Start tracking your CS2 items as a real portfolio."
         }</p>
 
-        ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
-        ${info ? `<div class="info">${escapeHtml(info)}</div>` : ""}
+        ${
+          error
+            ? `<div class="error" role="alert" aria-live="assertive">${escapeHtml(
+                error
+              )}</div>`
+            : ""
+        }
+        ${
+          info
+            ? `<div class="info" role="status" aria-live="polite">${escapeHtml(
+                info
+              )}</div>`
+            : ""
+        }
 
         <form id="auth-form" class="form">
           <label>Email

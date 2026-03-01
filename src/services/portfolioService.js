@@ -391,19 +391,73 @@ exports.getPortfolioHistory = async (userId, days = 7, options = {}) => {
     latestPriceBySkin[Number(skinId)] = Number(row?.price || 0);
   }
 
-  const points = [];
+  const earliestReferenceDate =
+    normalizedDays <= 1 ? new Date() : daysAgoEnd(normalizedDays - 1);
+  const baselineBySkin = await priceRepo.getLatestPricesBeforeDate(
+    skinIds,
+    earliestReferenceDate
+  );
+  const historyLimit = Math.min(
+    Math.max(skinIds.length * (normalizedDays + 8), 12000),
+    90000
+  );
+  const historyRows = await priceRepo.getHistoryBySkinIdsSince(
+    skinIds,
+    earliestReferenceDate,
+    historyLimit
+  );
 
+  const rowsBySkin = {};
+  for (const row of historyRows) {
+    const skinId = Number(row.skin_id);
+    const ts = new Date(row.recorded_at).getTime();
+    if (!Number.isInteger(skinId) || Number.isNaN(ts)) {
+      continue;
+    }
+
+    if (!rowsBySkin[skinId]) {
+      rowsBySkin[skinId] = [];
+    }
+
+    rowsBySkin[skinId].push({
+      ts,
+      price: Number(row.price || 0)
+    });
+  }
+
+  Object.values(rowsBySkin).forEach((rows) => rows.sort((a, b) => a.ts - b.ts));
+
+  const cursorBySkin = {};
+  const lastPriceBySkin = {};
+  for (const skinId of skinIds) {
+    cursorBySkin[skinId] = 0;
+    if (baselineBySkin[skinId] != null) {
+      lastPriceBySkin[skinId] = Number(baselineBySkin[skinId]);
+    } else {
+      lastPriceBySkin[skinId] = Number(latestPriceBySkin[skinId] || 0);
+    }
+  }
+
+  const points = [];
   for (let i = normalizedDays - 1; i >= 0; i -= 1) {
     const referenceDate = i === 0 ? new Date() : daysAgoEnd(i);
     const labelDate = daysAgoStart(i);
-    const px = await priceRepo.getLatestPricesBeforeDate(skinIds, referenceDate);
-    const total = holdings.reduce(
-      (acc, h) => {
-        const price = px[h.skin_id] ?? latestPriceBySkin[h.skin_id] ?? 0;
-        return acc + h.quantity * price;
-      },
-      0
-    );
+    const referenceTs = referenceDate.getTime();
+
+    const total = holdings.reduce((acc, h) => {
+      const skinId = Number(h.skin_id);
+      const rows = rowsBySkin[skinId] || [];
+      let cursor = Number(cursorBySkin[skinId] || 0);
+
+      while (cursor < rows.length && rows[cursor].ts <= referenceTs) {
+        lastPriceBySkin[skinId] = Number(rows[cursor].price || 0);
+        cursor += 1;
+      }
+
+      cursorBySkin[skinId] = cursor;
+      const price = Number(lastPriceBySkin[skinId] || latestPriceBySkin[skinId] || 0);
+      return acc + Number(h.quantity || 0) * price;
+    }, 0);
 
     points.push({
       date: labelDate.toISOString().slice(0, 10),

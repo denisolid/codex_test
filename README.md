@@ -184,6 +184,24 @@ Examples:
 - Start backend (non-watch):
   - `npm start`
 
+## Secret scanning (gitleaks)
+
+- Install gitleaks (Windows):
+  - `winget install --id Gitleaks.Gitleaks --exact --source winget`
+- Enable repo hooks once:
+  - `npm run hooks:enable`
+- Run full git scan manually:
+  - `npm run security:gitleaks`
+- Run working-tree scan (includes local files like `.env`):
+  - `npm run security:gitleaks:dir`
+- Run staged-only scan manually:
+  - `npm run security:gitleaks:staged`
+
+Notes:
+- The pre-commit hook is at `.githooks/pre-commit` and blocks commits if staged secrets are detected.
+- Keep real credentials only in local `.env` files and deployment secret managers.
+- Never commit `.env` or `frontend/.env`.
+
 ## Steam inventory sync mode
 
 - Configure in root `.env`:
