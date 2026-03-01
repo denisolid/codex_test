@@ -1,5 +1,4 @@
 const asyncHandler = require("../utils/asyncHandler");
-const AppError = require("../utils/AppError");
 const extensionApiKeyService = require("../services/extensionApiKeyService");
 const marketService = require("../services/marketService");
 const tradeCalculatorService = require("../services/tradeCalculatorService");
@@ -15,7 +14,8 @@ exports.listApiKeys = asyncHandler(async (req, res) => {
 });
 
 exports.revokeApiKey = asyncHandler(async (req, res) => {
-  await extensionApiKeyService.revokeKey(req.userId, Number(req.params.id));
+  const keyId = Number(req.validated?.keyId || req.params.id);
+  await extensionApiKeyService.revokeKey(req.userId, keyId);
   res.status(204).send();
 });
 
@@ -27,11 +27,7 @@ exports.getInventoryValue = asyncHandler(async (req, res) => {
 });
 
 exports.getQuickSellSuggestion = asyncHandler(async (req, res) => {
-  const skinId = Number(req.params.skinId);
-  if (!Number.isInteger(skinId) || skinId <= 0) {
-    throw new AppError("Invalid item id", 400);
-  }
-
+  const skinId = Number(req.validated?.skinId || req.params.skinId);
   const data = await marketService.getQuickSellSuggestion(skinId, {
     currency: req.query.currency
   });

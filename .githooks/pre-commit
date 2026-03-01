@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+set -eu
+
+if ! command -v powershell.exe >/dev/null 2>&1; then
+  echo "ERROR: powershell.exe not found. Cannot run gitleaks pre-commit scan."
+  exit 1
+fi
+
+echo "Running gitleaks staged scan..."
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/run-gitleaks.ps1 -Staged

@@ -6,11 +6,14 @@ import { setAuthToken, withAuthHeaders } from "./authToken";
 const app = document.querySelector("#app");
 
 function render(message, isError = false) {
+  const roleAttr = isError
+    ? 'role="alert" aria-live="assertive"'
+    : 'role="status" aria-live="polite"';
   app.innerHTML = `
     <main class="layout auth-layout">
       <article class="panel auth-panel">
         <h1>${isError ? "Auth failed" : "Completing sign-in"}</h1>
-        <p class="${isError ? "error" : "info"}">${message}</p>
+        <p class="${isError ? "error" : "info"}" ${roleAttr}>${message}</p>
         <p class="muted"><a href="/login.html">Back to login</a></p>
       </article>
     </main>
