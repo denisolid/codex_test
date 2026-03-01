@@ -7,6 +7,8 @@ const priceRepo = require("../repositories/priceHistoryRepository");
 const {
   steamInventorySource,
   steamInventoryTimeoutMs,
+  steamInventoryMaxRetries,
+  steamInventoryRetryBaseMs,
   marketPriceSource,
   marketPriceFallbackToMock,
   marketPriceRateLimitPerSecond,
@@ -40,6 +42,12 @@ async function withRetries(fn, retries = 3, baseDelayMs = 250) {
 }
 
 async function fetchInventoryByConfiguredSource(steamId64) {
+  const fetchOptions = {
+    timeoutMs: steamInventoryTimeoutMs,
+    maxRetries: steamInventoryMaxRetries,
+    retryBaseMs: steamInventoryRetryBaseMs
+  };
+
   if (steamInventorySource === "mock") {
     return {
       items: await mockSteamService.fetchInventory(steamId64),
@@ -49,16 +57,12 @@ async function fetchInventoryByConfiguredSource(steamId64) {
   }
 
   if (steamInventorySource === "real") {
-    const data = await steamInventoryService.fetchInventory(steamId64, {
-      timeoutMs: steamInventoryTimeoutMs
-    });
+    const data = await steamInventoryService.fetchInventory(steamId64, fetchOptions);
     return { ...data, source: "steam" };
   }
 
   try {
-    const data = await steamInventoryService.fetchInventory(steamId64, {
-      timeoutMs: steamInventoryTimeoutMs
-    });
+    const data = await steamInventoryService.fetchInventory(steamId64, fetchOptions);
     return { ...data, source: "steam" };
   } catch (_err) {
     const items = await mockSteamService.fetchInventory(steamId64);
