@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480" role="img" aria-labelledby="title desc">
+  <title id="title">CS2 Case Placeholder</title>
+  <desc id="desc">Stylized case icon used when market images are unavailable.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0d1426"/>
+      <stop offset="100%" stop-color="#1a2a4f"/>
+    </linearGradient>
+    <linearGradient id="caseFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4b6aa1"/>
+      <stop offset="100%" stop-color="#263a66"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="480" rx="20" fill="url(#bg)"/>
+  <g transform="translate(160 105)">
+    <rect x="0" y="40" width="320" height="220" rx="16" fill="url(#caseFill)" stroke="#82a0db" stroke-width="6"/>
+    <rect x="90" y="0" width="140" height="70" rx="14" fill="#2f487b" stroke="#82a0db" stroke-width="6"/>
+    <rect x="128" y="118" width="64" height="64" rx="10" fill="#0f1a33" stroke="#a7bff2" stroke-width="5"/>
+    <path d="M128 150h64" stroke="#a7bff2" stroke-width="5"/>
+    <path d="M160 118v64" stroke="#a7bff2" stroke-width="5"/>
+  </g>
+  <text x="320" y="424" text-anchor="middle" fill="#c9d8ff" font-family="Segoe UI, Arial, sans-serif" font-size="26" font-weight="600">
+    MARKET IMAGE UNAVAILABLE
+  </text>
+</svg>

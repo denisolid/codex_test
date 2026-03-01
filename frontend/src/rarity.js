@@ -12,6 +12,9 @@ export const rarityColors = Object.freeze({
 
 export const defaultSkinImage =
   "https://community.akamai.steamstatic.com/public/images/apps/730/header.jpg";
+export const defaultCaseImage = "/case-placeholder.svg";
+
+const knownBrokenImageHosts = new Set(["example.com", "www.example.com"]);
 
 const rarityAliases = Object.freeze({
   "base grade": "Consumer Grade",
@@ -78,4 +81,35 @@ export function getRarityTheme(item = {}) {
   const rarity = normalizeRarity(item.rarity, item.marketHashName);
   const color = getRarityColor(item.rarity, item.marketHashName, item.rarityColor);
   return { rarity, color };
+}
+
+export function isKnownBrokenImageUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return false;
+  try {
+    const parsed = new URL(raw);
+    return knownBrokenImageHosts.has(parsed.hostname.toLowerCase());
+  } catch (_err) {
+    return false;
+  }
+}
+
+export function isCaseLikeItem(item = {}) {
+  const name = String(item.marketHashName || item.skinName || "").toLowerCase();
+  const weapon = String(item.weapon || "").toLowerCase();
+  return (
+    /\b(case|container|capsule|souvenir package|gift package)\b/.test(name) ||
+    /\bcontainer\b/.test(weapon)
+  );
+}
+
+export function resolveItemImageUrl(item = {}) {
+  const candidates = [item.imageUrlLarge, item.imageUrl];
+  for (const candidate of candidates) {
+    const raw = String(candidate || "").trim();
+    if (!/^https?:\/\//i.test(raw)) continue;
+    if (isKnownBrokenImageUrl(raw)) continue;
+    return raw;
+  }
+  return isCaseLikeItem(item) ? defaultCaseImage : defaultSkinImage;
 }

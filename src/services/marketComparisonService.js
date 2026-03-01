@@ -7,6 +7,7 @@ const csfloatMarket = require("../markets/csfloat.market");
 const dmarketMarket = require("../markets/dmarket.market");
 const {
   round2,
+  roundPrice,
   sourceFeePercent,
   buildMarketPriceRecord
 } = require("../markets/marketUtils");
@@ -477,17 +478,18 @@ exports.compareItems = async (items = [], options = {}) => {
       bestBuy,
       bestSellNet
     });
-    const selectedUnitPrice = round2(getModeUnitPrice(pricingMode, selected));
-    const selectedLineValue = round2(selectedUnitPrice * Number(item.quantity || 0));
+    const quantity = Number(item.quantity || 0);
+    const selectedUnitPrice = roundPrice(getModeUnitPrice(pricingMode, selected));
+    const selectedLineValue = roundPrice(selectedUnitPrice * quantity);
 
-    const steamUnit = round2(Number(steam?.grossPrice || 0));
-    const bestBuyUnit = round2(Number(bestBuy?.grossPrice || 0));
-    const bestSellNetUnit = round2(Number(bestSellNet?.netPriceAfterFees || 0));
+    const steamUnit = Number(steam?.grossPrice || 0);
+    const bestBuyUnit = Number(bestBuy?.grossPrice || 0);
+    const bestSellNetUnit = Number(bestSellNet?.netPriceAfterFees || 0);
 
     summary.totalValueSelected += selectedLineValue;
-    summary.totalValueSteam += round2(steamUnit * Number(item.quantity || 0));
-    summary.totalValueBestSellNet += round2(bestSellNetUnit * Number(item.quantity || 0));
-    summary.totalValueLowestBuy += round2(bestBuyUnit * Number(item.quantity || 0));
+    summary.totalValueSteam += steamUnit * quantity;
+    summary.totalValueBestSellNet += bestSellNetUnit * quantity;
+    summary.totalValueLowestBuy += bestBuyUnit * quantity;
 
     if (selectedUnitPrice > 0) {
       summary.pricedItemsCount += 1;
@@ -520,9 +522,9 @@ exports.compareItems = async (items = [], options = {}) => {
       selectedUnitPrice,
       selectedLineValue,
       totalsByMode: {
-        steam: round2(steamUnit * Number(item.quantity || 0)),
-        best_sell_net: round2(bestSellNetUnit * Number(item.quantity || 0)),
-        lowest_buy: round2(bestBuyUnit * Number(item.quantity || 0))
+        steam: roundPrice(steamUnit * quantity),
+        best_sell_net: roundPrice(bestSellNetUnit * quantity),
+        lowest_buy: roundPrice(bestBuyUnit * quantity)
       }
     };
   });

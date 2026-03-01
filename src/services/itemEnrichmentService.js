@@ -8,6 +8,7 @@ const STEAM_IMAGE_BASE = "https://community.akamai.steamstatic.com/economy/image
 const DEFAULT_PLACEHOLDER = String(defaultSkinImageUrl || "").trim();
 const ENRICHMENT_MAX_AGE_DAYS = Math.max(Number(skinEnrichmentMaxAgeDays || 14), 1);
 const ENRICHMENT_MAX_AGE_MS = ENRICHMENT_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+const KNOWN_BAD_IMAGE_HOSTS = new Set(["example.com", "www.example.com"]);
 
 const RARITY_COLORS = Object.freeze({
   "Consumer Grade": "#b0c3d9",
@@ -96,6 +97,24 @@ function sanitizeHttpUrl(value) {
   }
 }
 
+function isKnownBadImageUrl(value) {
+  const safe = sanitizeHttpUrl(value);
+  if (!safe) return false;
+  try {
+    const host = new URL(safe).hostname.toLowerCase();
+    return KNOWN_BAD_IMAGE_HOSTS.has(host);
+  } catch (_err) {
+    return false;
+  }
+}
+
+function sanitizeImageUrl(value) {
+  const safe = sanitizeHttpUrl(value);
+  if (!safe) return null;
+  if (isKnownBadImageUrl(safe)) return null;
+  return safe;
+}
+
 function buildSteamImageUrlFromIcon(iconRef) {
   const icon = String(iconRef || "").trim();
   if (!icon) return null;
@@ -103,7 +122,7 @@ function buildSteamImageUrlFromIcon(iconRef) {
 }
 
 function buildLargeImageUrl(imageUrl) {
-  const safeImageUrl = sanitizeHttpUrl(imageUrl);
+  const safeImageUrl = sanitizeImageUrl(imageUrl);
   if (!safeImageUrl) return null;
 
   if (safeImageUrl.includes("/economy/image/")) {
@@ -115,7 +134,10 @@ function buildLargeImageUrl(imageUrl) {
 
 function shouldRefreshMetadata(existingSkin) {
   if (!existingSkin) return true;
-  if (!existingSkin.image_url || !existingSkin.rarity || !existingSkin.rarity_color) return true;
+  const hasValidImage = Boolean(
+    sanitizeImageUrl(existingSkin.image_url) || sanitizeImageUrl(existingSkin.image_url_large)
+  );
+  if (!hasValidImage || !existingSkin.rarity || !existingSkin.rarity_color) return true;
   const updatedAt = new Date(existingSkin.updated_at || existingSkin.created_at || 0).getTime();
   if (!Number.isFinite(updatedAt) || updatedAt <= 0) return true;
   return Date.now() - updatedAt >= ENRICHMENT_MAX_AGE_MS;
@@ -124,19 +146,20 @@ function shouldRefreshMetadata(existingSkin) {
 function buildSkinMetadata(item, existingSkin = null) {
   const refresh = shouldRefreshMetadata(existingSkin);
   const fallbackImage =
-    sanitizeHttpUrl(DEFAULT_PLACEHOLDER) ||
+    sanitizeImageUrl(DEFAULT_PLACEHOLDER) ||
     "https://community.akamai.steamstatic.com/public/images/apps/730/header.jpg";
 
   const sourceImage =
-    sanitizeHttpUrl(item.imageUrl) ||
-    buildSteamImageUrlFromIcon(item.iconUrl) ||
-    sanitizeHttpUrl(existingSkin?.image_url) ||
+    sanitizeImageUrl(item.imageUrl) ||
+    sanitizeImageUrl(buildSteamImageUrlFromIcon(item.iconUrl)) ||
+    sanitizeImageUrl(existingSkin?.image_url) ||
+    sanitizeImageUrl(existingSkin?.image_url_large) ||
     fallbackImage;
 
   const sourceLargeImage =
-    sanitizeHttpUrl(item.imageUrlLarge) ||
+    sanitizeImageUrl(item.imageUrlLarge) ||
     buildLargeImageUrl(sourceImage) ||
-    sanitizeHttpUrl(existingSkin?.image_url_large) ||
+    sanitizeImageUrl(existingSkin?.image_url_large) ||
     sourceImage;
 
   const sourceRarity = normalizeRarityName(
@@ -149,10 +172,13 @@ function buildSkinMetadata(item, existingSkin = null) {
   if (!refresh) {
     const existingColor = sanitizeHexColor(existingSkin.rarity_color);
     return {
-      imageUrl: sanitizeHttpUrl(existingSkin.image_url) || sourceImage,
+      imageUrl:
+        sanitizeImageUrl(existingSkin.image_url) ||
+        sanitizeImageUrl(existingSkin.image_url_large) ||
+        sourceImage,
       imageUrlLarge:
-        sanitizeHttpUrl(existingSkin.image_url_large) ||
-        buildLargeImageUrl(existingSkin.image_url) ||
+        sanitizeImageUrl(existingSkin.image_url_large) ||
+        buildLargeImageUrl(sanitizeImageUrl(existingSkin.image_url)) ||
         sourceLargeImage,
       rarity: String(existingSkin.rarity || sourceRarity),
       rarityColor: existingColor || sourceColor
@@ -230,6 +256,8 @@ module.exports = {
   __testables: {
     sanitizeHexColor,
     sanitizeHttpUrl,
+    sanitizeImageUrl,
+    isKnownBadImageUrl,
     buildLargeImageUrl,
     buildSteamImageUrlFromIcon,
     shouldRefreshMetadata

@@ -110,3 +110,36 @@ test("enrichInventoryItems uses placeholder when no image is available", () => {
   assert.match(enrichedItems[0].imageUrl, /^https:\/\//);
   assert.equal(enrichedItems[0].rarity, "Consumer Grade");
 });
+
+test("enrichInventoryItems refreshes fresh rows with known bad image hosts", () => {
+  const nowIso = new Date().toISOString();
+  const iconUrl = "3f6de9f5f2d80f4f94dbacae31f9f2cf4f4cc27a";
+
+  const { enrichedItems } = enrichInventoryItems(
+    [
+      {
+        marketHashName: "Revolution Case",
+        weapon: "Container",
+        skinName: "Revolution Case",
+        rarity: "Base Grade",
+        iconUrl,
+        quantity: 1
+      }
+    ],
+    {
+      "Revolution Case": {
+        market_hash_name: "Revolution Case",
+        image_url: "https://example.com/revolution-case.png",
+        image_url_large: "https://example.com/revolution-case-large.png",
+        rarity: "Consumer Grade",
+        rarity_color: "#b0c3d9",
+        updated_at: nowIso
+      }
+    }
+  );
+
+  assert.equal(
+    enrichedItems[0].imageUrl,
+    buildSteamImageUrlFromIcon(iconUrl)
+  );
+});

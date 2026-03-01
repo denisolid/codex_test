@@ -1,7 +1,14 @@
 import "./style.css";
 import { API_URL } from "./config";
 import { clearAuthToken, getAuthToken, withAuthHeaders } from "./authToken";
-import { getRarityColor, normalizeRarity } from "./rarity";
+import {
+  defaultCaseImage,
+  defaultSkinImage,
+  getRarityColor,
+  isCaseLikeItem,
+  normalizeRarity,
+  resolveItemImageUrl
+} from "./rarity";
 import { renderSkinCard, renderSkinCardSkeleton } from "./components/skinCard";
 const app = document.querySelector("#app");
 const SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "UAH", "PLN", "CZK"];
@@ -247,16 +254,18 @@ function buildAuthProfile(payload) {
 
 function formatMoney(amount, currencyCode = state.currency) {
   const value = Number(amount || 0);
+  const absValue = Math.abs(value);
+  const maxFractionDigits = absValue > 0 && absValue < 1 ? 4 : 2;
   const code = normalizeCurrencyCode(currencyCode);
   try {
     return new Intl.NumberFormat("en-US", {
       style: "currency",
       currency: code,
       minimumFractionDigits: 2,
-      maximumFractionDigits: 2
+      maximumFractionDigits: maxFractionDigits
     }).format(value);
   } catch (_err) {
-    return `${code} ${value.toFixed(2)}`;
+    return `${code} ${value.toFixed(maxFractionDigits)}`;
   }
 }
 
@@ -473,14 +482,7 @@ function getItemRarityTheme(item = {}) {
 }
 
 function getItemImageUrl(item = {}) {
-  const candidates = [item.imageUrlLarge, item.imageUrl];
-  for (const candidate of candidates) {
-    const raw = String(candidate || "").trim();
-    if (/^https?:\/\//i.test(raw)) {
-      return raw;
-    }
-  }
-  return "https://community.akamai.steamstatic.com/public/images/apps/730/header.jpg";
+  return resolveItemImageUrl(item);
 }
 
 function formatManagementClue(clue) {
@@ -2614,6 +2616,7 @@ function renderPortfolioRows() {
       const sevenDayClass = Number(item.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
       const rarityTheme = getItemRarityTheme(item);
       const itemImageUrl = getItemImageUrl(item);
+      const fallbackImage = isCaseLikeItem(item) ? defaultCaseImage : defaultSkinImage;
       const isExpanded = Boolean(state.compareExpandedBySkinId[skinId]);
 
       return `
@@ -2627,7 +2630,7 @@ function renderPortfolioRows() {
                 src="${escapeHtml(itemImageUrl)}"
                 alt="${escapeHtml(item.marketHashName || "CS2 item")}"
                 loading="lazy"
-                onerror="this.onerror=null;this.src='https://community.akamai.steamstatic.com/public/images/apps/730/header.jpg';"
+                onerror="this.onerror=null;this.src='${escapeHtml(fallbackImage)}';"
               />
               <div class="table-item-info">
                 <div class="skin-name">${escapeHtml(item.marketHashName)}</div>
@@ -4607,6 +4610,9 @@ function renderPublicPortfolioPage() {
             .slice(0, 30)
             .map((item) => {
               const rarityTheme = getItemRarityTheme(item);
+              const fallbackImage = isCaseLikeItem(item)
+                ? defaultCaseImage
+                : defaultSkinImage;
               return `
                 <tr>
                   <td>
@@ -4617,7 +4623,7 @@ function renderPublicPortfolioPage() {
                         src="${escapeHtml(getItemImageUrl(item))}"
                         alt="${escapeHtml(item.marketHashName || "CS2 item")}"
                         loading="lazy"
-                        onerror="this.onerror=null;this.src='https://community.akamai.steamstatic.com/public/images/apps/730/header.jpg';"
+                        onerror="this.onerror=null;this.src='${escapeHtml(fallbackImage)}';"
                       />
                       <div class="table-item-info">
                         <div class="skin-name">${escapeHtml(item.marketHashName)}</div>

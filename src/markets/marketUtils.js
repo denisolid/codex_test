@@ -13,7 +13,19 @@ const FEE_BY_SOURCE = Object.freeze({
 });
 
 function round2(value) {
-  return Number((Number(value || 0)).toFixed(2));
+  return roundTo(value, 2);
+}
+
+function roundTo(value, digits = 2) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return 0;
+  const safeDigits = Math.max(Number(digits || 0), 0);
+  const factor = 10 ** safeDigits;
+  return Math.round((n + Number.EPSILON) * factor) / factor;
+}
+
+function roundPrice(value) {
+  return roundTo(value, 4);
 }
 
 function clampPercent(value, fallback = 0) {
@@ -38,7 +50,7 @@ function normalizePriceNumber(value) {
 
   if (typeof value === "number") {
     if (!Number.isFinite(value) || value < 0) return null;
-    return round2(value);
+    return roundPrice(value);
   }
 
   const text = String(value).trim();
@@ -68,20 +80,20 @@ function normalizePriceNumber(value) {
   if (!Number.isFinite(parsed) || parsed < 0) {
     return null;
   }
-  return round2(parsed);
+  return roundPrice(parsed);
 }
 
 function normalizePriceFromMinorUnits(value) {
   if (value == null) return null;
   const n = Number(value);
   if (!Number.isFinite(n) || n < 0) return null;
-  return round2(n / 100);
+  return roundPrice(n / 100);
 }
 
 function computeNetPrice(grossPrice, feePercent) {
   if (!isPositiveNumber(grossPrice)) return null;
   const fee = clampPercent(feePercent, 0);
-  return round2(Number(grossPrice) * (1 - fee / 100));
+  return roundPrice(Number(grossPrice) * (1 - fee / 100));
 }
 
 function buildMarketPriceRecord({
@@ -127,6 +139,7 @@ function sourceFeePercent(source) {
 module.exports = {
   FEE_BY_SOURCE,
   round2,
+  roundPrice,
   clampPercent,
   normalizeCurrencyCode,
   normalizePriceNumber,
