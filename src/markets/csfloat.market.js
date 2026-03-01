@@ -30,15 +30,48 @@ function buildListingUrl(marketHashName) {
   )}`;
 }
 
-function buildHeaders() {
-  const headers = {
+function toSafeHttpUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      return null;
+    }
+    return parsed.toString();
+  } catch (_err) {
+    return null;
+  }
+}
+
+function buildHeaderVariantMap() {
+  const baseHeaders = {
     Accept: "application/json",
     "User-Agent": "cs2-portfolio-analyzer/1.0"
   };
-  if (csfloatApiKey) {
-    headers.Authorization = csfloatApiKey;
+
+  const apiKey = String(csfloatApiKey || "").trim();
+  if (!apiKey) {
+    return [baseHeaders];
   }
-  return headers;
+
+  const variants = [
+    { ...baseHeaders, Authorization: apiKey },
+    { ...baseHeaders, Authorization: `Bearer ${apiKey}` },
+    { ...baseHeaders, "X-Api-Key": apiKey },
+    { ...baseHeaders, "X-API-Key": apiKey }
+  ];
+
+  const seen = new Set();
+  const unique = [];
+  for (const headers of variants) {
+    const key = JSON.stringify(headers);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(headers);
+  }
+
+  return unique;
 }
 
 function normalizeCsfloatPrice(value) {
@@ -53,7 +86,7 @@ function normalizeCsfloatPrice(value) {
   return normalizePriceNumber(raw);
 }
 
-function extractBestListing(payload) {
+function extractBestListing(payload, marketHashName = "") {
   const list = Array.isArray(payload?.data)
     ? payload.data
     : Array.isArray(payload?.listings)
@@ -64,6 +97,36 @@ function extractBestListing(payload) {
 
   const first = list[0] || null;
   if (!first) return null;
+
+  const directUrl = toSafeHttpUrl(
+    first.url ||
+      first.listing_url ||
+      first.listingUrl ||
+      first.item_url ||
+      first.itemUrl ||
+      first.market_url ||
+      first.marketUrl ||
+      first.permalink ||
+      first.link ||
+      first?.item?.url ||
+      first?.item?.item_url ||
+      first?.item?.itemUrl
+  );
+
+  const directId =
+    first.id ||
+    first.listing_id ||
+    first.listingId ||
+    first.item_id ||
+    first.itemId ||
+    first?.item?.id ||
+    first?.item?.item_id ||
+    first?.item?.itemId ||
+    first?.item?.slug ||
+    null;
+  const idUrl = directId
+    ? `https://csfloat.com/item/${encodeURIComponent(String(directId))}`
+    : null;
 
   const priceCandidates = [
     first.price,
@@ -80,6 +143,7 @@ function extractBestListing(payload) {
         currency: String(first.currency || payload?.currency || "USD")
           .trim()
           .toUpperCase(),
+        url: directUrl || idUrl || buildListingUrl(marketHashName),
         raw: first
       };
     }
@@ -93,12 +157,34 @@ async function searchItemPrice(input = {}) {
   if (!marketHashName) return null;
 
   const url = buildApiUrl(marketHashName);
-  const payload = await fetchJsonWithRetry(url, {
-    timeoutMs: input.timeoutMs,
-    maxRetries: input.maxRetries,
-    headers: buildHeaders()
-  });
-  const best = extractBestListing(payload);
+  const headerVariants = buildHeaderVariantMap();
+  let lastError = null;
+  let payload = null;
+
+  for (const headers of headerVariants) {
+    try {
+      payload = await fetchJsonWithRetry(url, {
+        timeoutMs: input.timeoutMs,
+        maxRetries: input.maxRetries,
+        headers
+      });
+      if (payload) break;
+    } catch (err) {
+      lastError = err;
+      const status = Number(err?.statusCode || err?.status || 0);
+      if (status === 401 || status === 403) {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  if (!payload) {
+    if (lastError) throw lastError;
+    return null;
+  }
+
+  const best = extractBestListing(payload, marketHashName);
   if (!best) return null;
 
   return buildMarketPriceRecord({
@@ -106,7 +192,7 @@ async function searchItemPrice(input = {}) {
     marketHashName,
     grossPrice: best.price,
     currency: best.currency || "USD",
-    url: buildListingUrl(marketHashName),
+    url: best.url || buildListingUrl(marketHashName),
     confidence: "medium",
     raw: best.raw
   });
@@ -159,5 +245,10 @@ async function batchGetPrices(items = [], options = {}) {
 module.exports = {
   source: SOURCE,
   searchItemPrice,
-  batchGetPrices
+  batchGetPrices,
+  __testables: {
+    extractBestListing,
+    toSafeHttpUrl,
+    buildHeaderVariantMap
+  }
 };

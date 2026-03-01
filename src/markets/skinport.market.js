@@ -74,7 +74,7 @@ function normalizeItemsPayload(payload) {
       marketHashName: String(row?.market_hash_name || row?.marketHashName || "").trim(),
       price: extractPrice(row),
       currency: String(row?.currency || "").trim().toUpperCase() || null,
-      url: String(row?.market_page || row?.item_page || "").trim() || null,
+      url: String(row?.item_page || row?.market_page || "").trim() || null,
       raw: row
     }))
     .filter((row) => row.marketHashName && row.price != null);
