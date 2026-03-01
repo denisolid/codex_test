@@ -9,7 +9,9 @@ const {
   round2,
   roundPrice,
   sourceFeePercent,
-  buildMarketPriceRecord
+  buildMarketPriceRecord,
+  normalizePriceNumber,
+  normalizePriceFromMinorUnits
 } = require("../markets/marketUtils");
 const {
   resolveCurrency,
@@ -127,6 +129,34 @@ function normalizeLiveRecord(record, displayCurrency) {
   });
 }
 
+function parseDmarketUsdMinorValue(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  if (/^-?\d+$/.test(raw)) {
+    return normalizePriceFromMinorUnits(Number(raw));
+  }
+  return normalizePriceNumber(raw);
+}
+
+function maybeRepairLegacyDmarketGross(row, source, rowCurrency, rowGross) {
+  if (source !== "dmarket" || rowCurrency !== "USD" || !Number.isFinite(rowGross) || rowGross <= 0) {
+    return rowGross;
+  }
+
+  const rawUsd = row?.raw?.price?.USD ?? row?.raw?.price?.usd;
+  const parsedUsd = parseDmarketUsdMinorValue(rawUsd);
+  if (!Number.isFinite(parsedUsd) || parsedUsd <= 0) {
+    return rowGross;
+  }
+
+  // Repair legacy cached rows where dmarket "amount" was parsed as gross price.
+  if (parsedUsd > rowGross && Math.abs(parsedUsd - rowGross) >= 0.2) {
+    return parsedUsd;
+  }
+
+  return rowGross;
+}
+
 function fromCachedRow(row, displayCurrency) {
   if (!row) return null;
   const source = String(row.market || row.source || "").trim().toLowerCase();
@@ -134,7 +164,8 @@ function fromCachedRow(row, displayCurrency) {
   const rowCurrency = String(row.currency || "USD")
     .trim()
     .toUpperCase();
-  const rowGross = Number(row.gross_price ?? row.grossPrice);
+  const rowGrossRaw = Number(row.gross_price ?? row.grossPrice);
+  const rowGross = maybeRepairLegacyDmarketGross(row, source, rowCurrency, rowGrossRaw);
   if (!source || !marketHashName || !Number.isFinite(rowGross)) {
     return null;
   }
@@ -573,5 +604,7 @@ exports.__testables = {
   pickBestSellNet,
   selectByPricingMode,
   getModeUnitPrice,
-  isFreshTimestamp
+  isFreshTimestamp,
+  parseDmarketUsdMinorValue,
+  maybeRepairLegacyDmarketGross
 };

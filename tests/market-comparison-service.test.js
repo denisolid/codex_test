@@ -12,7 +12,9 @@ const {
     pickBestBuy,
     pickBestSellNet,
     selectByPricingMode,
-    getModeUnitPrice
+    getModeUnitPrice,
+    parseDmarketUsdMinorValue,
+    maybeRepairLegacyDmarketGross
   }
 } = require("../src/services/marketComparisonService");
 
@@ -67,4 +69,31 @@ test("mode selection chooses expected market row and unit value", () => {
   assert.equal(getModeUnitPrice("steam", steamSelected), 20);
   assert.equal(getModeUnitPrice("lowest_buy", lowSelected), 18);
   assert.equal(getModeUnitPrice("best_sell_net", netSelected), 18.62);
+});
+
+test("dmarket USD minor parser converts cents and keeps decimal values", () => {
+  assert.equal(parseDmarketUsdMinorValue("174"), 1.74);
+  assert.equal(parseDmarketUsdMinorValue("0.93"), 0.93);
+  assert.equal(parseDmarketUsdMinorValue(null), null);
+});
+
+test("legacy dmarket cached rows are repaired from raw USD cents", () => {
+  const repaired = maybeRepairLegacyDmarketGross(
+    {
+      raw: {
+        price: {
+          USD: "650"
+        }
+      }
+    },
+    "dmarket",
+    "USD",
+    1
+  );
+
+  assert.equal(repaired, 6.5);
+  assert.equal(
+    maybeRepairLegacyDmarketGross({ raw: { price: { USD: "100" } } }, "dmarket", "USD", 1),
+    1
+  );
 });

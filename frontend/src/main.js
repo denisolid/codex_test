@@ -10,6 +10,8 @@ import {
   resolveItemImageUrl
 } from "./rarity";
 import { renderSkinCard, renderSkinCardSkeleton } from "./components/skinCard";
+import { renderInspectModal } from "./components/inspectModal";
+import { renderSection } from "./components/uiPrimitives";
 const app = document.querySelector("#app");
 const SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "UAH", "PLN", "CZK"];
 const CURRENCY_STORAGE_KEY = "cs2sa:selected_currency";
@@ -41,6 +43,16 @@ function normalizePricingMode(value) {
   return "lowest_buy";
 }
 
+function createExitWhatIfState() {
+  return {
+    quantity: "1",
+    targetSellPrice: "0",
+    commissionPercent: "13",
+    result: null,
+    loading: false
+  };
+}
+
 const state = {
   sessionBooting: true,
   authenticated: false,
@@ -56,6 +68,15 @@ const state = {
   alerts: [],
   skin: null,
   inspectedSteamItemId: "",
+  inspectModal: {
+    open: false,
+    loading: false,
+    error: "",
+    steamItemId: "",
+    skin: null,
+    marketInsight: null,
+    exitWhatIf: createExitWhatIfState()
+  },
   activeTab: "dashboard",
   historyDays: 7,
   holdingsView: {
@@ -76,13 +97,7 @@ const state = {
     running: false,
     summary: null
   },
-  exitWhatIf: {
-    quantity: "1",
-    targetSellPrice: "0",
-    commissionPercent: "13",
-    result: null,
-    loading: false
-  },
+  exitWhatIf: createExitWhatIfState(),
   error: "",
   syncingInventory: false,
   syncSummary: null,
@@ -124,7 +139,8 @@ const state = {
     commissionPercent: "13",
     loading: false,
     inventoryValue: null,
-    autoLoaded: false
+    autoLoaded: false,
+    insight: null
   },
   accountNotice: "",
   steamOnboardingPending: false,
@@ -866,11 +882,15 @@ async function handleCurrencySelectChange(nextCurrency) {
   );
   state.marketTab.inventoryValue = null;
   state.marketTab.autoLoaded = false;
+  state.marketTab.insight = null;
   state.marketInsight = null;
 
   await refreshPortfolio();
   if (state.inspectedSteamItemId) {
     await inspectSkinBySteamItemId(state.inspectedSteamItemId);
+  }
+  if (state.inspectModal.open && state.inspectModal.steamItemId) {
+    await openInspectModalBySteamItemId(state.inspectModal.steamItemId);
   }
 }
 
@@ -962,11 +982,19 @@ async function handleTabSwitch(tab) {
 function triggerInspectBySteamItemId(rawSteamItemId) {
   const steamItemId = String(rawSteamItemId || "").trim();
   if (!steamItemId) return;
-  const input = document.querySelector("#steam-item-id");
-  if (input) {
-    input.value = steamItemId;
-  }
-  runUiTask(() => inspectSkinBySteamItemId(steamItemId));
+  runUiTask(() => openInspectModalBySteamItemId(steamItemId));
+}
+
+function closeInspectModal() {
+  if (!state.inspectModal.open) return;
+  state.inspectModal.open = false;
+  state.inspectModal.loading = false;
+  state.inspectModal.error = "";
+  state.inspectModal.steamItemId = "";
+  state.inspectModal.skin = null;
+  state.inspectModal.marketInsight = null;
+  state.inspectModal.exitWhatIf = createExitWhatIfState();
+  render();
 }
 
 function onAppClick(event) {
@@ -974,7 +1002,19 @@ function onAppClick(event) {
   const target = event.target instanceof Element ? event.target : null;
   if (!target) return;
 
+  if (target.matches("[data-inspect-modal-overlay]")) {
+    event.preventDefault();
+    closeInspectModal();
+    return;
+  }
+
   const button = target.closest("button");
+
+  if (button?.matches("[data-inspect-modal-close]")) {
+    event.preventDefault();
+    closeInspectModal();
+    return;
+  }
 
   if (button?.matches("#logout-btn")) {
     event.preventDefault();
@@ -1160,6 +1200,12 @@ function onAppClick(event) {
 }
 
 function onAppKeydown(event) {
+  if (event.key === "Escape" && state.inspectModal.open) {
+    event.preventDefault();
+    closeInspectModal();
+    return;
+  }
+
   const target = event.target instanceof Element ? event.target : null;
   if (!target) return;
   const tile = target.closest(".portfolio-skin-card-clickable");
@@ -1282,7 +1328,13 @@ function onAppSubmit(event) {
 
   if (form.id === "exit-whatif-form") {
     event.preventDefault();
-    runUiTask(() => calculateExitWhatIf(event));
+    runUiTask(() => calculateExitWhatIf(event, "inline"));
+    return;
+  }
+
+  if (form.id === "inspect-modal-exit-whatif-form") {
+    event.preventDefault();
+    runUiTask(() => calculateExitWhatIf(event, "modal"));
     return;
   }
 
@@ -1383,9 +1435,18 @@ async function logout() {
   state.ownershipAlertEvents = [];
   state.skin = null;
   state.marketInsight = null;
+  state.inspectModal.open = false;
+  state.inspectModal.loading = false;
+  state.inspectModal.error = "";
+  state.inspectModal.steamItemId = "";
+  state.inspectModal.skin = null;
+  state.inspectModal.marketInsight = null;
+  state.inspectModal.exitWhatIf = createExitWhatIfState();
+  state.exitWhatIf = createExitWhatIfState();
   resetAlertForm();
   state.marketTab.inventoryValue = null;
   state.marketTab.autoLoaded = false;
+  state.marketTab.insight = null;
   state.inspectedSteamItemId = "";
   state.tradeCalc.result = null;
   state.accountNotice = "";
@@ -1921,49 +1982,93 @@ async function findSkin(e) {
   await inspectSkinBySteamItemId(id);
 }
 
-async function inspectSkinBySteamItemId(rawId) {
+async function fetchInspectionBundleBySteamItemId(rawId) {
   const id = String(rawId ?? "").trim();
-  if (!id) return;
-
+  if (!id) return null;
   if (!/^\d+$/.test(id)) {
-    setError("Steam item ID must contain only digits.");
-    return;
+    throw new Error("Steam item ID must contain only digits.");
   }
 
+  const skin = await api(withCurrency(`/skins/by-steam-item/${encodeURIComponent(id)}`));
+  const holding = (state.portfolio?.items || []).find(
+    (item) => Number(item.skinId) === Number(skin.id)
+  );
+
+  let marketInsight = null;
   try {
-    const skin = await api(
-      withCurrency(`/skins/by-steam-item/${encodeURIComponent(id)}`)
-    );
-    state.skin = skin;
-    state.marketInsight = null;
-    state.marketTab.skinId = String(skin.id || "");
-    state.exitWhatIf.result = null;
-    state.exitWhatIf.targetSellPrice = String(
-      Number(skin?.latestPrice?.price || 0).toFixed(2)
-    );
+    const [sellSuggestion, liquidity] = await Promise.all([
+      api(withCurrency(`/market/items/${skin.id}/sell-suggestion`)),
+      api(withCurrency(`/market/items/${skin.id}/liquidity`))
+    ]);
+    marketInsight = { sellSuggestion, liquidity };
+  } catch (_err) {
+    marketInsight = null;
+  }
 
-    const holding = (state.portfolio?.items || []).find(
-      (item) => Number(item.skinId) === Number(skin.id)
-    );
-    state.exitWhatIf.quantity = String(Math.max(Number(holding?.quantity || 1), 1));
-
-    try {
-      const [sellSuggestion, liquidity] = await Promise.all([
-        api(withCurrency(`/market/items/${skin.id}/sell-suggestion`)),
-        api(withCurrency(`/market/items/${skin.id}/liquidity`))
-      ]);
-      state.marketInsight = { sellSuggestion, liquidity };
-    } catch (_err) {
-      state.marketInsight = null;
+  return {
+    id,
+    skin,
+    marketInsight,
+    exitDefaults: {
+      quantity: String(Math.max(Number(holding?.quantity || 1), 1)),
+      targetSellPrice: String(Number(skin?.latestPrice?.price || 0).toFixed(2)),
+      result: null
     }
+  };
+}
 
-    state.inspectedSteamItemId = id;
+async function inspectSkinBySteamItemId(rawId) {
+  try {
+    const payload = await fetchInspectionBundleBySteamItemId(rawId);
+    if (!payload) return;
+
+    state.skin = payload.skin;
+    state.marketInsight = payload.marketInsight;
+    state.marketTab.skinId = String(payload.skin.id || "");
+    state.exitWhatIf = {
+      ...state.exitWhatIf,
+      ...payload.exitDefaults,
+      loading: false
+    };
+    state.inspectedSteamItemId = payload.id;
     render();
   } catch (err) {
     state.skin = null;
     state.marketInsight = null;
     state.inspectedSteamItemId = "";
     setError(err.message);
+  }
+}
+
+async function openInspectModalBySteamItemId(rawId) {
+  clearError();
+  const id = String(rawId ?? "").trim();
+  if (!id) return;
+
+  state.inspectModal.open = true;
+  state.inspectModal.loading = true;
+  state.inspectModal.error = "";
+  state.inspectModal.steamItemId = id;
+  state.inspectModal.skin = null;
+  state.inspectModal.marketInsight = null;
+  state.inspectModal.exitWhatIf = createExitWhatIfState();
+  render();
+
+  try {
+    const payload = await fetchInspectionBundleBySteamItemId(id);
+    if (!payload) return;
+    state.inspectModal.skin = payload.skin;
+    state.inspectModal.marketInsight = payload.marketInsight;
+    state.inspectModal.exitWhatIf = {
+      ...state.inspectModal.exitWhatIf,
+      ...payload.exitDefaults,
+      loading: false
+    };
+  } catch (err) {
+    state.inspectModal.error = err.message || "Failed to inspect item.";
+  } finally {
+    state.inspectModal.loading = false;
+    render();
   }
 }
 
@@ -2007,6 +2112,7 @@ async function analyzeMarketItemBySkinId(rawSkinId) {
   }
 
   state.marketTab.skinId = String(skinId);
+  state.marketTab.insight = null;
   state.marketTab.loading = true;
   render();
 
@@ -2019,7 +2125,7 @@ async function analyzeMarketItemBySkinId(rawSkinId) {
       api(`/market/items/${skinId}/sell-suggestion${query}`),
       api(`/market/items/${skinId}/liquidity`)
     ]);
-    state.marketInsight = { sellSuggestion, liquidity, skinId };
+    state.marketTab.insight = { sellSuggestion, liquidity, skinId };
   } catch (err) {
     setError(err.message);
   } finally {
@@ -2392,22 +2498,43 @@ async function importTransactionsCsv(e) {
   }
 }
 
-async function calculateExitWhatIf(e) {
+function getInspectContextSnapshot(context = "inline") {
+  if (context === "modal") {
+    return {
+      skin: state.inspectModal.skin,
+      exitWhatIf: state.inspectModal.exitWhatIf
+    };
+  }
+  return {
+    skin: state.skin,
+    exitWhatIf: state.exitWhatIf
+  };
+}
+
+async function calculateExitWhatIf(e, context = "inline") {
   e.preventDefault();
   clearError();
-  if (state.exitWhatIf.loading || !state.skin) return;
+  const inspectContext = getInspectContextSnapshot(context);
+  if (inspectContext.exitWhatIf.loading || !inspectContext.skin) return;
 
-  const quantity = Number(document.querySelector("#exit-qty")?.value);
-  const targetSellPrice = Number(document.querySelector("#exit-price")?.value);
-  const commissionPercent = Number(document.querySelector("#exit-commission")?.value);
+  const form = e.target instanceof HTMLFormElement ? e.target : null;
+  const quantityRaw = String(
+    form?.querySelector('[data-exit-field="quantity"]')?.value || ""
+  );
+  const targetPriceRaw = String(
+    form?.querySelector('[data-exit-field="target-price"]')?.value || ""
+  );
+  const commissionRaw = String(
+    form?.querySelector('[data-exit-field="commission"]')?.value || ""
+  );
 
-  state.exitWhatIf.quantity = String(document.querySelector("#exit-qty")?.value || "");
-  state.exitWhatIf.targetSellPrice = String(
-    document.querySelector("#exit-price")?.value || ""
-  );
-  state.exitWhatIf.commissionPercent = String(
-    document.querySelector("#exit-commission")?.value || ""
-  );
+  const quantity = Number(quantityRaw);
+  const targetSellPrice = Number(targetPriceRaw);
+  const commissionPercent = Number(commissionRaw);
+
+  inspectContext.exitWhatIf.quantity = quantityRaw;
+  inspectContext.exitWhatIf.targetSellPrice = targetPriceRaw;
+  inspectContext.exitWhatIf.commissionPercent = commissionRaw;
 
   if (!Number.isFinite(quantity) || quantity <= 0) {
     setError("Exit quantity must be > 0.");
@@ -2426,10 +2553,11 @@ async function calculateExitWhatIf(e) {
     return;
   }
 
-  const itemStats = computeItemTradeStats(Number(state.skin.id));
-  const buyPrice = itemStats.avgEntryPrice || Number(state.skin.latestPrice?.price || 0);
+  const itemStats = computeItemTradeStats(Number(inspectContext.skin.id));
+  const buyPrice =
+    itemStats.avgEntryPrice || Number(inspectContext.skin.latestPrice?.price || 0);
 
-  state.exitWhatIf.loading = true;
+  inspectContext.exitWhatIf.loading = true;
   render();
   try {
     const result = await api(withCurrency("/trade/calculate"), {
@@ -2442,14 +2570,14 @@ async function calculateExitWhatIf(e) {
         currency: state.currency
       })
     });
-    state.exitWhatIf.result = {
+    inspectContext.exitWhatIf.result = {
       ...result,
       referenceBuyPrice: buyPrice
     };
   } catch (err) {
     setError(err.message);
   } finally {
-    state.exitWhatIf.loading = false;
+    inspectContext.exitWhatIf.loading = false;
     render();
   }
 }
@@ -3354,14 +3482,21 @@ function renderSkinValueGraph(historyRows) {
   `;
 }
 
-function renderSkinDetails() {
-  if (!state.skin) {
-    return `<p class="muted">Search an item by Steam item ID to inspect current and historical pricing.</p>`;
+function renderSkinDetails(context = "inline") {
+  const isModal = context === "modal";
+  const inspectSkin = isModal ? state.inspectModal.skin : state.skin;
+  const inspectMarketInsight = isModal ? state.inspectModal.marketInsight : state.marketInsight;
+  const inspectExitWhatIf = isModal ? state.inspectModal.exitWhatIf : state.exitWhatIf;
+
+  if (!inspectSkin) {
+    return isModal
+      ? `<p class="muted">Select an item to inspect.</p>`
+      : `<p class="muted">Search an item by Steam item ID to inspect current and historical pricing.</p>`;
   }
 
-  const skinId = Number(state.skin.id || 0);
-  const latest = state.skin.latestPrice;
-  const history = Array.isArray(state.skin.priceHistory) ? state.skin.priceHistory : [];
+  const skinId = Number(inspectSkin.id || 0);
+  const latest = inspectSkin.latestPrice;
+  const history = Array.isArray(inspectSkin.priceHistory) ? inspectSkin.priceHistory : [];
   const tradeStats = computeItemTradeStats(skinId);
   const holding = (state.portfolio?.items || []).find(
     (item) => Number(item.skinId) === Number(skinId)
@@ -3381,12 +3516,12 @@ function renderSkinDetails() {
         .join("")}</ul>`
     : "<p class=\"muted\">No transactions for this item yet.</p>";
 
-  const marketInsightMarkup = state.marketInsight?.sellSuggestion
+  const marketInsightMarkup = inspectMarketInsight?.sellSuggestion
     ? `
       <div class="sync-summary">
-        <p><strong>Quick Sell Tiers (${escapeHtml(state.marketInsight.sellSuggestion.currency || state.currency)}):</strong></p>
+        <p><strong>Quick Sell Tiers (${escapeHtml(inspectMarketInsight.sellSuggestion.currency || state.currency)}):</strong></p>
         <ul class="sync-list">
-          ${(state.marketInsight.sellSuggestion.tiers || [])
+          ${(inspectMarketInsight.sellSuggestion.tiers || [])
             .map(
               (tier) =>
                 `<li>${escapeHtml(toTitle(tier.tier))}: <strong>${formatMoney(
@@ -3400,11 +3535,11 @@ function renderSkinDetails() {
             .join("")}
         </ul>
         ${
-          state.marketInsight?.liquidity
+          inspectMarketInsight?.liquidity
             ? `<p>Liquidity: <strong>${formatNumber(
-                state.marketInsight.liquidity.score
+                inspectMarketInsight.liquidity.score
               )}/100 (${escapeHtml(
-                toTitle(state.marketInsight.liquidity.band)
+                toTitle(inspectMarketInsight.liquidity.band)
               )})</strong></p>`
             : ""
         }
@@ -3412,7 +3547,7 @@ function renderSkinDetails() {
     `
     : "";
 
-  const exitResult = state.exitWhatIf.result;
+  const exitResult = inspectExitWhatIf.result;
   const exitResultMarkup = exitResult
     ? `
       <div class="calc-result">
@@ -3481,11 +3616,14 @@ function renderSkinDetails() {
     `
     : "";
 
+  const formId = isModal ? "inspect-modal-exit-whatif-form" : "exit-whatif-form";
+  const cardClass = isModal ? "skin-card inspect-modal-skin-card" : "skin-card";
+
   return `
-    <div class="skin-card">
-      <h3>${escapeHtml(state.skin.market_hash_name)}</h3>
-      <p>Item ID: <strong>${Number(state.skin.id || 0) || "-"}</strong></p>
-      <p>${escapeHtml(state.skin.weapon || "-")} | ${escapeHtml(state.skin.exterior || "-")} | ${escapeHtml(state.skin.rarity || "-")}</p>
+    <div class="${cardClass}">
+      <h3>${escapeHtml(inspectSkin.market_hash_name)}</h3>
+      <p>Item ID: <strong>${Number(inspectSkin.id || 0) || "-"}</strong></p>
+      <p>${escapeHtml(inspectSkin.weapon || "-")} | ${escapeHtml(inspectSkin.exterior || "-")} | ${escapeHtml(inspectSkin.rarity || "-")}</p>
       <p>Latest Price: <strong>${latest ? `${formatMoney(latest.price)} ${escapeHtml(latest.currency)}` : "N/A"}</strong></p>
       <p>Price Source: <strong>${latest ? escapeHtml(latest.source || "unknown") : "-"}</strong></p>
       <p>Price Status: ${latest ? formatPriceStatusBadge(latest.status) : "-"}</p>
@@ -3520,24 +3658,26 @@ function renderSkinDetails() {
       </div>
       <p class="muted">Transaction timeline (latest 12):</p>
       ${timelineMarkup}
-      <form id="exit-whatif-form" class="trade-calc-grid">
+      <form id="${formId}" class="trade-calc-grid inspect-exit-whatif-form" data-inspect-context="${escapeHtml(
+        context
+      )}">
         <label>Exit Quantity
-          <input id="exit-qty" type="number" step="1" min="1" value="${escapeHtml(
-            state.exitWhatIf.quantity
+          <input data-exit-field="quantity" type="number" step="1" min="1" value="${escapeHtml(
+            inspectExitWhatIf.quantity
           )}" />
         </label>
         <label>Target Sell Price
-          <input id="exit-price" type="number" step="0.01" min="0" value="${escapeHtml(
-            state.exitWhatIf.targetSellPrice
+          <input data-exit-field="target-price" type="number" step="0.01" min="0" value="${escapeHtml(
+            inspectExitWhatIf.targetSellPrice
           )}" />
         </label>
         <label>Commission %
-          <input id="exit-commission" type="number" step="0.01" min="0" max="99.99" value="${escapeHtml(
-            state.exitWhatIf.commissionPercent
+          <input data-exit-field="commission" type="number" step="0.01" min="0" max="99.99" value="${escapeHtml(
+            inspectExitWhatIf.commissionPercent
           )}" />
         </label>
-        <button type="submit" ${state.exitWhatIf.loading ? "disabled" : ""}>
-          ${state.exitWhatIf.loading ? "Calculating..." : "What-if Exit"}
+        <button type="submit" ${inspectExitWhatIf.loading ? "disabled" : ""}>
+          ${inspectExitWhatIf.loading ? "Calculating..." : "What-if Exit"}
         </button>
       </form>
       ${exitResultMarkup}
@@ -3545,6 +3685,23 @@ function renderSkinDetails() {
       ${historyMarkup}
     </div>
   `;
+}
+
+function renderInspectModalOverlay() {
+  const modal = state.inspectModal;
+  const heading = modal.skin?.market_hash_name || "Item Inspector";
+  const subheading = modal.steamItemId
+    ? `Steam Item ID: ${modal.steamItemId}`
+    : "";
+
+  return renderInspectModal({
+    open: Boolean(modal.open),
+    loading: Boolean(modal.loading),
+    error: modal.error ? escapeHtml(modal.error) : "",
+    heading: escapeHtml(heading),
+    subheading: escapeHtml(subheading),
+    bodyMarkup: renderSkinDetails("modal")
+  });
 }
 
 function renderAlerts() {
@@ -4317,7 +4474,7 @@ function renderMarketTab() {
   const holdings = getHoldingsList();
   const marketOptions = buildHoldingOptions(state.marketTab.skinId);
   const valuation = state.marketTab.inventoryValue;
-  const insight = state.marketInsight;
+  const insight = state.marketTab.insight;
   const suggestion = insight?.sellSuggestion || null;
   const liquidity = insight?.liquidity || null;
   const hasSuggestionForSelected =
@@ -4958,77 +5115,87 @@ function renderApp() {
           Premium marketplace tiles for quick scanning plus an execution table for sorting and trade decisions.
         </p>
         ${renderPortfolioPricingControls()}
-        <div class="portfolio-cards-section">
-          <h3 class="portfolio-subheading">Marketplace Tiles</h3>
-          ${renderPortfolioCardGrid()}
-        </div>
-        <div class="portfolio-table-section">
-          <h3 class="portfolio-subheading">Execution Table</h3>
-        <div class="list-toolbar">
-          <label>Search
-            <input id="holdings-search" placeholder="item name or steam item id" value="${escapeHtml(
-              state.holdingsView.q
-            )}" />
-          </label>
-          <label>Status
-            <select id="holdings-status">
-              ${["all", "real", "cached", "stale", "unpriced", "mock"]
-                .map(
-                  (status) =>
-                    `<option value="${status}" ${
-                      state.holdingsView.status === status ? "selected" : ""
-                    }>${status === "all" ? "All" : toTitle(status)}</option>`
-                )
-                .join("")}
-            </select>
-          </label>
-          <label>Signal Sort
-            <select id="holdings-sort">
-              <option value="value_desc" ${state.holdingsView.sort === "value_desc" ? "selected" : ""}>Value high to low</option>
-              <option value="value_asc" ${state.holdingsView.sort === "value_asc" ? "selected" : ""}>Value low to high</option>
-              <option value="name_asc" ${state.holdingsView.sort === "name_asc" ? "selected" : ""}>Name A-Z</option>
-              <option value="name_desc" ${state.holdingsView.sort === "name_desc" ? "selected" : ""}>Name Z-A</option>
-              <option value="qty_desc" ${state.holdingsView.sort === "qty_desc" ? "selected" : ""}>Qty high to low</option>
-              <option value="qty_asc" ${state.holdingsView.sort === "qty_asc" ? "selected" : ""}>Qty low to high</option>
-              <option value="change_desc" ${state.holdingsView.sort === "change_desc" ? "selected" : ""}>7D change high to low</option>
-              <option value="change_asc" ${state.holdingsView.sort === "change_asc" ? "selected" : ""}>7D change low to high</option>
-              <option value="clue_sell_first" ${state.holdingsView.sort === "clue_sell_first" ? "selected" : ""}>Clue sell first</option>
-              <option value="clue_hold_first" ${state.holdingsView.sort === "clue_hold_first" ? "selected" : ""}>Clue hold first</option>
-            </select>
-          </label>
-          <label>Per page
-            <select id="holdings-page-size">
-              ${[10, 20, 50]
-                .map(
-                  (n) =>
-                    `<option value="${n}" ${
-                      state.holdingsView.pageSize === n ? "selected" : ""
-                    }>${n}</option>`
-                )
-                .join("")}
-            </select>
-          </label>
-        </div>
-        <div class="table-wrap">
-          <table class="portfolio-table">
-            <thead>
-              <tr>
-                <th>Steam Item ID</th>
-                <th>${renderHoldingsSortButton("Item", "name")}</th>
-                <th>${renderHoldingsSortButton("Qty", "qty")}</th>
-                <th>${renderHoldingsSortButton("Mode Price", "price")}</th>
-                <th>24H</th>
-                <th>${renderHoldingsSortButton("7D", "change")}</th>
-                <th>Status</th>
-                <th>Signal</th>
-                <th>${renderHoldingsSortButton("Mode Value", "value")}</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>${renderPortfolioRows()}</tbody>
-          </table>
-        </div>
-        </div>
+        ${renderSection({
+          eyebrow: "Portfolio",
+          title: "Marketplace Tiles",
+          description:
+            "Click any tile to inspect instantly in a modal without losing your current place in the table.",
+          className: "portfolio-cards-section",
+          body: renderPortfolioCardGrid()
+        })}
+        ${renderSection({
+          eyebrow: "Portfolio",
+          title: "Execution Table",
+          description:
+            "Filter, sort, and execute actions directly in-place. Compare rows expand inline under the clicked item.",
+          className: "portfolio-table-section",
+          body: `
+            <div class="list-toolbar">
+              <label>Search
+                <input id="holdings-search" placeholder="item name or steam item id" value="${escapeHtml(
+                  state.holdingsView.q
+                )}" />
+              </label>
+              <label>Status
+                <select id="holdings-status">
+                  ${["all", "real", "cached", "stale", "unpriced", "mock"]
+                    .map(
+                      (status) =>
+                        `<option value="${status}" ${
+                          state.holdingsView.status === status ? "selected" : ""
+                        }>${status === "all" ? "All" : toTitle(status)}</option>`
+                    )
+                    .join("")}
+                </select>
+              </label>
+              <label>Signal Sort
+                <select id="holdings-sort">
+                  <option value="value_desc" ${state.holdingsView.sort === "value_desc" ? "selected" : ""}>Value high to low</option>
+                  <option value="value_asc" ${state.holdingsView.sort === "value_asc" ? "selected" : ""}>Value low to high</option>
+                  <option value="name_asc" ${state.holdingsView.sort === "name_asc" ? "selected" : ""}>Name A-Z</option>
+                  <option value="name_desc" ${state.holdingsView.sort === "name_desc" ? "selected" : ""}>Name Z-A</option>
+                  <option value="qty_desc" ${state.holdingsView.sort === "qty_desc" ? "selected" : ""}>Qty high to low</option>
+                  <option value="qty_asc" ${state.holdingsView.sort === "qty_asc" ? "selected" : ""}>Qty low to high</option>
+                  <option value="change_desc" ${state.holdingsView.sort === "change_desc" ? "selected" : ""}>7D change high to low</option>
+                  <option value="change_asc" ${state.holdingsView.sort === "change_asc" ? "selected" : ""}>7D change low to high</option>
+                  <option value="clue_sell_first" ${state.holdingsView.sort === "clue_sell_first" ? "selected" : ""}>Clue sell first</option>
+                  <option value="clue_hold_first" ${state.holdingsView.sort === "clue_hold_first" ? "selected" : ""}>Clue hold first</option>
+                </select>
+              </label>
+              <label>Per page
+                <select id="holdings-page-size">
+                  ${[10, 20, 50]
+                    .map(
+                      (n) =>
+                        `<option value="${n}" ${
+                          state.holdingsView.pageSize === n ? "selected" : ""
+                        }>${n}</option>`
+                    )
+                    .join("")}
+                </select>
+              </label>
+            </div>
+            <div class="table-wrap">
+              <table class="portfolio-table">
+                <thead>
+                  <tr>
+                    <th>Steam Item ID</th>
+                    <th>${renderHoldingsSortButton("Item", "name")}</th>
+                    <th>${renderHoldingsSortButton("Qty", "qty")}</th>
+                    <th>${renderHoldingsSortButton("Mode Price", "price")}</th>
+                    <th>24H</th>
+                    <th>${renderHoldingsSortButton("7D", "change")}</th>
+                    <th>Status</th>
+                    <th>Signal</th>
+                    <th>${renderHoldingsSortButton("Mode Value", "value")}</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>${renderPortfolioRows()}</tbody>
+              </table>
+            </div>
+          `
+        })}
         <div class="pagination-bar">
           <button
             type="button"
@@ -5148,6 +5315,7 @@ function renderApp() {
         ${tabContent}
       </section>
     </main>
+    ${renderInspectModalOverlay()}
   `;
 
   ensureAppEventDelegation();
