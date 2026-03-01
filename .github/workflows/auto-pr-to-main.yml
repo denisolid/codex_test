@@ -13,10 +13,12 @@ permissions:
 jobs:
   create-or-update-pr:
     runs-on: ubuntu-latest
+    env:
+      PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
     steps:
       - name: Create or update pull request (PAT)
         id: create_pr_pat
-        if: ${{ secrets.PAT_TOKEN != '' }}
+        if: ${{ env.PAT_TOKEN != '' }}
         continue-on-error: true
         uses: actions/github-script@v7
         with:
@@ -80,7 +82,7 @@ jobs:
 
       - name: Create or update pull request (GITHUB_TOKEN fallback)
         id: create_pr_github_token
-        if: ${{ secrets.PAT_TOKEN == '' || steps.create_pr_pat.outcome != 'success' }}
+        if: ${{ env.PAT_TOKEN == '' || steps.create_pr_pat.outcome != 'success' }}
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
