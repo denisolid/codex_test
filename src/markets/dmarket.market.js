@@ -27,6 +27,54 @@ function buildListingUrl(marketHashName) {
   )}`;
 }
 
+function toSafeHttpUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      return null;
+    }
+    return parsed.toString();
+  } catch (_err) {
+    return null;
+  }
+}
+
+function resolveOfferUrl(offer = {}, marketHashName = "") {
+  const directCandidates = [
+    offer.itemPage,
+    offer.item_page,
+    offer.marketPage,
+    offer.market_page,
+    offer.url,
+    offer.offerUrl,
+    offer.offer_url,
+    offer.webUrl,
+    offer.web_url,
+    offer.externalUrl,
+    offer.external_url,
+    offer.link,
+    offer?.item?.itemPage,
+    offer?.item?.item_page,
+    offer?.item?.marketPage,
+    offer?.item?.market_page,
+    offer?.item?.url,
+    offer?.item?.externalUrl,
+    offer?.item?.external_url,
+    offer?.links?.itemPage,
+    offer?.links?.marketPage,
+    offer?.links?.url
+  ];
+
+  for (const candidate of directCandidates) {
+    const safe = toSafeHttpUrl(candidate);
+    if (safe) return safe;
+  }
+
+  return buildListingUrl(marketHashName);
+}
+
 function buildHeaders() {
   const headers = {
     Accept: "application/json",
@@ -70,7 +118,7 @@ function extractPrice(offer = {}) {
   return null;
 }
 
-function extractBestOffer(payload = {}) {
+function extractBestOffer(payload = {}, requestedMarketHashName = "") {
   const list = Array.isArray(payload?.objects)
     ? payload.objects
     : Array.isArray(payload?.items)
@@ -90,6 +138,10 @@ function extractBestOffer(payload = {}) {
   return {
     price,
     currency: String(first.currency || payload.currency || "USD").trim().toUpperCase(),
+    url: resolveOfferUrl(
+      first,
+      requestedMarketHashName || first.title || payload.title || ""
+    ),
     raw: first
   };
 }
@@ -105,7 +157,7 @@ async function searchItemPrice(input = {}) {
     headers: buildHeaders()
   });
 
-  const best = extractBestOffer(payload);
+  const best = extractBestOffer(payload, marketHashName);
   if (!best) return null;
 
   return buildMarketPriceRecord({
@@ -113,7 +165,7 @@ async function searchItemPrice(input = {}) {
     marketHashName,
     grossPrice: best.price,
     currency: best.currency || "USD",
-    url: buildListingUrl(marketHashName),
+    url: best.url || buildListingUrl(marketHashName),
     confidence: "low",
     raw: best.raw
   });
@@ -166,5 +218,9 @@ async function batchGetPrices(items = [], options = {}) {
 module.exports = {
   source: SOURCE,
   searchItemPrice,
-  batchGetPrices
+  batchGetPrices,
+  __testables: {
+    toSafeHttpUrl,
+    resolveOfferUrl
+  }
 };
