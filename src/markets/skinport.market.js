@@ -4,6 +4,7 @@ const { buildMarketPriceRecord, normalizePriceNumber } = require("./marketUtils"
 
 const SOURCE = "skinport";
 const DEFAULT_API_URL = "https://api.skinport.com/v1";
+const SUPPORTED_API_CURRENCIES = new Set(["USD", "EUR"]);
 
 function toApiBaseUrl() {
   const raw = String(skinportApiUrl || DEFAULT_API_URL).trim();
@@ -26,8 +27,25 @@ function buildListingUrl(marketHashName) {
   )}`;
 }
 
+function resolveApiCurrency(input) {
+  const candidate = String(input || "USD")
+    .trim()
+    .toUpperCase();
+  return SUPPORTED_API_CURRENCIES.has(candidate) ? candidate : "USD";
+}
+
 function extractPrice(item = {}) {
+  const historyCandidates = [
+    item?.last_24_hours?.min,
+    item?.last_24_hours?.median,
+    item?.last_7_days?.min,
+    item?.last_7_days?.median,
+    item?.last_30_days?.min,
+    item?.last_30_days?.median
+  ];
+
   const candidates = [
+    ...historyCandidates,
     item.min_price,
     item.minPrice,
     item.suggested_price,
@@ -56,6 +74,7 @@ function normalizeItemsPayload(payload) {
       marketHashName: String(row?.market_hash_name || row?.marketHashName || "").trim(),
       price: extractPrice(row),
       currency: String(row?.currency || "").trim().toUpperCase() || null,
+      url: String(row?.market_page || row?.item_page || "").trim() || null,
       raw: row
     }))
     .filter((row) => row.marketHashName && row.price != null);
@@ -103,14 +122,14 @@ async function batchGetPrices(items = [], options = {}) {
   }
 
   const currency = String(options.currency || "USD").trim().toUpperCase();
+  const apiCurrency = resolveApiCurrency(currency);
   const chunks = splitIntoChunks(normalizedNames);
   const chunkResults = await mapWithConcurrency(
     chunks,
     async (namesChunk) => {
-      const url = buildSkinportUrl("/items", {
+      const url = buildSkinportUrl("/sales/history", {
         app_id: 730,
-        currency,
-        tradable: 0,
+        currency: apiCurrency,
         market_hash_name: namesChunk.join(",")
       });
 
@@ -136,8 +155,8 @@ async function batchGetPrices(items = [], options = {}) {
         source: SOURCE,
         marketHashName: row.marketHashName,
         grossPrice: row.price,
-        currency: row.currency || currency,
-        url: buildListingUrl(row.marketHashName),
+        currency: row.currency || apiCurrency,
+        url: row.url || buildListingUrl(row.marketHashName),
         confidence: "medium",
         raw: row.raw
       });
@@ -150,5 +169,10 @@ async function batchGetPrices(items = [], options = {}) {
 module.exports = {
   source: SOURCE,
   searchItemPrice,
-  batchGetPrices
+  batchGetPrices,
+  __testables: {
+    extractPrice,
+    normalizeItemsPayload,
+    resolveApiCurrency
+  }
 };
