@@ -17,6 +17,7 @@ const {
   convertUsdAmount,
   ensureFreshFxRates
 } = require("./currencyService");
+const marketComparisonService = require("./marketComparisonService");
 
 function round2(n) {
   return Number((n || 0).toFixed(2));
@@ -105,8 +106,12 @@ exports.getPortfolio = async (userId, options = {}) => {
   );
   const holdings = await inventoryRepo.getUserHoldings(userId);
   if (!holdings.length) {
+    const preference = await marketComparisonService.getUserPricePreference(userId, {
+      currency: displayCurrency
+    });
     return {
       totalValue: 0,
+      totalValueSteam: 0,
       costBasis: 0,
       realizedProfit: convertUsdAmount(round2(realizedProfit), displayCurrency),
       unrealizedProfit: 0,
@@ -124,6 +129,19 @@ exports.getPortfolio = async (userId, options = {}) => {
         hold: 0,
         watch: 0,
         sell: 0
+      },
+      pricing: {
+        mode: preference.pricingMode,
+        availableModes: marketComparisonService.PRICING_MODES,
+        ttlMinutes: null,
+        generatedAt: null,
+        totals: {
+          selected: 0,
+          steam: 0,
+          bestSellNet: 0,
+          lowestBuy: 0
+        },
+        fees: null
       },
       currency: displayCurrency,
       items: []
@@ -242,20 +260,62 @@ exports.getPortfolio = async (userId, options = {}) => {
     };
   });
 
-  const roiPercent =
+  const steamRoiPercent =
     costBasis > 0 ? round2(((totalValue - costBasis) / costBasis) * 100) : null;
-  const sevenDayChangePercent =
+  const steamSevenDayChangePercent =
     value7d > 0 ? round2(((totalValue - value7d) / value7d) * 100) : null;
-  const oneDayChangePercent =
+  const steamOneDayChangePercent =
     value1d > 0 ? round2(((totalValue - value1d) / value1d) * 100) : null;
   const analytics = buildPortfolioAnalytics(itemsWithGuidance, totalValue);
   const advancedAnalytics = entitlements.advancedAnalytics
     ? buildAdvancedAnalytics(itemsWithGuidance, totalValue)
     : null;
-  const unrealizedProfit = totalValue - costBasis;
+  let marketComparison = null;
+  try {
+    marketComparison = await marketComparisonService.compareItems(
+      itemsWithGuidance.map((item) => ({
+        skinId: item.skinId,
+        marketHashName: item.marketHashName,
+        quantity: item.quantity,
+        steamPrice: item.currentPrice,
+        steamCurrency: "USD",
+        steamRecordedAt: item.currentPriceRecordedAt
+      })),
+      {
+        userId,
+        pricingMode: options.pricingMode,
+        currency: displayCurrency,
+        allowLiveFetch: false
+      }
+    );
+  } catch (_err) {
+    marketComparison = null;
+  }
+
+  const compareBySkinId = {};
+  for (const row of marketComparison?.items || []) {
+    if (Number.isInteger(Number(row.skinId)) && Number(row.skinId) > 0) {
+      compareBySkinId[Number(row.skinId)] = row;
+    }
+  }
+
+  const pricingMode = marketComparison?.pricingMode || marketComparisonService.DEFAULT_PRICING_MODE;
+  const effectiveOneDayChangePercent =
+    pricingMode === "steam" ? steamOneDayChangePercent : null;
+  const effectiveSevenDayChangePercent =
+    pricingMode === "steam" ? steamSevenDayChangePercent : null;
   const displayItems = itemsWithGuidance.map((item) => {
+    const comparison = compareBySkinId[item.skinId] || null;
+    const selectedUnitPrice = Number(comparison?.selectedUnitPrice || 0);
+    const selectedLineValue = Number(comparison?.selectedLineValue || 0);
     const clue = item.managementClue || null;
     const prediction = clue?.prediction || null;
+    const fallbackCurrentPrice = convertUsdAmount(item.currentPrice, displayCurrency);
+    const fallbackLineValue = convertUsdAmount(item.lineValue, displayCurrency);
+    const effectiveCurrentPrice =
+      selectedUnitPrice > 0 ? round2(selectedUnitPrice) : fallbackCurrentPrice;
+    const effectiveLineValue =
+      selectedLineValue > 0 ? round2(selectedLineValue) : fallbackLineValue;
 
     return {
       ...item,
@@ -263,7 +323,9 @@ exports.getPortfolio = async (userId, options = {}) => {
         item.purchasePrice == null
           ? null
           : convertUsdAmount(Number(item.purchasePrice), displayCurrency),
-      currentPrice: convertUsdAmount(item.currentPrice, displayCurrency),
+      currentPrice: effectiveCurrentPrice,
+      steamPrice: fallbackCurrentPrice,
+      selectedPricingSource: comparison?.selectedPricingSource || item.currentPriceSource,
       oneDayReferencePrice: convertUsdAmount(item.oneDayReferencePrice, displayCurrency),
       sevenDayReferencePrice: convertUsdAmount(
         item.sevenDayReferencePrice,
@@ -271,7 +333,16 @@ exports.getPortfolio = async (userId, options = {}) => {
       ),
       oneDayLinePnl: convertUsdAmount(item.oneDayLinePnl, displayCurrency),
       sevenDayLinePnl: convertUsdAmount(item.sevenDayLinePnl, displayCurrency),
-      lineValue: convertUsdAmount(item.lineValue, displayCurrency),
+      lineValue: effectiveLineValue,
+      steamLineValue: fallbackLineValue,
+      marketComparison: comparison
+        ? {
+            bestBuy: comparison.bestBuy,
+            bestSellNet: comparison.bestSellNet,
+            perMarket: comparison.perMarket,
+            selectedPricingSource: comparison.selectedPricingSource
+          }
+        : null,
       managementClue: clue
         ? {
             ...clue,
@@ -295,6 +366,25 @@ exports.getPortfolio = async (userId, options = {}) => {
       currency: displayCurrency
     };
   });
+  const selectedTotalValue =
+    Number(marketComparison?.summary?.totalValueSelected) > 0
+      ? Number(marketComparison.summary.totalValueSelected)
+      : round2(
+          displayItems.reduce(
+            (sum, item) => sum + Number(item.lineValue || 0),
+            0
+          )
+        );
+  const costBasisDisplay = convertUsdAmount(round2(costBasis), displayCurrency);
+  const realizedProfitDisplay = convertUsdAmount(round2(realizedProfit), displayCurrency);
+  const unrealizedProfitDisplay = round2(
+    Number(selectedTotalValue || 0) - Number(costBasisDisplay || 0)
+  );
+  const roiPercent =
+    Number(costBasisDisplay) > 0
+      ? round2(((Number(selectedTotalValue || 0) - Number(costBasisDisplay)) / Number(costBasisDisplay)) * 100)
+      : steamRoiPercent;
+
   const managementSummary = displayItems.reduce(
     (acc, item) => {
       const action = String(item.managementClue?.action || "watch").toLowerCase();
@@ -323,18 +413,18 @@ exports.getPortfolio = async (userId, options = {}) => {
       message: `${staleCount} item(s) use stale prices older than ${marketPriceStaleHours}h.`
     });
   }
-  if (oneDayChangePercent != null && Math.abs(oneDayChangePercent) >= 10) {
+  if (effectiveOneDayChangePercent != null && Math.abs(effectiveOneDayChangePercent) >= 10) {
     alerts.push({
       severity: "info",
       code: "ONE_DAY_MOVE",
-      message: `Large 24h move detected: ${oneDayChangePercent > 0 ? "+" : ""}${oneDayChangePercent}%.`
+      message: `Large 24h move detected: ${effectiveOneDayChangePercent > 0 ? "+" : ""}${effectiveOneDayChangePercent}%.`
     });
   }
-  if (sevenDayChangePercent != null && Math.abs(sevenDayChangePercent) >= 20) {
+  if (effectiveSevenDayChangePercent != null && Math.abs(effectiveSevenDayChangePercent) >= 20) {
     alerts.push({
       severity: "info",
       code: "SEVEN_DAY_MOVE",
-      message: `Large 7d move detected: ${sevenDayChangePercent > 0 ? "+" : ""}${sevenDayChangePercent}%.`
+      message: `Large 7d move detected: ${effectiveSevenDayChangePercent > 0 ? "+" : ""}${effectiveSevenDayChangePercent}%.`
     });
   }
   if (analytics.concentrationRisk === "high") {
@@ -356,19 +446,45 @@ exports.getPortfolio = async (userId, options = {}) => {
   }
 
   return {
-    totalValue: convertUsdAmount(round2(totalValue), displayCurrency),
-    costBasis: convertUsdAmount(round2(costBasis), displayCurrency),
-    realizedProfit: convertUsdAmount(round2(realizedProfit), displayCurrency),
-    unrealizedProfit: convertUsdAmount(round2(unrealizedProfit), displayCurrency),
+    totalValue: round2(selectedTotalValue),
+    totalValueSteam:
+      Number(marketComparison?.summary?.totalValueSteam) > 0
+        ? round2(Number(marketComparison.summary.totalValueSteam))
+        : convertUsdAmount(round2(totalValue), displayCurrency),
+    costBasis: costBasisDisplay,
+    realizedProfit: realizedProfitDisplay,
+    unrealizedProfit: unrealizedProfitDisplay,
     roiPercent,
-    oneDayChangePercent,
-    sevenDayChangePercent,
+    oneDayChangePercent: effectiveOneDayChangePercent,
+    sevenDayChangePercent: effectiveSevenDayChangePercent,
     unpricedItemsCount: unpricedCount,
     staleItemsCount: staleCount,
     alerts,
     analytics,
     advancedAnalytics,
     managementSummary,
+    pricing: {
+      mode: pricingMode,
+      availableModes: marketComparisonService.PRICING_MODES,
+      ttlMinutes: marketComparison?.ttlMinutes || null,
+      generatedAt: marketComparison?.generatedAt || null,
+      totals: {
+        selected: round2(selectedTotalValue),
+        steam:
+          Number(marketComparison?.summary?.totalValueSteam) > 0
+            ? round2(Number(marketComparison.summary.totalValueSteam))
+            : convertUsdAmount(round2(totalValue), displayCurrency),
+        bestSellNet:
+          Number(marketComparison?.summary?.totalValueBestSellNet) > 0
+            ? round2(Number(marketComparison.summary.totalValueBestSellNet))
+            : null,
+        lowestBuy:
+          Number(marketComparison?.summary?.totalValueLowestBuy) > 0
+            ? round2(Number(marketComparison.summary.totalValueLowestBuy))
+            : null
+      },
+      fees: marketComparison?.fees || null
+    },
     currency: displayCurrency,
     items: displayItems
   };

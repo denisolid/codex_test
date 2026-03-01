@@ -93,6 +93,10 @@ After login, the same `/` page renders the authenticated app view.
 - `GET /market/inventory/value`
 - `GET /market/items/:skinId/sell-suggestion`
 - `GET /market/items/:skinId/liquidity`
+- `GET /market/preferences`
+- `PATCH /market/preferences`
+- `POST /market/compare`
+- `POST /market/refresh` (requires `x-admin-token` header)
 - `POST /trade/calculate`
 - `GET /alerts`
 - `POST /alerts`
@@ -301,6 +305,44 @@ Notes:
   - frontend has a currency selector (`USD`, `EUR`, `GBP`, `UAH`, `PLN`, `CZK`)
   - backend converts USD-based outputs when `?currency=` is provided
   - FX rates support live refresh with static fallback if provider is unavailable
+
+## Market price comparison (Steam + Skinport + CSFloat + DMarket)
+
+- Backend now includes a market adapter layer in `src/markets/` and an aggregation service in `src/services/marketComparisonService.js`.
+- Portfolio valuation supports three modes:
+  - `steam`
+  - `best_sell_net`
+  - `lowest_buy` (default)
+- Preferences are persisted per user via `user_price_preferences`.
+- Cached market rows are stored in `market_prices` with default TTL `60` minutes.
+
+Apply migration:
+- `supabase/migrations/2026-03-01-market-price-comparison.sql`
+
+Configure backend env (root `.env`):
+- `MARKET_COMPARE_CACHE_TTL_MINUTES=60`
+- `MARKET_COMPARE_CONCURRENCY=4`
+- `MARKET_COMPARE_TIMEOUT_MS=9000`
+- `MARKET_COMPARE_MAX_RETRIES=3`
+- `MARKET_COMPARE_RETRY_BASE_MS=350`
+- `MARKET_FEE_STEAM_PERCENT=13`
+- `MARKET_FEE_SKINPORT_PERCENT=12`
+- `MARKET_FEE_CSFLOAT_PERCENT=2`
+- `MARKET_FEE_DMARKET_PERCENT=7`
+- `SKINPORT_API_URL=https://api.skinport.com/v1`
+- `SKINPORT_API_KEY=` (optional)
+- `CSFLOAT_API_URL=https://csfloat.com/api/v1`
+- `CSFLOAT_API_KEY=` (optional)
+- `DMARKET_API_URL=https://api.dmarket.com/exchange/v1`
+- `DMARKET_PUBLIC_KEY=` (optional)
+- `DMARKET_SECRET_KEY=` (optional)
+
+Primary API:
+- `POST /api/market/compare`
+  - body: `{ "items": [{ "skinId": 1, "marketHashName": "...", "quantity": 2 }], "pricingMode": "lowest_buy", "forceRefresh": false }`
+- `POST /api/market/refresh` (admin-protected, same body; forces refresh)
+- `GET /api/market/preferences`
+- `PATCH /api/market/preferences`
 
 ## Extension API key flow
 

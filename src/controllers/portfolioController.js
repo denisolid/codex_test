@@ -7,6 +7,7 @@ exports.getPortfolio = asyncHandler(async (req, res) => {
   const { planTier, entitlements } = await planService.getUserPlanProfile(req.userId);
   const data = await portfolioService.getPortfolio(req.userId, {
     currency: req.query.currency,
+    pricingMode: req.query.pricingMode,
     planTier,
     entitlements
   });

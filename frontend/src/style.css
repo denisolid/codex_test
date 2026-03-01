@@ -528,6 +528,10 @@ body {
   margin-bottom: var(--space-2);
 }
 
+.settings-pricing-form {
+  margin-bottom: var(--space-3);
+}
+
 .trade-calc-grid {
   display: grid;
   gap: var(--space-2);
@@ -541,6 +545,23 @@ body {
   grid-template-columns: repeat(4, minmax(130px, 1fr));
   gap: var(--space-2);
   margin: 10px 0 14px;
+}
+
+.portfolio-pricing-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin: 6px 0 14px;
+}
+
+.portfolio-pricing-toolbar label {
+  min-width: 220px;
+}
+
+.market-fee-note {
+  margin-bottom: 12px;
 }
 
 .pagination-bar {
@@ -898,6 +919,12 @@ button:disabled,
   overflow: hidden;
 }
 
+.portfolio-skin-card-price {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
 .portfolio-skin-card-meta {
   display: flex;
   align-items: center;
@@ -1019,8 +1046,71 @@ thead th {
   background: rgba(46, 139, 255, 0.08);
 }
 
+.holding-row-details td {
+  background: rgba(8, 13, 24, 0.52);
+  padding: 10px 8px 12px;
+}
+
 .holding-row.is-skeleton:hover {
   background: transparent;
+}
+
+.market-compare-panel {
+  border: 1px solid rgba(129, 155, 204, 0.22);
+  border-radius: var(--radius-sm);
+  background: rgba(8, 12, 21, 0.68);
+  padding: 10px;
+}
+
+.market-compare-summary {
+  margin: 0 0 8px;
+  font-size: 0.86rem;
+}
+
+.market-price-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.market-price-card {
+  border: 1px solid rgba(129, 155, 204, 0.2);
+  border-radius: 10px;
+  background: rgba(12, 18, 30, 0.8);
+  padding: 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.market-price-card.unavailable {
+  opacity: 0.65;
+}
+
+.market-price-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.market-price-head strong {
+  font-size: 0.82rem;
+}
+
+.market-price-head small {
+  color: var(--text-dim);
+  font-size: 0.7rem;
+}
+
+.market-price-card p {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.market-open-link {
+  justify-content: center;
+  padding: 7px 9px;
+  font-size: 0.72rem;
 }
 
 .table-row-skeleton {
@@ -1594,11 +1684,20 @@ a:hover {
 }
 
 @media (max-width: 1180px) {
+  .layout {
+    width: min(96%, 1200px);
+  }
+
   .sidebar {
-    width: min(96vw, 1180px);
+    position: sticky;
+    top: 8px;
+    left: auto;
+    transform: none;
+    width: 100%;
     grid-template-columns: 1fr;
-    gap: 8px;
+    gap: 10px;
     padding: 10px;
+    border-radius: 18px;
   }
 
   .sidebar-header {
@@ -1608,13 +1707,28 @@ a:hover {
     min-width: 0;
   }
 
+  .sidebar-nav {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .sidebar-nav-item {
+    min-height: 50px;
+  }
+
   .sidebar-footer {
     justify-content: space-between;
     min-width: 0;
   }
 
+  .sidebar-actions {
+    width: auto;
+    justify-content: flex-end;
+  }
+
   .app-main {
-    padding-top: 188px;
+    padding-top: 14px;
   }
 
   .hero-shell {
@@ -1636,21 +1750,34 @@ a:hover {
 
 @media (max-width: 980px) {
   .layout {
-    width: min(96%, 1200px);
+    width: min(96%, 980px);
+    margin-top: 14px;
   }
 
   .sidebar {
-    top: 8px;
-    width: 96vw;
-    border-radius: 18px;
+    top: 6px;
+    padding: 9px;
+    gap: 8px;
+    border-radius: 16px;
   }
 
   .sidebar-copy {
     display: none;
   }
 
+  .sidebar-nav {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
   .sidebar-nav-item {
-    flex: 1 1 calc(25% - 8px);
+    flex: initial;
+    width: 100%;
+    min-height: 46px;
+    padding: 7px 8px;
+  }
+
+  .sidebar-nav-item span {
+    font-size: 0.81rem;
   }
 
   .sidebar-nav-item small {
@@ -1659,25 +1786,57 @@ a:hover {
 
   .sidebar-footer {
     min-width: 0;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .user-chip {
+    max-width: 100%;
   }
 
   .sidebar-actions {
-    width: 100%;
-    justify-content: flex-start;
+    width: auto;
+    justify-content: flex-end;
+    display: flex;
+    flex-wrap: wrap;
+  }
+
+  .sidebar-actions button {
+    min-width: 84px;
+    padding: 8px 10px;
   }
 
   .app-main {
-    padding-top: 236px;
+    padding-top: 12px;
+    gap: var(--space-2);
   }
 
   .premium-topbar {
     flex-direction: column;
     align-items: stretch;
+    padding: 12px;
   }
 
   .topbar-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .top-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .currency-picker {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+  }
+
+  .currency-picker select {
+    min-width: 0;
   }
 
   .hero-block,
@@ -1692,12 +1851,26 @@ a:hover {
     grid-column: span 12;
   }
 
+  .panel {
+    padding: 16px;
+  }
+
   .sub-kpi-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .list-toolbar {
     grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+
+  .portfolio-pricing-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+  }
+
+  .market-price-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .trade-calc-grid {
@@ -1712,27 +1885,38 @@ a:hover {
 
 @media (max-width: 720px) {
   .layout {
-    margin-top: 12px;
+    width: min(97%, 720px);
+    margin-top: 10px;
   }
 
   .sidebar {
-    top: 6px;
-    width: 96vw;
-    padding: 9px;
+    top: 4px;
+    padding: 8px;
     gap: 7px;
+    border-radius: 14px;
   }
 
   .sidebar-header {
-    display: block;
+    display: grid;
+    gap: 2px;
+  }
+
+  .brand {
+    font-size: 0.95rem;
+  }
+
+  .sidebar-nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
   }
 
   .sidebar-nav-item {
-    flex: 1 1 calc(50% - 8px);
-    padding: 8px 10px;
+    min-height: 44px;
+    padding: 8px;
   }
 
   .sidebar-nav-item span {
-    font-size: 0.84rem;
+    font-size: 0.78rem;
   }
 
   .sidebar-footer {
@@ -1740,6 +1924,12 @@ a:hover {
     grid-template-columns: 1fr;
     align-items: stretch;
     justify-content: stretch;
+  }
+
+  .user-chip {
+    width: 100%;
+    max-width: none;
+    justify-content: center;
   }
 
   .sidebar-actions {
@@ -1751,10 +1941,36 @@ a:hover {
   .sidebar-actions button {
     min-width: 0;
     width: 100%;
+    padding: 9px 10px;
   }
 
   .app-main {
-    padding-top: 320px;
+    padding-top: 10px;
+  }
+
+  .premium-topbar {
+    padding: 10px;
+  }
+
+  .topbar-metric {
+    padding: 10px;
+  }
+
+  .topbar-metric strong {
+    font-size: 1.02rem;
+  }
+
+  .top-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  .currency-picker {
+    grid-template-columns: 1fr;
+    font-size: 0.64rem;
+    letter-spacing: 0.08em;
+    gap: 5px;
   }
 
   .kpi-grid,
@@ -1768,17 +1984,105 @@ a:hover {
     grid-template-columns: 1fr;
   }
 
+  .portfolio-cards-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .portfolio-pricing-toolbar {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .portfolio-pricing-toolbar label {
+    min-width: 0;
+  }
+
+  .portfolio-pricing-toolbar button {
+    width: 100%;
+  }
+
+  .market-price-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .table-wrap {
+    margin: 0 -2px;
+    padding-bottom: 4px;
+  }
+
+  .portfolio-table {
+    min-width: 920px;
+  }
+
+  .table-item-cell {
+    min-width: 170px;
+    gap: 8px;
+  }
+
+  .table-item-thumb {
+    width: 52px;
+    height: 42px;
+  }
+
   .chart-row {
-    grid-template-columns: 86px 1fr 82px;
+    grid-template-columns: 78px 1fr 74px;
+    gap: 8px;
   }
 
   .pagination-bar {
     justify-content: flex-start;
   }
 
+  .pagination-bar .ghost-btn {
+    min-width: 88px;
+  }
+
   th,
   td {
-    font-size: 0.84rem;
-    padding: 10px 7px;
+    font-size: 0.82rem;
+    padding: 9px 6px;
+  }
+}
+
+@media (max-width: 560px) {
+  .sidebar-nav-item {
+    min-height: 42px;
+  }
+
+  .portfolio-cards-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .row > button,
+  .row > .link-btn,
+  .row > a.link-btn {
+    width: 100%;
+  }
+
+  .list-toolbar label {
+    font-size: 0.82rem;
+  }
+
+  .market-compare-summary {
+    display: grid;
+    gap: 4px;
+  }
+
+  .table-wrap {
+    margin: 0 -4px;
+  }
+
+  .portfolio-table {
+    min-width: 860px;
+  }
+
+  .chart-row {
+    grid-template-columns: 68px 1fr 68px;
+    font-size: 0.82rem;
+  }
+
+  .daily-points-list {
+    max-height: 180px;
   }
 }

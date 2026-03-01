@@ -11,6 +11,7 @@ const currencyService = require("../src/services/currencyService");
 test("currency service converts USD amount into selected currency", () => {
   assert.equal(currencyService.convertUsdAmount(100, "USD"), 100);
   assert.equal(currencyService.convertUsdAmount(100, "EUR"), 92);
+  assert.equal(currencyService.convertAmount(92, "EUR", "USD"), 100);
 });
 
 test("currency service rejects unsupported currency codes", () => {
