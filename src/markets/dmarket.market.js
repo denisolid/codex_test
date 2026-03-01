@@ -1,6 +1,10 @@
 const { dmarketApiUrl, dmarketPublicKey } = require("../config/env");
 const { fetchJsonWithRetry, mapWithConcurrency } = require("./marketHttp");
-const { buildMarketPriceRecord, normalizePriceNumber } = require("./marketUtils");
+const {
+  buildMarketPriceRecord,
+  normalizePriceNumber,
+  normalizePriceFromMinorUnits
+} = require("./marketUtils");
 
 const SOURCE = "dmarket";
 const DEFAULT_API_URL = "https://api.dmarket.com/exchange/v1";
@@ -89,28 +93,28 @@ function buildHeaders() {
 }
 
 function extractPrice(offer = {}) {
-  const directCandidates = [
-    offer.price,
-    offer.amount,
-    offer.priceUSD,
-    offer.priceUsd,
-    offer.usdPrice
-  ];
+  const priceObj = offer?.price || {};
+  const usdCandidates = [priceObj.USD, priceObj.usd, offer.priceUSD, offer.priceUsd, offer.usdPrice];
+  for (const candidate of usdCandidates) {
+    const text = String(candidate ?? "").trim();
+    if (!text) continue;
+    const parsed = /^-?\d+$/.test(text)
+      ? normalizePriceFromMinorUnits(Number(text))
+      : normalizePriceNumber(text);
+    if (parsed != null) return parsed;
+  }
 
-  for (const candidate of directCandidates) {
+  const nestedCandidates = [priceObj.amount, priceObj.value, priceObj.price];
+  for (const candidate of nestedCandidates) {
     const parsed = normalizePriceNumber(candidate);
     if (parsed != null) return parsed;
   }
 
-  const priceObj = offer?.price || {};
-  const nestedCandidates = [
-    priceObj.USD,
-    priceObj.usd,
-    priceObj.amount,
-    priceObj.value,
-    priceObj.price
-  ];
-  for (const candidate of nestedCandidates) {
+  const directCandidates = [offer.price, offer.value];
+  for (const candidate of directCandidates) {
+    if (typeof candidate !== "number" && typeof candidate !== "string") {
+      continue;
+    }
     const parsed = normalizePriceNumber(candidate);
     if (parsed != null) return parsed;
   }
@@ -220,6 +224,7 @@ module.exports = {
   searchItemPrice,
   batchGetPrices,
   __testables: {
+    extractPrice,
     toSafeHttpUrl,
     resolveOfferUrl
   }

@@ -10,7 +10,7 @@ const {
   __testables: { extractBestListing }
 } = require("../src/markets/csfloat.market");
 const {
-  __testables: { resolveOfferUrl }
+  __testables: { resolveOfferUrl, extractPrice }
 } = require("../src/markets/dmarket.market");
 const {
   __testables: { normalizeItemsPayload }
@@ -65,6 +65,25 @@ test("dmarket offer URL resolver prefers exact item page and falls back to searc
     fallback,
     "https://dmarket.com/ingame-items/item-list/csgo-skins?searchTitle=Fracture%20Case"
   );
+});
+
+test("dmarket price extractor prefers USD minor-unit price over amount", () => {
+  const price = extractPrice({
+    amount: "1",
+    price: {
+      USD: "174"
+    }
+  });
+  assert.equal(price, 1.74);
+});
+
+test("dmarket price extractor supports decimal USD strings", () => {
+  const price = extractPrice({
+    price: {
+      USD: "0.93"
+    }
+  });
+  assert.equal(price, 0.93);
 });
 
 test("skinport payload normalization prefers item_page over market_page", () => {
