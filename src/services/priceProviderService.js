@@ -19,8 +19,14 @@ async function fromMock(marketHashName) {
   return { price, source: "mock-price" };
 }
 
-exports.getPrice = async (marketHashName) => {
+exports.getPrice = async (marketHashName, options = {}) => {
+  const allowMockFallback = options.allowMockFallback !== false;
+  const allowMockSource = options.allowMockSource !== false;
+
   if (marketPriceSource === "mock") {
+    if (!allowMockSource) {
+      throw new Error("Mock price source is disabled for this request.");
+    }
     return fromMock(marketHashName);
   }
 
@@ -30,7 +36,10 @@ exports.getPrice = async (marketHashName) => {
 
   try {
     return await fromSteam(marketHashName);
-  } catch (_err) {
+  } catch (err) {
+    if (!allowMockFallback || !allowMockSource) {
+      throw err;
+    }
     return fromMock(marketHashName);
   }
 };

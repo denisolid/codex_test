@@ -10,8 +10,18 @@ const {
   ensureFreshFxRates
 } = require("./currencyService");
 
+function isMockPriceSource(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .includes("mock");
+}
+
 async function refreshSkinPrice(skin) {
-  const priced = await priceProviderService.getPrice(skin.market_hash_name);
+  const priced = await priceProviderService.getPrice(skin.market_hash_name, {
+    allowMockFallback: false,
+    allowMockSource: false
+  });
   const recordedAt = new Date().toISOString();
 
   await priceRepo.insertPriceRows([
@@ -46,6 +56,9 @@ exports.getSkinDetails = async (skinId, options = {}) => {
   }
 
   let latestPrice = await priceRepo.getLatestPriceBySkinId(skinId);
+  if (isMockPriceSource(latestPrice?.source)) {
+    latestPrice = null;
+  }
 
   try {
     latestPrice = await refreshSkinPrice(skin);
