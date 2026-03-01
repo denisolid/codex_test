@@ -30,15 +30,31 @@ export function renderSkinCard(item = {}, helpers = {}) {
   const { rarity, color } = getRarityTheme(item);
   const imageUrl = resolveItemImageUrl(item);
   const fallbackImage = isCaseLikeItem(item) ? defaultCaseImage : defaultSkinImage;
+  const inspectSteamItemId = String(
+    item.primarySteamItemId || (Array.isArray(item.steamItemIds) ? item.steamItemIds[0] : "") || ""
+  ).trim();
+  const isInspectable = Boolean(inspectSteamItemId);
   const unitPriceMarkup =
     item.currentPrice == null
       ? "-"
-      : `${formatMoney(item.currentPrice, item.currency)} · ${formatSourceLabel(
+      : `${formatMoney(item.currentPrice, item.currency)} | ${formatSourceLabel(
           item.selectedPricingSource || item.currentPriceSource
         )}`;
 
   return `
-    <article class="portfolio-skin-card" style="--rarity-color: ${color};">
+    <article
+      class="portfolio-skin-card ${isInspectable ? "portfolio-skin-card-clickable" : "portfolio-skin-card-disabled"}"
+      style="--rarity-color: ${color};"
+      ${
+        isInspectable
+          ? `role="button" tabindex="0" data-steam-item-id="${escapeHtml(
+              inspectSteamItemId
+            )}" title="Inspect in Position Inspector" aria-label="Inspect ${escapeHtml(
+              item.marketHashName || "item"
+            )} in Position Inspector"`
+          : 'aria-disabled="true" title="Steam item ID unavailable for inspect"'
+      }
+    >
       <div class="portfolio-skin-card-media">
         <div class="portfolio-skin-card-hex" aria-hidden="true"></div>
         <img

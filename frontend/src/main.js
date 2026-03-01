@@ -959,6 +959,16 @@ async function handleTabSwitch(tab) {
   }
 }
 
+function triggerInspectBySteamItemId(rawSteamItemId) {
+  const steamItemId = String(rawSteamItemId || "").trim();
+  if (!steamItemId) return;
+  const input = document.querySelector("#steam-item-id");
+  if (input) {
+    input.value = steamItemId;
+  }
+  runUiTask(() => inspectSkinBySteamItemId(steamItemId));
+}
+
 function onAppClick(event) {
   if (!app) return;
   const target = event.target instanceof Element ? event.target : null;
@@ -1030,14 +1040,16 @@ function onAppClick(event) {
     return;
   }
 
+  const tile = target.closest(".portfolio-skin-card-clickable");
+  if (tile) {
+    event.preventDefault();
+    triggerInspectBySteamItemId(tile.getAttribute("data-steam-item-id"));
+    return;
+  }
+
   if (button?.matches(".inspect-skin-btn")) {
     event.preventDefault();
-    const steamItemId = button.getAttribute("data-steam-item-id");
-    const input = document.querySelector("#steam-item-id");
-    if (input) {
-      input.value = String(steamItemId || "");
-    }
-    runUiTask(() => inspectSkinBySteamItemId(steamItemId));
+    triggerInspectBySteamItemId(button.getAttribute("data-steam-item-id"));
     return;
   }
 
@@ -1145,6 +1157,16 @@ function onAppClick(event) {
     event.preventDefault();
     runUiTask(() => refreshTeamDashboard());
   }
+}
+
+function onAppKeydown(event) {
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) return;
+  const tile = target.closest(".portfolio-skin-card-clickable");
+  if (!tile) return;
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  triggerInspectBySteamItemId(tile.getAttribute("data-steam-item-id"));
 }
 
 function onAppInput(event) {
@@ -1334,6 +1356,7 @@ function ensureAppEventDelegation() {
   if (!app || delegatedAppEventsBound) return;
 
   app.addEventListener("click", onAppClick);
+  app.addEventListener("keydown", onAppKeydown);
   app.addEventListener("input", onAppInput);
   app.addEventListener("change", onAppChange);
   app.addEventListener("submit", onAppSubmit);
