@@ -101,6 +101,29 @@ function convertUsdAmount(amount, currencyCode) {
   return round2(n * rate);
 }
 
+function convertAmount(amount, fromCurrencyCode, toCurrencyCode) {
+  if (amount == null) return null;
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return null;
+
+  try {
+    const from = resolveCurrency(fromCurrencyCode || "USD");
+    const to = resolveCurrency(toCurrencyCode || from);
+    if (from === to) return round2(n);
+
+    const rates = getActiveRateMap();
+    const fromRate = Number(rates[from] || BASE_RATE_MAP[from] || 0);
+    const toRate = Number(rates[to] || BASE_RATE_MAP[to] || 0);
+    if (!Number.isFinite(fromRate) || fromRate <= 0) return null;
+    if (!Number.isFinite(toRate) || toRate <= 0) return null;
+
+    const amountInUsd = n / fromRate;
+    return round2(amountInUsd * toRate);
+  } catch (_err) {
+    return null;
+  }
+}
+
 function getSupportedCurrencies() {
   return SUPPORTED_CODES.slice();
 }
@@ -224,6 +247,7 @@ async function ensureFreshFxRates(options = {}) {
 module.exports = {
   resolveCurrency,
   convertUsdAmount,
+  convertAmount,
   ensureFreshFxRates,
   getSupportedCurrencies,
   __testables: {

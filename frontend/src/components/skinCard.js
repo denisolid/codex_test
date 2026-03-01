@@ -19,11 +19,27 @@ function getImageUrl(item = {}) {
   return defaultSkinImage;
 }
 
+function formatSourceLabel(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "N/A";
+  if (raw === "csfloat") return "CSFloat";
+  if (raw === "dmarket") return "DMarket";
+  if (raw === "skinport") return "Skinport";
+  if (raw === "steam") return "Steam";
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
 export function renderSkinCard(item = {}, helpers = {}) {
   const escapeHtml = helpers.escapeHtml || fallbackEscape;
   const formatMoney = helpers.formatMoney || ((value) => String(value ?? "0"));
   const { rarity, color } = getRarityTheme(item);
   const imageUrl = getImageUrl(item);
+  const unitPriceMarkup =
+    item.currentPrice == null
+      ? "-"
+      : `${formatMoney(item.currentPrice, item.currency)} · ${formatSourceLabel(
+          item.selectedPricingSource || item.currentPriceSource
+        )}`;
 
   return `
     <article class="portfolio-skin-card" style="--rarity-color: ${color};">
@@ -40,6 +56,7 @@ export function renderSkinCard(item = {}, helpers = {}) {
         <p class="portfolio-skin-card-name" title="${escapeHtml(item.marketHashName || "-")}">
           ${escapeHtml(item.marketHashName || "Unknown item")}
         </p>
+        <p class="portfolio-skin-card-price">${escapeHtml(unitPriceMarkup)}</p>
         <div class="portfolio-skin-card-meta">
           <span class="rarity-tag" style="--rarity-color: ${color};">${escapeHtml(rarity)}</span>
           <span class="portfolio-skin-card-value">${formatMoney(item.lineValue, item.currency)}</span>

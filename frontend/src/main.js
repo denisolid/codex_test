@@ -6,6 +6,12 @@ import { renderSkinCard, renderSkinCardSkeleton } from "./components/skinCard";
 const app = document.querySelector("#app");
 const SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "UAH", "PLN", "CZK"];
 const CURRENCY_STORAGE_KEY = "cs2sa:selected_currency";
+const PRICING_MODE_STORAGE_KEY = "cs2sa:pricing_mode";
+const PRICING_MODE_LABELS = {
+  steam: "Steam Price",
+  best_sell_net: "Best Sell Net",
+  lowest_buy: "Lowest Buy"
+};
 const SEARCH_RENDER_DEBOUNCE_MS = 120;
 
 function normalizeCurrencyCode(value) {
@@ -16,6 +22,16 @@ function normalizeCurrencyCode(value) {
     return code;
   }
   return "USD";
+}
+
+function normalizePricingMode(value) {
+  const mode = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(PRICING_MODE_LABELS, mode)) {
+    return mode;
+  }
+  return "lowest_buy";
 }
 
 const state = {
@@ -64,6 +80,11 @@ const state = {
   syncingInventory: false,
   syncSummary: null,
   currency: normalizeCurrencyCode(localStorage.getItem(CURRENCY_STORAGE_KEY) || "USD"),
+  pricingMode: normalizePricingMode(
+    localStorage.getItem(PRICING_MODE_STORAGE_KEY) || "lowest_buy"
+  ),
+  compareExpandedBySkinId: {},
+  compareRefreshing: false,
   txSubmitting: false,
   txForm: {
     skinId: "",
@@ -248,6 +269,21 @@ function formatPercent(value) {
 function formatNumber(value, digits = 2) {
   if (value == null || Number.isNaN(Number(value))) return "-";
   return Number(value).toFixed(digits);
+}
+
+function formatRelativeTime(isoValue) {
+  if (!isoValue) return "-";
+  const ts = new Date(isoValue).getTime();
+  if (Number.isNaN(ts)) return "-";
+  const deltaSeconds = Math.round((Date.now() - ts) / 1000);
+  if (deltaSeconds < 60) return "just now";
+  if (deltaSeconds < 3600) return `${Math.floor(deltaSeconds / 60)}m ago`;
+  if (deltaSeconds < 86400) return `${Math.floor(deltaSeconds / 3600)}h ago`;
+  return `${Math.floor(deltaSeconds / 86400)}d ago`;
+}
+
+function getPricingModeLabel(mode) {
+  return PRICING_MODE_LABELS[normalizePricingMode(mode)] || PRICING_MODE_LABELS.lowest_buy;
 }
 
 function formatSignedMoney(amount, currencyCode = state.currency) {
@@ -793,6 +829,23 @@ function syncMarketCommissionFromElement(el) {
   if (inline && inline !== el) inline.value = value;
 }
 
+async function savePricePreferences(patch = {}, options = {}) {
+  const { silent = true } = options;
+  try {
+    const payload = await api("/market/preferences", {
+      method: "PATCH",
+      body: JSON.stringify(patch)
+    });
+    if (payload?.pricingMode) {
+      state.pricingMode = normalizePricingMode(payload.pricingMode);
+    }
+  } catch (err) {
+    if (!silent) {
+      throw err;
+    }
+  }
+}
+
 async function handleCurrencySelectChange(nextCurrency) {
   if (nextCurrency === state.currency) return;
 
@@ -802,6 +855,13 @@ async function handleCurrencySelectChange(nextCurrency) {
   } catch (_err) {
     // Ignore storage write errors.
   }
+  await savePricePreferences(
+    {
+      preferredCurrency: nextCurrency,
+      pricingMode: state.pricingMode
+    },
+    { silent: true }
+  );
   state.marketTab.inventoryValue = null;
   state.marketTab.autoLoaded = false;
   state.marketInsight = null;
@@ -812,10 +872,80 @@ async function handleCurrencySelectChange(nextCurrency) {
   }
 }
 
+async function handlePricingModeChange(nextMode) {
+  const normalized = normalizePricingMode(nextMode);
+  if (normalized === state.pricingMode) return;
+
+  state.pricingMode = normalized;
+  try {
+    localStorage.setItem(PRICING_MODE_STORAGE_KEY, normalized);
+  } catch (_err) {
+    // Ignore storage write errors.
+  }
+
+  await savePricePreferences(
+    {
+      pricingMode: normalized,
+      preferredCurrency: state.currency
+    },
+    { silent: true }
+  );
+
+  await refreshPortfolio({ silent: true });
+}
+
+function buildComparisonItemsPayload(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => ({
+      skinId: Number(item.skinId || 0) || null,
+      marketHashName: String(item.marketHashName || "").trim(),
+      quantity: Number(item.quantity || 0),
+      steamPrice: Number(item.steamPrice || item.currentPrice || 0),
+      steamCurrency: state.portfolio?.currency || state.currency,
+      steamRecordedAt: item.currentPriceRecordedAt || null
+    }))
+    .filter((row) => row.marketHashName);
+}
+
+async function refreshVisibleMarketComparisons() {
+  if (state.compareRefreshing) return;
+
+  const { items } = getFilteredHoldings();
+  const payloadItems = buildComparisonItemsPayload(items);
+  if (!payloadItems.length) return;
+
+  clearError();
+  state.compareRefreshing = true;
+  render();
+
+  try {
+    await api("/market/compare", {
+      method: "POST",
+      body: JSON.stringify({
+        items: payloadItems,
+        pricingMode: state.pricingMode,
+        forceRefresh: true,
+        allowLiveFetch: true,
+        currency: state.currency
+      })
+    });
+    await refreshPortfolio({ silent: true });
+  } catch (err) {
+    setError(err.message);
+  } finally {
+    state.compareRefreshing = false;
+    render();
+  }
+}
+
 async function handleTabSwitch(tab) {
   if (!tab || tab === state.activeTab) return;
   state.activeTab = tab;
   render();
+
+  if (tab === "portfolio") {
+    runUiTask(() => refreshVisibleMarketComparisons());
+  }
 
   if (
     tab === "team" &&
@@ -906,6 +1036,21 @@ function onAppClick(event) {
       input.value = String(steamItemId || "");
     }
     runUiTask(() => inspectSkinBySteamItemId(steamItemId));
+    return;
+  }
+
+  if (button?.matches(".compare-market-btn")) {
+    event.preventDefault();
+    const skinId = Number(button.getAttribute("data-skin-id") || 0);
+    if (!Number.isInteger(skinId) || skinId <= 0) return;
+    state.compareExpandedBySkinId[skinId] = !state.compareExpandedBySkinId[skinId];
+    render();
+    return;
+  }
+
+  if (button?.matches("#refresh-market-compare-btn")) {
+    event.preventDefault();
+    runUiTask(() => refreshVisibleMarketComparisons());
     return;
   }
 
@@ -1040,6 +1185,18 @@ function onAppChange(event) {
   if (target.matches("#currency-select")) {
     const nextCurrency = normalizeCurrencyCode(target.value);
     runUiTask(() => handleCurrencySelectChange(nextCurrency));
+    return;
+  }
+
+  if (target.matches("#settings-currency-select")) {
+    const nextCurrency = normalizeCurrencyCode(target.value);
+    runUiTask(() => handleCurrencySelectChange(nextCurrency));
+    return;
+  }
+
+  if (target.matches("#pricing-mode-select, #settings-pricing-mode")) {
+    const nextMode = normalizePricingMode(target.value);
+    runUiTask(() => handlePricingModeChange(nextMode));
     return;
   }
 
@@ -1315,6 +1472,9 @@ async function refreshPortfolio(options = {}) {
   }
 
   try {
+    const portfolioPath = withCurrency(
+      `/portfolio?pricingMode=${encodeURIComponent(state.pricingMode)}`
+    );
     const [
       mePayload,
       portfolio,
@@ -1328,7 +1488,7 @@ async function refreshPortfolio(options = {}) {
     ] =
       await Promise.all([
         api("/auth/me"),
-        api(withCurrency("/portfolio")),
+        api(portfolioPath),
         api(withCurrency(`/portfolio/history?days=${state.historyDays}`)),
         api("/transactions"),
         api("/alerts").catch(() => ({ items: [] })),
@@ -1346,6 +1506,14 @@ async function refreshPortfolio(options = {}) {
 
     state.authProfile = buildAuthProfile(mePayload);
     state.portfolio = portfolio;
+    if (portfolio?.pricing?.mode) {
+      state.pricingMode = normalizePricingMode(portfolio.pricing.mode);
+      try {
+        localStorage.setItem(PRICING_MODE_STORAGE_KEY, state.pricingMode);
+      } catch (_err) {
+        // Ignore storage write errors.
+      }
+    }
     state.history = history.points || [];
     state.transactions = Array.isArray(txPayload?.items) ? txPayload.items : [];
     state.alertsFeed = Array.isArray(alertsPayload?.items) ? alertsPayload.items : [];
@@ -1371,6 +1539,11 @@ async function refreshPortfolio(options = {}) {
         holdingsValueMemory.delete(skinId);
       }
     }
+    for (const skinId of Object.keys(state.compareExpandedBySkinId || {})) {
+      if (!liveSkinIds.has(Number(skinId))) {
+        delete state.compareExpandedBySkinId[skinId];
+      }
+    }
 
     state.marketTab.autoLoaded = false;
     hydrateTabDefaults();
@@ -1394,6 +1567,10 @@ async function refreshPortfolio(options = {}) {
       1
     );
     state.transactionsView.page = clampInt(state.transactionsView.page, 1, maxTxPages);
+
+    if (state.activeTab === "portfolio" && !silent) {
+      runUiTask(() => refreshVisibleMarketComparisons());
+    }
     return true;
   } catch (err) {
     if (!silent) {
@@ -2280,6 +2457,121 @@ function renderPortfolioCardGrid() {
   `;
 }
 
+function formatMarketSourceLabel(source) {
+  const map = {
+    steam: "Steam",
+    skinport: "Skinport",
+    csfloat: "CSFloat",
+    dmarket: "DMarket"
+  };
+  return map[String(source || "").toLowerCase()] || toTitle(source || "Market");
+}
+
+function renderPortfolioPricingControls() {
+  const pricing = state.portfolio?.pricing || {};
+  const mode = normalizePricingMode(pricing.mode || state.pricingMode);
+  const fees = pricing.fees || {};
+  const feeText = [
+    `Steam ${formatNumber(fees.steam, 2)}%`,
+    `Skinport ${formatNumber(fees.skinport, 2)}%`,
+    `CSFloat ${formatNumber(fees.csfloat, 2)}%`,
+    `DMarket ${formatNumber(fees.dmarket, 2)}%`
+  ].join(" | ");
+
+  return `
+    <div class="portfolio-pricing-toolbar">
+      <label>Pricing Mode
+        <select id="pricing-mode-select">
+          <option value="lowest_buy" ${mode === "lowest_buy" ? "selected" : ""}>Lowest Buy</option>
+          <option value="steam" ${mode === "steam" ? "selected" : ""}>Steam Price</option>
+          <option value="best_sell_net" ${mode === "best_sell_net" ? "selected" : ""}>Best Sell Net</option>
+        </select>
+      </label>
+      <button
+        type="button"
+        id="refresh-market-compare-btn"
+        class="ghost-btn"
+        ${state.compareRefreshing ? "disabled" : ""}
+      >
+        ${state.compareRefreshing ? "Refreshing..." : "Refresh Market Prices"}
+      </button>
+    </div>
+    <p class="helper-text market-fee-note" title="Net sell value subtracts marketplace fees before comparing venues.">
+      Portfolio valuation mode: <strong>${escapeHtml(getPricingModeLabel(mode))}</strong>. Fee model: ${escapeHtml(
+    feeText
+  )}.
+    </p>
+  `;
+}
+
+function renderMarketComparisonPanel(item) {
+  const comparison = item?.marketComparison || null;
+  if (!comparison || !Array.isArray(comparison.perMarket)) {
+    return `
+      <div class="market-compare-panel">
+        <p class="muted">Market comparison data is unavailable for this item. Use "Refresh Market Prices".</p>
+      </div>
+    `;
+  }
+
+  const bestBuyMarkup = comparison.bestBuy
+    ? `${formatMarketSourceLabel(comparison.bestBuy.source)} ${formatMoney(
+        comparison.bestBuy.grossPrice,
+        item.currency || state.currency
+      )}`
+    : "N/A";
+  const bestSellMarkup = comparison.bestSellNet
+    ? `${formatMarketSourceLabel(comparison.bestSellNet.source)} ${formatMoney(
+        comparison.bestSellNet.netPriceAfterFees,
+        item.currency || state.currency
+      )}`
+    : "N/A";
+
+  const perMarketMarkup = comparison.perMarket
+    .map((row) => {
+      const isAvailable = Boolean(row?.available);
+      const listingLink = row?.url
+        ? `<a class="link-btn ghost market-open-link" href="${escapeHtml(
+            row.url
+          )}" target="_blank" rel="noreferrer">Open listing</a>`
+        : '<span class="muted">No listing</span>';
+
+      return `
+        <div class="market-price-card ${isAvailable ? "" : "unavailable"}">
+          <div class="market-price-head">
+            <strong>${escapeHtml(formatMarketSourceLabel(row.source))}</strong>
+            <small>${escapeHtml(
+              isAvailable ? formatRelativeTime(row.updatedAt) : "No data"
+            )}</small>
+          </div>
+          <p>Gross: <strong>${
+            isAvailable ? formatMoney(row.grossPrice, row.currency || state.currency) : "-"
+          }</strong></p>
+          <p>Net: <strong>${
+            isAvailable
+              ? formatMoney(row.netPriceAfterFees, row.currency || state.currency)
+              : "-"
+          }</strong></p>
+          ${listingLink}
+        </div>
+      `;
+    })
+    .join("");
+
+  return `
+    <div class="market-compare-panel">
+      <p class="market-compare-summary">
+        Best Buy: <strong>${bestBuyMarkup}</strong>
+        <span class="muted">|</span>
+        Best Sell Net: <strong>${bestSellMarkup}</strong>
+      </p>
+      <div class="market-price-grid">
+        ${perMarketMarkup}
+      </div>
+    </div>
+  `;
+}
+
 function renderPortfolioRows() {
   if (state.portfolioLoading) {
     return Array.from({ length: 6 }, (_, idx) => idx)
@@ -2322,6 +2614,7 @@ function renderPortfolioRows() {
       const sevenDayClass = Number(item.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
       const rarityTheme = getItemRarityTheme(item);
       const itemImageUrl = getItemImageUrl(item);
+      const isExpanded = Boolean(state.compareExpandedBySkinId[skinId]);
 
       return `
         <tr class="holding-row">
@@ -2351,22 +2644,42 @@ function renderPortfolioRows() {
           <td><span class="price-cell">${formatMoney(item.currentPrice)}</span></td>
           <td><span class="pnl-chip ${oneDayClass}">${formatPercent(item.oneDayChangePercent)}</span></td>
           <td><span class="pnl-chip ${sevenDayClass}">${formatPercent(item.sevenDayChangePercent)}</span></td>
-          <td title="Source: ${escapeHtml(item.currentPriceSource || "-")}">${formatPriceStatusBadge(item.priceStatus)}</td>
+          <td title="Source: ${escapeHtml(item.selectedPricingSource || item.currentPriceSource || "-")}">${formatPriceStatusBadge(item.priceStatus)}</td>
           <td>${formatManagementClue(item.managementClue)}</td>
           <td>
             <strong class="line-value ${flashClass}">${formatMoney(item.lineValue)}</strong>
           </td>
           <td>
-            <button
-              type="button"
-              class="ghost-btn inspect-skin-btn"
-              data-steam-item-id="${escapeHtml(item.primarySteamItemId || "")}"
-              ${item.primarySteamItemId ? "" : "disabled"}
-            >
-              Inspect
-            </button>
+            <div class="row">
+              <button
+                type="button"
+                class="ghost-btn inspect-skin-btn"
+                data-steam-item-id="${escapeHtml(item.primarySteamItemId || "")}"
+                ${item.primarySteamItemId ? "" : "disabled"}
+              >
+                Inspect
+              </button>
+              <button
+                type="button"
+                class="ghost-btn compare-market-btn"
+                data-skin-id="${skinId}"
+              >
+                ${isExpanded ? "Hide Compare" : "Compare"}
+              </button>
+            </div>
           </td>
         </tr>
+        ${
+          isExpanded
+            ? `
+          <tr class="holding-row-details">
+            <td colspan="10">
+              ${renderMarketComparisonPanel(item)}
+            </td>
+          </tr>
+        `
+            : ""
+        }
       `;
     })
     .join("");
@@ -2515,6 +2828,7 @@ function renderHistoryChart() {
 
 function renderDashboardHero() {
   const portfolio = state.portfolio || {};
+  const pricingModeLabel = getPricingModeLabel(portfolio?.pricing?.mode || state.pricingMode);
   const currencyCode = portfolio.currency || state.currency;
   const totalValue = Number(portfolio.totalValue || 0);
   const sevenDay = Number(portfolio.sevenDayChangePercent || 0);
@@ -2543,7 +2857,7 @@ function renderDashboardHero() {
           </div>
           <div class="hero-metric-stack">
             <article class="hero-metric metric-glow">
-              <span>Total Portfolio Value</span>
+              <span>${escapeHtml(pricingModeLabel)} Portfolio Value</span>
               <strong
                 class="metric-number"
                 data-count-key="hero-total-value"
@@ -4125,6 +4439,11 @@ function renderSettingsTab() {
   const publicUrl = steamLinked
     ? `${window.location.origin}/u/${encodeURIComponent(profile.steamId64 || "")}`
     : "";
+  const pricingMode = normalizePricingMode(state.portfolio?.pricing?.mode || state.pricingMode);
+  const currencyOptions = SUPPORTED_CURRENCIES.map(
+    (code) =>
+      `<option value="${code}" ${code === state.currency ? "selected" : ""}>${code}</option>`
+  ).join("");
 
   return `
     <section class="grid">
@@ -4186,6 +4505,20 @@ function renderSettingsTab() {
       </article>
       <article class="panel wide">
         <h2>Plan & Monetization</h2>
+        <div class="form settings-pricing-form">
+          <h3 style="margin:0;">Portfolio Pricing Preferences</h3>
+          <label>Pricing mode
+            <select id="settings-pricing-mode">
+              <option value="lowest_buy" ${pricingMode === "lowest_buy" ? "selected" : ""}>Lowest Buy</option>
+              <option value="steam" ${pricingMode === "steam" ? "selected" : ""}>Steam Price</option>
+              <option value="best_sell_net" ${pricingMode === "best_sell_net" ? "selected" : ""}>Best Sell Net</option>
+            </select>
+          </label>
+          <label>Display currency
+            <select id="settings-currency-select">${currencyOptions}</select>
+          </label>
+          <p class="helper-text">Pricing mode changes how item price and total value are calculated across Steam, Skinport, CSFloat, and DMarket.</p>
+        </div>
         <div class="sub-kpi-grid">
           <article class="sub-kpi-card">
             <span>Current Plan</span>
@@ -4544,6 +4877,7 @@ function renderApp() {
   const topValue = Number(portfolio.totalValue || 0);
   const top7d = Number(portfolio.sevenDayChangePercent || 0);
   const top24h = Number(portfolio.oneDayChangePercent || 0);
+  const topValueLabel = getPricingModeLabel(portfolio?.pricing?.mode || state.pricingMode);
 
   const currencyOptions = SUPPORTED_CURRENCIES.map(
     (code) => `<option value="${code}" ${code === state.currency ? "selected" : ""}>${code}</option>`
@@ -4588,6 +4922,7 @@ function renderApp() {
         <p class="helper-text">
           Premium marketplace tiles for quick scanning plus an execution table for sorting and trade decisions.
         </p>
+        ${renderPortfolioPricingControls()}
         <div class="portfolio-cards-section">
           <h3 class="portfolio-subheading">Marketplace Tiles</h3>
           ${renderPortfolioCardGrid()}
@@ -4646,12 +4981,12 @@ function renderApp() {
                 <th>Steam Item ID</th>
                 <th>${renderHoldingsSortButton("Item", "name")}</th>
                 <th>${renderHoldingsSortButton("Qty", "qty")}</th>
-                <th>${renderHoldingsSortButton("Price", "price")}</th>
+                <th>${renderHoldingsSortButton("Mode Price", "price")}</th>
                 <th>24H</th>
                 <th>${renderHoldingsSortButton("7D", "change")}</th>
                 <th>Status</th>
                 <th>Signal</th>
-                <th>${renderHoldingsSortButton("Value", "value")}</th>
+                <th>${renderHoldingsSortButton("Mode Value", "value")}</th>
                 <th>Action</th>
               </tr>
             </thead>
@@ -4735,7 +5070,7 @@ function renderApp() {
         <header class="topbar premium-topbar">
           <div class="topbar-metrics">
             <article class="topbar-metric metric-glow">
-              <span>Portfolio Value</span>
+              <span>${escapeHtml(topValueLabel)} Value</span>
               <strong
                 class="metric-number"
                 data-count-key="topbar-total-value"

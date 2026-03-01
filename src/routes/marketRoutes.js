@@ -1,5 +1,6 @@
 const router = require("express").Router();
 const auth = require("../middleware/authMiddleware");
+const adminAuth = require("../middleware/adminAuth");
 const ctrl = require("../controllers/marketController");
 const {
   requirePositiveIntParam,
@@ -29,5 +30,9 @@ router.get(
   requirePositiveIntParam("skinId", { message: "Invalid item id" }),
   ctrl.getLiquidityScore
 );
+router.get("/preferences", ctrl.getPricePreferences);
+router.patch("/preferences", ctrl.updatePricePreferences);
+router.post("/compare", ctrl.compareItems);
+router.post("/refresh", adminAuth, ctrl.refreshComparisonCache);
 
 module.exports = router;
