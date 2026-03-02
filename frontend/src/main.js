@@ -11,6 +11,7 @@ import {
   resolveItemImageUrl
 } from "./rarity";
 import { renderSkinCard, renderSkinCardSkeleton } from "./components/skinCard";
+import { renderAvatarMenu } from "./components/avatarMenu";
 import { renderInspectModal } from "./components/inspectModal";
 import { renderMobileDrawer, renderMobileNav } from "./components/mobileNav";
 import { renderSection } from "./components/uiPrimitives";
@@ -24,6 +25,8 @@ const PRICING_MODE_LABELS = {
   lowest_buy: "Lowest Buy"
 };
 const SEARCH_RENDER_DEBOUNCE_MS = 120;
+const TOAST_MAX_VISIBLE = 4;
+const TOAST_DEFAULT_TIMEOUT_MS = 5000;
 
 function normalizeCurrencyCode(value) {
   const code = String(value || "")
@@ -72,6 +75,7 @@ const state = {
   inspectedSteamItemId: "",
   inspectModal: {
     open: false,
+    focusPending: false,
     loading: false,
     error: "",
     steamItemId: "",
@@ -87,6 +91,13 @@ const state = {
     open: false,
     focusPending: false
   },
+  avatarMenu: {
+    open: false
+  },
+  tooltip: {
+    openId: ""
+  },
+  globalSearch: "",
   activeTab: "dashboard",
   historyDays: 7,
   holdingsView: {
@@ -175,7 +186,11 @@ const state = {
   teamDashboard: {
     loading: false,
     payload: null
-  }
+  },
+  authNotice: {
+    emailConfirmToastShown: false
+  },
+  toasts: []
 };
 
 const holdingsValueMemory = new Map();
@@ -183,6 +198,10 @@ const metricCounterMemory = new Map();
 let delegatedAppEventsBound = false;
 let tabSwitchTicket = 0;
 let mobileDrawerLastFocusedElement = null;
+let avatarMenuLastFocusedElement = null;
+let inspectModalLastTriggerElement = null;
+let toastSequence = 0;
+const toastTimers = new Map();
 const APP_TABS = [
   { id: "dashboard", label: "Dashboard", hint: "Performance" },
   { id: "portfolio", label: "Portfolio", hint: "Holdings" },
@@ -219,13 +238,137 @@ function escapeHtml(value) {
 }
 
 function setError(msg) {
-  state.error = msg;
-  render();
+  notify("error", msg);
 }
 
 function clearError() {
   if (!state.error) return;
   state.error = "";
+}
+
+function normalizeToastType(type) {
+  const safe = String(type || "info").trim().toLowerCase();
+  if (safe === "success" || safe === "warning" || safe === "error") return safe;
+  return "info";
+}
+
+function dismissToast(rawId) {
+  const id = Number(rawId);
+  if (!Number.isInteger(id)) return;
+
+  if (toastTimers.has(id)) {
+    clearTimeout(toastTimers.get(id));
+    toastTimers.delete(id);
+  }
+
+  const before = state.toasts.length;
+  state.toasts = state.toasts.filter((toast) => Number(toast.id) !== id);
+  if (state.toasts.length !== before) {
+    renderToastHost();
+  }
+}
+
+function notify(type, message, options = {}) {
+  const safeMessage = String(message || "").trim();
+  if (!safeMessage) return null;
+
+  const id = ++toastSequence;
+  const timeoutMs = Math.max(Number(options.timeoutMs || TOAST_DEFAULT_TIMEOUT_MS), 1200);
+  const pinned = Boolean(options.pinned);
+  const toast = {
+    id,
+    type: normalizeToastType(type),
+    message: safeMessage,
+    pinned
+  };
+
+  state.toasts = [...state.toasts, toast].slice(-TOAST_MAX_VISIBLE);
+  const activeIds = new Set(state.toasts.map((row) => Number(row.id)));
+  for (const [timerId, timer] of toastTimers.entries()) {
+    if (!activeIds.has(Number(timerId))) {
+      clearTimeout(timer);
+      toastTimers.delete(timerId);
+    }
+  }
+
+  if (!pinned) {
+    const timer = setTimeout(() => {
+      dismissToast(id);
+    }, timeoutMs);
+    toastTimers.set(id, timer);
+  }
+
+  renderToastHost();
+  return id;
+}
+
+if (typeof window !== "undefined") {
+  window.notify = notify;
+}
+
+function ensureToastHost() {
+  let host = document.querySelector("#toast-host");
+  if (host) return host;
+
+  host = document.createElement("div");
+  host.id = "toast-host";
+  host.className = "toast-viewport";
+  host.setAttribute("aria-live", "polite");
+  host.setAttribute("aria-relevant", "additions");
+  document.body.appendChild(host);
+  return host;
+}
+
+function renderToastHost() {
+  const host = ensureToastHost();
+  const rows = (Array.isArray(state.toasts) ? state.toasts : [])
+    .map((toast) => {
+      const role = toast.type === "error" || toast.type === "warning" ? "alert" : "status";
+      return `
+        <article class="toast ${escapeHtml(toast.type)}" role="${role}">
+          <div class="toast-body">
+            <span class="toast-tag">${escapeHtml(toTitle(toast.type))}</span>
+            <p>${escapeHtml(toast.message)}</p>
+          </div>
+          <button
+            type="button"
+            class="toast-close"
+            aria-label="Dismiss notification"
+            data-toast-dismiss="${Number(toast.id)}"
+          >
+            ×
+          </button>
+        </article>
+      `;
+    })
+    .join("");
+
+  host.innerHTML = rows;
+}
+
+function flushAuthNotices() {
+  if (!state.authenticated) {
+    state.authNotice.emailConfirmToastShown = false;
+    return;
+  }
+
+  const accountNotice = String(state.accountNotice || "").trim();
+  if (accountNotice) {
+    notify("info", accountNotice);
+    state.accountNotice = "";
+  }
+
+  const emailUnconfirmed = state.authProfile?.emailConfirmed === false;
+  if (emailUnconfirmed && !state.authNotice.emailConfirmToastShown) {
+    notify(
+      "warning",
+      `Email for ${state.authProfile?.email || "your account"} is not confirmed yet.`,
+      { pinned: true, timeoutMs: 12000 }
+    );
+    state.authNotice.emailConfirmToastShown = true;
+  } else if (!emailUnconfirmed) {
+    state.authNotice.emailConfirmToastShown = false;
+  }
 }
 
 function getHeaderEmailLabel() {
@@ -237,6 +380,7 @@ function getHeaderEmailLabel() {
 
 function syncBodyUiLocks() {
   document.body.classList.toggle("mobile-drawer-open", Boolean(state.mobileDrawer.open));
+  document.body.classList.toggle("inspect-modal-open", Boolean(state.inspectModal.open));
 }
 
 function openMobileDrawer(triggerElement = null) {
@@ -318,6 +462,230 @@ function trapMobileDrawerFocus(event) {
     event.preventDefault();
     first.focus();
   }
+}
+
+function focusInspectModalIfNeeded() {
+  if (!state.inspectModal.open || !state.inspectModal.focusPending) return;
+  const modal = document.querySelector("[data-inspect-modal-dialog]");
+  if (!modal) return;
+
+  state.inspectModal.focusPending = false;
+  const firstFocusable = modal.querySelector(
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  );
+  if (firstFocusable instanceof HTMLElement) {
+    firstFocusable.focus();
+    return;
+  }
+  if (modal instanceof HTMLElement) {
+    modal.focus();
+  }
+}
+
+function trapInspectModalFocus(event) {
+  if (!state.inspectModal.open || event.key !== "Tab") return;
+
+  const modal = document.querySelector("[data-inspect-modal-dialog]");
+  if (!modal) return;
+
+  const focusable = Array.from(
+    modal.querySelectorAll(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )
+  ).filter((el) => !el.hasAttribute("disabled"));
+
+  if (!focusable.length) {
+    event.preventDefault();
+    modal.focus();
+    return;
+  }
+
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+
+  if (event.shiftKey && (active === first || !modal.contains(active))) {
+    event.preventDefault();
+    last.focus();
+    return;
+  }
+
+  if (!event.shiftKey && (active === last || !modal.contains(active))) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function openAvatarMenu(triggerElement = null) {
+  if (state.avatarMenu.open) return;
+  state.avatarMenu.open = true;
+  const active = document.activeElement;
+  avatarMenuLastFocusedElement =
+    triggerElement instanceof HTMLElement
+      ? triggerElement
+      : active instanceof HTMLElement
+        ? active
+        : null;
+  render();
+  requestAnimationFrame(() => {
+    const first = document.querySelector(".avatar-menu-item");
+    if (first instanceof HTMLElement) {
+      first.focus();
+    }
+  });
+}
+
+function closeAvatarMenu(options = {}) {
+  const { restoreFocus = true } = options;
+  if (!state.avatarMenu.open) return;
+  state.avatarMenu.open = false;
+  render();
+  if (restoreFocus && avatarMenuLastFocusedElement) {
+    requestAnimationFrame(() => {
+      avatarMenuLastFocusedElement?.focus?.();
+    });
+  }
+}
+
+function renderDesktopHeader(userEmailLabel, userEmailTitle) {
+  const notificationCount = Number(state.alertEvents?.length || 0);
+  return `
+    <header class="desktop-header" role="banner">
+      <a href="#" class="desktop-brand" data-desktop-home aria-label="Go to dashboard">
+        <span class="desktop-brand-dot" aria-hidden="true"></span>
+        <span>CS2 Portfolio Analyzer</span>
+      </a>
+      <nav class="desktop-tab-nav" aria-label="Primary">
+        ${APP_TABS.map(
+          (tab) => `
+          <button
+            type="button"
+            class="ghost-btn tab-btn desktop-tab-btn ${state.activeTab === tab.id ? "active" : ""}"
+            data-tab="${tab.id}"
+            title="${escapeHtml(tab.hint)}"
+          >
+            ${escapeHtml(tab.label)}
+          </button>
+        `
+        ).join("")}
+      </nav>
+      <div class="desktop-header-actions">
+        <label class="desktop-search">
+          <input
+            id="global-search"
+            type="search"
+            placeholder="Quick find skins..."
+            value="${escapeHtml(state.globalSearch)}"
+            aria-label="Quick find skins"
+          />
+        </label>
+        <button
+          type="button"
+          class="ghost-btn header-icon-btn"
+          id="header-sync-btn"
+          aria-label="Sync inventory"
+          title="Sync inventory"
+        >
+          &#x21bb;
+        </button>
+        <button
+          type="button"
+          class="ghost-btn header-icon-btn"
+          data-header-action="create-alert"
+          aria-label="Create alert"
+          title="Create alert"
+        >
+          &#x26A1;
+        </button>
+        <button
+          type="button"
+          class="ghost-btn header-icon-btn"
+          data-header-action="add-transaction"
+          aria-label="Add transaction"
+          title="Add transaction"
+        >
+          +
+        </button>
+        ${renderAvatarMenu({
+          open: state.avatarMenu.open,
+          userLabel: userEmailLabel,
+          userTitle: userEmailTitle,
+          notificationCount,
+          escapeHtml
+        })}
+      </div>
+    </header>
+  `;
+}
+
+function renderAppFooter() {
+  return `
+    <footer class="app-footer">
+      <div class="app-footer-left">&copy; ${new Date().getFullYear()} CS2 Portfolio Analyzer</div>
+      <nav class="app-footer-links" aria-label="Footer links">
+        <a href="https://github.com/denisolid/codex_test" target="_blank" rel="noreferrer" class="ghost-link">About</a>
+        <a href="https://github.com/denisolid/codex_test/tree/market-analysis/docs" target="_blank" rel="noreferrer" class="ghost-link">Docs</a>
+        <a href="https://github.com/denisolid/codex_test#readme" target="_blank" rel="noreferrer" class="ghost-link">Privacy</a>
+      </nav>
+      <div class="app-footer-right">v1.0.0 &middot; build MVP</div>
+    </footer>
+  `;
+}
+function resolveMarketListingUrl(item = {}) {
+  const perMarket = Array.isArray(item?.marketComparison?.perMarket)
+    ? item.marketComparison.perMarket
+    : [];
+  const direct = perMarket.find((row) => typeof row?.url === "string" && row.url.trim());
+  if (direct?.url) return String(direct.url);
+  if (typeof item?.marketListingUrl === "string" && item.marketListingUrl.trim()) {
+    return item.marketListingUrl;
+  }
+  return "";
+}
+
+function renderHoldingInfoTooltip(item = {}) {
+  const skinId = Number(item.skinId || 0);
+  if (!skinId) return "";
+
+  const tooltipId = `holding-tip-${skinId}`;
+  const isOpen = state.tooltip.openId === tooltipId;
+  const floatValue =
+    item.floatValue == null ? "-" : Number.isFinite(Number(item.floatValue)) ? formatNumber(item.floatValue, 5) : "-";
+  const pattern = item.pattern ?? item.paintSeed ?? "-";
+  const lastSaleDate = String(item.currentPriceRecordedAt || item.updatedAt || "-").slice(0, 10) || "-";
+  const marketVolume = item.marketVolume24h ?? item.marketVolume7d ?? "-";
+  const listingUrl = resolveMarketListingUrl(item);
+
+  return `
+    <span class="tooltip-wrap" data-tooltip-wrap>
+      <button
+        type="button"
+        class="tooltip-toggle"
+        data-tooltip-toggle="${escapeHtml(tooltipId)}"
+        aria-label="Show secondary item details"
+        aria-describedby="${escapeHtml(tooltipId)}"
+        aria-expanded="${isOpen ? "true" : "false"}"
+      >
+        i
+      </button>
+      <span
+        id="${escapeHtml(tooltipId)}"
+        role="tooltip"
+        class="tooltip-bubble ${isOpen ? "open" : ""}"
+      >
+        <strong>Secondary Data</strong>
+        <small>Float: ${escapeHtml(String(floatValue))}</small>
+        <small>Pattern: ${escapeHtml(String(pattern))}</small>
+        <small>Last sale: ${escapeHtml(lastSaleDate)}</small>
+        <small>Volume: ${escapeHtml(String(marketVolume))}</small>
+        ${
+          listingUrl
+            ? `<a href="${escapeHtml(listingUrl)}" target="_blank" rel="noreferrer">Open listing</a>`
+            : ""
+        }
+      </span>
+    </span>
+  `;
 }
 
 function buildSteamAuthStartUrl(mode = "login") {
@@ -1116,15 +1484,19 @@ async function handleTabSwitch(tab) {
   }
 }
 
-function triggerInspectBySteamItemId(rawSteamItemId) {
+function triggerInspectBySteamItemId(rawSteamItemId, triggerElement = null) {
   const steamItemId = String(rawSteamItemId || "").trim();
   if (!steamItemId) return;
+  if (triggerElement instanceof HTMLElement) {
+    inspectModalLastTriggerElement = triggerElement;
+  }
   runUiTask(() => openInspectModalBySteamItemId(steamItemId));
 }
 
 function closeInspectModal() {
   if (!state.inspectModal.open) return;
   state.inspectModal.open = false;
+  state.inspectModal.focusPending = false;
   state.inspectModal.loading = false;
   state.inspectModal.error = "";
   state.inspectModal.steamItemId = "";
@@ -1132,12 +1504,28 @@ function closeInspectModal() {
   state.inspectModal.marketInsight = null;
   state.inspectModal.exitWhatIf = createExitWhatIfState();
   render();
+
+  if (inspectModalLastTriggerElement) {
+    requestAnimationFrame(() => {
+      inspectModalLastTriggerElement?.focus?.();
+    });
+  }
+  inspectModalLastTriggerElement = null;
 }
 
 function onAppClick(event) {
   if (!app) return;
   const target = event.target instanceof Element ? event.target : null;
   if (!target) return;
+
+  if (state.avatarMenu.open && !target.closest("[data-avatar-menu-root]")) {
+    closeAvatarMenu({ restoreFocus: false });
+  }
+
+  if (state.tooltip.openId && !target.closest("[data-tooltip-wrap]")) {
+    state.tooltip.openId = "";
+    render();
+  }
 
   if (target.matches("[data-mobile-drawer-overlay]")) {
     event.preventDefault();
@@ -1151,12 +1539,61 @@ function onAppClick(event) {
     return;
   }
 
+  const homeLink = target.closest("[data-desktop-home]");
+  if (homeLink) {
+    event.preventDefault();
+    handleTabSwitch("dashboard").catch((err) => setError(err.message || "Request failed"));
+    return;
+  }
+
   const button = target.closest("button");
+
+  if (button?.matches("[data-toast-dismiss]")) {
+    event.preventDefault();
+    dismissToast(button.getAttribute("data-toast-dismiss"));
+    return;
+  }
+
+  if (button?.matches("[data-tooltip-toggle]")) {
+    event.preventDefault();
+    const id = String(button.getAttribute("data-tooltip-toggle") || "").trim();
+    state.tooltip.openId = state.tooltip.openId === id ? "" : id;
+    render();
+    return;
+  }
 
   if (button?.matches("[data-mobile-drawer-open]")) {
     event.preventDefault();
     openMobileDrawer(button);
     return;
+  }
+
+  if (button?.matches("#avatar-menu-toggle")) {
+    event.preventDefault();
+    if (state.avatarMenu.open) {
+      closeAvatarMenu();
+    } else {
+      openAvatarMenu(button);
+    }
+    return;
+  }
+
+  if (button?.matches("[data-avatar-action]")) {
+    event.preventDefault();
+    const action = String(button.getAttribute("data-avatar-action") || "").trim();
+    closeAvatarMenu({ restoreFocus: false });
+    if (action === "profile" || action === "settings" || action === "billing") {
+      handleTabSwitch("settings").catch((err) => setError(err.message || "Request failed"));
+      return;
+    }
+    if (action === "notifications") {
+      handleTabSwitch("alerts").catch((err) => setError(err.message || "Request failed"));
+      return;
+    }
+    if (action === "logout") {
+      runUiTask(() => logout());
+      return;
+    }
   }
 
   if (button?.matches("[data-mobile-drawer-close]")) {
@@ -1185,11 +1622,32 @@ function onAppClick(event) {
     return;
   }
 
+  if (button?.matches("#header-sync-btn")) {
+    event.preventDefault();
+    runUiTask(() => syncInventory());
+    return;
+  }
+
+  if (button?.matches("[data-header-action='create-alert']")) {
+    event.preventDefault();
+    handleTabSwitch("alerts").catch((err) => setError(err.message || "Request failed"));
+    return;
+  }
+
+  if (button?.matches("[data-header-action='add-transaction']")) {
+    event.preventDefault();
+    handleTabSwitch("trades").catch((err) => setError(err.message || "Request failed"));
+    return;
+  }
+
   if (button?.matches(".tab-btn")) {
     event.preventDefault();
     const tab = button.getAttribute("data-tab");
     if (state.mobileDrawer.open) {
       closeMobileDrawer({ restoreFocus: false });
+    }
+    if (state.avatarMenu.open) {
+      closeAvatarMenu({ restoreFocus: false });
     }
     handleTabSwitch(tab).catch((err) => setError(err.message || "Request failed"));
     return;
@@ -1243,13 +1701,13 @@ function onAppClick(event) {
   const tile = target.closest(".portfolio-skin-card-clickable");
   if (tile) {
     event.preventDefault();
-    triggerInspectBySteamItemId(tile.getAttribute("data-steam-item-id"));
+    triggerInspectBySteamItemId(tile.getAttribute("data-steam-item-id"), tile);
     return;
   }
 
   if (button?.matches(".inspect-skin-btn")) {
     event.preventDefault();
-    triggerInspectBySteamItemId(button.getAttribute("data-steam-item-id"));
+    triggerInspectBySteamItemId(button.getAttribute("data-steam-item-id"), button);
     return;
   }
 
@@ -1259,6 +1717,17 @@ function onAppClick(event) {
     if (!Number.isInteger(skinId) || skinId <= 0) return;
     state.compareExpandedBySkinId[skinId] = !state.compareExpandedBySkinId[skinId];
     render();
+    return;
+  }
+
+  if (button?.matches(".sell-suggestion-btn")) {
+    event.preventDefault();
+    const skinId = Number(button.getAttribute("data-skin-id") || 0);
+    if (!Number.isInteger(skinId) || skinId <= 0) return;
+    state.activeTab = "market";
+    state.marketTab.skinId = String(skinId);
+    render();
+    runUiTask(() => analyzeMarketItemBySkinId(skinId));
     return;
   }
 
@@ -1361,10 +1830,24 @@ function onAppClick(event) {
 
 function onAppKeydown(event) {
   trapMobileDrawerFocus(event);
+  trapInspectModalFocus(event);
 
   if (event.key === "Escape" && state.inspectModal.open) {
     event.preventDefault();
     closeInspectModal();
+    return;
+  }
+
+  if (event.key === "Escape" && state.avatarMenu.open) {
+    event.preventDefault();
+    closeAvatarMenu();
+    return;
+  }
+
+  if (event.key === "Escape" && state.tooltip.openId) {
+    event.preventDefault();
+    state.tooltip.openId = "";
+    render();
     return;
   }
 
@@ -1376,16 +1859,46 @@ function onAppKeydown(event) {
 
   const target = event.target instanceof Element ? event.target : null;
   if (!target) return;
+
+  if (state.avatarMenu.open && target.matches(".avatar-menu-item")) {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+      return;
+    }
+    event.preventDefault();
+    const items = Array.from(document.querySelectorAll(".avatar-menu-item"));
+    if (!items.length) return;
+    const index = items.indexOf(target);
+    if (index < 0) return;
+    const nextIndex =
+      event.key === "ArrowDown"
+        ? (index + 1) % items.length
+        : (index - 1 + items.length) % items.length;
+    items[nextIndex]?.focus?.();
+    return;
+  }
+
   const tile = target.closest(".portfolio-skin-card-clickable");
   if (!tile) return;
   if (event.key !== "Enter" && event.key !== " ") return;
   event.preventDefault();
-  triggerInspectBySteamItemId(tile.getAttribute("data-steam-item-id"));
+  triggerInspectBySteamItemId(tile.getAttribute("data-steam-item-id"), tile);
 }
 
 function onAppInput(event) {
   const target = event.target instanceof Element ? event.target : null;
   if (!target) return;
+
+  if (target.matches("#global-search")) {
+    state.globalSearch = String(target.value || "");
+    state.holdingsView.q = state.globalSearch;
+    state.holdingsView.page = 1;
+    if (state.activeTab !== "portfolio") {
+      debouncedRender();
+      return;
+    }
+    debouncedRender();
+    return;
+  }
 
   if (target.matches("#backtest-days")) {
     state.backtest.days = String(target.value || "");
@@ -1394,6 +1907,7 @@ function onAppInput(event) {
 
   if (target.matches("#holdings-search")) {
     state.holdingsView.q = target.value;
+    state.globalSearch = target.value;
     state.holdingsView.page = 1;
     debouncedRender();
     return;
@@ -1604,6 +2118,7 @@ async function logout() {
   state.skin = null;
   state.marketInsight = null;
   state.inspectModal.open = false;
+  state.inspectModal.focusPending = false;
   state.inspectModal.loading = false;
   state.inspectModal.error = "";
   state.inspectModal.steamItemId = "";
@@ -1614,6 +2129,8 @@ async function logout() {
   state.tabSwitch.target = "";
   state.mobileDrawer.open = false;
   state.mobileDrawer.focusPending = false;
+  state.avatarMenu.open = false;
+  state.tooltip.openId = "";
   state.exitWhatIf = createExitWhatIfState();
   resetAlertForm();
   state.marketTab.inventoryValue = null;
@@ -1632,6 +2149,8 @@ async function logout() {
   state.backtest.result = null;
   state.teamDashboard.loading = false;
   state.teamDashboard.payload = null;
+  state.authNotice.emailConfirmToastShown = false;
+  inspectModalLastTriggerElement = null;
   render();
 }
 
@@ -1648,8 +2167,15 @@ async function syncInventory() {
       state.steamOnboardingPending = false;
     }
     await refreshPortfolio();
+    notify(
+      "success",
+      `Inventory synced: ${Number(result?.itemsSynced || 0)} items, ${Number(
+        result?.pricedItems || 0
+      )} priced.`
+    );
   } catch (err) {
     setError(err.message);
+    notify("warning", "Inventory sync failed. Please try again.");
     state.alerts = [
       {
         severity: "warning",
@@ -1970,6 +2496,10 @@ async function updatePublicPortfolioSettings(e) {
     state.accountNotice = enabled
       ? "Public portfolio enabled. Your /u/SteamID page is now visible."
       : "Public portfolio disabled.";
+    notify(
+      "success",
+      enabled ? "Public portfolio enabled." : "Public portfolio disabled."
+    );
     render();
   } catch (err) {
     setError(err.message);
@@ -1990,6 +2520,12 @@ async function updateOwnershipAlertSettings(e) {
     state.accountNotice = enabled
       ? "Ownership-change alerts enabled."
       : "Ownership-change alerts disabled.";
+    notify(
+      "success",
+      enabled
+        ? "Ownership-change alerts enabled."
+        : "Ownership-change alerts disabled."
+    );
     render();
   } catch (err) {
     setError(err.message);
@@ -2095,6 +2631,7 @@ async function updatePlanTier(planTier) {
       state.teamDashboard.payload = null;
     }
     state.accountNotice = `Plan updated to ${toTitle(planTier)}.`;
+    notify("success", `Plan updated to ${toTitle(planTier)}.`);
     render();
   } catch (err) {
     setError(err.message);
@@ -2218,6 +2755,7 @@ async function openInspectModalBySteamItemId(rawId) {
   if (!id) return;
 
   state.inspectModal.open = true;
+  state.inspectModal.focusPending = true;
   state.inspectModal.loading = true;
   state.inspectModal.error = "";
   state.inspectModal.steamItemId = id;
@@ -2437,11 +2975,13 @@ async function submitAlertForm(e) {
         method: "PATCH",
         body: JSON.stringify(payload)
       });
+      notify("success", "Alert updated.");
     } else {
       await api("/alerts", {
         method: "POST",
         body: JSON.stringify(payload)
       });
+      notify("success", "Alert created.");
     }
 
     resetAlertForm();
@@ -2464,6 +3004,7 @@ async function removeAlert(rawAlertId) {
       resetAlertForm();
     }
     await refreshPortfolio();
+    notify("info", "Alert deleted.");
   } catch (err) {
     setError(err.message);
   }
@@ -2479,6 +3020,7 @@ async function toggleAlertEnabled(rawAlertId, enabled) {
       body: JSON.stringify({ enabled: Boolean(enabled) })
     });
     await refreshPortfolio();
+    notify("success", enabled ? "Alert enabled." : "Alert paused.");
   } catch (err) {
     setError(err.message);
   }
@@ -2594,6 +3136,7 @@ async function submitTransaction(e) {
       })
     });
     await refreshPortfolio();
+    notify("success", "Transaction saved.");
   } catch (err) {
     setError(err.message);
   } finally {
@@ -2607,6 +3150,7 @@ async function removeTransaction(id) {
   try {
     await api(`/transactions/${Number(id)}`, { method: "DELETE" });
     await refreshPortfolio();
+    notify("info", "Transaction deleted.");
   } catch (err) {
     setError(err.message);
   }
@@ -2662,6 +3206,12 @@ async function importTransactionsCsv(e) {
       failed
     };
     await refreshPortfolio();
+    notify(
+      failed.length ? "warning" : "success",
+      failed.length
+        ? `CSV imported ${imported}/${parsed.length}. ${failed.length} rows failed.`
+        : `CSV imported ${imported} rows successfully.`
+    );
   } catch (err) {
     setError(err.message);
   } finally {
@@ -2993,6 +3543,121 @@ function renderPortfolioMobileList() {
                 isExpanded
                   ? `
                 <div class="portfolio-mobile-compare">
+                  ${renderMarketComparisonPanel(item)}
+                </div>
+              `
+                  : ""
+              }
+            </article>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function renderPortfolioDesktopCards() {
+  if (state.portfolioLoading) {
+    return `
+      <div class="portfolio-desktop-cards-grid">
+        ${Array.from({ length: 8 }, (_, idx) => `
+          <article class="portfolio-desktop-card is-skeleton" data-skeleton-index="${idx}">
+            <div class="table-row-skeleton"></div>
+          </article>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  const { items } = getFilteredHoldings();
+  if (!items.length) {
+    return `<p class="muted empty-table-cell">No holdings match your filters.</p>`;
+  }
+
+  return `
+    <div class="portfolio-desktop-cards-grid">
+      ${items
+        .map((item) => {
+          const skinId = Number(item.skinId || 0);
+          const rarityTheme = getItemRarityTheme(item);
+          const itemImageUrl = getItemImageUrl(item);
+          const fallbackImage = isCaseLikeItem(item) ? defaultCaseImage : defaultSkinImage;
+          const sevenDayClass = Number(item.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
+          const isExpanded = Boolean(state.compareExpandedBySkinId[skinId]);
+          const liquidityScoreRaw = Number(
+            item?.managementClue?.metrics?.liquidityScore ??
+              item?.marketInsight?.liquidity?.score ??
+              item?.marketComparison?.liquidityScore ??
+              0
+          );
+          const liquidityScore = Number.isFinite(liquidityScoreRaw)
+            ? Math.max(Math.min(Math.round(liquidityScoreRaw), 100), 0)
+            : 0;
+
+          return `
+            <article class="portfolio-desktop-card">
+              <div class="portfolio-desktop-card-head">
+                <img
+                  class="portfolio-desktop-card-thumb"
+                  style="--rarity-color: ${rarityTheme.color};"
+                  src="${escapeHtml(itemImageUrl)}"
+                  alt="${escapeHtml(item.marketHashName || "CS2 item")}"
+                  loading="lazy"
+                  onerror="this.onerror=null;this.src='${escapeHtml(fallbackImage)}';"
+                />
+                <div class="portfolio-desktop-card-meta">
+                  <div class="portfolio-desktop-card-title-row">
+                    <p class="portfolio-desktop-card-name" title="${escapeHtml(
+                      item.marketHashName || "-"
+                    )}">
+                      ${escapeHtml(item.marketHashName || "-")}
+                    </p>
+                    ${renderHoldingInfoTooltip(item)}
+                  </div>
+                  <div class="portfolio-desktop-card-subline">
+                    <span class="rarity-tag" style="--rarity-color: ${rarityTheme.color};">${escapeHtml(
+            rarityTheme.rarity
+          )}</span>
+                    <small class="muted">Qty ${Number(item.quantity || 0)}</small>
+                  </div>
+                </div>
+              </div>
+              <div class="portfolio-desktop-card-kpis">
+                <p><span>Price</span><strong>${formatMoney(item.currentPrice)}</strong></p>
+                <p><span>7D</span><strong class="pnl-text ${sevenDayClass}">${formatPercent(
+            item.sevenDayChangePercent
+          )}</strong></p>
+                <p><span>Liquidity</span><strong>${liquidityScore}/100</strong></p>
+                <p><span>Value</span><strong>${formatMoney(item.lineValue)}</strong></p>
+              </div>
+              <div class="row portfolio-desktop-card-actions">
+                <button
+                  type="button"
+                  class="ghost-btn inspect-skin-btn"
+                  data-steam-item-id="${escapeHtml(item.primarySteamItemId || "")}"
+                  ${item.primarySteamItemId ? "" : "disabled"}
+                >
+                  Inspect
+                </button>
+                <button
+                  type="button"
+                  class="ghost-btn compare-market-btn"
+                  data-skin-id="${skinId}"
+                >
+                  ${isExpanded ? "Hide Compare" : "Compare"}
+                </button>
+                <button
+                  type="button"
+                  class="ghost-btn sell-suggestion-btn"
+                  data-skin-id="${skinId}"
+                >
+                  Sell Suggestion
+                </button>
+              </div>
+              ${
+                isExpanded
+                  ? `
+                <div class="portfolio-desktop-card-expand">
                   ${renderMarketComparisonPanel(item)}
                 </div>
               `
@@ -4002,26 +4667,7 @@ function renderAlerts() {
 }
 
 function renderAuthNotices() {
-  if (!state.authenticated) return "";
-
-  const infoNotice = state.accountNotice
-    ? `<div class="info" role="status" aria-live="polite">${escapeHtml(
-        state.accountNotice
-      )}</div>`
-    : "";
-
-  if (state.authProfile?.emailConfirmed === false) {
-    const safeEmail = escapeHtml(state.authProfile.email || "your account");
-    return `
-      ${infoNotice}
-      <div class="error" role="alert" aria-live="assertive">
-        Email for <strong>${safeEmail}</strong> is not confirmed.
-        Check your inbox and click the confirmation link.
-      </div>
-    `;
-  }
-
-  return infoNotice;
+  return "";
 }
 
 function renderManagementSummary() {
@@ -5376,22 +6022,14 @@ function renderApp() {
       <article class="panel wide">
         <h2>Portfolio Holdings</h2>
         <p class="helper-text">
-          Premium marketplace tiles for quick scanning plus an execution table for sorting and trade decisions.
+          Card-first execution surface for scanning, sorting, and acting without losing your place.
         </p>
         ${renderPortfolioPricingControls()}
         ${renderSection({
           eyebrow: "Portfolio",
-          title: "Marketplace Tiles",
+          title: "Execution Cards",
           description:
-            "Click any tile to inspect instantly in a modal without losing your current place in the table.",
-          className: "portfolio-cards-section",
-          body: renderPortfolioCardGrid()
-        })}
-        ${renderSection({
-          eyebrow: "Portfolio",
-          title: "Execution Table",
-          description:
-            "Filter, sort, and execute actions directly in-place. Compare rows expand inline under the clicked item.",
+            "Inspect opens in a centered modal. Compare expands inline inside the same card to avoid page jumps.",
           className: "portfolio-table-section",
           body: `
             <div class="list-toolbar">
@@ -5442,24 +6080,8 @@ function renderApp() {
             <div class="portfolio-mobile-only">
               ${renderPortfolioMobileList()}
             </div>
-            <div class="table-wrap portfolio-desktop-table">
-              <table class="portfolio-table">
-                <thead>
-                  <tr>
-                    <th>Steam Item ID</th>
-                    <th>${renderHoldingsSortButton("Item", "name")}</th>
-                    <th>${renderHoldingsSortButton("Qty", "qty")}</th>
-                    <th>${renderHoldingsSortButton("Mode Price", "price")}</th>
-                    <th>24H</th>
-                    <th>${renderHoldingsSortButton("7D", "change")}</th>
-                    <th>Status</th>
-                    <th>Signal</th>
-                    <th>${renderHoldingsSortButton("Mode Value", "value")}</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
-                <tbody>${renderPortfolioRows()}</tbody>
-              </table>
+            <div class="portfolio-desktop-cards">
+              ${renderPortfolioDesktopCards()}
             </div>
           `
         })}
@@ -5533,22 +6155,7 @@ function renderApp() {
         loading: state.tabSwitch.loading,
         escapeHtml
       })}
-      <aside class="sidebar ${state.tabSwitch.loading ? "is-tab-loading" : ""}">
-        <div class="sidebar-header">
-          <div class="brand">CS2 Portfolio Analyzer</div>
-          <p class="muted sidebar-copy">Premium dark trading interface</p>
-        </div>
-        ${renderTabNav()}
-        <div class="sidebar-footer">
-          <span class="user-chip" title="${escapeHtml(userEmailTitle)}">${escapeHtml(
-    userEmailLabel
-  )}</span>
-          <div class="row sidebar-actions">
-            <button id="refresh-btn" class="ghost-btn">Refresh</button>
-            <button id="logout-btn" class="ghost-btn">Logout</button>
-          </div>
-        </div>
-      </aside>
+      ${renderDesktopHeader(userEmailLabel, userEmailTitle)}
       <section class="app-main">
         <header class="topbar premium-topbar">
           <div class="topbar-metrics">
@@ -5591,23 +6198,17 @@ function renderApp() {
               )}...</div>`
             : ""
         }
-
-        ${
-          state.error
-            ? `<div class="error" role="alert" aria-live="assertive">${escapeHtml(
-                state.error
-              )}</div>`
-            : ""
-        }
         ${renderAuthNotices()}
         ${tabContent}
       </section>
+      ${renderAppFooter()}
     </main>
     ${renderInspectModalOverlay()}
   `;
 
   ensureAppEventDelegation();
   focusMobileDrawerIfNeeded();
+  focusInspectModalIfNeeded();
 
   if (
     state.activeTab === "market" &&
@@ -5625,25 +6226,38 @@ function render() {
   if (state.sessionBooting) {
     renderSessionBoot();
     syncBodyUiLocks();
+    renderToastHost();
     return;
   }
 
   if (state.publicPage.steamId64) {
+    state.avatarMenu.open = false;
+    state.tooltip.openId = "";
+    state.inspectModal.open = false;
+    state.inspectModal.focusPending = false;
     renderPublicPortfolioPage();
     syncBodyUiLocks();
+    renderToastHost();
     return;
   }
 
   if (!state.authenticated) {
     state.mobileDrawer.open = false;
     state.mobileDrawer.focusPending = false;
+    state.avatarMenu.open = false;
+    state.tooltip.openId = "";
+    state.inspectModal.open = false;
+    state.inspectModal.focusPending = false;
     renderPublicHome();
     syncBodyUiLocks();
+    renderToastHost();
     return;
   }
 
+  flushAuthNotices();
   renderApp();
   syncBodyUiLocks();
+  renderToastHost();
 }
 
 function hydrateAppNoticesFromUrl() {
@@ -5689,3 +6303,4 @@ bootstrapSession().catch(() => {
   state.sessionBooting = false;
   render();
 });
+
