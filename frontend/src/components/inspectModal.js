@@ -16,6 +16,14 @@ export function renderInspectModal({
         <span class="spinner" aria-hidden="true"></span>
         <p>Loading inspect data...</p>
       </div>
+      <div class="inspect-modal-skeleton" aria-hidden="true">
+        <div class="inspect-modal-skeleton-media"></div>
+        <div class="inspect-modal-skeleton-lines">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+      </div>
     `
     : error
       ? `<div class="error inspect-modal-error" role="alert">${error}</div>`
@@ -25,13 +33,16 @@ export function renderInspectModal({
     <div class="inspect-modal-overlay" data-inspect-modal-overlay>
       <section
         class="inspect-modal-dialog"
+        data-inspect-modal-dialog
         role="dialog"
         aria-modal="true"
+        aria-labelledby="inspect-modal-title"
+        tabindex="-1"
         aria-label="Inspect item details"
       >
         <header class="inspect-modal-header">
           <div>
-            <p class="inspect-modal-title">${heading}</p>
+            <p class="inspect-modal-title" id="inspect-modal-title">${heading}</p>
             ${subheading ? `<p class="inspect-modal-subtitle">${subheading}</p>` : ""}
           </div>
           ${renderButton({
@@ -47,4 +58,3 @@ export function renderInspectModal({
     </div>
   `;
 }
-
