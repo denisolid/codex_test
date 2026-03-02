@@ -274,6 +274,7 @@ body.tx-edit-modal-open {
     radial-gradient(560px 160px at 0% -25%, rgba(46, 139, 255, 0.24), transparent 72%),
     radial-gradient(560px 160px at 100% -25%, rgba(127, 93, 255, 0.2), transparent 72%);
   backdrop-filter: blur(16px) saturate(1.18);
+  overflow: hidden;
   box-shadow:
     0 14px 30px rgba(3, 7, 18, 0.42),
     inset 0 -1px 0 rgba(171, 197, 241, 0.18);
@@ -301,9 +302,16 @@ body.tx-edit-modal-open {
   display: flex;
   align-items: center;
   gap: 8px;
-  overflow: auto;
-  scrollbar-width: thin;
-  padding-bottom: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  padding-bottom: 0;
+}
+
+.desktop-tab-nav::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .desktop-tab-btn {
@@ -328,13 +336,17 @@ body.tx-edit-modal-open {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .desktop-search {
-  min-width: 220px;
+  min-width: 0;
+  width: clamp(150px, 19vw, 224px);
 }
 
 .desktop-search input {
+  width: 100%;
+  min-width: 0;
   min-height: 36px;
 }
 
@@ -1568,7 +1580,7 @@ button:disabled,
 .portfolio-desktop-cards-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: 14px;
 }
 
 .portfolio-desktop-card {
@@ -1577,9 +1589,9 @@ button:disabled,
   background:
     linear-gradient(140deg, rgba(10, 16, 28, 0.92), rgba(15, 22, 37, 0.88)),
     radial-gradient(220px 110px at 8% -12%, rgba(46, 139, 255, 0.14), transparent 72%);
-  padding: 12px;
+  padding: 14px;
   display: grid;
-  gap: 10px;
+  gap: 12px;
   transition: transform 170ms ease, border-color 170ms ease, box-shadow 170ms ease;
 }
 
@@ -1591,19 +1603,19 @@ button:disabled,
 
 .portfolio-desktop-card-head {
   display: grid;
-  grid-template-columns: 86px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: 108px minmax(0, 1fr);
+  gap: 12px;
   align-items: start;
 }
 
 .portfolio-desktop-card-thumb {
-  width: 86px;
-  height: 64px;
-  border-radius: 10px;
+  width: 108px;
+  height: 78px;
+  border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--rarity-color, #7f8ba5) 62%, transparent);
   background: rgba(8, 11, 18, 0.9);
   object-fit: contain;
-  padding: 4px;
+  padding: 5px;
 }
 
 .portfolio-desktop-card-meta {
@@ -1615,9 +1627,9 @@ button:disabled,
 .portfolio-desktop-card-name {
   margin: 0;
   color: #dfebff;
-  font-size: 0.88rem;
+  font-size: 0.94rem;
   font-weight: 700;
-  line-height: 1.35;
+  line-height: 1.3;
 }
 
 .portfolio-desktop-card-title-row {
@@ -1643,7 +1655,7 @@ button:disabled,
 .portfolio-card-core {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
 }
 
 .portfolio-core-price,
@@ -1652,7 +1664,7 @@ button:disabled,
   border: 1px solid var(--line);
   border-radius: 10px;
   background: rgba(9, 13, 23, 0.74);
-  padding: 8px 9px;
+  padding: 10px;
   display: grid;
   gap: 3px;
 }
@@ -1666,17 +1678,17 @@ button:disabled,
 }
 
 .portfolio-core-price strong {
-  font-size: 1.15rem;
+  font-size: 1.24rem;
 }
 
 .portfolio-core-move strong {
-  font-size: 1.1rem;
+  font-size: 1.2rem;
 }
 
 .portfolio-secondary-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
 }
 
 .portfolio-secondary-grid p {
@@ -1684,7 +1696,7 @@ button:disabled,
   border: 1px solid var(--line);
   border-radius: 10px;
   background: rgba(9, 13, 23, 0.62);
-  padding: 8px 9px;
+  padding: 10px;
   display: grid;
   gap: 3px;
 }
@@ -1700,7 +1712,7 @@ button:disabled,
   border: 1px solid var(--line);
   border-radius: 10px;
   background: rgba(9, 13, 23, 0.62);
-  padding: 8px 9px;
+  padding: 10px;
   display: grid;
   gap: 6px;
 }
@@ -1748,18 +1760,22 @@ button:disabled,
 }
 
 .portfolio-desktop-card-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
 .portfolio-desktop-card-actions button {
-  min-height: 34px;
+  min-height: 40px;
   padding: 8px 10px;
-  font-size: 0.79rem;
+  font-size: 0.8rem;
+  width: 100%;
+  margin: 0;
 }
 
 .portfolio-desktop-card-expand {
   border-top: 1px solid rgba(127, 153, 204, 0.2);
-  padding-top: 8px;
+  padding-top: 10px;
 }
 
 .status-badge.signal-strong {
@@ -2110,27 +2126,29 @@ thead th {
   border: 1px solid rgba(129, 155, 204, 0.22);
   border-radius: var(--radius-sm);
   background: rgba(8, 12, 21, 0.68);
-  padding: 10px;
+  padding: 12px;
 }
 
 .market-compare-summary {
   margin: 0 0 8px;
   font-size: 0.86rem;
+  line-height: 1.45;
 }
 
 .market-price-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  gap: 10px;
 }
 
 .market-price-card {
   border: 1px solid rgba(129, 155, 204, 0.2);
   border-radius: 10px;
   background: rgba(12, 18, 30, 0.8);
-  padding: 8px;
+  padding: 10px;
   display: grid;
-  gap: 4px;
+  gap: 6px;
+  min-width: 0;
 }
 
 .market-price-card.unavailable {
@@ -2139,7 +2157,7 @@ thead th {
 
 .market-price-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 6px;
 }
@@ -2156,9 +2174,11 @@ thead th {
 .market-price-card p {
   margin: 0;
   font-size: 0.8rem;
+  line-height: 1.35;
 }
 
 .market-open-link {
+  width: 100%;
   justify-content: center;
   padding: 7px 9px;
   font-size: 0.72rem;
