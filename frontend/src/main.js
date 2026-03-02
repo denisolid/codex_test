@@ -1,4 +1,5 @@
 import "./style.css";
+import "./responsive.css";
 import { API_URL } from "./config";
 import { clearAuthToken, getAuthToken, withAuthHeaders } from "./authToken";
 import {
@@ -11,6 +12,7 @@ import {
 } from "./rarity";
 import { renderSkinCard, renderSkinCardSkeleton } from "./components/skinCard";
 import { renderInspectModal } from "./components/inspectModal";
+import { renderMobileDrawer, renderMobileNav } from "./components/mobileNav";
 import { renderSection } from "./components/uiPrimitives";
 const app = document.querySelector("#app");
 const SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "UAH", "PLN", "CZK"];
@@ -80,6 +82,10 @@ const state = {
   tabSwitch: {
     loading: false,
     target: ""
+  },
+  mobileDrawer: {
+    open: false,
+    focusPending: false
   },
   activeTab: "dashboard",
   historyDays: 7,
@@ -176,6 +182,17 @@ const holdingsValueMemory = new Map();
 const metricCounterMemory = new Map();
 let delegatedAppEventsBound = false;
 let tabSwitchTicket = 0;
+let mobileDrawerLastFocusedElement = null;
+const APP_TABS = [
+  { id: "dashboard", label: "Dashboard", hint: "Performance" },
+  { id: "portfolio", label: "Portfolio", hint: "Holdings" },
+  { id: "alerts", label: "Alerts", hint: "Triggers" },
+  { id: "trades", label: "Transactions", hint: "Buys/Sells" },
+  { id: "social", label: "Watchlist", hint: "Community" },
+  { id: "market", label: "Market", hint: "Pricing" },
+  { id: "team", label: "Team", hint: "Creator Ops" },
+  { id: "settings", label: "Settings", hint: "Account" }
+];
 
 function debounce(fn, waitMs = 100) {
   let timer = null;
@@ -216,6 +233,91 @@ function getHeaderEmailLabel() {
   if (!email) return "Signed in";
   if (email.length <= 32) return email;
   return `${email.slice(0, 29)}...`;
+}
+
+function syncBodyUiLocks() {
+  document.body.classList.toggle("mobile-drawer-open", Boolean(state.mobileDrawer.open));
+}
+
+function openMobileDrawer(triggerElement = null) {
+  if (state.mobileDrawer.open) return;
+  state.mobileDrawer.open = true;
+  state.mobileDrawer.focusPending = true;
+  const fallbackFocus = document.activeElement;
+  mobileDrawerLastFocusedElement =
+    triggerElement instanceof HTMLElement
+      ? triggerElement
+      : fallbackFocus instanceof HTMLElement
+        ? fallbackFocus
+        : null;
+  render();
+}
+
+function closeMobileDrawer(options = {}) {
+  const { restoreFocus = true } = options;
+  if (!state.mobileDrawer.open) return;
+
+  state.mobileDrawer.open = false;
+  state.mobileDrawer.focusPending = false;
+  render();
+
+  if (restoreFocus && mobileDrawerLastFocusedElement) {
+    requestAnimationFrame(() => {
+      mobileDrawerLastFocusedElement?.focus?.();
+    });
+  }
+}
+
+function focusMobileDrawerIfNeeded() {
+  if (!state.mobileDrawer.open || !state.mobileDrawer.focusPending) return;
+
+  state.mobileDrawer.focusPending = false;
+  const drawerPanel = document.querySelector("[data-mobile-drawer-panel]");
+  if (!drawerPanel) return;
+
+  const preferredTarget =
+    drawerPanel.querySelector("[data-mobile-drawer-close]") ||
+    drawerPanel.querySelector(".mobile-drawer-tab.active") ||
+    drawerPanel.querySelector(".mobile-drawer-tab");
+  if (preferredTarget instanceof HTMLElement) {
+    preferredTarget.focus();
+    return;
+  }
+  drawerPanel.focus();
+}
+
+function trapMobileDrawerFocus(event) {
+  if (!state.mobileDrawer.open || event.key !== "Tab") return;
+
+  const drawerPanel = document.querySelector("[data-mobile-drawer-panel]");
+  if (!drawerPanel) return;
+
+  const focusable = Array.from(
+    drawerPanel.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )
+  ).filter((el) => el instanceof HTMLElement);
+
+  if (!focusable.length) {
+    event.preventDefault();
+    drawerPanel.focus();
+    return;
+  }
+
+  const active = document.activeElement;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+
+  if (event.shiftKey && (active === first || !drawerPanel.contains(active))) {
+    event.preventDefault();
+    last.focus();
+    return;
+  }
+
+  if (!event.shiftKey && (active === last || !drawerPanel.contains(active))) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function buildSteamAuthStartUrl(mode = "login") {
@@ -527,16 +629,27 @@ function formatManagementClue(clue) {
 }
 
 async function api(path, options = {}) {
-  const headers = withAuthHeaders({
+  const baseHeaders = {
     "Content-Type": "application/json",
     ...(options.headers || {})
-  });
+  };
+  const hasAuthHeader = (headers) =>
+    Object.keys(headers || {}).some((key) => String(key).toLowerCase() === "authorization");
+  const request = (headers) =>
+    fetch(`${API_URL}${path}`, {
+      ...options,
+      credentials: "include",
+      headers
+    });
 
-  const res = await fetch(`${API_URL}${path}`, {
-    ...options,
-    credentials: "include",
-    headers
-  });
+  let headers = withAuthHeaders(baseHeaders);
+  let res = await request(headers);
+
+  if (res.status === 401 && hasAuthHeader(headers)) {
+    clearAuthToken();
+    headers = { ...baseHeaders };
+    res = await request(headers);
+  }
 
   const payload = await res.json().catch(() => ({}));
   if (res.status === 401) {
@@ -1026,6 +1139,12 @@ function onAppClick(event) {
   const target = event.target instanceof Element ? event.target : null;
   if (!target) return;
 
+  if (target.matches("[data-mobile-drawer-overlay]")) {
+    event.preventDefault();
+    closeMobileDrawer();
+    return;
+  }
+
   if (target.matches("[data-inspect-modal-overlay]")) {
     event.preventDefault();
     closeInspectModal();
@@ -1034,19 +1153,33 @@ function onAppClick(event) {
 
   const button = target.closest("button");
 
+  if (button?.matches("[data-mobile-drawer-open]")) {
+    event.preventDefault();
+    openMobileDrawer(button);
+    return;
+  }
+
+  if (button?.matches("[data-mobile-drawer-close]")) {
+    event.preventDefault();
+    closeMobileDrawer();
+    return;
+  }
+
   if (button?.matches("[data-inspect-modal-close]")) {
     event.preventDefault();
     closeInspectModal();
     return;
   }
 
-  if (button?.matches("#logout-btn")) {
+  if (button?.matches("#logout-btn, #mobile-drawer-logout-btn")) {
     event.preventDefault();
     runUiTask(() => logout());
     return;
   }
 
-  if (button?.matches("#refresh-btn")) {
+  if (
+    button?.matches("#refresh-btn, #mobile-nav-refresh-btn, #mobile-drawer-refresh-btn")
+  ) {
     event.preventDefault();
     runUiTask(() => refreshPortfolio());
     return;
@@ -1055,6 +1188,9 @@ function onAppClick(event) {
   if (button?.matches(".tab-btn")) {
     event.preventDefault();
     const tab = button.getAttribute("data-tab");
+    if (state.mobileDrawer.open) {
+      closeMobileDrawer({ restoreFocus: false });
+    }
     handleTabSwitch(tab).catch((err) => setError(err.message || "Request failed"));
     return;
   }
@@ -1224,9 +1360,17 @@ function onAppClick(event) {
 }
 
 function onAppKeydown(event) {
+  trapMobileDrawerFocus(event);
+
   if (event.key === "Escape" && state.inspectModal.open) {
     event.preventDefault();
     closeInspectModal();
+    return;
+  }
+
+  if (event.key === "Escape" && state.mobileDrawer.open) {
+    event.preventDefault();
+    closeMobileDrawer();
     return;
   }
 
@@ -1468,6 +1612,8 @@ async function logout() {
   state.inspectModal.exitWhatIf = createExitWhatIfState();
   state.tabSwitch.loading = false;
   state.tabSwitch.target = "";
+  state.mobileDrawer.open = false;
+  state.mobileDrawer.focusPending = false;
   state.exitWhatIf = createExitWhatIfState();
   resetAlertForm();
   state.marketTab.inventoryValue = null;
@@ -2753,6 +2899,109 @@ function renderMarketComparisonPanel(item) {
       <div class="market-price-grid">
         ${perMarketMarkup}
       </div>
+    </div>
+  `;
+}
+
+function renderPortfolioMobileList() {
+  if (state.portfolioLoading) {
+    return `
+      <div class="portfolio-mobile-list">
+        ${Array.from({ length: 5 }, (_, idx) => `
+          <article class="portfolio-mobile-item is-skeleton" data-skeleton-index="${idx}">
+            <div class="table-row-skeleton"></div>
+          </article>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  const { items } = getFilteredHoldings();
+  if (!items.length) {
+    return `<p class="muted empty-table-cell">No holdings yet. Link Steam and run sync.</p>`;
+  }
+
+  const formatSteamItemIdCell = (item) => {
+    const ids = Array.isArray(item.steamItemIds) ? item.steamItemIds : [];
+    if (!ids.length) return "-";
+    if (ids.length === 1) return escapeHtml(ids[0]);
+    return `${escapeHtml(ids[0])} +${ids.length - 1} more`;
+  };
+
+  return `
+    <div class="portfolio-mobile-list">
+      ${items
+        .map((item) => {
+          const skinId = Number(item.skinId || 0);
+          const rarityTheme = getItemRarityTheme(item);
+          const itemImageUrl = getItemImageUrl(item);
+          const fallbackImage = isCaseLikeItem(item) ? defaultCaseImage : defaultSkinImage;
+          const oneDayClass = Number(item.oneDayChangePercent || 0) >= 0 ? "up" : "down";
+          const sevenDayClass = Number(item.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
+          const isExpanded = Boolean(state.compareExpandedBySkinId[skinId]);
+
+          return `
+            <article class="portfolio-mobile-item">
+              <div class="portfolio-mobile-head">
+                <img
+                  class="portfolio-mobile-thumb"
+                  style="--rarity-color: ${rarityTheme.color};"
+                  src="${escapeHtml(itemImageUrl)}"
+                  alt="${escapeHtml(item.marketHashName || "CS2 item")}"
+                  loading="lazy"
+                  onerror="this.onerror=null;this.src='${escapeHtml(fallbackImage)}';"
+                />
+                <div class="portfolio-mobile-meta">
+                  <p class="portfolio-mobile-name">${escapeHtml(item.marketHashName || "-")}</p>
+                  <div class="portfolio-mobile-subline">
+                    <span class="rarity-tag" style="--rarity-color: ${rarityTheme.color};">${escapeHtml(
+                      rarityTheme.rarity
+                    )}</span>
+                    <small class="muted">Qty ${Number(item.quantity || 0)}</small>
+                  </div>
+                  <small class="muted mono-cell">Steam ID: ${formatSteamItemIdCell(item)}</small>
+                </div>
+              </div>
+              <div class="portfolio-mobile-stats">
+                <p><span>Price</span><strong>${formatMoney(item.currentPrice)}</strong></p>
+                <p><span>7D</span><strong class="pnl-text ${sevenDayClass}">${formatPercent(
+            item.sevenDayChangePercent
+          )}</strong></p>
+                <p><span>24H</span><strong class="pnl-text ${oneDayClass}">${formatPercent(
+            item.oneDayChangePercent
+          )}</strong></p>
+                <p><span>Value</span><strong>${formatMoney(item.lineValue)}</strong></p>
+              </div>
+              <div class="row portfolio-mobile-actions">
+                <button
+                  type="button"
+                  class="ghost-btn inspect-skin-btn"
+                  data-steam-item-id="${escapeHtml(item.primarySteamItemId || "")}"
+                  ${item.primarySteamItemId ? "" : "disabled"}
+                >
+                  Inspect
+                </button>
+                <button
+                  type="button"
+                  class="ghost-btn compare-market-btn"
+                  data-skin-id="${skinId}"
+                >
+                  ${isExpanded ? "Hide Compare" : "Compare"}
+                </button>
+              </div>
+              ${
+                isExpanded
+                  ? `
+                <div class="portfolio-mobile-compare">
+                  ${renderMarketComparisonPanel(item)}
+                </div>
+              `
+                  : ""
+              }
+            </article>
+          `;
+        })
+        .join("")}
     </div>
   `;
 }
@@ -4133,20 +4382,9 @@ function renderTeamTab() {
 }
 
 function renderTabNav() {
-  const tabs = [
-    { id: "dashboard", label: "Dashboard", hint: "Performance" },
-    { id: "portfolio", label: "Portfolio", hint: "Holdings" },
-    { id: "alerts", label: "Alerts", hint: "Triggers" },
-    { id: "trades", label: "Transactions", hint: "Buys/Sells" },
-    { id: "social", label: "Watchlist", hint: "Community" },
-    { id: "market", label: "Market", hint: "Pricing" },
-    { id: "team", label: "Team", hint: "Creator Ops" },
-    { id: "settings", label: "Settings", hint: "Account" }
-  ];
-
   return `
     <nav class="sidebar-nav">
-      ${tabs
+      ${APP_TABS
         .map(
           (tab) => `
           <button
@@ -5201,7 +5439,10 @@ function renderApp() {
                 </select>
               </label>
             </div>
-            <div class="table-wrap">
+            <div class="portfolio-mobile-only">
+              ${renderPortfolioMobileList()}
+            </div>
+            <div class="table-wrap portfolio-desktop-table">
               <table class="portfolio-table">
                 <thead>
                   <tr>
@@ -5278,6 +5519,20 @@ function renderApp() {
 
   app.innerHTML = `
     <main class="layout app-shell">
+      ${renderMobileNav({
+        title: "CS2 Portfolio Analyzer",
+        drawerOpen: state.mobileDrawer.open,
+        escapeHtml
+      })}
+      ${renderMobileDrawer({
+        open: state.mobileDrawer.open,
+        tabs: APP_TABS,
+        activeTab: state.activeTab,
+        userLabel: userEmailLabel,
+        userTitle: userEmailTitle,
+        loading: state.tabSwitch.loading,
+        escapeHtml
+      })}
       <aside class="sidebar ${state.tabSwitch.loading ? "is-tab-loading" : ""}">
         <div class="sidebar-header">
           <div class="brand">CS2 Portfolio Analyzer</div>
@@ -5352,6 +5607,7 @@ function renderApp() {
   `;
 
   ensureAppEventDelegation();
+  focusMobileDrawerIfNeeded();
 
   if (
     state.activeTab === "market" &&
@@ -5368,20 +5624,26 @@ function renderApp() {
 function render() {
   if (state.sessionBooting) {
     renderSessionBoot();
+    syncBodyUiLocks();
     return;
   }
 
   if (state.publicPage.steamId64) {
     renderPublicPortfolioPage();
+    syncBodyUiLocks();
     return;
   }
 
   if (!state.authenticated) {
+    state.mobileDrawer.open = false;
+    state.mobileDrawer.focusPending = false;
     renderPublicHome();
+    syncBodyUiLocks();
     return;
   }
 
   renderApp();
+  syncBodyUiLocks();
 }
 
 function hydrateAppNoticesFromUrl() {
