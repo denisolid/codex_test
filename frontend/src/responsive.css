@@ -383,6 +383,14 @@ body.mobile-drawer-open {
   width: 100%;
 }
 
+.landing-trust-grid {
+  grid-template-columns: 1fr;
+}
+
+.landing-hero-copy {
+  max-width: 100%;
+}
+
 .topbar {
   gap: 10px;
 }
@@ -544,6 +552,26 @@ body.mobile-drawer-open {
   gap: 8px;
 }
 
+.portfolio-card-core,
+.portfolio-secondary-grid {
+  grid-template-columns: 1fr;
+}
+
+.dashboard-alert-card {
+  grid-template-columns: 1fr;
+}
+
+.alert-fieldset {
+  grid-template-columns: 1fr;
+}
+
+.tx-journal-shell,
+.tx-form-grid,
+.tx-csv-grid,
+.tx-edit-form-grid {
+  grid-template-columns: 1fr;
+}
+
 .portfolio-mobile-compare {
   margin-top: 2px;
 }
@@ -611,6 +639,22 @@ button:active,
   padding: 12px 14px calc(20px + env(safe-area-inset-bottom));
 }
 
+.tx-edit-overlay {
+  place-items: stretch;
+  padding: 0;
+}
+
+.tx-edit-dialog {
+  width: 100%;
+  max-height: none;
+  height: 100dvh;
+  border-radius: 0;
+}
+
+.tx-edit-body {
+  padding-bottom: calc(20px + env(safe-area-inset-bottom));
+}
+
 @media (min-width: 640px) {
   .layout {
     margin-top: 18px;
@@ -627,6 +671,16 @@ button:active,
   .sub-kpi-grid,
   .value-insights,
   .value-chart-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .landing-trust-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .alert-fieldset,
+  .tx-form-grid,
+  .tx-edit-form-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -712,6 +766,26 @@ button:active,
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .portfolio-secondary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .portfolio-card-core {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-alert-card {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .tx-journal-shell {
+    grid-template-columns: minmax(0, 1.5fr) minmax(260px, 1fr);
+  }
+
+  .tx-csv-grid {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
   .inspect-modal-overlay {
     place-items: center;
     padding: clamp(10px, 2.4vw, 24px);
@@ -731,6 +805,18 @@ button:active,
 
   .inspect-modal-content {
     padding: 14px 16px 18px;
+  }
+
+  .tx-edit-overlay {
+    place-items: center;
+    padding: clamp(10px, 2.4vw, 24px);
+  }
+
+  .tx-edit-dialog {
+    width: min(720px, 96vw);
+    max-height: min(92vh, 820px);
+    height: auto;
+    border-radius: 16px;
   }
 }
 
@@ -781,6 +867,10 @@ button:active,
 
   .trade-calc-grid {
     grid-template-columns: repeat(5, minmax(120px, 1fr));
+  }
+
+  .tx-form-grid {
+    grid-template-columns: repeat(3, minmax(120px, 1fr));
   }
 
   .history-toolbar {

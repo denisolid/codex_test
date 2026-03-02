@@ -136,6 +136,17 @@ const state = {
     unitPrice: "0",
     commissionPercent: "13"
   },
+  txEditModal: {
+    open: false,
+    id: null,
+    skinId: "",
+    type: "buy",
+    quantity: "1",
+    unitPrice: "0",
+    commissionPercent: "13",
+    executedAt: "",
+    submitting: false
+  },
   tradeCalc: {
     buyPrice: "0",
     sellPrice: "0",
@@ -200,6 +211,7 @@ let tabSwitchTicket = 0;
 let mobileDrawerLastFocusedElement = null;
 let avatarMenuLastFocusedElement = null;
 let inspectModalLastTriggerElement = null;
+let txEditModalLastTriggerElement = null;
 let toastSequence = 0;
 const toastTimers = new Map();
 const APP_TABS = [
@@ -268,6 +280,23 @@ function dismissToast(rawId) {
   }
 }
 
+function toggleToastExpanded(rawId) {
+  const id = Number(rawId);
+  if (!Number.isInteger(id)) return;
+  let changed = false;
+  state.toasts = state.toasts.map((toast) => {
+    if (Number(toast.id) !== id || !toast.details) return toast;
+    changed = true;
+    return {
+      ...toast,
+      expanded: !toast.expanded
+    };
+  });
+  if (changed) {
+    renderToastHost();
+  }
+}
+
 function notify(type, message, options = {}) {
   const safeMessage = String(message || "").trim();
   if (!safeMessage) return null;
@@ -275,10 +304,13 @@ function notify(type, message, options = {}) {
   const id = ++toastSequence;
   const timeoutMs = Math.max(Number(options.timeoutMs || TOAST_DEFAULT_TIMEOUT_MS), 1200);
   const pinned = Boolean(options.pinned);
+  const details = String(options.details || "").trim();
   const toast = {
     id,
     type: normalizeToastType(type),
     message: safeMessage,
+    details,
+    expanded: false,
     pinned
   };
 
@@ -324,11 +356,31 @@ function renderToastHost() {
   const rows = (Array.isArray(state.toasts) ? state.toasts : [])
     .map((toast) => {
       const role = toast.type === "error" || toast.type === "warning" ? "alert" : "status";
+      const hasDetails = Boolean(toast.details);
       return `
         <article class="toast ${escapeHtml(toast.type)}" role="${role}">
           <div class="toast-body">
             <span class="toast-tag">${escapeHtml(toTitle(toast.type))}</span>
             <p>${escapeHtml(toast.message)}</p>
+            ${
+              hasDetails
+                ? `
+              <button
+                type="button"
+                class="toast-expand"
+                data-toast-toggle="${Number(toast.id)}"
+                aria-expanded="${toast.expanded ? "true" : "false"}"
+              >
+                ${toast.expanded ? "Hide details" : "Show details"}
+              </button>
+            `
+                : ""
+            }
+            ${
+              hasDetails && toast.expanded
+                ? `<pre class="toast-details">${escapeHtml(toast.details)}</pre>`
+                : ""
+            }
           </div>
           <button
             type="button"
@@ -381,6 +433,7 @@ function getHeaderEmailLabel() {
 function syncBodyUiLocks() {
   document.body.classList.toggle("mobile-drawer-open", Boolean(state.mobileDrawer.open));
   document.body.classList.toggle("inspect-modal-open", Boolean(state.inspectModal.open));
+  document.body.classList.toggle("tx-edit-modal-open", Boolean(state.txEditModal.open));
 }
 
 function openMobileDrawer(triggerElement = null) {
@@ -511,6 +564,39 @@ function trapInspectModalFocus(event) {
   }
 
   if (!event.shiftKey && (active === last || !modal.contains(active))) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function trapTxEditModalFocus(event) {
+  if (!state.txEditModal.open || event.key !== "Tab") return;
+  const dialog = document.querySelector(".tx-edit-dialog");
+  if (!dialog) return;
+
+  const focusable = Array.from(
+    dialog.querySelectorAll(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )
+  ).filter((el) => !el.hasAttribute("disabled"));
+
+  if (!focusable.length) {
+    event.preventDefault();
+    dialog.focus();
+    return;
+  }
+
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+
+  if (event.shiftKey && (active === first || !dialog.contains(active))) {
+    event.preventDefault();
+    last.focus();
+    return;
+  }
+
+  if (!event.shiftKey && (active === last || !dialog.contains(active))) {
     event.preventDefault();
     first.focus();
   }
@@ -780,6 +866,19 @@ function formatRelativeTime(isoValue) {
   if (deltaSeconds < 3600) return `${Math.floor(deltaSeconds / 60)}m ago`;
   if (deltaSeconds < 86400) return `${Math.floor(deltaSeconds / 3600)}h ago`;
   return `${Math.floor(deltaSeconds / 86400)}d ago`;
+}
+
+function formatDateTime(isoValue) {
+  if (!isoValue) return "-";
+  const ts = new Date(isoValue);
+  if (Number.isNaN(ts.getTime())) return "-";
+  return ts.toLocaleString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 }
 
 function getPricingModeLabel(mode) {
@@ -1539,6 +1638,12 @@ function onAppClick(event) {
     return;
   }
 
+  if (target.matches("[data-tx-edit-overlay]")) {
+    event.preventDefault();
+    closeTxEditModal();
+    return;
+  }
+
   const homeLink = target.closest("[data-desktop-home]");
   if (homeLink) {
     event.preventDefault();
@@ -1551,6 +1656,12 @@ function onAppClick(event) {
   if (button?.matches("[data-toast-dismiss]")) {
     event.preventDefault();
     dismissToast(button.getAttribute("data-toast-dismiss"));
+    return;
+  }
+
+  if (button?.matches("[data-toast-toggle]")) {
+    event.preventDefault();
+    toggleToastExpanded(button.getAttribute("data-toast-toggle"));
     return;
   }
 
@@ -1608,6 +1719,12 @@ function onAppClick(event) {
     return;
   }
 
+  if (button?.matches("[data-tx-edit-close]")) {
+    event.preventDefault();
+    closeTxEditModal();
+    return;
+  }
+
   if (button?.matches("#logout-btn, #mobile-drawer-logout-btn")) {
     event.preventDefault();
     runUiTask(() => logout());
@@ -1648,6 +1765,9 @@ function onAppClick(event) {
     }
     if (state.avatarMenu.open) {
       closeAvatarMenu({ restoreFocus: false });
+    }
+    if (state.txEditModal.open) {
+      closeTxEditModal({ restoreFocus: false });
     }
     handleTabSwitch(tab).catch((err) => setError(err.message || "Request failed"));
     return;
@@ -1768,6 +1888,12 @@ function onAppClick(event) {
     return;
   }
 
+  if (button?.matches(".tx-edit-btn")) {
+    event.preventDefault();
+    openTxEditModal(button.getAttribute("data-tx-id"), button);
+    return;
+  }
+
   if (button?.matches(".alert-edit-btn")) {
     event.preventDefault();
     startEditAlert(button.getAttribute("data-alert-id"));
@@ -1831,10 +1957,17 @@ function onAppClick(event) {
 function onAppKeydown(event) {
   trapMobileDrawerFocus(event);
   trapInspectModalFocus(event);
+  trapTxEditModalFocus(event);
 
   if (event.key === "Escape" && state.inspectModal.open) {
     event.preventDefault();
     closeInspectModal();
+    return;
+  }
+
+  if (event.key === "Escape" && state.txEditModal.open) {
+    event.preventDefault();
+    closeTxEditModal();
     return;
   }
 
@@ -1920,6 +2053,47 @@ function onAppInput(event) {
     return;
   }
 
+  if (target.matches("#tx-quantity")) {
+    state.txForm.quantity = String(target.value || "");
+    syncTransactionPreviewFromInputs();
+    return;
+  }
+
+  if (target.matches("#tx-unit-price")) {
+    state.txForm.unitPrice = String(target.value || "");
+    syncTransactionPreviewFromInputs();
+    return;
+  }
+
+  if (target.matches("#tx-commission")) {
+    state.txForm.commissionPercent = String(target.value || "");
+    syncTransactionPreviewFromInputs();
+    return;
+  }
+
+  if (target.matches("#tx-edit-quantity")) {
+    state.txEditModal.quantity = String(target.value || "");
+    syncTransactionEditPreviewFromInputs();
+    return;
+  }
+
+  if (target.matches("#tx-edit-unit-price")) {
+    state.txEditModal.unitPrice = String(target.value || "");
+    syncTransactionEditPreviewFromInputs();
+    return;
+  }
+
+  if (target.matches("#tx-edit-commission")) {
+    state.txEditModal.commissionPercent = String(target.value || "");
+    syncTransactionEditPreviewFromInputs();
+    return;
+  }
+
+  if (target.matches("#tx-edit-executed-at")) {
+    state.txEditModal.executedAt = String(target.value || "");
+    return;
+  }
+
   if (target.matches("#social-watch-steam-id")) {
     state.social.newSteamId = target.value;
     return;
@@ -1992,6 +2166,23 @@ function onAppChange(event) {
     return;
   }
 
+  if (target.matches("#tx-type")) {
+    state.txForm.type = String(target.value || "buy").toLowerCase();
+    syncTransactionPreviewFromInputs();
+    return;
+  }
+
+  if (target.matches("#tx-skin-id")) {
+    state.txForm.skinId = String(target.value || "");
+    return;
+  }
+
+  if (target.matches("#tx-edit-type")) {
+    state.txEditModal.type = String(target.value || "buy").toLowerCase();
+    syncTransactionEditPreviewFromInputs();
+    return;
+  }
+
   if (target.matches("#social-scope")) {
     state.social.scope = String(target.value || "global");
     runUiTask(() => refreshSocialData());
@@ -2035,6 +2226,12 @@ function onAppSubmit(event) {
   if (form.id === "tx-csv-form") {
     event.preventDefault();
     runUiTask(() => importTransactionsCsv(event));
+    return;
+  }
+
+  if (form.id === "tx-edit-form") {
+    event.preventDefault();
+    runUiTask(() => submitTransactionEdit(event));
     return;
   }
 
@@ -2131,6 +2328,17 @@ async function logout() {
   state.mobileDrawer.focusPending = false;
   state.avatarMenu.open = false;
   state.tooltip.openId = "";
+  state.txEditModal = {
+    open: false,
+    id: null,
+    skinId: "",
+    type: "buy",
+    quantity: "1",
+    unitPrice: "0",
+    commissionPercent: "13",
+    executedAt: "",
+    submitting: false
+  };
   state.exitWhatIf = createExitWhatIfState();
   resetAlertForm();
   state.marketTab.inventoryValue = null;
@@ -2151,6 +2359,7 @@ async function logout() {
   state.teamDashboard.payload = null;
   state.authNotice.emailConfirmToastShown = false;
   inspectModalLastTriggerElement = null;
+  txEditModalLastTriggerElement = null;
   render();
 }
 
@@ -3145,6 +3354,135 @@ async function submitTransaction(e) {
   }
 }
 
+function openTxEditModal(rawTxId, triggerElement = null) {
+  const txId = Number(rawTxId);
+  if (!Number.isInteger(txId) || txId <= 0) return;
+  const tx = (state.transactions || []).find((row) => Number(row.id) === txId);
+  if (!tx) {
+    notify("warning", "Transaction not found.");
+    return;
+  }
+
+  state.txEditModal = {
+    open: true,
+    id: txId,
+    skinId: String(tx.skin_id || ""),
+    type: String(tx.type || "buy").toLowerCase(),
+    quantity: String(Math.max(Number(tx.quantity || 1), 1)),
+    unitPrice: String(Number(tx.unit_price || 0)),
+    commissionPercent: String(Number(tx.commission_percent || 0)),
+    executedAt: String(tx.executed_at || "").slice(0, 16),
+    submitting: false
+  };
+  txEditModalLastTriggerElement =
+    triggerElement instanceof HTMLElement ? triggerElement : document.activeElement;
+  render();
+  requestAnimationFrame(() => {
+    const firstInput = document.querySelector("#tx-edit-type");
+    if (firstInput instanceof HTMLElement) {
+      firstInput.focus();
+    }
+  });
+}
+
+function closeTxEditModal(options = {}) {
+  const { restoreFocus = true } = options;
+  if (!state.txEditModal.open) return;
+  state.txEditModal = {
+    open: false,
+    id: null,
+    skinId: "",
+    type: "buy",
+    quantity: "1",
+    unitPrice: "0",
+    commissionPercent: "13",
+    executedAt: "",
+    submitting: false
+  };
+  render();
+  if (restoreFocus && txEditModalLastTriggerElement instanceof HTMLElement) {
+    requestAnimationFrame(() => {
+      txEditModalLastTriggerElement?.focus?.();
+    });
+  }
+  txEditModalLastTriggerElement = null;
+}
+
+async function submitTransactionEdit(event) {
+  event.preventDefault();
+  clearError();
+  if (!state.txEditModal.open || state.txEditModal.submitting) return;
+
+  const txId = Number(state.txEditModal.id);
+  const type = String(document.querySelector("#tx-edit-type")?.value || "buy").toLowerCase();
+  const quantity = Number(document.querySelector("#tx-edit-quantity")?.value);
+  const unitPrice = Number(document.querySelector("#tx-edit-unit-price")?.value);
+  const commissionPercent = Number(document.querySelector("#tx-edit-commission")?.value);
+  const executedAtRaw = String(document.querySelector("#tx-edit-executed-at")?.value || "").trim();
+  const executedAt = executedAtRaw ? new Date(executedAtRaw).toISOString() : null;
+
+  state.txEditModal.type = type;
+  state.txEditModal.quantity = String(document.querySelector("#tx-edit-quantity")?.value || "");
+  state.txEditModal.unitPrice = String(document.querySelector("#tx-edit-unit-price")?.value || "");
+  state.txEditModal.commissionPercent = String(
+    document.querySelector("#tx-edit-commission")?.value || ""
+  );
+  state.txEditModal.executedAt = executedAtRaw;
+
+  if (!Number.isInteger(txId) || txId <= 0) {
+    setError("Pick a valid transaction to update.");
+    return;
+  }
+  if (!["buy", "sell"].includes(type)) {
+    setError('Transaction type must be "buy" or "sell".');
+    return;
+  }
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    setError("Quantity must be a positive integer.");
+    return;
+  }
+  if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+    setError("Unit price must be a number >= 0.");
+    return;
+  }
+  if (
+    !Number.isFinite(commissionPercent) ||
+    commissionPercent < 0 ||
+    commissionPercent >= 100
+  ) {
+    setError("Commission must be between 0 and 99.99.");
+    return;
+  }
+  if (executedAtRaw && !executedAt) {
+    setError("Pick a valid date/time.");
+    return;
+  }
+
+  state.txEditModal.submitting = true;
+  render();
+
+  try {
+    await api(`/transactions/${txId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        type,
+        quantity,
+        unitPrice,
+        commissionPercent,
+        executedAt,
+        currency: "USD"
+      })
+    });
+    await refreshPortfolio();
+    notify("success", "Transaction updated.");
+    closeTxEditModal({ restoreFocus: false });
+  } catch (err) {
+    setError(err.message);
+    state.txEditModal.submitting = false;
+    render();
+  }
+}
+
 async function removeTransaction(id) {
   clearError();
   try {
@@ -3525,7 +3863,7 @@ function renderPortfolioMobileList() {
               <div class="row portfolio-mobile-actions">
                 <button
                   type="button"
-                  class="ghost-btn inspect-skin-btn"
+                  class="inspect-skin-btn btn-primary"
                   data-steam-item-id="${escapeHtml(item.primarySteamItemId || "")}"
                   ${item.primarySteamItemId ? "" : "disabled"}
                 >
@@ -3533,10 +3871,17 @@ function renderPortfolioMobileList() {
                 </button>
                 <button
                   type="button"
-                  class="ghost-btn compare-market-btn"
+                  class="ghost-btn compare-market-btn btn-secondary"
                   data-skin-id="${skinId}"
                 >
                   ${isExpanded ? "Hide Compare" : "Compare"}
+                </button>
+                <button
+                  type="button"
+                  class="ghost-btn sell-suggestion-btn btn-tertiary"
+                  data-skin-id="${skinId}"
+                >
+                  Sell Suggestion
                 </button>
               </div>
               ${
@@ -3593,10 +3938,20 @@ function renderPortfolioDesktopCards() {
           const liquidityScore = Number.isFinite(liquidityScoreRaw)
             ? Math.max(Math.min(Math.round(liquidityScoreRaw), 100), 0)
             : 0;
+          const hasLiquidity = liquidityScore > 0;
+          const tradeStats = computeItemTradeStats(skinId);
+          const avgEntry = Number(tradeStats.avgEntryPrice || 0);
+          const unrealized =
+            avgEntry > 0 ? (Number(item.currentPrice || 0) - avgEntry) * Number(item.quantity || 0) : null;
+          const clueAction = String(item?.managementClue?.action || "watch").toLowerCase();
+          const clueConfidence = Math.round(Number(item?.managementClue?.confidence || 0));
+          const signalBand =
+            clueConfidence >= 75 ? "strong" : clueConfidence <= 45 ? "weak" : "watch";
+          const signalLabel = `${toTitle(clueAction)} ${clueConfidence}%`;
 
           return `
-            <article class="portfolio-desktop-card">
-              <div class="portfolio-desktop-card-head">
+            <article class="portfolio-desktop-card ${sevenDayClass}">
+              <header class="portfolio-desktop-card-head">
                 <img
                   class="portfolio-desktop-card-thumb"
                   style="--rarity-color: ${rarityTheme.color};"
@@ -3619,21 +3974,47 @@ function renderPortfolioDesktopCards() {
             rarityTheme.rarity
           )}</span>
                     <small class="muted">Qty ${Number(item.quantity || 0)}</small>
+                    <span class="status-badge signal-${escapeHtml(signalBand)}">${escapeHtml(signalLabel)}</span>
                   </div>
                 </div>
-              </div>
-              <div class="portfolio-desktop-card-kpis">
-                <p><span>Price</span><strong>${formatMoney(item.currentPrice)}</strong></p>
-                <p><span>7D</span><strong class="pnl-text ${sevenDayClass}">${formatPercent(
+              </header>
+              <div class="portfolio-card-core">
+                <p class="portfolio-core-price">
+                  <span>Current Price</span>
+                  <strong>${formatMoney(item.currentPrice)}</strong>
+                </p>
+                <p class="portfolio-core-move ${sevenDayClass}">
+                  <span>7D Change</span>
+                  <strong class="pnl-text ${sevenDayClass}">${formatPercent(
             item.sevenDayChangePercent
           )}</strong></p>
-                <p><span>Liquidity</span><strong>${liquidityScore}/100</strong></p>
-                <p><span>Value</span><strong>${formatMoney(item.lineValue)}</strong></p>
+              </div>
+              <div class="portfolio-secondary-grid">
+                <p><span>Position Value</span><strong>${formatMoney(item.lineValue)}</strong></p>
+                <p>
+                  <span>Unrealized P/L</span>
+                  <strong class="pnl-text ${Number(unrealized || 0) >= 0 ? "up" : "down"}">${
+            unrealized == null ? "-" : formatSignedMoney(unrealized)
+          }</strong>
+                </p>
+                <div class="portfolio-liquidity">
+                  <span>Liquidity</span>
+                  ${
+                    hasLiquidity
+                      ? `
+                    <div class="liquidity-track" role="img" aria-label="Liquidity score ${liquidityScore} out of 100">
+                      <div class="liquidity-fill" style="width:${liquidityScore}%"></div>
+                    </div>
+                    <small>${liquidityScore}/100</small>
+                  `
+                      : `<small class="muted">No liquidity data</small>`
+                  }
+                </div>
               </div>
               <div class="row portfolio-desktop-card-actions">
                 <button
                   type="button"
-                  class="ghost-btn inspect-skin-btn"
+                  class="inspect-skin-btn btn-primary"
                   data-steam-item-id="${escapeHtml(item.primarySteamItemId || "")}"
                   ${item.primarySteamItemId ? "" : "disabled"}
                 >
@@ -3641,14 +4022,14 @@ function renderPortfolioDesktopCards() {
                 </button>
                 <button
                   type="button"
-                  class="ghost-btn compare-market-btn"
+                  class="ghost-btn compare-market-btn btn-secondary"
                   data-skin-id="${skinId}"
                 >
                   ${isExpanded ? "Hide Compare" : "Compare"}
                 </button>
                 <button
                   type="button"
-                  class="ghost-btn sell-suggestion-btn"
+                  class="ghost-btn sell-suggestion-btn btn-tertiary"
                   data-skin-id="${skinId}"
                 >
                   Sell Suggestion
@@ -3848,6 +4229,23 @@ function renderHistoryChart() {
     (tick, index, list) =>
       list.findIndex((candidate) => candidate.label === tick.label) === index
   );
+  const dashboardSevenDay = Number(state.portfolio?.sevenDayChangePercent || 0);
+  const dashboardSevenDayClass = dashboardSevenDay >= 0 ? "up" : "down";
+  const hoverDots = coords
+    .map(
+      (coord, index) => `
+        <circle
+          cx="${coord.x.toFixed(2)}"
+          cy="${coord.y.toFixed(2)}"
+          r="8"
+          class="value-chart-hover-dot"
+          tabindex="0"
+        >
+          <title>${escapeHtml(points[index].date)} | ${escapeHtml(formatMoney(points[index].value, currencyCode))}</title>
+        </circle>
+      `
+    )
+    .join("");
 
   return `
     <div class="history-toolbar">
@@ -3877,6 +4275,11 @@ function renderHistoryChart() {
         <strong>${formatMoney(min, currencyCode)} - ${formatMoney(max, currencyCode)}</strong>
       </div>
     </div>
+    <div class="chart-link-pill ${dashboardSevenDayClass}">
+      <span>7D KPI Link</span>
+      <strong>${formatPercent(dashboardSevenDay)}</strong>
+      <small>Performance chart and top KPI are synchronized.</small>
+    </div>
     <div class="performance-chart-shell">
       <svg class="value-chart performance-chart" viewBox="0 0 ${viewWidth} ${viewHeight}" role="img" aria-label="Portfolio value performance chart">
         ${yTicks
@@ -3895,6 +4298,7 @@ function renderHistoryChart() {
         <line x1="${padX}" y1="${viewHeight - padY}" x2="${viewWidth - padX}" y2="${viewHeight - padY}" class="value-chart-axis" />
         <path d="${areaPath}" class="value-chart-area" />
         <polyline class="value-chart-line" points="${linePoints}" />
+        ${hoverDots}
         <circle cx="${coords[coords.length - 1].x.toFixed(2)}" cy="${coords[
     coords.length - 1
   ].y.toFixed(2)}" r="4" class="value-chart-dot" />
@@ -3950,9 +4354,9 @@ function renderDashboardHero() {
               Built to keep decision latency low during volatile market windows.
             </p>
             <div class="hero-actions">
-              <button type="button" class="ghost-btn tab-jump-btn" data-tab-target="portfolio">Open Holdings</button>
-              <button type="button" class="ghost-btn tab-jump-btn" data-tab-target="alerts">Open Alerts</button>
-              <button type="button" class="ghost-btn tab-jump-btn" data-tab-target="trades">Open Transactions</button>
+              <button type="button" class="tab-jump-btn btn-primary" data-tab-target="portfolio">Open Holdings</button>
+              <button type="button" class="ghost-btn tab-jump-btn btn-secondary" data-tab-target="alerts">Open Alerts</button>
+              <button type="button" class="ghost-btn tab-jump-btn btn-tertiary" data-tab-target="trades">Open Transactions</button>
             </div>
           </div>
           <div class="hero-metric-stack">
@@ -4065,9 +4469,10 @@ function renderPnlSummary() {
 function renderTradeCalculator() {
   const result = state.tradeCalc.result;
   const calcCurrency = result?.currency || state.currency;
+  const roiClass = Number(result?.roiPercent || 0) >= 0 ? "up" : "down";
   const resultMarkup = result
     ? `
-      <div class="calc-result">
+      <div class="calc-result roi-result ${roiClass}">
         <p><span>Net Profit</span><strong>${formatMoney(result.netProfit, calcCurrency)}</strong></p>
         <p><span>ROI</span><strong>${formatPercent(result.roiPercent)}</strong></p>
         <p><span>Break-even Sell Price</span><strong>${formatMoney(result.breakEvenSellPrice, calcCurrency)}</strong></p>
@@ -4082,7 +4487,7 @@ function renderTradeCalculator() {
       <article class="panel wide">
         <h2>Trade ROI Calculator</h2>
         <p class="helper-text">Use buy/sell price, quantity, and commission to estimate ROI and net profit.</p>
-        <form id="trade-calc-form" class="trade-calc-grid">
+        <form id="trade-calc-form" class="trade-calc-grid compact-calc">
           <label>Buy Price
             <input id="calc-buy-price" type="number" step="0.01" min="0" value="${escapeHtml(
               state.tradeCalc.buyPrice
@@ -4103,7 +4508,7 @@ function renderTradeCalculator() {
               state.tradeCalc.commissionPercent
             )}" />
           </label>
-          <button type="submit" ${state.tradeCalc.loading ? "disabled" : ""}>
+          <button type="submit" class="btn-primary" ${state.tradeCalc.loading ? "disabled" : ""}>
             ${state.tradeCalc.loading ? "Calculating..." : "Calculate ROI"}
           </button>
         </form>
@@ -4111,6 +4516,73 @@ function renderTradeCalculator() {
       </article>
     </section>
   `;
+}
+
+function buildTransactionPreview(type, quantityValue, unitPriceValue, commissionPercentValue) {
+  const qty = Math.max(Number(quantityValue || 0), 0);
+  const unitPrice = Math.max(Number(unitPriceValue || 0), 0);
+  const commissionPercent = Math.max(Number(commissionPercentValue || 0), 0);
+  const gross = qty * unitPrice;
+  const commissionAmount = gross * (commissionPercent / 100);
+  const net = Math.max(gross - commissionAmount, 0);
+  const cashImpact = String(type || "buy").toLowerCase() === "sell" ? net : -gross;
+  return {
+    gross,
+    commissionAmount,
+    net,
+    cashImpact
+  };
+}
+
+function syncTransactionPreviewFromInputs() {
+  const type = String(document.querySelector("#tx-type")?.value || state.txForm.type || "buy");
+  const quantityValue = document.querySelector("#tx-quantity")?.value ?? state.txForm.quantity;
+  const unitPriceValue = document.querySelector("#tx-unit-price")?.value ?? state.txForm.unitPrice;
+  const commissionValue =
+    document.querySelector("#tx-commission")?.value ?? state.txForm.commissionPercent;
+  const preview = buildTransactionPreview(type, quantityValue, unitPriceValue, commissionValue);
+
+  const grossEl = document.querySelector('[data-tx-preview="gross"]');
+  const commissionEl = document.querySelector('[data-tx-preview="commission"]');
+  const netEl = document.querySelector('[data-tx-preview="net"]');
+  const impactEl = document.querySelector('[data-tx-preview="impact"]');
+  const titleEl = document.querySelector('[data-tx-preview="title"]');
+
+  if (titleEl) {
+    titleEl.textContent = type === "sell" ? "Sell Order" : "Buy Order";
+  }
+  if (grossEl) grossEl.textContent = formatMoney(preview.gross, "USD");
+  if (commissionEl) commissionEl.textContent = formatMoney(preview.commissionAmount, "USD");
+  if (netEl) netEl.textContent = formatMoney(preview.net, "USD");
+  if (impactEl) {
+    impactEl.textContent = formatSignedMoney(preview.cashImpact, "USD");
+    impactEl.classList.remove("up", "down");
+    impactEl.classList.add(preview.cashImpact >= 0 ? "up" : "down");
+  }
+}
+
+function syncTransactionEditPreviewFromInputs() {
+  if (!state.txEditModal.open) return;
+  const type = String(document.querySelector("#tx-edit-type")?.value || state.txEditModal.type || "buy");
+  const quantityValue = document.querySelector("#tx-edit-quantity")?.value ?? state.txEditModal.quantity;
+  const unitPriceValue = document.querySelector("#tx-edit-unit-price")?.value ?? state.txEditModal.unitPrice;
+  const commissionValue =
+    document.querySelector("#tx-edit-commission")?.value ?? state.txEditModal.commissionPercent;
+  const preview = buildTransactionPreview(type, quantityValue, unitPriceValue, commissionValue);
+
+  const grossEl = document.querySelector('[data-tx-edit-preview="gross"]');
+  const commissionEl = document.querySelector('[data-tx-edit-preview="commission"]');
+  const netEl = document.querySelector('[data-tx-edit-preview="net"]');
+  const impactEl = document.querySelector('[data-tx-edit-preview="impact"]');
+
+  if (grossEl) grossEl.textContent = formatMoney(preview.gross, "USD");
+  if (commissionEl) commissionEl.textContent = formatMoney(preview.commissionAmount, "USD");
+  if (netEl) netEl.textContent = formatMoney(preview.net, "USD");
+  if (impactEl) {
+    impactEl.textContent = formatSignedMoney(preview.cashImpact, "USD");
+    impactEl.classList.remove("up", "down");
+    impactEl.classList.add(preview.cashImpact >= 0 ? "up" : "down");
+  }
 }
 
 function renderTransactionManager() {
@@ -4121,6 +4593,12 @@ function renderTransactionManager() {
   );
 
   const itemOptions = buildHoldingOptions(selectedSkinId);
+  const txPreview = buildTransactionPreview(
+    state.txForm.type,
+    state.txForm.quantity,
+    state.txForm.unitPrice,
+    state.txForm.commissionPercent
+  );
 
   const txPaginated = getFilteredTransactions();
   const rows = txPaginated.items;
@@ -4131,8 +4609,15 @@ function renderTransactionManager() {
           const type = String(tx.type || "buy").toLowerCase();
           const skinId = Number(tx.skin_id || 0);
           const marketHashName = itemNameBySkinId[skinId] || `Skin #${skinId}`;
+          const fallbackNet =
+            Number(tx.quantity || 0) *
+            Number(tx.unit_price || 0) *
+            (type === "sell" ? 1 - Number(tx.commission_percent || 0) / 100 : 1);
+          const netTotal = tx.net_total == null ? fallbackNet : Number(tx.net_total || 0);
+          const cashImpact = type === "sell" ? netTotal : -Math.abs(netTotal);
+          const cashClass = cashImpact >= 0 ? "up" : "down";
           return `
-            <tr>
+            <tr class="tx-row ${cashClass}">
               <td>${escapeHtml(String(tx.executed_at || "").slice(0, 10))}</td>
               <td><span class="status-badge ${escapeHtml(type)}">${escapeHtml(toTitle(type))}</span></td>
               <td>${escapeHtml(marketHashName)}</td>
@@ -4140,14 +4625,18 @@ function renderTransactionManager() {
               <td>${formatMoney(tx.unit_price, "USD")} USD</td>
               <td>${Number(tx.commission_percent || 0).toFixed(2)}%</td>
               <td>${tx.net_total == null ? "-" : `${formatMoney(tx.net_total, "USD")} USD`}</td>
+              <td><strong class="pnl-text ${cashClass}">${formatSignedMoney(cashImpact, "USD")}</strong></td>
               <td>
-                <button type="button" class="ghost-btn tx-delete-btn" data-tx-id="${txId}">Delete</button>
+                <div class="row">
+                  <button type="button" class="ghost-btn tx-edit-btn" data-tx-id="${txId}">Edit</button>
+                  <button type="button" class="ghost-btn tx-delete-btn" data-tx-id="${txId}">Delete</button>
+                </div>
               </td>
             </tr>
           `;
         })
         .join("")
-    : '<tr><td colspan="8" class="muted empty-table-cell">No buy/sell transactions yet.</td></tr>';
+    : '<tr><td colspan="9" class="muted empty-table-cell">No buy/sell transactions yet.</td></tr>';
 
   const csvSummary = state.csvImport.summary;
   const csvSummaryMarkup = csvSummary
@@ -4171,46 +4660,61 @@ function renderTransactionManager() {
       <article class="panel wide">
         <h2>Buy/Sell Transactions</h2>
         <p class="helper-text">
-          Save trades here to drive <strong>Cost Basis</strong>, <strong>Realized/Unrealized P/L</strong>, and portfolio ROI.
-          Values are stored in <strong>USD</strong>.
+          Trading journal controls cost basis, realized/unrealized P/L, and inventory attribution.
+          Values are stored in <strong>USD</strong> for consistency.
         </p>
-        <form id="tx-form" class="trade-calc-grid">
-          <label>Item
-            <select id="tx-skin-id" ${holdings.length ? "" : "disabled"}>${itemOptions}</select>
-          </label>
-          <label>Type
-            <select id="tx-type">
-              <option value="buy" ${state.txForm.type === "buy" ? "selected" : ""}>Buy</option>
-              <option value="sell" ${state.txForm.type === "sell" ? "selected" : ""}>Sell</option>
-            </select>
-          </label>
-          <label>Quantity
-            <input id="tx-quantity" type="number" step="1" min="1" value="${escapeHtml(
-              state.txForm.quantity
-            )}" />
-          </label>
-          <label>Unit Price (USD)
-            <input id="tx-unit-price" type="number" step="0.01" min="0" value="${escapeHtml(
-              state.txForm.unitPrice
-            )}" />
-          </label>
-          <label>Commission %
-            <input id="tx-commission" type="number" step="0.01" min="0" max="99.99" value="${escapeHtml(
-              state.txForm.commissionPercent
-            )}" />
-          </label>
-          <button type="submit" ${state.txSubmitting || !holdings.length ? "disabled" : ""}>
-            ${state.txSubmitting ? "Saving..." : "Save Transaction"}
-          </button>
-        </form>
-        <form id="tx-csv-form" class="trade-calc-grid">
+        <div class="tx-journal-shell">
+          <form id="tx-form" class="tx-form-grid">
+            <label>Item
+              <select id="tx-skin-id" ${holdings.length ? "" : "disabled"}>${itemOptions}</select>
+            </label>
+            <label>Type
+              <select id="tx-type">
+                <option value="buy" ${state.txForm.type === "buy" ? "selected" : ""}>Buy</option>
+                <option value="sell" ${state.txForm.type === "sell" ? "selected" : ""}>Sell</option>
+              </select>
+            </label>
+            <label>Quantity
+              <input id="tx-quantity" type="number" step="1" min="1" value="${escapeHtml(
+                state.txForm.quantity
+              )}" />
+            </label>
+            <label>Unit Price (USD)
+              <input id="tx-unit-price" type="number" step="0.01" min="0" value="${escapeHtml(
+                state.txForm.unitPrice
+              )}" />
+            </label>
+            <label>Commission %
+              <input id="tx-commission" type="number" step="0.01" min="0" max="99.99" value="${escapeHtml(
+                state.txForm.commissionPercent
+              )}" />
+            </label>
+            <button type="submit" class="btn-primary" ${state.txSubmitting || !holdings.length ? "disabled" : ""}>
+              ${state.txSubmitting ? "Saving..." : "Save Transaction"}
+            </button>
+          </form>
+          <aside class="tx-live-preview">
+            <p class="eyebrow">Live Preview</p>
+            <h3 data-tx-preview="title">${state.txForm.type === "sell" ? "Sell Order" : "Buy Order"}</h3>
+            <div class="calc-result compact">
+              <p><span>Gross</span><strong data-tx-preview="gross">${formatMoney(txPreview.gross, "USD")}</strong></p>
+              <p><span>Commission</span><strong data-tx-preview="commission">${formatMoney(txPreview.commissionAmount, "USD")}</strong></p>
+              <p><span>Net</span><strong data-tx-preview="net">${formatMoney(txPreview.net, "USD")}</strong></p>
+              <p><span>Cash Impact</span><strong data-tx-preview="impact" class="pnl-text ${
+                txPreview.cashImpact >= 0 ? "up" : "down"
+              }">${formatSignedMoney(
+                txPreview.cashImpact,
+                "USD"
+              )}</strong></p>
+            </div>
+          </aside>
+        </div>
+        <form id="tx-csv-form" class="tx-csv-grid">
           <label>Bulk CSV
             <input id="tx-csv-file" type="file" accept=".csv,text/csv" />
+            <small class="field-help">Header: <code>skinId,type,quantity,unitPrice[,commissionPercent,executedAt]</code></small>
           </label>
-          <div class="helper-text">
-            Header: <code>skinId,type,quantity,unitPrice[,commissionPercent,executedAt]</code>
-          </div>
-          <button type="submit" ${state.csvImport.running ? "disabled" : ""}>
+          <button type="submit" class="ghost-btn" ${state.csvImport.running ? "disabled" : ""}>
             ${state.csvImport.running ? "Importing..." : "Import CSV"}
           </button>
         </form>
@@ -4251,7 +4755,7 @@ function renderTransactionManager() {
             </select>
           </label>
         </div>
-        <table>
+        <table class="tx-journal-table">
           <thead>
             <tr>
               <th>Date</th>
@@ -4261,6 +4765,7 @@ function renderTransactionManager() {
               <th>Unit Price</th>
               <th>Commission</th>
               <th>Net Total</th>
+              <th>Cash Impact</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -4287,6 +4792,88 @@ function renderTransactionManager() {
         </div>
       </article>
     </section>
+  `;
+}
+
+function renderTransactionEditModal() {
+  const modal = state.txEditModal;
+  if (!modal.open || !modal.id) return "";
+
+  const preview = buildTransactionPreview(
+    modal.type,
+    modal.quantity,
+    modal.unitPrice,
+    modal.commissionPercent
+  );
+
+  return `
+    <div class="tx-edit-overlay" data-tx-edit-overlay>
+      <section
+        class="tx-edit-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="tx-edit-title"
+        tabindex="-1"
+      >
+        <header class="tx-edit-header">
+          <div>
+            <p class="tx-edit-title" id="tx-edit-title">Edit Transaction</p>
+            <p class="tx-edit-subtitle">Update journal fields without leaving the table.</p>
+          </div>
+          <button type="button" class="ghost-btn" data-tx-edit-close>Close</button>
+        </header>
+        <div class="tx-edit-body">
+          <form id="tx-edit-form" class="tx-edit-form-grid">
+            <label>Type
+              <select id="tx-edit-type">
+                <option value="buy" ${modal.type === "buy" ? "selected" : ""}>Buy</option>
+                <option value="sell" ${modal.type === "sell" ? "selected" : ""}>Sell</option>
+              </select>
+            </label>
+            <label>Quantity
+              <input id="tx-edit-quantity" type="number" step="1" min="1" value="${escapeHtml(
+                modal.quantity
+              )}" />
+            </label>
+            <label>Unit Price (USD)
+              <input id="tx-edit-unit-price" type="number" step="0.01" min="0" value="${escapeHtml(
+                modal.unitPrice
+              )}" />
+            </label>
+            <label>Commission %
+              <input id="tx-edit-commission" type="number" step="0.01" min="0" max="99.99" value="${escapeHtml(
+                modal.commissionPercent
+              )}" />
+            </label>
+            <label>Executed At
+              <input id="tx-edit-executed-at" type="datetime-local" value="${escapeHtml(
+                modal.executedAt
+              )}" />
+            </label>
+            <div class="calc-result compact">
+              <p><span>Gross</span><strong data-tx-edit-preview="gross">${formatMoney(preview.gross, "USD")}</strong></p>
+              <p><span>Commission</span><strong data-tx-edit-preview="commission">${formatMoney(
+                preview.commissionAmount,
+                "USD"
+              )}</strong></p>
+              <p><span>Net</span><strong data-tx-edit-preview="net">${formatMoney(preview.net, "USD")}</strong></p>
+              <p><span>Cash Impact</span><strong data-tx-edit-preview="impact" class="pnl-text ${
+                preview.cashImpact >= 0 ? "up" : "down"
+              }">${formatSignedMoney(
+                preview.cashImpact,
+                "USD"
+              )}</strong></p>
+            </div>
+            <div class="row">
+              <button type="submit" class="btn-primary" ${modal.submitting ? "disabled" : ""}>
+                ${modal.submitting ? "Saving..." : "Update Transaction"}
+              </button>
+              <button type="button" class="ghost-btn" data-tx-edit-close>Cancel</button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </div>
   `;
 }
 
@@ -4650,17 +5237,32 @@ function renderAlerts() {
   const rows = state.alerts
     .map((alert) => {
       const severity = String(alert.severity || "info").toLowerCase();
-      return `<li class="alert-row ${escapeHtml(severity)}">${escapeHtml(
-        alert.message || "Portfolio alert"
-      )}</li>`;
+      const code = String(alert.code || "").toUpperCase();
+      const action =
+        code === "SYNC_FAILED"
+          ? '<button type="button" id="refresh-btn" class="ghost-btn btn-secondary">Refresh Prices</button>'
+          : '<button type="button" class="ghost-btn tab-jump-btn btn-tertiary" data-tab-target="alerts">Open Alerts Center</button>';
+      return `
+        <article class="dashboard-alert-card ${escapeHtml(severity)}">
+          <div class="dashboard-alert-copy">
+            <span class="status-badge ${escapeHtml(severity === "warning" ? "unpriced" : severity)}">${escapeHtml(
+        toTitle(severity)
+      )}</span>
+            <p>${escapeHtml(alert.message || "Portfolio alert")}</p>
+          </div>
+          <div class="dashboard-alert-actions">
+            ${action}
+          </div>
+        </article>
+      `;
     })
     .join("");
 
   return `
     <section class="grid">
       <article class="panel wide">
-        <h2>Alerts</h2>
-        <ul class="alert-list">${rows}</ul>
+        <h2>Action Alerts</h2>
+        <div class="dashboard-alert-list">${rows}</div>
       </article>
     </section>
   `;
@@ -4718,33 +5320,38 @@ function renderAdvancedAnalytics() {
   return `
     <section class="grid">
       <article class="panel wide">
-        <h2>Advanced Analytics</h2>
-        <div class="analytics-grid">
-          <div class="analytics-item">
-            <span>Price Quality Score</span>
-            <strong>${escapeHtml(formatPercent(advanced.priceQualityScore))}</strong>
+        <details class="analytics-collapsible">
+          <summary>
+            <span>Advanced Analytics</span>
+            <small>Compact by default, expand for deep diagnostics</small>
+          </summary>
+          <div class="analytics-grid">
+            <div class="analytics-item">
+              <span>Price Quality Score</span>
+              <strong>${escapeHtml(formatPercent(advanced.priceQualityScore))}</strong>
+            </div>
+            <div class="analytics-item">
+              <span>Median Daily Volatility</span>
+              <strong>${escapeHtml(formatPercent(advanced.medianVolatilityDailyPercent))}</strong>
+            </div>
+            <div class="analytics-item">
+              <span>Tail Risk 7D (P10)</span>
+              <strong>${escapeHtml(formatPercent(advanced.tailRisk7dPercentP10))}</strong>
+            </div>
+            <div class="analytics-item">
+              <span>Estimated VaR 95% 1D</span>
+              <strong>${escapeHtml(formatPercent(advanced.estimatedVar95OneDayPercent))}</strong>
+            </div>
+            <div class="analytics-item">
+              <span>Top 10 Weight</span>
+              <strong>${escapeHtml(formatPercent(advanced.top10WeightPercent))}</strong>
+            </div>
+            <div class="analytics-item">
+              <span>Positions Over 2%</span>
+              <strong>${escapeHtml(formatNumber(advanced.diversifiedPositionsOver2Percent, 0))}</strong>
+            </div>
           </div>
-          <div class="analytics-item">
-            <span>Median Daily Volatility</span>
-            <strong>${escapeHtml(formatPercent(advanced.medianVolatilityDailyPercent))}</strong>
-          </div>
-          <div class="analytics-item">
-            <span>Tail Risk 7D (P10)</span>
-            <strong>${escapeHtml(formatPercent(advanced.tailRisk7dPercentP10))}</strong>
-          </div>
-          <div class="analytics-item">
-            <span>Estimated VaR 95% 1D</span>
-            <strong>${escapeHtml(formatPercent(advanced.estimatedVar95OneDayPercent))}</strong>
-          </div>
-          <div class="analytics-item">
-            <span>Top 10 Weight</span>
-            <strong>${escapeHtml(formatPercent(advanced.top10WeightPercent))}</strong>
-          </div>
-          <div class="analytics-item">
-            <span>Positions Over 2%</span>
-            <strong>${escapeHtml(formatNumber(advanced.diversifiedPositionsOver2Percent, 0))}</strong>
-          </div>
-        </div>
+        </details>
       </article>
     </section>
   `;
@@ -4827,6 +5434,7 @@ function renderAnalytics() {
 
   const topGainer = analytics?.leaders?.topGainer || null;
   const topLoser = analytics?.leaders?.topLoser || null;
+  const holdings = getHoldingsList();
   const breadth = analytics?.breadth || {};
   const signal = buildPortfolioSignals();
   const liquidityScore = signal.liquidityScore == null ? 0 : signal.liquidityScore;
@@ -4844,24 +5452,83 @@ function renderAnalytics() {
       : signal.riskBand === "medium"
         ? "Balanced Risk"
         : "Controlled Risk";
+  const resolveMover = (mover) => {
+    if (!mover) return null;
+    const skinId = Number(mover.skinId || mover.id || 0);
+    const holding = holdings.find((item) => Number(item.skinId) === skinId) || null;
+    const imageUrl = holding ? getItemImageUrl(holding) : defaultSkinImage;
+    const inspectId = String(holding?.primarySteamItemId || "").trim();
+    return {
+      skinId,
+      name: mover.marketHashName || holding?.marketHashName || `Skin #${skinId}`,
+      change: mover.sevenDayChangePercent,
+      lineValue: mover.lineValue,
+      imageUrl,
+      inspectId
+    };
+  };
+  const gainer = resolveMover(topGainer);
+  const loser = resolveMover(topLoser);
 
   return `
     <section class="grid">
       <article class="panel">
         <h2>Top Movers</h2>
         <div class="movers-grid">
-          <div class="mover-card up">
-            <span>Top Gainer</span>
-            <strong>${topGainer ? escapeHtml(topGainer.marketHashName) : "N/A"}</strong>
-            <p>${topGainer ? escapeHtml(formatPercent(topGainer.sevenDayChangePercent)) : "-"}</p>
-            <small>${topGainer ? formatMoney(topGainer.lineValue, state.portfolio?.currency || state.currency) : ""}</small>
-          </div>
-          <div class="mover-card down">
-            <span>Top Loser</span>
-            <strong>${topLoser ? escapeHtml(topLoser.marketHashName) : "N/A"}</strong>
-            <p>${topLoser ? escapeHtml(formatPercent(topLoser.sevenDayChangePercent)) : "-"}</p>
-            <small>${topLoser ? formatMoney(topLoser.lineValue, state.portfolio?.currency || state.currency) : ""}</small>
-          </div>
+          ${
+            gainer
+              ? `
+            <div class="mover-card up">
+              <span>Top Gainer</span>
+              <div class="mover-head">
+                <img src="${escapeHtml(gainer.imageUrl)}" alt="${escapeHtml(gainer.name)}" loading="lazy" />
+                <strong>${escapeHtml(gainer.name)}</strong>
+              </div>
+              <p>${escapeHtml(formatPercent(gainer.change))}</p>
+              <small>${formatMoney(gainer.lineValue, state.portfolio?.currency || state.currency)}</small>
+              <div class="row mover-actions">
+                <button type="button" class="ghost-btn inspect-skin-btn btn-secondary" data-steam-item-id="${escapeHtml(
+                  gainer.inspectId
+                )}" ${gainer.inspectId ? "" : "disabled"}>Inspect</button>
+                <button type="button" class="ghost-btn compare-market-btn btn-tertiary" data-skin-id="${gainer.skinId}">Compare</button>
+              </div>
+            </div>
+          `
+              : `
+            <div class="mover-card up">
+              <span>Top Gainer</span>
+              <strong>N/A</strong>
+              <p>-</p>
+            </div>
+          `
+          }
+          ${
+            loser
+              ? `
+            <div class="mover-card down">
+              <span>Top Loser</span>
+              <div class="mover-head">
+                <img src="${escapeHtml(loser.imageUrl)}" alt="${escapeHtml(loser.name)}" loading="lazy" />
+                <strong>${escapeHtml(loser.name)}</strong>
+              </div>
+              <p>${escapeHtml(formatPercent(loser.change))}</p>
+              <small>${formatMoney(loser.lineValue, state.portfolio?.currency || state.currency)}</small>
+              <div class="row mover-actions">
+                <button type="button" class="ghost-btn inspect-skin-btn btn-secondary" data-steam-item-id="${escapeHtml(
+                  loser.inspectId
+                )}" ${loser.inspectId ? "" : "disabled"}>Inspect</button>
+                <button type="button" class="ghost-btn compare-market-btn btn-tertiary" data-skin-id="${loser.skinId}">Compare</button>
+              </div>
+            </div>
+          `
+              : `
+            <div class="mover-card down">
+              <span>Top Loser</span>
+              <strong>N/A</strong>
+              <p>-</p>
+            </div>
+          `
+          }
         </div>
       </article>
       <article class="panel">
@@ -5060,65 +5727,57 @@ function renderAlertsCenter() {
 
   const configuredMarkup = alertRows.length
     ? `
-      <table>
-        <thead>
-          <tr>
-            <th>Item</th>
-            <th>Target</th>
-            <th>% Trigger</th>
-            <th>Direction</th>
-            <th>Cooldown</th>
-            <th>Status</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${alertRows
-            .map(
-              (alert) => `
-                <tr>
-                  <td>${escapeHtml(alert.marketHashName || `Skin #${alert.skinId}`)}</td>
-                  <td>${
-                    alert.targetPrice == null
-                      ? "-"
-                      : formatMoney(alert.targetPrice, "USD")
-                  }</td>
-                  <td>${
-                    alert.percentChangeThreshold == null
-                      ? "-"
-                      : formatPercent(alert.percentChangeThreshold)
-                  }</td>
-                  <td>${escapeHtml(toTitle(alert.direction || "both"))}</td>
-                  <td>${Number(alert.cooldownMinutes || 0)}m</td>
-                  <td>${
+      <div class="alert-card-list">
+        ${alertRows
+          .map((alert) => {
+            const nextCheckRaw = alert.nextCheckAt || alert.lastCheckedAt || alert.updatedAt || alert.createdAt;
+            const triggerBits = [
+              alert.targetPrice == null ? null : `Target ${formatMoney(alert.targetPrice, "USD")}`,
+              alert.percentChangeThreshold == null
+                ? null
+                : `Move ${formatPercent(alert.percentChangeThreshold)}`,
+              `Direction ${toTitle(alert.direction || "both")}`
+            ]
+              .filter(Boolean)
+              .join(" | ");
+            return `
+              <article class="alert-config-card">
+                <header>
+                  <div>
+                    <p class="alert-config-title">${escapeHtml(alert.marketHashName || `Skin #${alert.skinId}`)}</p>
+                    <small class="muted">Next check: ${escapeHtml(
+                      nextCheckRaw ? `${formatDateTime(nextCheckRaw)} (${formatRelativeTime(nextCheckRaw)})` : "pending"
+                    )}</small>
+                  </div>
+                  ${
                     alert.enabled
                       ? '<span class="status-badge real">Enabled</span>'
                       : '<span class="status-badge stale">Paused</span>'
-                  }</td>
-                  <td>
-                    <div class="row">
-                      <button type="button" class="ghost-btn alert-edit-btn" data-alert-id="${Number(
-                        alert.id
-                      )}">Edit</button>
-                      <button
-                        type="button"
-                        class="ghost-btn alert-toggle-btn"
-                        data-alert-id="${Number(alert.id)}"
-                        data-enabled="${alert.enabled ? "false" : "true"}"
-                      >
-                        ${alert.enabled ? "Pause" : "Enable"}
-                      </button>
-                      <button type="button" class="ghost-btn alert-delete-btn" data-alert-id="${Number(
-                        alert.id
-                      )}">Delete</button>
-                    </div>
-                  </td>
-                </tr>
-              `
-            )
-            .join("")}
-        </tbody>
-      </table>
+                  }
+                </header>
+                <p class="alert-config-logic">${escapeHtml(triggerBits)}</p>
+                <p class="muted">Cooldown ${Number(alert.cooldownMinutes || 0)}m</p>
+                <div class="row alert-config-actions">
+                  <button type="button" class="ghost-btn alert-edit-btn btn-secondary" data-alert-id="${Number(
+                    alert.id
+                  )}">Edit</button>
+                  <button
+                    type="button"
+                    class="ghost-btn alert-toggle-btn btn-tertiary"
+                    data-alert-id="${Number(alert.id)}"
+                    data-enabled="${alert.enabled ? "false" : "true"}"
+                  >
+                    ${alert.enabled ? "Pause" : "Enable"}
+                  </button>
+                  <button type="button" class="ghost-btn alert-delete-btn btn-tertiary" data-alert-id="${Number(
+                    alert.id
+                  )}">Delete</button>
+                </div>
+              </article>
+            `;
+          })
+          .join("")}
+      </div>
     `
     : '<p class="muted">No configured alerts yet.</p>';
 
@@ -5184,51 +5843,67 @@ function renderAlertsCenter() {
     <section class="grid">
       <article class="panel wide">
         <h2>${isEditMode ? "Edit Alert" : "Create Alert"}</h2>
-        <p class="helper-text">Set trigger by target price and/or percent move. Alert thresholds and checks use <strong>USD</strong> market prices.</p>
-        <form id="alert-form" class="trade-calc-grid">
-          <label>Item
-            <select id="alert-skin-id" ${holdings.length ? "" : "disabled"}>${alertOptions}</select>
-          </label>
-          <label>Target Price (USD)
-            <input id="alert-target-price" type="number" min="0" step="0.01" value="${escapeHtml(
-              state.alertForm.targetPrice
-            )}" />
-          </label>
-          <label>% Change Trigger
-            <input id="alert-percent-threshold" type="number" min="0" step="0.01" value="${escapeHtml(
-              state.alertForm.percentChangeThreshold
-            )}" />
-          </label>
-          <label>Direction
-            <select id="alert-direction">
-              <option value="both" ${state.alertForm.direction === "both" ? "selected" : ""}>Both</option>
-              <option value="up" ${state.alertForm.direction === "up" ? "selected" : ""}>Up</option>
-              <option value="down" ${state.alertForm.direction === "down" ? "selected" : ""}>Down</option>
-            </select>
-          </label>
-          <label>Cooldown (minutes)
-            <input id="alert-cooldown" type="number" min="0" step="1" value="${escapeHtml(
-              state.alertForm.cooldownMinutes
-            )}" />
-          </label>
-          <label>
-            Enabled
-            <input id="alert-enabled" type="checkbox" ${state.alertForm.enabled ? "checked" : ""} />
-          </label>
-          <button type="submit" ${state.alertForm.submitting || !holdings.length ? "disabled" : ""}>
+        <p class="helper-text">Target, trigger, and direction are evaluated against <strong>USD</strong> pricing. Use cooldown to prevent notification spam.</p>
+        <form id="alert-form" class="alert-form-grid">
+          <fieldset class="alert-fieldset">
+            <legend>Target</legend>
+            <label>Item
+              <select id="alert-skin-id" ${holdings.length ? "" : "disabled"}>${alertOptions}</select>
+              <small class="field-help">Select a tracked portfolio item.</small>
+            </label>
+            <label>Target Price (USD)
+              <input id="alert-target-price" type="number" min="0" step="0.01" value="${escapeHtml(
+                state.alertForm.targetPrice
+              )}" />
+              <small class="field-help">Trigger when market price reaches this level.</small>
+            </label>
+          </fieldset>
+          <fieldset class="alert-fieldset">
+            <legend>Trigger</legend>
+            <label>% Change Trigger
+              <input id="alert-percent-threshold" type="number" min="0" step="0.01" value="${escapeHtml(
+                state.alertForm.percentChangeThreshold
+              )}" />
+              <small class="field-help">Use for momentum alerts if target price is empty.</small>
+            </label>
+            <label>Direction
+              <select id="alert-direction">
+                <option value="both" ${state.alertForm.direction === "both" ? "selected" : ""}>Both</option>
+                <option value="up" ${state.alertForm.direction === "up" ? "selected" : ""}>Up</option>
+                <option value="down" ${state.alertForm.direction === "down" ? "selected" : ""}>Down</option>
+              </select>
+              <small class="field-help">Choose whether to fire on rises, drops, or both.</small>
+            </label>
+          </fieldset>
+          <fieldset class="alert-fieldset">
+            <legend>Delivery</legend>
+            <label>Cooldown (minutes)
+              <input id="alert-cooldown" type="number" min="0" step="1" value="${escapeHtml(
+                state.alertForm.cooldownMinutes
+              )}" />
+              <small class="field-help">Minimum delay before same alert can trigger again.</small>
+            </label>
+            <label class="alert-checkbox-label" title="Toggle whether this alert is active immediately after save.">
+              Enabled
+              <input id="alert-enabled" type="checkbox" ${state.alertForm.enabled ? "checked" : ""} />
+            </label>
+          </fieldset>
+          <div class="row alert-form-actions">
+            <button type="submit" class="btn-primary" ${state.alertForm.submitting || !holdings.length ? "disabled" : ""}>
+              ${
+                state.alertForm.submitting
+                  ? "Saving..."
+                  : isEditMode
+                    ? "Update Alert"
+                    : "Create Alert"
+              }
+            </button>
             ${
-              state.alertForm.submitting
-                ? "Saving..."
-                : isEditMode
-                  ? "Update Alert"
-                  : "Create Alert"
+              isEditMode
+                ? '<button id="alert-cancel-btn" type="button" class="ghost-btn btn-secondary">Cancel Edit</button>'
+                : ""
             }
-          </button>
-          ${
-            isEditMode
-              ? '<button id="alert-cancel-btn" type="button" class="ghost-btn">Cancel Edit</button>'
-              : ""
-          }
+          </div>
         </form>
       </article>
       <article class="panel wide">
@@ -5834,8 +6509,8 @@ function renderPublicHome() {
   const userEmailLabel = getHeaderEmailLabel();
 
   app.innerHTML = `
-    <main class="layout">
-      <nav class="topbar">
+    <main class="layout landing-shell">
+      <nav class="topbar landing-topbar">
         <div class="brand">CS2 Portfolio Analyzer</div>
         <div class="top-actions">
           ${
@@ -5847,48 +6522,63 @@ function renderPublicHome() {
                 <a class="link-btn ghost" href="/">Back to Dashboard</a>
               `
               : `
-                <a class="link-btn ghost" href="${escapeHtml(steamStartUrl)}">Login with Steam</a>
                 <a class="link-btn ghost" href="/login.html">Login</a>
-                <a class="link-btn" href="/register.html">Start Free</a>
+                <a class="link-btn btn-primary" href="/register.html">Start Free</a>
               `
           }
         </div>
       </nav>
 
-      <section class="hero-block">
-        <div>
+      <section class="hero-block landing-hero">
+        <div class="landing-hero-copy">
           <p class="eyebrow">SaaS for CS2 traders and collectors</p>
-          <h1>See your CS2 items like a real portfolio, not a random inventory list.</h1>
-          <p class="hero-copy">Connect Steam, sync your inventory (skins, cases, stickers, music kits, and more), and instantly track value, ROI, and 7-day movement in one focused dashboard.</p>
+          <h1>Trade your CS2 inventory with portfolio-grade clarity.</h1>
+          <p class="hero-copy">
+            Connect Steam once, sync instantly, and monitor value, liquidity, and execution signals in a single command surface.
+          </p>
           <div class="hero-actions">
-            <a class="link-btn ghost" href="${escapeHtml(steamStartUrl)}">Continue with Steam</a>
-            <a class="link-btn" href="/register.html">Create Account</a>
-            <a class="link-btn ghost" href="/login.html">I already have an account</a>
+            <a class="link-btn btn-primary landing-primary-cta" href="/register.html">Start Free</a>
+            <a class="link-btn ghost btn-secondary" href="${escapeHtml(steamStartUrl)}">Continue with Steam</a>
+            <a class="link-btn ghost btn-tertiary" href="/login.html">I already have an account</a>
+          </div>
+          <div class="landing-trust-grid">
+            <article class="landing-trust-item">
+              <span>Portfolio Sync</span>
+              <strong>1-click</strong>
+            </article>
+            <article class="landing-trust-item">
+              <span>Live Signals</span>
+              <strong>7D + 24H</strong>
+            </article>
+            <article class="landing-trust-item">
+              <span>Pricing Surface</span>
+              <strong>Multi-market</strong>
+            </article>
           </div>
         </div>
-        <div class="hero-preview panel">
-          <h3>What you get</h3>
+        <div class="hero-preview panel landing-preview">
+          <h3>Why teams use it</h3>
           <ul class="bullet-list">
-            <li>Total portfolio value in USD</li>
-            <li>ROI from your stored buy prices</li>
-            <li>7-day movement snapshot</li>
-            <li>Item-level lookup and trend data</li>
+            <li>Decision-first dashboard for value and risk</li>
+            <li>Inspect modal without losing page context</li>
+            <li>Actionable alerts and transaction journal</li>
+            <li>Fast workflows tuned for trading sessions</li>
           </ul>
         </div>
       </section>
 
-      <section class="grid">
-        <article class="panel">
-          <h2>Built for speed</h2>
-          <p class="muted">No spreadsheet maintenance. Sync once and get immediate valuation.</p>
+      <section class="grid landing-feature-grid">
+        <article class="panel landing-feature-card">
+          <h2>Execution-Speed Workflow</h2>
+          <p class="muted">No spreadsheets. Sync once and act with inspect, compare, and sell guidance directly in context.</p>
         </article>
-        <article class="panel">
-          <h2>Built for decisions</h2>
-          <p class="muted">Quickly identify winners, laggards, and where your value is concentrated.</p>
+        <article class="panel landing-feature-card">
+          <h2>Decision-Grade Signals</h2>
+          <p class="muted">Spot winners, laggards, and concentration risk with a clear KPI hierarchy and compact analytics.</p>
         </article>
-        <article class="panel">
-          <h2>Built for growth</h2>
-          <p class="muted">MVP architecture is already ready for live market providers and scheduled sync jobs.</p>
+        <article class="panel landing-feature-card">
+          <h2>Built to Scale</h2>
+          <p class="muted">Extensible architecture for deeper market providers, automation, and creator/team operations.</p>
         </article>
       </section>
     </main>
@@ -5980,6 +6670,8 @@ function renderApp() {
   const top7d = Number(portfolio.sevenDayChangePercent || 0);
   const top24h = Number(portfolio.oneDayChangePercent || 0);
   const topValueLabel = getPricingModeLabel(portfolio?.pricing?.mode || state.pricingMode);
+  const topbarSignal = buildPortfolioSignals();
+  const showTopbarTotals = state.activeTab !== "dashboard";
 
   const currencyOptions = SUPPORTED_CURRENCIES.map(
     (code) => `<option value="${code}" ${code === state.currency ? "selected" : ""}>${code}</option>`
@@ -6159,30 +6851,51 @@ function renderApp() {
       <section class="app-main">
         <header class="topbar premium-topbar">
           <div class="topbar-metrics">
-            <article class="topbar-metric metric-glow">
-              <span>${escapeHtml(topValueLabel)} Value</span>
-              <strong
-                class="metric-number"
-                data-count-key="topbar-total-value"
-                data-count-format="money"
-                data-count-currency="${escapeHtml(currencyCode)}"
-                data-count-to="${topValue}"
-              >
-                ${formatMoney(topValue, currencyCode)}
-              </strong>
-            </article>
-            <article class="topbar-metric ${trendClass}">
-              <span>7D Change</span>
-              <strong
-                class="metric-number"
-                data-count-key="topbar-seven-day"
-                data-count-format="percent"
-                data-count-to="${top7d}"
-              >
-                ${formatPercent(top7d)}
-              </strong>
-              <small class="pnl-text ${oneDayTrendClass}">24H ${formatPercent(top24h)}</small>
-            </article>
+            ${
+              showTopbarTotals
+                ? `
+              <article class="topbar-metric metric-glow">
+                <span>${escapeHtml(topValueLabel)} Value</span>
+                <strong
+                  class="metric-number"
+                  data-count-key="topbar-total-value"
+                  data-count-format="money"
+                  data-count-currency="${escapeHtml(currencyCode)}"
+                  data-count-to="${topValue}"
+                >
+                  ${formatMoney(topValue, currencyCode)}
+                </strong>
+              </article>
+              <article class="topbar-metric ${trendClass}">
+                <span>7D Change</span>
+                <strong
+                  class="metric-number"
+                  data-count-key="topbar-seven-day"
+                  data-count-format="percent"
+                  data-count-to="${top7d}"
+                >
+                  ${formatPercent(top7d)}
+                </strong>
+                <small class="pnl-text ${oneDayTrendClass}">24H ${formatPercent(top24h)}</small>
+              </article>
+            `
+                : `
+              <article class="topbar-metric">
+                <span>Pricing Mode</span>
+                <strong>${escapeHtml(topValueLabel)}</strong>
+              </article>
+              <article class="topbar-metric">
+                <span>Portfolio Readiness</span>
+                <strong>${Math.max(
+                  Number(topbarSignal.holdingsCount || 0) -
+                    Number(topbarSignal.unpricedItems || 0) -
+                    Number(topbarSignal.staleItems || 0),
+                  0
+                )}/${Number(topbarSignal.holdingsCount || 0)}</strong>
+                <small>Priced and fresh positions</small>
+              </article>
+            `
+            }
           </div>
           <div class="top-actions">
             <label class="currency-picker">
@@ -6204,6 +6917,7 @@ function renderApp() {
       ${renderAppFooter()}
     </main>
     ${renderInspectModalOverlay()}
+    ${renderTransactionEditModal()}
   `;
 
   ensureAppEventDelegation();
@@ -6217,6 +6931,13 @@ function renderApp() {
     !state.marketTab.autoLoaded
   ) {
     runUiTask(() => refreshMarketInventoryValue());
+  }
+
+  if (state.activeTab === "trades") {
+    syncTransactionPreviewFromInputs();
+  }
+  if (state.txEditModal.open) {
+    syncTransactionEditPreviewFromInputs();
   }
 
   animateMetricCounters();
@@ -6235,6 +6956,17 @@ function render() {
     state.tooltip.openId = "";
     state.inspectModal.open = false;
     state.inspectModal.focusPending = false;
+    state.txEditModal = {
+      open: false,
+      id: null,
+      skinId: "",
+      type: "buy",
+      quantity: "1",
+      unitPrice: "0",
+      commissionPercent: "13",
+      executedAt: "",
+      submitting: false
+    };
     renderPublicPortfolioPage();
     syncBodyUiLocks();
     renderToastHost();
@@ -6248,6 +6980,17 @@ function render() {
     state.tooltip.openId = "";
     state.inspectModal.open = false;
     state.inspectModal.focusPending = false;
+    state.txEditModal = {
+      open: false,
+      id: null,
+      skinId: "",
+      type: "buy",
+      quantity: "1",
+      unitPrice: "0",
+      commissionPercent: "13",
+      executedAt: "",
+      submitting: false
+    };
     renderPublicHome();
     syncBodyUiLocks();
     renderToastHost();
