@@ -335,16 +335,18 @@ body.tx-edit-modal-open {
   display: flex;
   align-items: center;
   gap: 8px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-  padding-bottom: 0;
+  overflow: visible;
+  position: relative;
 }
 
 .desktop-tab-nav::-webkit-scrollbar {
   width: 0;
   height: 0;
+}
+
+.desktop-tab-dropdown {
+  position: relative;
+  display: inline-flex;
 }
 
 .desktop-tab-btn {
@@ -353,6 +355,46 @@ body.tx-edit-modal-open {
   padding: 8px 12px;
   font-size: 0.82rem;
   white-space: nowrap;
+}
+
+.desktop-tab-menu-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.desktop-tab-menu-caret {
+  font-size: 0.64rem;
+  opacity: 0.82;
+}
+
+.desktop-tab-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 215;
+  min-width: 198px;
+  border-radius: 12px;
+  border: 1px solid rgba(137, 162, 214, 0.32);
+  background:
+    linear-gradient(132deg, rgba(10, 17, 31, 0.96), rgba(15, 22, 39, 0.92));
+  box-shadow: 0 18px 30px rgba(3, 7, 18, 0.54);
+  padding: 6px;
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.desktop-tab-menu.open {
+  display: flex;
+}
+
+.desktop-tab-menu-item {
+  width: 100%;
+  min-width: 0;
+  justify-content: flex-start;
+  text-align: left;
+  border-radius: 9px;
 }
 
 .desktop-tab-btn.active {
@@ -3816,13 +3858,13 @@ a:hover {
 }
 
 .kpi-item-value {
-  font-size: 1rem;
+  font-size: 1.18rem;
   color: #dce9ff;
-  line-height: 1.3;
+  line-height: 1.24;
 }
 
 .kpi-item-value.primary {
-  font-size: 1.42rem;
+  font-size: 1.82rem;
   letter-spacing: -0.01em;
 }
 
@@ -3852,7 +3894,8 @@ a:hover {
 
 .kpi-tertiary-row {
   display: inline-flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-end;
   gap: 8px;
 }
 
@@ -3929,6 +3972,8 @@ a:hover {
   padding-bottom: 12px;
   overflow: visible;
   position: relative;
+  z-index: 220;
+  isolation: isolate;
 }
 
 .dashboard-hero-panel .dashboard-panel-body {
@@ -3955,13 +4000,13 @@ a:hover {
 }
 
 .dashboard-hero-title-row .tooltip-wrap {
-  z-index: 24;
+  z-index: 240;
 }
 
 .dashboard-hero-title-row .tooltip-bubble {
   right: 0;
   left: auto;
-  z-index: 28;
+  z-index: 260;
   width: min(220px, calc(100vw - 24px));
 }
 
@@ -4597,6 +4642,14 @@ a:hover {
     top: calc(68px + env(safe-area-inset-top));
   }
 
+  .kpi-item-value {
+    font-size: 1.08rem;
+  }
+
+  .kpi-item-value.primary {
+    font-size: 1.56rem;
+  }
+
   .kpi-items {
     grid-template-columns: 1fr;
   }
@@ -4607,7 +4660,7 @@ a:hover {
   }
 
   .kpi-tertiary-row {
-    justify-content: space-between;
+    align-items: flex-start;
   }
 
   .history-toolbar-terminal {

@@ -123,6 +123,9 @@ const state = {
   avatarMenu: {
     open: false
   },
+  headerTabMenu: {
+    open: false
+  },
   tooltip: {
     openId: ""
   },
@@ -275,6 +278,9 @@ const APP_TABS = [
   { id: "team", label: "Team", hint: "Creator Ops" },
   { id: "settings", label: "Settings", hint: "Account" }
 ];
+const HEADER_PRIMARY_TAB_IDS = new Set(["dashboard", "portfolio"]);
+const HEADER_PRIMARY_TABS = APP_TABS.filter((tab) => HEADER_PRIMARY_TAB_IDS.has(tab.id));
+const HEADER_MORE_TABS = APP_TABS.filter((tab) => !HEADER_PRIMARY_TAB_IDS.has(tab.id));
 const PORTFOLIO_CARD_CACHE_MAX = 800;
 const portfolioCardMarkupCache = {
   desktop: new Map(),
@@ -1173,6 +1179,8 @@ function closeAvatarMenu(options = {}) {
 
 function renderDesktopHeader(userEmailLabel, userEmailTitle) {
   const notificationCount = Number(state.alertEvents?.length || 0);
+  const hasMoreTabs = HEADER_MORE_TABS.length > 0;
+  const moreTabActive = HEADER_MORE_TABS.some((tab) => tab.id === state.activeTab);
   return `
     <header class="desktop-header" role="banner">
       <a href="#" class="desktop-brand" data-desktop-home aria-label="Go to dashboard">
@@ -1180,7 +1188,7 @@ function renderDesktopHeader(userEmailLabel, userEmailTitle) {
         <span>CS2 Portfolio Analyzer</span>
       </a>
       <nav class="desktop-tab-nav" aria-label="Primary">
-        ${APP_TABS.map(
+        ${HEADER_PRIMARY_TABS.map(
           (tab) => `
           <button
             type="button"
@@ -1192,6 +1200,45 @@ function renderDesktopHeader(userEmailLabel, userEmailTitle) {
           </button>
         `
         ).join("")}
+        ${
+          hasMoreTabs
+            ? `
+          <div class="desktop-tab-dropdown" data-header-tab-menu-root>
+            <button
+              type="button"
+              class="ghost-btn tab-btn desktop-tab-btn desktop-tab-menu-toggle ${moreTabActive ? "active" : ""}"
+              data-header-tab-menu-toggle
+              aria-haspopup="true"
+              aria-expanded="${state.headerTabMenu.open ? "true" : "false"}"
+              aria-controls="desktop-tab-menu"
+            >
+              More
+              <span class="desktop-tab-menu-caret" aria-hidden="true">&#x25BE;</span>
+            </button>
+            <div
+              class="desktop-tab-menu ${state.headerTabMenu.open ? "open" : ""}"
+              id="desktop-tab-menu"
+              role="menu"
+              aria-label="More sections"
+            >
+              ${HEADER_MORE_TABS.map(
+                (tab) => `
+                <button
+                  type="button"
+                  class="ghost-btn tab-btn desktop-tab-btn desktop-tab-menu-item ${state.activeTab === tab.id ? "active" : ""}"
+                  data-tab="${tab.id}"
+                  title="${escapeHtml(tab.hint)}"
+                  role="menuitem"
+                >
+                  ${escapeHtml(tab.label)}
+                </button>
+              `
+              ).join("")}
+            </div>
+          </div>
+        `
+            : ""
+        }
       </nav>
       <div class="desktop-header-actions">
         <label class="desktop-search">
@@ -2264,6 +2311,10 @@ async function handleTabSwitch(tab) {
       !state.teamDashboard.loading &&
       !state.teamDashboard.payload);
 
+  if (state.headerTabMenu.open) {
+    state.headerTabMenu.open = false;
+  }
+
   if (target !== "dashboard" && state.compareDrawer.open) {
     state.compareDrawer.open = false;
     state.compareDrawer.focusPending = false;
@@ -2349,6 +2400,11 @@ function onAppClick(event) {
     closeAvatarMenu({ restoreFocus: false });
   }
 
+  if (state.headerTabMenu.open && !target.closest("[data-header-tab-menu-root]")) {
+    state.headerTabMenu.open = false;
+    render();
+  }
+
   if (state.tooltip.openId && !target.closest("[data-tooltip-wrap]")) {
     state.tooltip.openId = "";
     render();
@@ -2427,8 +2483,21 @@ function onAppClick(event) {
     return;
   }
 
+  if (button?.matches("[data-header-tab-menu-toggle]")) {
+    event.preventDefault();
+    state.headerTabMenu.open = !state.headerTabMenu.open;
+    if (state.headerTabMenu.open && state.avatarMenu.open) {
+      state.avatarMenu.open = false;
+    }
+    render();
+    return;
+  }
+
   if (button?.matches("#avatar-menu-toggle")) {
     event.preventDefault();
+    if (state.headerTabMenu.open) {
+      state.headerTabMenu.open = false;
+    }
     if (state.avatarMenu.open) {
       closeAvatarMenu();
     } else {
@@ -2783,6 +2852,13 @@ function onAppKeydown(event) {
   if (event.key === "Escape" && state.portfolioControls.open) {
     event.preventDefault();
     closePortfolioControlsDrawer();
+    return;
+  }
+
+  if (event.key === "Escape" && state.headerTabMenu.open) {
+    event.preventDefault();
+    state.headerTabMenu.open = false;
+    render();
     return;
   }
 
@@ -3157,6 +3233,7 @@ async function logout() {
   state.portfolioControls.open = false;
   state.portfolioControls.focusPending = false;
   state.avatarMenu.open = false;
+  state.headerTabMenu.open = false;
   state.tooltip.openId = "";
   state.txEditModal = {
     open: false,
@@ -8020,6 +8097,7 @@ function render() {
 
   if (state.publicPage.steamId64) {
     state.avatarMenu.open = false;
+    state.headerTabMenu.open = false;
     state.tooltip.openId = "";
     state.portfolioControls.open = false;
     state.portfolioControls.focusPending = false;
@@ -8051,6 +8129,7 @@ function render() {
     state.portfolioControls.open = false;
     state.portfolioControls.focusPending = false;
     state.avatarMenu.open = false;
+    state.headerTabMenu.open = false;
     state.tooltip.openId = "";
     state.inspectModal.open = false;
     state.inspectModal.focusPending = false;
