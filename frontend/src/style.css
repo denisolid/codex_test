@@ -1688,7 +1688,7 @@ button:disabled,
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-height: 332px;
+  min-height: 306px;
   height: auto;
   align-self: start;
   transition: transform 170ms ease, border-color 170ms ease, box-shadow 170ms ease;
@@ -1702,21 +1702,22 @@ button:disabled,
 
 .portfolio-desktop-card-head {
   display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: 10px;
   align-items: start;
 }
 
 .portfolio-desktop-card-media {
   width: 100%;
-  height: clamp(118px, 18vh, 152px);
+  height: clamp(136px, 20vh, 178px);
   border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--rarity-color, #7f8ba5) 62%, transparent);
   background: rgba(8, 11, 18, 0.9);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 6px;
+  padding: 4px;
+  overflow: hidden;
 }
 
 .portfolio-desktop-card-thumb {
@@ -1727,6 +1728,8 @@ button:disabled,
   background: transparent;
   object-fit: contain;
   padding: 0;
+  transform: scale(1.26);
+  transform-origin: center;
 }
 
 .portfolio-desktop-card-meta {
@@ -1751,7 +1754,7 @@ button:disabled,
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
-  align-items: start;
+  align-items: center;
 }
 
 .portfolio-desktop-card-subline {
@@ -1902,7 +1905,7 @@ button:disabled,
 }
 
 .portfolio-desktop-card.is-skeleton {
-  min-height: 332px;
+  min-height: 306px;
 }
 
 .portfolio-desktop-card.is-skeleton .table-row-skeleton {
@@ -1933,8 +1936,10 @@ button:disabled,
 }
 
 .tooltip-toggle {
-  min-height: 24px;
-  min-width: 24px;
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  min-width: 26px;
   border-radius: 999px;
   padding: 0;
   border: 1px solid rgba(127, 153, 204, 0.34);
@@ -1943,6 +1948,10 @@ button:disabled,
   font-size: 0.72rem;
   font-weight: 700;
   box-shadow: none;
+  display: inline-grid;
+  place-items: center;
+  line-height: 1;
+  flex: 0 0 26px;
 }
 
 .tooltip-toggle:hover,
