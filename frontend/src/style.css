@@ -112,6 +112,9 @@ body.tx-edit-modal-open {
 .layout {
   width: min(1380px, 95%);
   margin: 22px auto 48px;
+}
+
+.layout:not(.app-shell) {
   animation: fade-slide 340ms ease;
 }
 
