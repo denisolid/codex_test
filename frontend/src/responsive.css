@@ -940,7 +940,7 @@ button:active,
 }
 
 @media (max-width: 1023px) {
-  .dashboard-kpi-sticky {
+  .dashboard-kpi-sticky.is-pinned {
     top: calc(66px + env(safe-area-inset-top));
   }
 }
