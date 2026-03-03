@@ -1,4 +1,4 @@
-import { renderButton } from "./uiPrimitives";
+import { renderModal } from "./dashboardPrimitives";
 
 export function renderInspectModal({
   open = false,
@@ -29,32 +29,15 @@ export function renderInspectModal({
       ? `<div class="error inspect-modal-error" role="alert">${error}</div>`
       : bodyMarkup;
 
-  return `
-    <div class="inspect-modal-overlay" data-inspect-modal-overlay>
-      <section
-        class="inspect-modal-dialog"
-        data-inspect-modal-dialog
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="inspect-modal-title"
-        tabindex="-1"
-        aria-label="Inspect item details"
-      >
-        <header class="inspect-modal-header">
-          <div>
-            <p class="inspect-modal-title" id="inspect-modal-title">${heading}</p>
-            ${subheading ? `<p class="inspect-modal-subtitle">${subheading}</p>` : ""}
-          </div>
-          ${renderButton({
-            label: "Close",
-            className: "ghost-btn inspect-modal-close-btn",
-            extraAttrs: 'data-inspect-modal-close="1"'
-          })}
-        </header>
-        <div class="inspect-modal-content">
-          ${statusMarkup}
-        </div>
-      </section>
-    </div>
-  `;
+  return renderModal({
+    open,
+    title: heading,
+    subtitle: subheading,
+    bodyMarkup: statusMarkup,
+    closeAttr: 'data-inspect-modal-close="1"',
+    label: "Inspect item details",
+    rootClassName: "inspect-modal-overlay",
+    overlayAttr: 'data-inspect-modal-overlay="1"',
+    panelAttr: 'data-inspect-modal-dialog="1"'
+  });
 }

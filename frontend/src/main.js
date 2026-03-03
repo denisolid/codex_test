@@ -15,10 +15,18 @@ import { renderAvatarMenu } from "./components/avatarMenu";
 import { renderInspectModal } from "./components/inspectModal";
 import { renderMobileDrawer, renderMobileNav } from "./components/mobileNav";
 import { renderSection } from "./components/uiPrimitives";
+import {
+  renderDrawer,
+  renderKPIBar,
+  renderPanel,
+  renderStatGrid,
+  renderStatTile
+} from "./components/dashboardPrimitives";
 const app = document.querySelector("#app");
 const SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "UAH", "PLN", "CZK"];
 const CURRENCY_STORAGE_KEY = "cs2sa:selected_currency";
 const PRICING_MODE_STORAGE_KEY = "cs2sa:pricing_mode";
+const DASHBOARD_DETAILS_STORAGE_KEY = "cs2sa:dashboard_details_open";
 const PRICING_MODE_LABELS = {
   steam: "Steam Price",
   best_sell_net: "Best Sell Net",
@@ -27,6 +35,7 @@ const PRICING_MODE_LABELS = {
 const SEARCH_RENDER_DEBOUNCE_MS = 120;
 const TOAST_MAX_VISIBLE = 4;
 const TOAST_DEFAULT_TIMEOUT_MS = 5000;
+const HISTORY_RANGE_OPTIONS = [7, 30, 90, 180];
 
 function normalizeCurrencyCode(value) {
   const code = String(value || "")
@@ -46,6 +55,22 @@ function normalizePricingMode(value) {
     return mode;
   }
   return "lowest_buy";
+}
+
+function readDashboardDetailsPreference() {
+  try {
+    return localStorage.getItem(DASHBOARD_DETAILS_STORAGE_KEY) === "1";
+  } catch (_err) {
+    return false;
+  }
+}
+
+function persistDashboardDetailsPreference(nextOpen) {
+  try {
+    localStorage.setItem(DASHBOARD_DETAILS_STORAGE_KEY, nextOpen ? "1" : "0");
+  } catch (_err) {
+    // Ignore storage write errors.
+  }
 }
 
 function createExitWhatIfState() {
@@ -126,6 +151,18 @@ const state = {
   pricingMode: normalizePricingMode(
     localStorage.getItem(PRICING_MODE_STORAGE_KEY) || "lowest_buy"
   ),
+  dashboardUi: {
+    detailsExpanded: readDashboardDetailsPreference()
+  },
+  compareDrawer: {
+    open: false,
+    focusPending: false,
+    loading: false,
+    error: "",
+    skinId: 0,
+    marketHashName: "",
+    payload: null
+  },
   compareExpandedBySkinId: {},
   compareRefreshing: false,
   txSubmitting: false,
@@ -211,9 +248,15 @@ let tabSwitchTicket = 0;
 let mobileDrawerLastFocusedElement = null;
 let avatarMenuLastFocusedElement = null;
 let inspectModalLastTriggerElement = null;
+let compareDrawerLastTriggerElement = null;
+let compareDrawerRequestTicket = 0;
 let txEditModalLastTriggerElement = null;
 let toastSequence = 0;
 const toastTimers = new Map();
+let historyChartCache = {
+  key: "",
+  markup: ""
+};
 const APP_TABS = [
   { id: "dashboard", label: "Dashboard", hint: "Performance" },
   { id: "portfolio", label: "Portfolio", hint: "Holdings" },
@@ -433,6 +476,7 @@ function getHeaderEmailLabel() {
 function syncBodyUiLocks() {
   document.body.classList.toggle("mobile-drawer-open", Boolean(state.mobileDrawer.open));
   document.body.classList.toggle("inspect-modal-open", Boolean(state.inspectModal.open));
+  document.body.classList.toggle("compare-drawer-open", Boolean(state.compareDrawer.open));
   document.body.classList.toggle("tx-edit-modal-open", Boolean(state.txEditModal.open));
 }
 
@@ -564,6 +608,60 @@ function trapInspectModalFocus(event) {
   }
 
   if (!event.shiftKey && (active === last || !modal.contains(active))) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function focusCompareDrawerIfNeeded() {
+  if (!state.compareDrawer.open || !state.compareDrawer.focusPending) return;
+
+  state.compareDrawer.focusPending = false;
+  const panel = document.querySelector("[data-compare-drawer-panel]");
+  if (!panel) return;
+
+  const preferredTarget =
+    panel.querySelector("[data-compare-drawer-close]") ||
+    panel.querySelector("button:not([disabled])") ||
+    panel.querySelector("a[href]");
+  if (preferredTarget instanceof HTMLElement) {
+    preferredTarget.focus();
+    return;
+  }
+
+  if (panel instanceof HTMLElement) {
+    panel.focus();
+  }
+}
+
+function trapCompareDrawerFocus(event) {
+  if (!state.compareDrawer.open || event.key !== "Tab") return;
+  const panel = document.querySelector("[data-compare-drawer-panel]");
+  if (!panel) return;
+
+  const focusable = Array.from(
+    panel.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )
+  ).filter((el) => el instanceof HTMLElement);
+
+  if (!focusable.length) {
+    event.preventDefault();
+    panel.focus();
+    return;
+  }
+
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+
+  if (event.shiftKey && (active === first || !panel.contains(active))) {
+    event.preventDefault();
+    last.focus();
+    return;
+  }
+
+  if (!event.shiftKey && (active === last || !panel.contains(active))) {
     event.preventDefault();
     first.focus();
   }
@@ -1514,6 +1612,165 @@ function buildComparisonItemsPayload(items = []) {
     .filter((row) => row.marketHashName);
 }
 
+function getHoldingBySkinId(rawSkinId) {
+  const skinId = Number(rawSkinId || 0);
+  if (!Number.isInteger(skinId) || skinId <= 0) return null;
+  const holdings = getHoldingsList();
+  return holdings.find((item) => Number(item.skinId || 0) === skinId) || null;
+}
+
+function buildCompareDrawerSnapshotFromHolding(holding, options = {}) {
+  if (!holding) return null;
+  const fallbackImage = isCaseLikeItem(holding) ? defaultCaseImage : defaultSkinImage;
+  const imageUrl = getItemImageUrl(holding) || fallbackImage;
+  const comparison = holding?.marketComparison || null;
+
+  return {
+    skinId: Number(holding.skinId || 0),
+    marketHashName: String(holding.marketHashName || options.marketHashName || "Tracked Item"),
+    quantity: Number(holding.quantity || 0),
+    imageUrl,
+    currency: holding.currency || state.portfolio?.currency || state.currency,
+    currentPrice: Number(holding.currentPrice || 0),
+    lineValue: Number(holding.lineValue || 0),
+    marketComparison: comparison,
+    fees: options.fees || state.portfolio?.pricing?.fees || null,
+    generatedAt: options.generatedAt || null
+  };
+}
+
+function closeCompareDrawer(options = {}) {
+  const { restoreFocus = true } = options;
+  if (!state.compareDrawer.open) return;
+  compareDrawerRequestTicket += 1;
+  state.compareDrawer.open = false;
+  state.compareDrawer.focusPending = false;
+  state.compareDrawer.loading = false;
+  state.compareDrawer.error = "";
+  render();
+
+  if (restoreFocus && compareDrawerLastTriggerElement) {
+    requestAnimationFrame(() => {
+      compareDrawerLastTriggerElement?.focus?.();
+    });
+  }
+  compareDrawerLastTriggerElement = null;
+}
+
+async function refreshCompareDrawerData(options = {}) {
+  const {
+    skinId: rawSkinId = state.compareDrawer.skinId,
+    forceRefresh = false,
+    notifyOnSuccess = false
+  } = options;
+  const skinId = Number(rawSkinId || 0);
+  if (!Number.isInteger(skinId) || skinId <= 0) return;
+  const holding = getHoldingBySkinId(skinId);
+  if (!holding) {
+    state.compareDrawer.error = "Item was not found in current holdings.";
+    state.compareDrawer.loading = false;
+    render();
+    return;
+  }
+
+  const payloadItems = buildComparisonItemsPayload([holding]);
+  if (!payloadItems.length) {
+    state.compareDrawer.error = "Market comparison payload is unavailable for this item.";
+    state.compareDrawer.loading = false;
+    render();
+    return;
+  }
+
+  const ticket = ++compareDrawerRequestTicket;
+  state.compareDrawer.loading = true;
+  state.compareDrawer.error = "";
+  render();
+
+  try {
+    const comparisonPayload = await api("/market/compare", {
+      method: "POST",
+      body: JSON.stringify({
+        items: payloadItems,
+        pricingMode: state.pricingMode,
+        forceRefresh: Boolean(forceRefresh),
+        allowLiveFetch: true,
+        currency: state.currency
+      })
+    });
+    if (ticket !== compareDrawerRequestTicket) return;
+    const comparisonRow =
+      (Array.isArray(comparisonPayload?.items) ? comparisonPayload.items : []).find(
+        (row) => Number(row?.skinId || 0) === skinId
+      ) || null;
+    if (!comparisonRow) {
+      throw new Error("No market comparison data returned for this item.");
+    }
+
+    const updatedHolding = getHoldingBySkinId(skinId) || holding;
+    if (updatedHolding) {
+      updatedHolding.marketComparison = {
+        perMarket: Array.isArray(comparisonRow.perMarket) ? comparisonRow.perMarket : [],
+        bestBuy: comparisonRow.bestBuy || null,
+        bestSellNet: comparisonRow.bestSellNet || null
+      };
+    }
+
+    const snapshot = buildCompareDrawerSnapshotFromHolding(updatedHolding || holding, {
+      fees: comparisonPayload?.fees || state.portfolio?.pricing?.fees || null,
+      generatedAt: comparisonPayload?.generatedAt || null
+    });
+    state.compareDrawer.payload = snapshot;
+    state.compareDrawer.marketHashName = snapshot?.marketHashName || state.compareDrawer.marketHashName;
+    if (notifyOnSuccess) {
+      notify("success", "Comparison data refreshed.");
+    }
+  } catch (err) {
+    if (ticket !== compareDrawerRequestTicket) return;
+    state.compareDrawer.error = err.message || "Failed to load comparison data.";
+    notify("error", state.compareDrawer.error, {
+      details: String(err?.stack || "").trim()
+    });
+  } finally {
+    if (ticket === compareDrawerRequestTicket) {
+      state.compareDrawer.loading = false;
+      render();
+    }
+  }
+}
+
+function openCompareDrawerBySkinId(rawSkinId, triggerElement = null) {
+  const skinId = Number(rawSkinId || 0);
+  if (!Number.isInteger(skinId) || skinId <= 0) return;
+  const holding = getHoldingBySkinId(skinId);
+  if (!holding) {
+    setError("Unable to open comparison: item not found.");
+    return;
+  }
+
+  if (triggerElement instanceof HTMLElement) {
+    compareDrawerLastTriggerElement = triggerElement;
+  }
+
+  state.compareDrawer.open = true;
+  state.compareDrawer.focusPending = true;
+  state.compareDrawer.loading = false;
+  state.compareDrawer.error = "";
+  state.compareDrawer.skinId = skinId;
+  state.compareDrawer.payload = buildCompareDrawerSnapshotFromHolding(holding);
+  state.compareDrawer.marketHashName = String(holding.marketHashName || `Skin #${skinId}`);
+  render();
+
+  const hasPerMarket = Boolean(
+    state.compareDrawer.payload?.marketComparison?.perMarket &&
+      Array.isArray(state.compareDrawer.payload.marketComparison.perMarket) &&
+      state.compareDrawer.payload.marketComparison.perMarket.length
+  );
+
+  if (!hasPerMarket) {
+    runUiTask(() => refreshCompareDrawerData({ skinId, forceRefresh: true }));
+  }
+}
+
 async function refreshVisibleMarketComparisons() {
   if (state.compareRefreshing) return;
 
@@ -1556,6 +1813,14 @@ async function handleTabSwitch(tab) {
       !state.teamDashboard.loading &&
       !state.teamDashboard.payload);
 
+  if (target !== "dashboard" && state.compareDrawer.open) {
+    state.compareDrawer.open = false;
+    state.compareDrawer.focusPending = false;
+    state.compareDrawer.loading = false;
+    state.compareDrawer.error = "";
+    compareDrawerRequestTicket += 1;
+  }
+
   state.activeTab = tab;
   state.tabSwitch.target = target;
   state.tabSwitch.loading = requiresLoad;
@@ -1586,6 +1851,9 @@ async function handleTabSwitch(tab) {
 function triggerInspectBySteamItemId(rawSteamItemId, triggerElement = null) {
   const steamItemId = String(rawSteamItemId || "").trim();
   if (!steamItemId) return;
+  if (state.compareDrawer.open) {
+    closeCompareDrawer({ restoreFocus: false });
+  }
   if (triggerElement instanceof HTMLElement) {
     inspectModalLastTriggerElement = triggerElement;
   }
@@ -1635,6 +1903,12 @@ function onAppClick(event) {
   if (target.matches("[data-inspect-modal-overlay]")) {
     event.preventDefault();
     closeInspectModal();
+    return;
+  }
+
+  if (target.matches("[data-compare-drawer-overlay]")) {
+    event.preventDefault();
+    closeCompareDrawer();
     return;
   }
 
@@ -1716,6 +1990,12 @@ function onAppClick(event) {
   if (button?.matches("[data-inspect-modal-close]")) {
     event.preventDefault();
     closeInspectModal();
+    return;
+  }
+
+  if (button?.matches("[data-compare-drawer-close]")) {
+    event.preventDefault();
+    closeCompareDrawer();
     return;
   }
 
@@ -1831,6 +2111,12 @@ function onAppClick(event) {
     return;
   }
 
+  if (button?.matches(".top-mover-compare-btn")) {
+    event.preventDefault();
+    openCompareDrawerBySkinId(button.getAttribute("data-skin-id"), button);
+    return;
+  }
+
   if (button?.matches(".compare-market-btn")) {
     event.preventDefault();
     const skinId = Number(button.getAttribute("data-skin-id") || 0);
@@ -1854,6 +2140,26 @@ function onAppClick(event) {
   if (button?.matches("#refresh-market-compare-btn")) {
     event.preventDefault();
     runUiTask(() => refreshVisibleMarketComparisons());
+    return;
+  }
+
+  if (button?.matches("#compare-drawer-refresh-btn")) {
+    event.preventDefault();
+    runUiTask(() =>
+      refreshCompareDrawerData({
+        skinId: state.compareDrawer.skinId,
+        forceRefresh: true,
+        notifyOnSuccess: true
+      })
+    );
+    return;
+  }
+
+  if (button?.matches("[data-dashboard-details-toggle]")) {
+    event.preventDefault();
+    state.dashboardUi.detailsExpanded = !state.dashboardUi.detailsExpanded;
+    persistDashboardDetailsPreference(state.dashboardUi.detailsExpanded);
+    render();
     return;
   }
 
@@ -1957,6 +2263,7 @@ function onAppClick(event) {
 function onAppKeydown(event) {
   trapMobileDrawerFocus(event);
   trapInspectModalFocus(event);
+  trapCompareDrawerFocus(event);
   trapTxEditModalFocus(event);
 
   if (event.key === "Escape" && state.inspectModal.open) {
@@ -1968,6 +2275,12 @@ function onAppKeydown(event) {
   if (event.key === "Escape" && state.txEditModal.open) {
     event.preventDefault();
     closeTxEditModal();
+    return;
+  }
+
+  if (event.key === "Escape" && state.compareDrawer.open) {
+    event.preventDefault();
+    closeCompareDrawer();
     return;
   }
 
@@ -2322,6 +2635,15 @@ async function logout() {
   state.inspectModal.skin = null;
   state.inspectModal.marketInsight = null;
   state.inspectModal.exitWhatIf = createExitWhatIfState();
+  state.compareDrawer = {
+    open: false,
+    focusPending: false,
+    loading: false,
+    error: "",
+    skinId: 0,
+    marketHashName: "",
+    payload: null
+  };
   state.tabSwitch.loading = false;
   state.tabSwitch.target = "";
   state.mobileDrawer.open = false;
@@ -2359,6 +2681,8 @@ async function logout() {
   state.teamDashboard.payload = null;
   state.authNotice.emailConfirmToastShown = false;
   inspectModalLastTriggerElement = null;
+  compareDrawerLastTriggerElement = null;
+  compareDrawerRequestTicket += 1;
   txEditModalLastTriggerElement = null;
   render();
 }
@@ -2535,6 +2859,24 @@ async function refreshPortfolio(options = {}) {
     for (const skinId of Object.keys(state.compareExpandedBySkinId || {})) {
       if (!liveSkinIds.has(Number(skinId))) {
         delete state.compareExpandedBySkinId[skinId];
+      }
+    }
+    if (state.compareDrawer.skinId && !liveSkinIds.has(Number(state.compareDrawer.skinId))) {
+      state.compareDrawer.open = false;
+      state.compareDrawer.focusPending = false;
+      state.compareDrawer.loading = false;
+      state.compareDrawer.error = "";
+      state.compareDrawer.skinId = 0;
+      state.compareDrawer.marketHashName = "";
+      state.compareDrawer.payload = null;
+      compareDrawerRequestTicket += 1;
+    } else if (state.compareDrawer.skinId) {
+      const liveHolding = getHoldingBySkinId(state.compareDrawer.skinId);
+      if (liveHolding) {
+        state.compareDrawer.payload = buildCompareDrawerSnapshotFromHolding(liveHolding, {
+          fees: state.compareDrawer.payload?.fees || state.portfolio?.pricing?.fees || null,
+          generatedAt: state.compareDrawer.payload?.generatedAt || null
+        });
       }
     }
 
@@ -3703,10 +4045,13 @@ function renderPortfolioPricingControls() {
       <button
         type="button"
         id="refresh-market-compare-btn"
-        class="ghost-btn"
+        class="ghost-btn compare-refresh-btn"
         ${state.compareRefreshing ? "disabled" : ""}
       >
-        ${state.compareRefreshing ? "Refreshing..." : "Refresh Market Prices"}
+        <span class="btn-inline-status">
+          <span class="spinner ${state.compareRefreshing ? "" : "is-hidden"}" aria-hidden="true"></span>
+          <span>Refresh Market Prices</span>
+        </span>
       </button>
     </div>
     <p class="helper-text market-fee-note" title="Net sell value subtracts marketplace fees before comparing venues.">
@@ -3789,6 +4134,150 @@ function renderMarketComparisonPanel(item) {
       </div>
     </div>
   `;
+}
+
+function renderCompareDrawerBody() {
+  const drawer = state.compareDrawer;
+  const payload = drawer.payload;
+  if (!payload && drawer.loading) {
+    return `
+      <div class="compare-drawer-skeleton" aria-hidden="true">
+        <div class="compare-drawer-skeleton-head"></div>
+        <div class="compare-drawer-skeleton-row"></div>
+        <div class="compare-drawer-skeleton-row"></div>
+        <div class="compare-drawer-skeleton-row"></div>
+      </div>
+    `;
+  }
+
+  if (!payload) {
+    return `<p class="muted">Select a mover and open compare to inspect multi-market pricing.</p>`;
+  }
+
+  const comparison = payload.marketComparison || null;
+  const perMarket = Array.isArray(comparison?.perMarket) ? comparison.perMarket : [];
+  const bestBuy = comparison?.bestBuy
+    ? `${formatMarketSourceLabel(comparison.bestBuy.source)} ${formatMoney(
+        comparison.bestBuy.grossPrice,
+        payload.currency || state.currency
+      )}`
+    : "N/A";
+  const bestSell = comparison?.bestSellNet
+    ? `${formatMarketSourceLabel(comparison.bestSellNet.source)} ${formatMoney(
+        comparison.bestSellNet.netPriceAfterFees,
+        payload.currency || state.currency
+      )}`
+    : "N/A";
+
+  const marketRows = perMarket.length
+    ? perMarket
+        .map((row) => {
+          const available = Boolean(row?.available);
+          return `
+            <article class="compare-drawer-market-card ${available ? "" : "unavailable"}">
+              <div class="compare-drawer-market-head">
+                <strong>${escapeHtml(formatMarketSourceLabel(row?.source))}</strong>
+                <small>${escapeHtml(available ? formatRelativeTime(row?.updatedAt) : "No data")}</small>
+              </div>
+              ${
+                !available && row?.unavailableReason
+                  ? `<p class="muted">${escapeHtml(String(row.unavailableReason))}</p>`
+                  : ""
+              }
+              <p>Best Buy <strong>${available ? formatMoney(row?.grossPrice, row?.currency || state.currency) : "-"}</strong></p>
+              <p>Best Sell Net <strong>${
+                available ? formatMoney(row?.netPriceAfterFees, row?.currency || state.currency) : "-"
+              }</strong></p>
+              ${
+                row?.url
+                  ? `<a class="link-btn ghost market-open-link" href="${escapeHtml(
+                      row.url
+                    )}" target="_blank" rel="noreferrer">Open listing</a>`
+                  : '<span class="muted">No listing link</span>'
+              }
+            </article>
+          `;
+        })
+        .join("")
+    : '<p class="muted">Market comparison data is unavailable for this item.</p>';
+
+  const fees = payload.fees || {};
+  const feeRows = ["steam", "skinport", "csfloat", "dmarket"]
+    .filter((source) => Number.isFinite(Number(fees[source])))
+    .map(
+      (source) =>
+        `<li><span>${escapeHtml(formatMarketSourceLabel(source))}</span><strong>${escapeHtml(
+          `${formatNumber(fees[source], 2)}%`
+        )}</strong></li>`
+    )
+    .join("");
+
+  return `
+    <div class="compare-drawer-item-head">
+      <img src="${escapeHtml(payload.imageUrl)}" alt="${escapeHtml(payload.marketHashName)}" loading="lazy" />
+      <div>
+        <p class="compare-drawer-item-name">${escapeHtml(payload.marketHashName)}</p>
+        <small class="muted">Qty ${escapeHtml(formatNumber(payload.quantity, 0))} | Position ${formatMoney(
+    payload.lineValue,
+    payload.currency || state.currency
+  )}</small>
+      </div>
+    </div>
+    <div class="compare-drawer-summary">
+      <p>Best Buy <strong>${bestBuy}</strong></p>
+      <p>Best Sell Net <strong>${bestSell}</strong></p>
+      ${
+        payload.generatedAt
+          ? `<small class="muted">Snapshot ${escapeHtml(formatRelativeTime(payload.generatedAt))}</small>`
+          : ""
+      }
+    </div>
+    <div class="compare-drawer-market-grid">
+      ${marketRows}
+    </div>
+    ${
+      feeRows
+        ? `
+      <div class="compare-drawer-fees">
+        <h4>Fees</h4>
+        <ul>${feeRows}</ul>
+      </div>
+    `
+        : ""
+    }
+    ${
+      drawer.error
+        ? `<p class="muted compare-drawer-error" role="status" aria-live="polite">${escapeHtml(drawer.error)}</p>`
+        : ""
+    }
+  `;
+}
+
+function renderCompareDrawerOverlay() {
+  const drawer = state.compareDrawer;
+  const footerMarkup = `
+    <button
+      type="button"
+      class="ghost-btn compare-drawer-refresh-btn"
+      id="compare-drawer-refresh-btn"
+      ${drawer.loading ? "disabled" : ""}
+    >
+      ${drawer.loading ? "Refreshing..." : "Refresh prices"}
+    </button>
+  `;
+
+  return renderDrawer({
+    open: Boolean(drawer.open),
+    title: drawer.marketHashName || "Market Comparison",
+    subtitle: "Multi-market pricing and fee-adjusted sell opportunities",
+    bodyMarkup: renderCompareDrawerBody(),
+    footerMarkup,
+    closeAttr: 'data-compare-drawer-close="1"',
+    label: "Compare markets",
+    rootClassName: "compare-drawer-root",
+    overlayAttr: 'data-compare-drawer-overlay="1"',
+    panelAttr: 'data-compare-drawer-panel="1"'
+  });
 }
 
 function renderPortfolioMobileList() {
@@ -4175,7 +4664,19 @@ function renderHistoryChart() {
     .filter((point) => point.date && Number.isFinite(point.value));
 
   if (!points.length) {
-    return `<p class="empty-state">No history yet. Sync inventory to create data points.</p>`;
+    return `
+      <div class="chart-empty-shell" role="status" aria-live="polite">
+        <p class="empty-state">No history yet. Sync inventory to create data points.</p>
+      </div>
+    `;
+  }
+
+  const currencyCode = state.portfolio?.currency || state.currency;
+  const cacheKey = `${state.historyDays}|${currencyCode}|${points
+    .map((point) => `${point.date}:${point.value.toFixed(4)}`)
+    .join("|")}`;
+  if (historyChartCache.key === cacheKey) {
+    return historyChartCache.markup;
   }
 
   const values = points.map((point) => point.value);
@@ -4185,12 +4686,11 @@ function renderHistoryChart() {
   const last = Number(values[values.length - 1] || 0);
   const change = last - first;
   const trendClass = change >= 0 ? "up" : "down";
-  const ranges = [7, 30, 90, 180];
-  const currencyCode = state.portfolio?.currency || state.currency;
+  const trendPercent = first > 0 ? (change / first) * 100 : null;
 
   const viewWidth = 920;
-  const viewHeight = 280;
-  const padX = 52;
+  const viewHeight = 236;
+  const padX = 50;
   const padY = 24;
   const plotWidth = viewWidth - padX * 2;
   const plotHeight = viewHeight - padY * 2;
@@ -4229,8 +4729,6 @@ function renderHistoryChart() {
     (tick, index, list) =>
       list.findIndex((candidate) => candidate.label === tick.label) === index
   );
-  const dashboardSevenDay = Number(state.portfolio?.sevenDayChangePercent || 0);
-  const dashboardSevenDayClass = dashboardSevenDay >= 0 ? "up" : "down";
   const hoverDots = coords
     .map(
       (coord, index) => `
@@ -4246,11 +4744,27 @@ function renderHistoryChart() {
       `
     )
     .join("");
+  const hotspotDots = coords
+    .map((coord, index) => {
+      const left = (coord.x / viewWidth) * 100;
+      const top = (coord.y / viewHeight) * 100;
+      return `
+        <span class="value-chart-hotspot" style="left:${left.toFixed(2)}%;top:${top.toFixed(2)}%;">
+          <span class="value-chart-hotspot-tooltip">
+            <strong>${escapeHtml(points[index].date)}</strong>
+            <small>${escapeHtml(formatMoney(points[index].value, currencyCode))}</small>
+          </span>
+        </span>
+      `;
+    })
+    .join("");
 
-  return `
-    <div class="history-toolbar">
-      <div class="history-range">
-        ${ranges
+  const markup = `
+    <div class="history-toolbar history-toolbar-terminal">
+      <div class="history-toolbar-left">
+        <h3>${state.historyDays === 180 ? "6-Month Performance" : `${state.historyDays}-Day Performance`}</h3>
+        <div class="history-range">
+          ${HISTORY_RANGE_OPTIONS
           .map(
             (d) => `
             <button
@@ -4263,22 +4777,18 @@ function renderHistoryChart() {
           `
           )
           .join("")}
+        </div>
       </div>
-      <div class="history-summary ${trendClass}">
-        <span>Range change</span>
-        <strong>${formatSignedMoney(change, currencyCode)} (${formatPercent(
-    first > 0 ? (change / first) * 100 : null
-  )})</strong>
+      <div class="history-toolbar-right">
+        <div class="history-summary ${trendClass}">
+          <span>Range change</span>
+          <strong>${formatSignedMoney(change, currencyCode)} (${formatPercent(trendPercent)})</strong>
+        </div>
+        <div class="history-summary">
+          <span>Min/Max</span>
+          <strong>${formatMoney(min, currencyCode)} - ${formatMoney(max, currencyCode)}</strong>
+        </div>
       </div>
-      <div class="history-summary">
-        <span>Min/Max</span>
-        <strong>${formatMoney(min, currencyCode)} - ${formatMoney(max, currencyCode)}</strong>
-      </div>
-    </div>
-    <div class="chart-link-pill ${dashboardSevenDayClass}">
-      <span>7D KPI Link</span>
-      <strong>${formatPercent(dashboardSevenDay)}</strong>
-      <small>Performance chart and top KPI are synchronized.</small>
     </div>
     <div class="performance-chart-shell">
       <svg class="value-chart performance-chart" viewBox="0 0 ${viewWidth} ${viewHeight}" role="img" aria-label="Portfolio value performance chart">
@@ -4317,14 +4827,112 @@ function renderHistoryChart() {
           )
           .join("")}
       </svg>
+      <div class="value-chart-hotspots" aria-hidden="true">
+        ${hotspotDots}
+      </div>
       <div class="value-chart-meta">
         <span>Points: <strong>${points.length}</strong></span>
         <span>Latest: <strong>${formatMoney(last, currencyCode)}</strong></span>
         <span>Peak: <strong>${formatMoney(max, currencyCode)}</strong></span>
         <span>Floor: <strong>${formatMoney(min, currencyCode)}</strong></span>
-        <span class="${trendClass}">Momentum: <strong>${formatPercent(
-    first > 0 ? (change / first) * 100 : null
-  )}</strong></span>
+        <span class="${trendClass}">Momentum: <strong>${formatPercent(trendPercent)}</strong></span>
+      </div>
+    </div>
+  `;
+  historyChartCache = {
+    key: cacheKey,
+    markup
+  };
+  return markup;
+}
+
+function renderDashboardKpiBar() {
+  const portfolio = state.portfolio || {};
+  const currencyCode = portfolio.currency || state.currency;
+  const signal = buildPortfolioSignals();
+  const pricingModeLabel = getPricingModeLabel(portfolio?.pricing?.mode || state.pricingMode);
+  const totalValue = Number(portfolio.totalValue || 0);
+  const sevenDay = Number(portfolio.sevenDayChangePercent || 0);
+  const unrealized = Number(portfolio.unrealizedProfit || 0);
+  const readyCount = Math.max(
+    Number(signal.holdingsCount || 0) - Number(signal.unpricedItems || 0) - Number(signal.staleItems || 0),
+    0
+  );
+  const refreshMarker = state.syncSummary?.syncedAt || portfolio?.updatedAt || portfolio?.generatedAt || "";
+  const refreshTone = state.portfolioLoading || state.syncingInventory ? "warning" : "neutral";
+  const refreshText = state.syncingInventory
+    ? "Syncing inventory..."
+    : state.portfolioLoading
+      ? "Refreshing snapshot..."
+      : refreshMarker
+        ? `Updated ${formatRelativeTime(refreshMarker)}`
+        : "Live snapshot";
+
+  const currencyOptions = SUPPORTED_CURRENCIES.map(
+    (code) => `<option value="${code}" ${code === state.currency ? "selected" : ""}>${code}</option>`
+  ).join("");
+
+  const controls = `
+    <span class="kpi-readiness-badge" title="Priced and fresh positions">
+      Portfolio Readiness <strong>${readyCount}/${Number(signal.holdingsCount || 0)}</strong>
+    </span>
+    <label class="currency-picker kpi-currency-picker">
+      Currency
+      <select id="currency-select">${currencyOptions}</select>
+    </label>
+  `;
+
+  return `
+    <section class="grid">
+      <div class="dashboard-kpi-anchor">
+        ${renderKPIBar({
+          className: "dashboard-kpi-sticky",
+          status: `
+            <span class="kpi-refresh-dot tone-${escapeHtml(refreshTone)}" aria-hidden="true"></span>
+            <span>${escapeHtml(refreshText)}</span>
+          `,
+          controls,
+          items: [
+            {
+              label: "Pricing Mode",
+              value: escapeHtml(pricingModeLabel),
+              tone: "neutral"
+            },
+            {
+              label: "Total Portfolio Value",
+              value: formatMoney(totalValue, currencyCode),
+              tone: "neutral",
+              primary: true
+            },
+            {
+              label: "7D Change",
+              value: formatPercent(sevenDay),
+              tone: sevenDay >= 0 ? "positive" : "negative"
+            },
+            {
+              label: "Unrealized P/L",
+              value: formatSignedMoney(unrealized, currencyCode),
+              tone: unrealized >= 0 ? "positive" : "negative"
+            }
+          ]
+        })}
+      </div>
+    </section>
+  `;
+}
+
+function renderDashboardChartSkeleton() {
+  return `
+    <div class="chart-skeleton-shell" aria-hidden="true">
+      <div class="chart-skeleton-toolbar">
+        <span></span>
+        <span></span>
+      </div>
+      <div class="chart-skeleton-plot"></div>
+      <div class="chart-skeleton-meta">
+        <span></span>
+        <span></span>
+        <span></span>
       </div>
     </div>
   `;
@@ -4333,101 +4941,54 @@ function renderHistoryChart() {
 function renderDashboardHero() {
   const portfolio = state.portfolio || {};
   const pricingModeLabel = getPricingModeLabel(portfolio?.pricing?.mode || state.pricingMode);
-  const currencyCode = portfolio.currency || state.currency;
-  const totalValue = Number(portfolio.totalValue || 0);
-  const sevenDay = Number(portfolio.sevenDayChangePercent || 0);
-  const oneDay = Number(portfolio.oneDayChangePercent || 0);
-  const roi = Number(portfolio.roiPercent || 0);
-  const sevenDayClass = sevenDay >= 0 ? "up" : "down";
-  const oneDayClass = oneDay >= 0 ? "up" : "down";
-  const signal = buildPortfolioSignals();
+  const infoTooltipId = "dashboard-hero-info-tip";
+  const infoOpen = state.tooltip.openId === infoTooltipId;
 
   return `
     <section class="grid">
-      <article class="panel wide hero-panel">
-        <div class="hero-shell">
-          <div>
-            <p class="eyebrow">CS2 Trading Command</p>
-            <h1>Portfolio Performance Center</h1>
-            <p class="hero-copy">
-              High-signal view of value, momentum, liquidity quality, and concentration risk.
-              Built to keep decision latency low during volatile market windows.
-            </p>
-            <div class="hero-actions">
-              <button type="button" class="tab-jump-btn btn-primary" data-tab-target="portfolio">Open Holdings</button>
-              <button type="button" class="ghost-btn tab-jump-btn btn-secondary" data-tab-target="alerts">Open Alerts</button>
-              <button type="button" class="ghost-btn tab-jump-btn btn-tertiary" data-tab-target="trades">Open Transactions</button>
-            </div>
-          </div>
-          <div class="hero-metric-stack">
-            <article class="hero-metric metric-glow">
-              <span>${escapeHtml(pricingModeLabel)} Portfolio Value</span>
-              <strong
-                class="metric-number"
-                data-count-key="hero-total-value"
-                data-count-format="money"
-                data-count-currency="${escapeHtml(currencyCode)}"
-                data-count-to="${totalValue}"
-              >
-                ${formatMoney(totalValue, currencyCode)}
-              </strong>
-            </article>
-            <article class="hero-metric hero-performance ${sevenDayClass}">
-              <span>7D Performance</span>
-              <strong
-                class="metric-number"
-                data-count-key="hero-seven-day"
-                data-count-format="percent"
-                data-count-to="${sevenDay}"
-              >
-                ${formatPercent(sevenDay)}
-              </strong>
-              <small>
-                24H:
-                <span class="pnl-text ${oneDayClass}">
-                  ${formatPercent(oneDay)}
+      ${renderPanel({
+        wide: true,
+        className: "hero-panel dashboard-hero-panel",
+        body: `
+          <div class="dashboard-hero-compact">
+            <div class="dashboard-hero-copy">
+              <p class="eyebrow">Decision Center</p>
+              <div class="dashboard-hero-title-row">
+                <h1>Trading Terminal Dashboard</h1>
+                <span class="tooltip-wrap" data-tooltip-wrap>
+                  <button
+                    type="button"
+                    class="tooltip-toggle"
+                    data-tooltip-toggle="${escapeHtml(infoTooltipId)}"
+                    aria-label="Show dashboard context"
+                    aria-describedby="${escapeHtml(infoTooltipId)}"
+                    aria-expanded="${infoOpen ? "true" : "false"}"
+                  >
+                    i
+                  </button>
+                  <span
+                    id="${escapeHtml(infoTooltipId)}"
+                    role="tooltip"
+                    class="tooltip-bubble ${infoOpen ? "open" : ""}"
+                  >
+                    <strong>Dashboard intent</strong>
+                    <small>Primary KPIs stay fixed while analytics remain collapsible.</small>
+                    <small>Current valuation mode: ${escapeHtml(pricingModeLabel)}</small>
+                  </span>
                 </span>
-                | ROI:
-                <span class="pnl-text ${roi >= 0 ? "up" : "down"}">${formatPercent(roi)}</span>
-              </small>
-            </article>
-            <div class="hero-stat-grid">
-              <article class="hero-stat">
-                <span>Liquidity</span>
-                <strong
-                  class="metric-number"
-                  data-count-key="hero-liquidity-score"
-                  data-count-format="integer"
-                  data-count-to="${Number(signal.liquidityScore || 0)}"
-                >
-                  ${signal.liquidityScore == null ? "-" : signal.liquidityScore}
-                </strong>
-                <small>/100</small>
-              </article>
-              <article class="hero-stat">
-                <span>Risk</span>
-                <strong
-                  class="metric-number"
-                  data-count-key="hero-risk-score"
-                  data-count-format="integer"
-                  data-count-to="${Number(signal.riskScore || 0)}"
-                >
-                  ${signal.riskScore}
-                </strong>
-                <small>/100</small>
-              </article>
-              <article class="hero-stat">
-                <span>Unpriced</span>
-                <strong>${signal.unpricedItems}</strong>
-              </article>
-              <article class="hero-stat">
-                <span>Stale</span>
-                <strong>${signal.staleItems}</strong>
-              </article>
+              </div>
+              <p class="hero-copy compact">
+                Compact command surface for rapid decisions with deep metrics available on demand.
+              </p>
+            </div>
+            <div class="dashboard-hero-actions">
+              <button type="button" class="tab-jump-btn btn-primary" data-tab-target="portfolio">Open Portfolio</button>
+              <button type="button" class="ghost-btn tab-jump-btn btn-secondary" data-tab-target="alerts">Alerts</button>
+              <button type="button" class="ghost-btn tab-jump-btn btn-tertiary" data-tab-target="trades">Transactions</button>
             </div>
           </div>
-        </div>
-      </article>
+        `
+      })}
     </section>
   `;
 }
@@ -5435,23 +5996,6 @@ function renderAnalytics() {
   const topGainer = analytics?.leaders?.topGainer || null;
   const topLoser = analytics?.leaders?.topLoser || null;
   const holdings = getHoldingsList();
-  const breadth = analytics?.breadth || {};
-  const signal = buildPortfolioSignals();
-  const liquidityScore = signal.liquidityScore == null ? 0 : signal.liquidityScore;
-  const liquidityLabel =
-    signal.liquidityBand === "high"
-      ? "High Liquidity"
-      : signal.liquidityBand === "medium"
-        ? "Medium Liquidity"
-        : signal.liquidityBand === "low"
-          ? "Low Liquidity"
-          : "No Data";
-  const riskLabel =
-    signal.riskBand === "high"
-      ? "Elevated Risk"
-      : signal.riskBand === "medium"
-        ? "Balanced Risk"
-        : "Controlled Risk";
   const resolveMover = (mover) => {
     if (!mover) return null;
     const skinId = Number(mover.skinId || mover.id || 0);
@@ -5462,6 +6006,7 @@ function renderAnalytics() {
       skinId,
       name: mover.marketHashName || holding?.marketHashName || `Skin #${skinId}`,
       change: mover.sevenDayChangePercent,
+      price: Number(holding?.currentPrice || mover.currentPrice || 0),
       lineValue: mover.lineValue,
       imageUrl,
       inspectId
@@ -5469,140 +6014,204 @@ function renderAnalytics() {
   };
   const gainer = resolveMover(topGainer);
   const loser = resolveMover(topLoser);
+  const currencyCode = state.portfolio?.currency || state.currency;
+  const buildMoverCard = (mover, label, trendClass) => {
+    if (!mover) {
+      return `
+        <article class="mover-card ${trendClass}">
+          <span>${escapeHtml(label)}</span>
+          <div class="mover-head">
+            <div class="mover-thumb placeholder" aria-hidden="true"></div>
+            <strong>N/A</strong>
+          </div>
+          <p>-</p>
+          <small>No mover data in selected range.</small>
+        </article>
+      `;
+    }
+
+    return `
+      <article class="mover-card ${trendClass}">
+        <span>${escapeHtml(label)}</span>
+        <div class="mover-head">
+          <img src="${escapeHtml(mover.imageUrl)}" alt="${escapeHtml(mover.name)}" loading="lazy" />
+          <strong>${escapeHtml(mover.name)}</strong>
+        </div>
+        <p>${escapeHtml(formatPercent(mover.change))}</p>
+        <small>
+          Price ${formatMoney(mover.price, currencyCode)} | Position ${formatMoney(mover.lineValue, currencyCode)}
+        </small>
+        <div class="row mover-actions">
+          <button type="button" class="inspect-skin-btn btn-primary" data-steam-item-id="${escapeHtml(
+            mover.inspectId
+          )}" ${mover.inspectId ? "" : "disabled"}>Inspect</button>
+          <button
+            type="button"
+            class="ghost-btn top-mover-compare-btn btn-secondary"
+            data-skin-id="${mover.skinId}"
+          >
+            Compare
+          </button>
+        </div>
+      </article>
+    `;
+  };
+  const chartBody =
+    state.portfolioLoading && !state.history.length
+      ? renderDashboardChartSkeleton()
+      : renderHistoryChart();
+
+  return `
+    <section class="grid dashboard-operations-grid">
+      ${renderPanel({
+        className: "dashboard-chart-panel",
+        body: chartBody
+      })}
+      ${renderPanel({
+        className: "dashboard-movers-panel",
+        title: "Top Movers",
+        subtitle: "Actionable gainers and losers in the selected range.",
+        body: `
+          <div class="movers-grid">
+            ${buildMoverCard(gainer, "Top Gainer", "up")}
+            ${buildMoverCard(loser, "Top Loser", "down")}
+          </div>
+        `
+      })}
+    </section>
+  `;
+}
+
+function renderDashboardDeepAnalytics() {
+  const analytics = state.portfolio?.analytics;
+  if (!analytics) return "";
+
+  const detailsOpen = Boolean(state.dashboardUi.detailsExpanded);
+  const signal = buildPortfolioSignals();
+  const breadth = analytics?.breadth || {};
+  const unpricedItems = Number(signal.unpricedItems || 0);
+  const staleItems = Number(signal.staleItems || 0);
+  const allFresh = unpricedItems === 0 && staleItems === 0;
+
+  const healthTiles = [
+    renderStatTile({
+      label: "Liquidity",
+      value: signal.liquidityScore == null ? "-" : `${Number(signal.liquidityScore)}/100`,
+      hint: "Fresh and priced coverage",
+      tone: signal.liquidityBand === "low" ? "negative" : signal.liquidityBand === "medium" ? "warning" : "positive"
+    }),
+    renderStatTile({
+      label: "Risk",
+      value: `${Number(signal.riskScore || 0)}/100`,
+      hint: `Concentration ${toTitle(analytics.concentrationRisk || "unknown")}`,
+      tone: signal.riskBand === "high" ? "negative" : signal.riskBand === "medium" ? "warning" : "positive"
+    })
+  ];
+  if (!allFresh) {
+    healthTiles.push(
+      renderStatTile({
+        label: "Unpriced",
+        value: escapeHtml(formatNumber(unpricedItems, 0)),
+        hint: "Missing valuation source",
+        tone: unpricedItems > 0 ? "warning" : "neutral"
+      }),
+      renderStatTile({
+        label: "Stale",
+        value: escapeHtml(formatNumber(staleItems, 0)),
+        hint: "Older than freshness threshold",
+        tone: staleItems > 0 ? "warning" : "neutral"
+      })
+    );
+  }
+
+  const structureTiles = [
+    renderStatTile({
+      label: "Holdings",
+      value: escapeHtml(formatNumber(analytics.holdingsCount, 0)),
+      hint: "Open positions",
+      tone: "neutral"
+    }),
+    renderStatTile({
+      label: "Top 1 Weight",
+      value: escapeHtml(formatPercent(analytics.concentrationTop1Percent)),
+      hint: "Single-position concentration",
+      tone: "neutral"
+    }),
+    renderStatTile({
+      label: "Top 3 Weight",
+      value: escapeHtml(formatPercent(analytics.concentrationTop3Percent)),
+      hint: "Cluster concentration",
+      tone: "neutral"
+    }),
+    renderStatTile({
+      label: "Effective Holdings",
+      value: escapeHtml(formatNumber(analytics.effectiveHoldings)),
+      hint: "Diversification footprint",
+      tone: "neutral"
+    }),
+    renderStatTile({
+      label: "Weighted 7D Move",
+      value: escapeHtml(formatPercent(analytics.weightedAverageMove7dPercent)),
+      hint: "Portfolio-level momentum",
+      tone: Number(analytics.weightedAverageMove7dPercent || 0) >= 0 ? "positive" : "negative"
+    }),
+    renderStatTile({
+      label: "Breadth",
+      value: escapeHtml(formatPercent(breadth.advancerRatioPercent)),
+      hint: "Advancers ratio",
+      tone: Number(breadth.advancerRatioPercent || 0) >= 50 ? "positive" : "warning"
+    })
+  ];
+
+  const detailPanels = detailsOpen
+    ? `
+      ${renderPnlSummary()}
+      ${renderManagementSummary()}
+      ${renderAdvancedAnalytics()}
+      ${renderBacktestPanel()}
+    `
+    : "";
 
   return `
     <section class="grid">
-      <article class="panel">
-        <h2>Top Movers</h2>
-        <div class="movers-grid">
-          ${
-            gainer
-              ? `
-            <div class="mover-card up">
-              <span>Top Gainer</span>
-              <div class="mover-head">
-                <img src="${escapeHtml(gainer.imageUrl)}" alt="${escapeHtml(gainer.name)}" loading="lazy" />
-                <strong>${escapeHtml(gainer.name)}</strong>
-              </div>
-              <p>${escapeHtml(formatPercent(gainer.change))}</p>
-              <small>${formatMoney(gainer.lineValue, state.portfolio?.currency || state.currency)}</small>
-              <div class="row mover-actions">
-                <button type="button" class="ghost-btn inspect-skin-btn btn-secondary" data-steam-item-id="${escapeHtml(
-                  gainer.inspectId
-                )}" ${gainer.inspectId ? "" : "disabled"}>Inspect</button>
-                <button type="button" class="ghost-btn compare-market-btn btn-tertiary" data-skin-id="${gainer.skinId}">Compare</button>
-              </div>
-            </div>
-          `
-              : `
-            <div class="mover-card up">
-              <span>Top Gainer</span>
-              <strong>N/A</strong>
-              <p>-</p>
-            </div>
-          `
-          }
-          ${
-            loser
-              ? `
-            <div class="mover-card down">
-              <span>Top Loser</span>
-              <div class="mover-head">
-                <img src="${escapeHtml(loser.imageUrl)}" alt="${escapeHtml(loser.name)}" loading="lazy" />
-                <strong>${escapeHtml(loser.name)}</strong>
-              </div>
-              <p>${escapeHtml(formatPercent(loser.change))}</p>
-              <small>${formatMoney(loser.lineValue, state.portfolio?.currency || state.currency)}</small>
-              <div class="row mover-actions">
-                <button type="button" class="ghost-btn inspect-skin-btn btn-secondary" data-steam-item-id="${escapeHtml(
-                  loser.inspectId
-                )}" ${loser.inspectId ? "" : "disabled"}>Inspect</button>
-                <button type="button" class="ghost-btn compare-market-btn btn-tertiary" data-skin-id="${loser.skinId}">Compare</button>
-              </div>
-            </div>
-          `
-              : `
-            <div class="mover-card down">
-              <span>Top Loser</span>
-              <strong>N/A</strong>
-              <p>-</p>
-            </div>
-          `
-          }
-        </div>
-      </article>
-      <article class="panel">
-        <h2>Liquidity Score</h2>
-        <div class="signal-score ${escapeHtml(signal.liquidityBand)}">
-          <strong
-            class="metric-number"
-            data-count-key="liquidity-score"
-            data-count-format="integer"
-            data-count-to="${liquidityScore}"
+      ${renderPanel({
+        wide: true,
+        className: "dashboard-deep-panel",
+        title: "Deep Analytics",
+        subtitle: "Liquidity, risk, structure, and advanced diagnostics.",
+        actions: `
+          <button
+            type="button"
+            class="ghost-btn dashboard-details-toggle"
+            data-dashboard-details-toggle="1"
+            aria-expanded="${detailsOpen ? "true" : "false"}"
           >
-            ${liquidityScore}
-          </strong>
-          <span>/100</span>
-        </div>
-        <p class="helper-text">${escapeHtml(liquidityLabel)} based on priced inventory freshness.</p>
-        <p class="muted">
-          Ready: ${signal.holdingsCount - signal.staleItems - signal.unpricedItems} /
-          ${signal.holdingsCount} items
-        </p>
-      </article>
-      <article class="panel">
-        <h2>Risk Score</h2>
-        <div class="signal-score ${escapeHtml(signal.riskBand)}">
-          <strong
-            class="metric-number"
-            data-count-key="risk-score"
-            data-count-format="integer"
-            data-count-to="${signal.riskScore}"
-          >
-            ${signal.riskScore}
-          </strong>
-          <span>/100</span>
-        </div>
-        <p class="helper-text">${escapeHtml(riskLabel)} from concentration and breadth pressure.</p>
-        <p class="muted">
-          Concentration ${formatRiskBadge(analytics.concentrationRisk)} |
-          Breadth ${escapeHtml(formatPercent(breadth.advancerRatioPercent))}
-        </p>
-      </article>
-      <article class="panel">
-        <h2>Portfolio Structure</h2>
-        <div class="analytics-grid">
-          <div class="analytics-item">
-            <span>Holdings</span>
-            <strong>${escapeHtml(formatNumber(analytics.holdingsCount, 0))}</strong>
+            ${detailsOpen ? "Hide details" : "Show details"}
+          </button>
+        `,
+        body: `
+          <div class="dashboard-deep-summary">
+            ${renderStatGrid({
+              className: "dashboard-health-grid",
+              tiles: healthTiles
+            })}
+            ${
+              allFresh
+                ? '<span class="status-badge real dashboard-fresh-badge">All priced / Fresh</span>'
+                : ""
+            }
           </div>
-          <div class="analytics-item">
-            <span>Top 1 Weight</span>
-            <strong>${escapeHtml(formatPercent(analytics.concentrationTop1Percent))}</strong>
+          <div class="dashboard-deep-content ${detailsOpen ? "open" : ""}" ${detailsOpen ? "" : "hidden"}>
+            <h3>Portfolio Structure</h3>
+            ${renderStatGrid({
+              className: "dashboard-structure-grid",
+              tiles: structureTiles
+            })}
           </div>
-          <div class="analytics-item">
-            <span>Top 3 Weight</span>
-            <strong>${escapeHtml(formatPercent(analytics.concentrationTop3Percent))}</strong>
-          </div>
-          <div class="analytics-item">
-            <span>Effective Holdings</span>
-            <strong>${escapeHtml(formatNumber(analytics.effectiveHoldings))}</strong>
-          </div>
-          <div class="analytics-item">
-            <span>Weighted 7D Move</span>
-            <strong>${escapeHtml(formatPercent(analytics.weightedAverageMove7dPercent))}</strong>
-          </div>
-          <div class="analytics-item">
-            <span>Unpriced / Stale</span>
-            <strong>${escapeHtml(
-              `${Number(state.portfolio?.unpricedItemsCount || 0)} / ${Number(
-                state.portfolio?.staleItemsCount || 0
-              )}`
-            )}</strong>
-          </div>
-        </div>
-      </article>
+        `
+      })}
     </section>
+    ${detailPanels}
   `;
 }
 
@@ -6671,7 +7280,7 @@ function renderApp() {
   const top24h = Number(portfolio.oneDayChangePercent || 0);
   const topValueLabel = getPricingModeLabel(portfolio?.pricing?.mode || state.pricingMode);
   const topbarSignal = buildPortfolioSignals();
-  const showTopbarTotals = state.activeTab !== "dashboard";
+  const showTopbarMetrics = state.activeTab !== "dashboard";
 
   const currencyOptions = SUPPORTED_CURRENCIES.map(
     (code) => `<option value="${code}" ${code === state.currency ? "selected" : ""}>${code}</option>`
@@ -6679,18 +7288,10 @@ function renderApp() {
 
   const dashboardContent = `
     ${renderDashboardHero()}
-    <section class="grid">
-      <article class="panel wide">
-        <h2>${state.historyDays === 180 ? "6-Month" : `${state.historyDays}-Day`} Performance Chart</h2>
-        ${renderHistoryChart()}
-      </article>
-    </section>
+    ${renderDashboardKpiBar()}
     ${renderAnalytics()}
     ${renderAlerts()}
-    ${renderPnlSummary()}
-    ${renderManagementSummary()}
-    ${renderAdvancedAnalytics()}
-    ${renderBacktestPanel()}
+    ${renderDashboardDeepAnalytics()}
   `;
 
   const portfolioContent = `
@@ -6852,7 +7453,7 @@ function renderApp() {
         <header class="topbar premium-topbar">
           <div class="topbar-metrics">
             ${
-              showTopbarTotals
+              showTopbarMetrics
                 ? `
               <article class="topbar-metric metric-glow">
                 <span>${escapeHtml(topValueLabel)} Value</span>
@@ -6880,49 +7481,58 @@ function renderApp() {
               </article>
             `
                 : `
-              <article class="topbar-metric">
-                <span>Pricing Mode</span>
-                <strong>${escapeHtml(topValueLabel)}</strong>
-              </article>
-              <article class="topbar-metric">
-                <span>Portfolio Readiness</span>
-                <strong>${Math.max(
-                  Number(topbarSignal.holdingsCount || 0) -
-                    Number(topbarSignal.unpricedItems || 0) -
-                    Number(topbarSignal.staleItems || 0),
-                  0
-                )}/${Number(topbarSignal.holdingsCount || 0)}</strong>
-                <small>Priced and fresh positions</small>
+              <article class="topbar-metric topbar-dashboard-note">
+                <span>Dashboard</span>
+                <strong>Decision terminal</strong>
+                <small>
+                  Sticky KPI bar tracks ${escapeHtml(topValueLabel)} with readiness
+                  ${Math.max(
+                    Number(topbarSignal.holdingsCount || 0) -
+                      Number(topbarSignal.unpricedItems || 0) -
+                      Number(topbarSignal.staleItems || 0),
+                    0
+                  )}/${Number(topbarSignal.holdingsCount || 0)}.
+                </small>
               </article>
             `
             }
           </div>
           <div class="top-actions">
-            <label class="currency-picker">
-              Currency
-              <select id="currency-select">${currencyOptions}</select>
-            </label>
+            ${
+              state.activeTab === "dashboard"
+                ? '<span class="muted topbar-note">Currency and readiness controls are pinned in the KPI bar.</span>'
+                : `
+              <label class="currency-picker">
+                Currency
+                <select id="currency-select">${currencyOptions}</select>
+              </label>
+            `
+            }
           </div>
         </header>
-        ${
-          state.tabSwitch.loading
-            ? `<div class="tab-switch-indicator" role="status" aria-live="polite">Loading ${escapeHtml(
-                toTitle(state.tabSwitch.target || state.activeTab || "tab")
-              )}...</div>`
-            : ""
-        }
+        <div class="tab-switch-indicator-slot" aria-live="polite">
+          ${
+            state.tabSwitch.loading
+              ? `<div class="tab-switch-indicator" role="status">Loading ${escapeHtml(
+                  toTitle(state.tabSwitch.target || state.activeTab || "tab")
+                )}...</div>`
+              : '<div class="tab-switch-indicator-placeholder" aria-hidden="true"></div>'
+          }
+        </div>
         ${renderAuthNotices()}
         ${tabContent}
       </section>
       ${renderAppFooter()}
     </main>
     ${renderInspectModalOverlay()}
+    ${renderCompareDrawerOverlay()}
     ${renderTransactionEditModal()}
   `;
 
   ensureAppEventDelegation();
   focusMobileDrawerIfNeeded();
   focusInspectModalIfNeeded();
+  focusCompareDrawerIfNeeded();
 
   if (
     state.activeTab === "market" &&
@@ -6956,6 +7566,9 @@ function render() {
     state.tooltip.openId = "";
     state.inspectModal.open = false;
     state.inspectModal.focusPending = false;
+    state.compareDrawer.open = false;
+    state.compareDrawer.focusPending = false;
+    state.compareDrawer.loading = false;
     state.txEditModal = {
       open: false,
       id: null,
@@ -6980,6 +7593,9 @@ function render() {
     state.tooltip.openId = "";
     state.inspectModal.open = false;
     state.inspectModal.focusPending = false;
+    state.compareDrawer.open = false;
+    state.compareDrawer.focusPending = false;
+    state.compareDrawer.loading = false;
     state.txEditModal = {
       open: false,
       id: null,
