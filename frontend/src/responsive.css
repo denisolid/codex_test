@@ -814,10 +814,6 @@ button:active,
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .portfolio-secondary-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
   .portfolio-card-core {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
