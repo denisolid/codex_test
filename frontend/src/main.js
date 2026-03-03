@@ -4731,20 +4731,6 @@ function renderPortfolioDesktopCards() {
           const fallbackImage = isCaseLikeItem(item) ? defaultCaseImage : defaultSkinImage;
           const sevenDayClass = Number(item.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
           const conditionLabel = getHoldingConditionLabel(item);
-          const liquidityScoreRaw = Number(
-            item?.managementClue?.metrics?.liquidityScore ??
-              item?.marketInsight?.liquidity?.score ??
-              item?.marketComparison?.liquidityScore ??
-              0
-          );
-          const liquidityScore = Number.isFinite(liquidityScoreRaw)
-            ? Math.max(Math.min(Math.round(liquidityScoreRaw), 100), 0)
-            : 0;
-          const hasLiquidity = liquidityScore > 0;
-          const tradeStats = computeItemTradeStats(skinId);
-          const avgEntry = Number(tradeStats.avgEntryPrice || 0);
-          const unrealized =
-            avgEntry > 0 ? (Number(item.currentPrice || 0) - avgEntry) * Number(item.quantity || 0) : null;
           const clueAction = String(item?.managementClue?.action || "watch").toLowerCase();
           const clueConfidence = Math.round(Number(item?.managementClue?.confidence || 0));
           const signalBand =
@@ -4753,14 +4739,15 @@ function renderPortfolioDesktopCards() {
           const markup = `
             <article class="portfolio-desktop-card ${sevenDayClass}">
               <header class="portfolio-desktop-card-head">
-                <img
-                  class="portfolio-desktop-card-thumb"
-                  style="--rarity-color: ${rarityTheme.color};"
-                  src="${escapeHtml(itemImageUrl)}"
-                  alt="${escapeHtml(item.marketHashName || "CS2 item")}"
-                  loading="lazy"
-                  onerror="this.onerror=null;this.src='${escapeHtml(fallbackImage)}';"
-                />
+                <div class="portfolio-desktop-card-media" style="--rarity-color: ${rarityTheme.color};">
+                  <img
+                    class="portfolio-desktop-card-thumb"
+                    src="${escapeHtml(itemImageUrl)}"
+                    alt="${escapeHtml(item.marketHashName || "CS2 item")}"
+                    loading="lazy"
+                    onerror="this.onerror=null;this.src='${escapeHtml(fallbackImage)}';"
+                  />
+                </div>
                 <div class="portfolio-desktop-card-meta">
                   <div class="portfolio-desktop-card-title-row">
                     <p class="portfolio-desktop-card-name" title="${escapeHtml(
@@ -4793,25 +4780,6 @@ function renderPortfolioDesktopCards() {
               </div>
               <div class="portfolio-secondary-grid">
                 <p><span>Position Value</span><strong>${formatMoney(item.lineValue)}</strong></p>
-                <p>
-                  <span>Unrealized P/L</span>
-                  <strong class="pnl-text ${Number(unrealized || 0) >= 0 ? "up" : "down"}">${
-            unrealized == null ? "-" : formatSignedMoney(unrealized)
-          }</strong>
-                </p>
-                <div class="portfolio-liquidity">
-                  <span>Liquidity</span>
-                  ${
-                    hasLiquidity
-                      ? `
-                    <div class="liquidity-track" role="img" aria-label="Liquidity score ${liquidityScore} out of 100">
-                      <div class="liquidity-fill" style="width:${liquidityScore}%"></div>
-                    </div>
-                    <small>${liquidityScore}/100</small>
-                  `
-                      : `<small class="muted">No liquidity data</small>`
-                  }
-                </div>
               </div>
               <div class="row portfolio-desktop-card-actions">
                 <button

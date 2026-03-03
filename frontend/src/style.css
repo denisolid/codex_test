@@ -1684,11 +1684,11 @@ button:disabled,
   background:
     linear-gradient(140deg, rgba(10, 16, 28, 0.92), rgba(15, 22, 37, 0.88)),
     radial-gradient(220px 110px at 8% -12%, rgba(46, 139, 255, 0.14), transparent 72%);
-  padding: 14px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  min-height: 386px;
+  gap: 10px;
+  min-height: 332px;
   height: auto;
   align-self: start;
   transition: transform 170ms ease, border-color 170ms ease, box-shadow 170ms ease;
@@ -1702,24 +1702,36 @@ button:disabled,
 
 .portfolio-desktop-card-head {
   display: grid;
-  grid-template-columns: 108px minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+  gap: 10px;
   align-items: start;
 }
 
-.portfolio-desktop-card-thumb {
-  width: 108px;
-  height: 78px;
+.portfolio-desktop-card-media {
+  width: 100%;
+  height: clamp(118px, 18vh, 152px);
   border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--rarity-color, #7f8ba5) 62%, transparent);
   background: rgba(8, 11, 18, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+}
+
+.portfolio-desktop-card-thumb {
+  width: 100%;
+  height: 100%;
+  border-radius: 10px;
+  border: 0;
+  background: transparent;
   object-fit: contain;
-  padding: 5px;
+  padding: 0;
 }
 
 .portfolio-desktop-card-meta {
   display: grid;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
 }
 
@@ -1758,7 +1770,7 @@ button:disabled,
 .portfolio-card-core {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .portfolio-core-price,
@@ -1767,7 +1779,7 @@ button:disabled,
   border: 1px solid var(--line);
   border-radius: 10px;
   background: rgba(9, 13, 23, 0.74);
-  padding: 10px;
+  padding: 8px 9px;
   display: grid;
   gap: 3px;
 }
@@ -1781,17 +1793,17 @@ button:disabled,
 }
 
 .portfolio-core-price strong {
-  font-size: 1.24rem;
+  font-size: 1.14rem;
 }
 
 .portfolio-core-move strong {
-  font-size: 1.2rem;
+  font-size: 1.1rem;
 }
 
 .portfolio-secondary-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: 1fr;
+  gap: 8px;
 }
 
 .portfolio-secondary-grid p {
@@ -1799,7 +1811,7 @@ button:disabled,
   border: 1px solid var(--line);
   border-radius: 10px;
   background: rgba(9, 13, 23, 0.62);
-  padding: 10px;
+  padding: 8px 9px;
   display: grid;
   gap: 3px;
 }
@@ -1870,7 +1882,7 @@ button:disabled,
 }
 
 .portfolio-desktop-card-actions button {
-  min-height: 40px;
+  min-height: 38px;
   padding: 8px 10px;
   font-size: 0.8rem;
   width: 100%;
@@ -1890,7 +1902,7 @@ button:disabled,
 }
 
 .portfolio-desktop-card.is-skeleton {
-  min-height: 386px;
+  min-height: 332px;
 }
 
 .portfolio-desktop-card.is-skeleton .table-row-skeleton {
