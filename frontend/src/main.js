@@ -6580,17 +6580,33 @@ function renderAnalytics() {
   const holdings = getHoldingsList();
   const resolveMover = (mover) => {
     if (!mover) return null;
-    const skinId = Number(mover.skinId || mover.id || 0);
-    const holding = holdings.find((item) => Number(item.skinId) === skinId) || null;
-    const imageUrl = holding ? getItemImageUrl(holding) : defaultSkinImage;
-    const inspectId = String(holding?.primarySteamItemId || "").trim();
+    const rawSkinId = Number(mover.skinId || mover.id || 0);
+    const holdingById =
+      Number.isInteger(rawSkinId) && rawSkinId > 0
+        ? holdings.find((item) => Number(item.skinId) === rawSkinId) || null
+        : null;
+    const holdingByName =
+      !holdingById && mover.marketHashName
+        ? holdings.find(
+            (item) =>
+              String(item.marketHashName || "").trim().toLowerCase() ===
+              String(mover.marketHashName || "").trim().toLowerCase()
+          ) || null
+        : null;
+    const holding = holdingById || holdingByName;
+    const skinId = Number(holding?.skinId || rawSkinId || 0);
+    const moverItem = holding || mover;
+    const imageUrl = getItemImageUrl(moverItem);
+    const fallbackImage = isCaseLikeItem(moverItem) ? defaultCaseImage : defaultSkinImage;
+    const inspectId = String(holding?.primarySteamItemId || mover.primarySteamItemId || "").trim();
     return {
       skinId,
       name: mover.marketHashName || holding?.marketHashName || `Skin #${skinId}`,
       change: mover.sevenDayChangePercent,
-      price: Number(holding?.currentPrice || mover.currentPrice || 0),
-      lineValue: mover.lineValue,
+      price: Number(holding?.currentPrice ?? mover.currentPrice ?? 0),
+      lineValue: Number(mover.lineValue ?? holding?.lineValue ?? 0),
       imageUrl,
+      fallbackImage,
       inspectId
     };
   };
@@ -6616,7 +6632,12 @@ function renderAnalytics() {
       <article class="mover-card ${trendClass}">
         <span>${escapeHtml(label)}</span>
         <div class="mover-head">
-          <img src="${escapeHtml(mover.imageUrl)}" alt="${escapeHtml(mover.name)}" loading="lazy" />
+          <img
+            src="${escapeHtml(mover.imageUrl)}"
+            alt="${escapeHtml(mover.name)}"
+            loading="lazy"
+            onerror="this.onerror=null;this.src='${escapeHtml(mover.fallbackImage)}';"
+          />
           <strong class="mover-name" title="${escapeHtml(mover.name)}">${escapeHtml(mover.name)}</strong>
         </div>
         <p>${escapeHtml(formatPercent(mover.change))}</p>
@@ -6629,6 +6650,7 @@ function renderAnalytics() {
             type="button"
             class="ghost-btn top-mover-compare-btn btn-secondary"
             data-skin-id="${mover.skinId}"
+            ${mover.skinId > 0 ? "" : "disabled"}
           >
             Compare
           </button>
