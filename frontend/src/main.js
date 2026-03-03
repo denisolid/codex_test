@@ -116,6 +116,10 @@ const state = {
     open: false,
     focusPending: false
   },
+  portfolioControls: {
+    open: false,
+    focusPending: false
+  },
   avatarMenu: {
     open: false
   },
@@ -163,7 +167,6 @@ const state = {
     marketHashName: "",
     payload: null
   },
-  compareExpandedBySkinId: {},
   compareRefreshing: false,
   txSubmitting: false,
   txForm: {
@@ -246,11 +249,14 @@ const metricCounterMemory = new Map();
 let delegatedAppEventsBound = false;
 let tabSwitchTicket = 0;
 let mobileDrawerLastFocusedElement = null;
+let portfolioControlsLastTriggerElement = null;
 let avatarMenuLastFocusedElement = null;
 let inspectModalLastTriggerElement = null;
 let compareDrawerLastTriggerElement = null;
 let compareDrawerRequestTicket = 0;
 let txEditModalLastTriggerElement = null;
+let bodyScrollLockY = 0;
+let bodyScrollLocked = false;
 let toastSequence = 0;
 const toastTimers = new Map();
 let dashboardStickySyncBound = false;
@@ -269,6 +275,66 @@ const APP_TABS = [
   { id: "team", label: "Team", hint: "Creator Ops" },
   { id: "settings", label: "Settings", hint: "Account" }
 ];
+const PORTFOLIO_CARD_CACHE_MAX = 800;
+const portfolioCardMarkupCache = {
+  desktop: new Map(),
+  mobile: new Map()
+};
+
+function resetPortfolioCardMarkupCache() {
+  portfolioCardMarkupCache.desktop.clear();
+  portfolioCardMarkupCache.mobile.clear();
+}
+
+function trimPortfolioCardCache(cacheMap) {
+  if (!(cacheMap instanceof Map)) return;
+  if (cacheMap.size <= PORTFOLIO_CARD_CACHE_MAX) return;
+  cacheMap.clear();
+}
+
+function getPortfolioTransactionsCacheToken() {
+  const txRows = Array.isArray(state.transactions) ? state.transactions : [];
+  if (!txRows.length) return "0";
+  const first = txRows[0];
+  const last = txRows[txRows.length - 1];
+  return `${txRows.length}|${first?.id || ""}|${first?.executed_at || ""}|${last?.id || ""}|${
+    last?.executed_at || ""
+  }`;
+}
+
+function buildPortfolioCardCacheKey(item, variant = "desktop") {
+  const liquidityScoreRaw = Number(
+    item?.managementClue?.metrics?.liquidityScore ??
+      item?.marketInsight?.liquidity?.score ??
+      item?.marketComparison?.liquidityScore ??
+      0
+  );
+  const liquidityScore = Number.isFinite(liquidityScoreRaw)
+    ? Math.max(Math.min(Math.round(liquidityScoreRaw), 100), 0)
+    : 0;
+  const clue = item?.managementClue || {};
+  const oneDay = Number(item?.oneDayChangePercent || 0);
+  const sevenDay = Number(item?.sevenDayChangePercent || 0);
+
+  return [
+    variant,
+    state.currency,
+    state.pricingMode,
+    getPortfolioTransactionsCacheToken(),
+    Number(item?.skinId || 0),
+    String(item?.marketHashName || ""),
+    String(item?.exterior || item?.condition || item?.wearName || ""),
+    Number(item?.quantity || 0),
+    Number(item?.currentPrice || 0).toFixed(4),
+    Number(item?.lineValue || 0).toFixed(4),
+    Number.isFinite(oneDay) ? oneDay.toFixed(4) : "0.0000",
+    Number.isFinite(sevenDay) ? sevenDay.toFixed(4) : "0.0000",
+    String(item?.primarySteamItemId || ""),
+    String(clue?.action || ""),
+    Math.round(Number(clue?.confidence || 0)),
+    liquidityScore
+  ].join("|");
+}
 
 function debounce(fn, waitMs = 100) {
   let timer = null;
@@ -477,13 +543,53 @@ function getHeaderEmailLabel() {
 
 function syncBodyUiLocks() {
   document.body.classList.toggle("mobile-drawer-open", Boolean(state.mobileDrawer.open));
+  document.body.classList.toggle("portfolio-controls-open", Boolean(state.portfolioControls.open));
   document.body.classList.toggle("inspect-modal-open", Boolean(state.inspectModal.open));
   document.body.classList.toggle("compare-drawer-open", Boolean(state.compareDrawer.open));
   document.body.classList.toggle("tx-edit-modal-open", Boolean(state.txEditModal.open));
+  syncBodyScrollLock();
+}
+
+function hasBlockingOverlayOpen() {
+  return Boolean(
+    state.mobileDrawer.open ||
+      state.portfolioControls.open ||
+      state.inspectModal.open ||
+      state.compareDrawer.open ||
+      state.txEditModal.open
+  );
+}
+
+function syncBodyScrollLock() {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  const shouldLock = hasBlockingOverlayOpen();
+  if (shouldLock && !bodyScrollLocked) {
+    bodyScrollLockY = Math.max(Number(window.scrollY || 0), 0);
+    document.body.style.position = "fixed";
+    document.body.style.top = `-${bodyScrollLockY}px`;
+    document.body.style.left = "0";
+    document.body.style.right = "0";
+    document.body.style.width = "100%";
+    bodyScrollLocked = true;
+    return;
+  }
+
+  if (!shouldLock && bodyScrollLocked) {
+    document.body.style.position = "";
+    document.body.style.top = "";
+    document.body.style.left = "";
+    document.body.style.right = "";
+    document.body.style.width = "";
+    window.scrollTo(0, bodyScrollLockY);
+    bodyScrollLocked = false;
+  }
 }
 
 function openMobileDrawer(triggerElement = null) {
   if (state.mobileDrawer.open) return;
+  if (state.portfolioControls.open) {
+    closePortfolioControlsDrawer({ restoreFocus: false });
+  }
   state.mobileDrawer.open = true;
   state.mobileDrawer.focusPending = true;
   const fallbackFocus = document.activeElement;
@@ -558,6 +664,87 @@ function trapMobileDrawerFocus(event) {
   }
 
   if (!event.shiftKey && (active === last || !drawerPanel.contains(active))) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function openPortfolioControlsDrawer(triggerElement = null) {
+  if (state.portfolioControls.open) return;
+  if (state.mobileDrawer.open) {
+    closeMobileDrawer({ restoreFocus: false });
+  }
+  state.portfolioControls.open = true;
+  state.portfolioControls.focusPending = true;
+  const fallbackFocus = document.activeElement;
+  portfolioControlsLastTriggerElement =
+    triggerElement instanceof HTMLElement
+      ? triggerElement
+      : fallbackFocus instanceof HTMLElement
+        ? fallbackFocus
+        : null;
+  render();
+}
+
+function closePortfolioControlsDrawer(options = {}) {
+  const { restoreFocus = true } = options;
+  if (!state.portfolioControls.open) return;
+  state.portfolioControls.open = false;
+  state.portfolioControls.focusPending = false;
+  render();
+
+  if (restoreFocus && portfolioControlsLastTriggerElement) {
+    requestAnimationFrame(() => {
+      portfolioControlsLastTriggerElement?.focus?.();
+    });
+  }
+  portfolioControlsLastTriggerElement = null;
+}
+
+function focusPortfolioControlsIfNeeded() {
+  if (!state.portfolioControls.open || !state.portfolioControls.focusPending) return;
+  state.portfolioControls.focusPending = false;
+
+  const panel = document.querySelector("[data-portfolio-controls-panel]");
+  if (!panel) return;
+  const preferredTarget =
+    panel.querySelector("[data-portfolio-controls-close]") ||
+    panel.querySelector("input, select, button:not([disabled])");
+  if (preferredTarget instanceof HTMLElement) {
+    preferredTarget.focus();
+    return;
+  }
+  panel.focus();
+}
+
+function trapPortfolioControlsFocus(event) {
+  if (!state.portfolioControls.open || event.key !== "Tab") return;
+  const panel = document.querySelector("[data-portfolio-controls-panel]");
+  if (!panel) return;
+
+  const focusable = Array.from(
+    panel.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )
+  ).filter((el) => el instanceof HTMLElement);
+
+  if (!focusable.length) {
+    event.preventDefault();
+    panel.focus();
+    return;
+  }
+
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+
+  if (event.shiftKey && (active === first || !panel.contains(active))) {
+    event.preventDefault();
+    last.focus();
+    return;
+  }
+
+  if (!event.shiftKey && (active === last || !panel.contains(active))) {
     event.preventDefault();
     first.focus();
   }
@@ -1611,9 +1798,6 @@ async function handleCurrencySelectChange(nextCurrency) {
   state.marketInsight = null;
 
   await refreshPortfolio();
-  if (state.inspectedSteamItemId) {
-    await inspectSkinBySteamItemId(state.inspectedSteamItemId);
-  }
   if (state.inspectModal.open && state.inspectModal.steamItemId) {
     await openInspectModalBySteamItemId(state.inspectModal.steamItemId);
   }
@@ -1670,10 +1854,12 @@ function buildCompareDrawerSnapshotFromHolding(holding, options = {}) {
   return {
     skinId: Number(holding.skinId || 0),
     marketHashName: String(holding.marketHashName || options.marketHashName || "Tracked Item"),
+    condition: getHoldingConditionLabel(holding),
     quantity: Number(holding.quantity || 0),
     imageUrl,
     currency: holding.currency || state.portfolio?.currency || state.currency,
     currentPrice: Number(holding.currentPrice || 0),
+    currentPriceSource: String(holding.selectedPricingSource || holding.currentPriceSource || "").trim(),
     lineValue: Number(holding.lineValue || 0),
     marketComparison: comparison,
     fees: options.fees || state.portfolio?.pricing?.fees || null,
@@ -1793,6 +1979,10 @@ function openCompareDrawerBySkinId(rawSkinId, triggerElement = null) {
     compareDrawerLastTriggerElement = triggerElement;
   }
 
+  if (state.portfolioControls.open) {
+    closePortfolioControlsDrawer({ restoreFocus: false });
+  }
+
   state.compareDrawer.open = true;
   state.compareDrawer.focusPending = true;
   state.compareDrawer.loading = false;
@@ -1863,6 +2053,12 @@ async function handleTabSwitch(tab) {
     compareDrawerRequestTicket += 1;
   }
 
+  if (target !== "portfolio" && state.portfolioControls.open) {
+    state.portfolioControls.open = false;
+    state.portfolioControls.focusPending = false;
+    portfolioControlsLastTriggerElement = null;
+  }
+
   state.activeTab = tab;
   state.tabSwitch.target = target;
   state.tabSwitch.loading = requiresLoad;
@@ -1895,6 +2091,9 @@ function triggerInspectBySteamItemId(rawSteamItemId, triggerElement = null) {
   if (!steamItemId) return;
   if (state.compareDrawer.open) {
     closeCompareDrawer({ restoreFocus: false });
+  }
+  if (state.portfolioControls.open) {
+    closePortfolioControlsDrawer({ restoreFocus: false });
   }
   if (triggerElement instanceof HTMLElement) {
     inspectModalLastTriggerElement = triggerElement;
@@ -1939,6 +2138,12 @@ function onAppClick(event) {
   if (target.matches("[data-mobile-drawer-overlay]")) {
     event.preventDefault();
     closeMobileDrawer();
+    return;
+  }
+
+  if (target.matches("[data-portfolio-controls-overlay]")) {
+    event.preventDefault();
+    closePortfolioControlsDrawer();
     return;
   }
 
@@ -2026,6 +2231,18 @@ function onAppClick(event) {
   if (button?.matches("[data-mobile-drawer-close]")) {
     event.preventDefault();
     closeMobileDrawer();
+    return;
+  }
+
+  if (button?.matches("[data-portfolio-controls-open]")) {
+    event.preventDefault();
+    openPortfolioControlsDrawer(button);
+    return;
+  }
+
+  if (button?.matches("[data-portfolio-controls-close]")) {
+    event.preventDefault();
+    closePortfolioControlsDrawer();
     return;
   }
 
@@ -2161,10 +2378,7 @@ function onAppClick(event) {
 
   if (button?.matches(".compare-market-btn")) {
     event.preventDefault();
-    const skinId = Number(button.getAttribute("data-skin-id") || 0);
-    if (!Number.isInteger(skinId) || skinId <= 0) return;
-    state.compareExpandedBySkinId[skinId] = !state.compareExpandedBySkinId[skinId];
-    render();
+    openCompareDrawerBySkinId(button.getAttribute("data-skin-id"), button);
     return;
   }
 
@@ -2179,9 +2393,21 @@ function onAppClick(event) {
     return;
   }
 
-  if (button?.matches("#refresh-market-compare-btn")) {
+  if (button?.matches("[data-refresh-market-compare]")) {
     event.preventDefault();
     runUiTask(() => refreshVisibleMarketComparisons());
+    return;
+  }
+
+  if (button?.matches("#compare-drawer-open-market-btn")) {
+    event.preventDefault();
+    const skinId = Number(button.getAttribute("data-skin-id") || state.compareDrawer.skinId || 0);
+    if (!Number.isInteger(skinId) || skinId <= 0) return;
+    closeCompareDrawer({ restoreFocus: false });
+    state.activeTab = "market";
+    state.marketTab.skinId = String(skinId);
+    render();
+    runUiTask(() => analyzeMarketItemBySkinId(skinId));
     return;
   }
 
@@ -2304,6 +2530,7 @@ function onAppClick(event) {
 
 function onAppKeydown(event) {
   trapMobileDrawerFocus(event);
+  trapPortfolioControlsFocus(event);
   trapInspectModalFocus(event);
   trapCompareDrawerFocus(event);
   trapTxEditModalFocus(event);
@@ -2323,6 +2550,12 @@ function onAppKeydown(event) {
   if (event.key === "Escape" && state.compareDrawer.open) {
     event.preventDefault();
     closeCompareDrawer();
+    return;
+  }
+
+  if (event.key === "Escape" && state.portfolioControls.open) {
+    event.preventDefault();
+    closePortfolioControlsDrawer();
     return;
   }
 
@@ -2393,7 +2626,7 @@ function onAppInput(event) {
     return;
   }
 
-  if (target.matches("#holdings-search")) {
+  if (target.matches("#holdings-search, #holdings-search-mobile, [data-holdings-search]")) {
     state.holdingsView.q = target.value;
     state.globalSearch = target.value;
     state.holdingsView.page = 1;
@@ -2475,26 +2708,30 @@ function onAppChange(event) {
     return;
   }
 
-  if (target.matches("#pricing-mode-select, #settings-pricing-mode")) {
+  if (
+    target.matches(
+      "#pricing-mode-select, #pricing-mode-select-mobile, #settings-pricing-mode, [data-pricing-mode-select]"
+    )
+  ) {
     const nextMode = normalizePricingMode(target.value);
     runUiTask(() => handlePricingModeChange(nextMode));
     return;
   }
 
-  if (target.matches("#holdings-status")) {
+  if (target.matches("#holdings-status, #holdings-status-mobile, [data-holdings-status]")) {
     state.holdingsView.status = target.value;
     state.holdingsView.page = 1;
     render();
     return;
   }
 
-  if (target.matches("#holdings-sort")) {
+  if (target.matches("#holdings-sort, #holdings-sort-mobile, [data-holdings-sort]")) {
     state.holdingsView.sort = target.value;
     render();
     return;
   }
 
-  if (target.matches("#holdings-page-size")) {
+  if (target.matches("#holdings-page-size, #holdings-page-size-mobile, [data-holdings-page-size]")) {
     state.holdingsView.pageSize = clampInt(target.value, 1, 200);
     state.holdingsView.page = 1;
     render();
@@ -2690,6 +2927,8 @@ async function logout() {
   state.tabSwitch.target = "";
   state.mobileDrawer.open = false;
   state.mobileDrawer.focusPending = false;
+  state.portfolioControls.open = false;
+  state.portfolioControls.focusPending = false;
   state.avatarMenu.open = false;
   state.tooltip.openId = "";
   state.txEditModal = {
@@ -2722,9 +2961,11 @@ async function logout() {
   state.teamDashboard.loading = false;
   state.teamDashboard.payload = null;
   state.authNotice.emailConfirmToastShown = false;
+  resetPortfolioCardMarkupCache();
   inspectModalLastTriggerElement = null;
   compareDrawerLastTriggerElement = null;
   compareDrawerRequestTicket += 1;
+  portfolioControlsLastTriggerElement = null;
   txEditModalLastTriggerElement = null;
   render();
 }
@@ -2887,6 +3128,7 @@ async function refreshPortfolio(options = {}) {
       ? leaderboardPayload.items
       : [];
     state.alerts = Array.isArray(portfolio.alerts) ? portfolio.alerts : [];
+    resetPortfolioCardMarkupCache();
 
     const liveSkinIds = new Set(
       (Array.isArray(portfolio?.items) ? portfolio.items : [])
@@ -2896,11 +3138,6 @@ async function refreshPortfolio(options = {}) {
     for (const skinId of holdingsValueMemory.keys()) {
       if (!liveSkinIds.has(Number(skinId))) {
         holdingsValueMemory.delete(skinId);
-      }
-    }
-    for (const skinId of Object.keys(state.compareExpandedBySkinId || {})) {
-      if (!liveSkinIds.has(Number(skinId))) {
-        delete state.compareExpandedBySkinId[skinId];
       }
     }
     if (state.compareDrawer.skinId && !liveSkinIds.has(Number(state.compareDrawer.skinId))) {
@@ -3281,7 +3518,11 @@ async function findSkin(e) {
   e.preventDefault();
   clearError();
   const id = document.querySelector("#steam-item-id").value;
-  await inspectSkinBySteamItemId(id);
+  const submitter = e?.submitter instanceof HTMLElement ? e.submitter : null;
+  if (submitter) {
+    inspectModalLastTriggerElement = submitter;
+  }
+  await openInspectModalBySteamItemId(id);
 }
 
 async function fetchInspectionBundleBySteamItemId(rawId) {
@@ -3319,33 +3560,11 @@ async function fetchInspectionBundleBySteamItemId(rawId) {
   };
 }
 
-async function inspectSkinBySteamItemId(rawId) {
-  try {
-    const payload = await fetchInspectionBundleBySteamItemId(rawId);
-    if (!payload) return;
-
-    state.skin = payload.skin;
-    state.marketInsight = payload.marketInsight;
-    state.marketTab.skinId = String(payload.skin.id || "");
-    state.exitWhatIf = {
-      ...state.exitWhatIf,
-      ...payload.exitDefaults,
-      loading: false
-    };
-    state.inspectedSteamItemId = payload.id;
-    render();
-  } catch (err) {
-    state.skin = null;
-    state.marketInsight = null;
-    state.inspectedSteamItemId = "";
-    setError(err.message);
-  }
-}
-
 async function openInspectModalBySteamItemId(rawId) {
   clearError();
   const id = String(rawId ?? "").trim();
   if (!id) return;
+  state.inspectedSteamItemId = id;
 
   state.inspectModal.open = true;
   state.inspectModal.focusPending = true;
@@ -3360,6 +3579,7 @@ async function openInspectModalBySteamItemId(rawId) {
   try {
     const payload = await fetchInspectionBundleBySteamItemId(id);
     if (!payload) return;
+    state.marketTab.skinId = String(payload.skin?.id || state.marketTab.skinId || "");
     state.inspectModal.skin = payload.skin;
     state.inspectModal.marketInsight = payload.marketInsight;
     state.inspectModal.exitWhatIf = {
@@ -4064,6 +4284,16 @@ function formatMarketSourceLabel(source) {
   return map[String(source || "").toLowerCase()] || toTitle(source || "Market");
 }
 
+function getHoldingConditionLabel(item) {
+  const direct = String(
+    item?.exterior || item?.condition || item?.wearName || item?.wear || ""
+  ).trim();
+  if (direct) return direct;
+  const marketHashName = String(item?.marketHashName || "");
+  const match = marketHashName.match(/\(([^)]+)\)\s*$/);
+  return match ? String(match[1]).trim() : "Unknown";
+}
+
 function renderPortfolioPricingControls() {
   const pricing = state.portfolio?.pricing || {};
   const mode = normalizePricingMode(pricing.mode || state.pricingMode);
@@ -4076,25 +4306,21 @@ function renderPortfolioPricingControls() {
   ].join(" | ");
 
   return `
-    <div class="portfolio-pricing-toolbar">
-      <label>Pricing Mode
-        <select id="pricing-mode-select">
-          <option value="lowest_buy" ${mode === "lowest_buy" ? "selected" : ""}>Lowest Buy</option>
-          <option value="steam" ${mode === "steam" ? "selected" : ""}>Steam Price</option>
-          <option value="best_sell_net" ${mode === "best_sell_net" ? "selected" : ""}>Best Sell Net</option>
-        </select>
-      </label>
-      <button
-        type="button"
-        id="refresh-market-compare-btn"
-        class="ghost-btn compare-refresh-btn"
-        ${state.compareRefreshing ? "disabled" : ""}
-      >
-        <span class="btn-inline-status">
-          <span class="spinner ${state.compareRefreshing ? "" : "is-hidden"}" aria-hidden="true"></span>
-          <span>Refresh Market Prices</span>
-        </span>
-      </button>
+    <div class="portfolio-controls-shell">
+      <div class="portfolio-mobile-controls">
+        <button
+          type="button"
+          class="ghost-btn"
+          data-portfolio-controls-open="1"
+          aria-expanded="${state.portfolioControls.open ? "true" : "false"}"
+          aria-controls="portfolio-controls-drawer-panel"
+        >
+          Filters & Sort
+        </button>
+      </div>
+      <div class="portfolio-control-bar">
+        ${renderPortfolioControlFields({ mobile: false, mode })}
+      </div>
     </div>
     <p class="helper-text market-fee-note" title="Net sell value subtracts marketplace fees before comparing venues.">
       Portfolio valuation mode: <strong>${escapeHtml(getPricingModeLabel(mode))}</strong>. Fee model: ${escapeHtml(
@@ -4104,78 +4330,103 @@ function renderPortfolioPricingControls() {
   `;
 }
 
-function renderMarketComparisonPanel(item) {
-  const comparison = item?.marketComparison || null;
-  if (!comparison || !Array.isArray(comparison.perMarket)) {
-    return `
-      <div class="market-compare-panel">
-        <p class="muted">Market comparison data is unavailable for this item. Use "Refresh Market Prices".</p>
-      </div>
-    `;
-  }
-
-  const bestBuyMarkup = comparison.bestBuy
-    ? `${formatMarketSourceLabel(comparison.bestBuy.source)} ${formatMoney(
-        comparison.bestBuy.grossPrice,
-        item.currency || state.currency
-      )}`
-    : "N/A";
-  const bestSellMarkup = comparison.bestSellNet
-    ? `${formatMarketSourceLabel(comparison.bestSellNet.source)} ${formatMoney(
-        comparison.bestSellNet.netPriceAfterFees,
-        item.currency || state.currency
-      )}`
-    : "N/A";
-
-  const perMarketMarkup = comparison.perMarket
-    .map((row) => {
-      const isAvailable = Boolean(row?.available);
-      const unavailableReason = String(row?.unavailableReason || "").trim();
-      const listingLink = row?.url
-        ? `<a class="link-btn ghost market-open-link" href="${escapeHtml(
-            row.url
-          )}" target="_blank" rel="noreferrer">Open listing</a>`
-        : '<span class="muted">No listing</span>';
-
-      return `
-        <div class="market-price-card ${isAvailable ? "" : "unavailable"}">
-          <div class="market-price-head">
-            <strong>${escapeHtml(formatMarketSourceLabel(row.source))}</strong>
-            <small>${escapeHtml(
-              isAvailable ? formatRelativeTime(row.updatedAt) : "No data"
-            )}</small>
-          </div>
-          ${
-            !isAvailable && unavailableReason
-              ? `<p class="muted">${escapeHtml(unavailableReason)}</p>`
-              : ""
-          }
-          <p>Gross: <strong>${
-            isAvailable ? formatMoney(row.grossPrice, row.currency || state.currency) : "-"
-          }</strong></p>
-          <p>Net: <strong>${
-            isAvailable
-              ? formatMoney(row.netPriceAfterFees, row.currency || state.currency)
-              : "-"
-          }</strong></p>
-          ${listingLink}
-        </div>
-      `;
-    })
-    .join("");
-
+function renderPortfolioControlFields({ mobile = false, mode = state.pricingMode } = {}) {
+  const suffix = mobile ? "-mobile" : "";
+  const controlClass = mobile ? "portfolio-control-field mobile" : "portfolio-control-field";
   return `
-    <div class="market-compare-panel">
-      <p class="market-compare-summary">
-        Best Buy: <strong>${bestBuyMarkup}</strong>
-        <span class="muted">|</span>
-        Best Sell Net: <strong>${bestSellMarkup}</strong>
-      </p>
-      <div class="market-price-grid">
-        ${perMarketMarkup}
-      </div>
-    </div>
+    <label class="${controlClass}">Search
+      <input
+        id="holdings-search${suffix}"
+        data-holdings-search="1"
+        placeholder="item name or steam item id"
+        value="${escapeHtml(state.holdingsView.q)}"
+      />
+    </label>
+    <label class="${controlClass}">Status
+      <select id="holdings-status${suffix}" data-holdings-status="1">
+        ${["all", "real", "cached", "stale", "unpriced", "mock"]
+          .map(
+            (status) =>
+              `<option value="${status}" ${
+                state.holdingsView.status === status ? "selected" : ""
+              }>${status === "all" ? "All" : toTitle(status)}</option>`
+          )
+          .join("")}
+      </select>
+    </label>
+    <label class="${controlClass}">Signal Sort
+      <select id="holdings-sort${suffix}" data-holdings-sort="1">
+        <option value="value_desc" ${state.holdingsView.sort === "value_desc" ? "selected" : ""}>Value high to low</option>
+        <option value="value_asc" ${state.holdingsView.sort === "value_asc" ? "selected" : ""}>Value low to high</option>
+        <option value="name_asc" ${state.holdingsView.sort === "name_asc" ? "selected" : ""}>Name A-Z</option>
+        <option value="name_desc" ${state.holdingsView.sort === "name_desc" ? "selected" : ""}>Name Z-A</option>
+        <option value="qty_desc" ${state.holdingsView.sort === "qty_desc" ? "selected" : ""}>Qty high to low</option>
+        <option value="qty_asc" ${state.holdingsView.sort === "qty_asc" ? "selected" : ""}>Qty low to high</option>
+        <option value="change_desc" ${state.holdingsView.sort === "change_desc" ? "selected" : ""}>7D change high to low</option>
+        <option value="change_asc" ${state.holdingsView.sort === "change_asc" ? "selected" : ""}>7D change low to high</option>
+        <option value="clue_sell_first" ${state.holdingsView.sort === "clue_sell_first" ? "selected" : ""}>Clue sell first</option>
+        <option value="clue_hold_first" ${state.holdingsView.sort === "clue_hold_first" ? "selected" : ""}>Clue hold first</option>
+      </select>
+    </label>
+    <label class="${controlClass}">Per page
+      <select id="holdings-page-size${suffix}" data-holdings-page-size="1">
+        ${[10, 20, 50]
+          .map(
+            (n) =>
+              `<option value="${n}" ${
+                state.holdingsView.pageSize === n ? "selected" : ""
+              }>${n}</option>`
+          )
+          .join("")}
+      </select>
+    </label>
+    <label class="${controlClass}">Pricing Mode
+      <select
+        id="${mobile ? "pricing-mode-select-mobile" : "pricing-mode-select"}"
+        data-pricing-mode-select="1"
+      >
+        <option value="lowest_buy" ${mode === "lowest_buy" ? "selected" : ""}>Lowest Buy</option>
+        <option value="steam" ${mode === "steam" ? "selected" : ""}>Steam Price</option>
+        <option value="best_sell_net" ${mode === "best_sell_net" ? "selected" : ""}>Best Sell Net</option>
+      </select>
+    </label>
+    <button
+      type="button"
+      class="ghost-btn compare-refresh-btn portfolio-controls-refresh-btn"
+      data-refresh-market-compare="1"
+      ${state.compareRefreshing ? "disabled" : ""}
+    >
+      <span class="btn-inline-status">
+        <span class="spinner ${state.compareRefreshing ? "" : "is-hidden"}" aria-hidden="true"></span>
+        <span>Refresh Prices</span>
+      </span>
+    </button>
   `;
+}
+
+function renderPortfolioControlsDrawer() {
+  return renderDrawer({
+    open: Boolean(state.portfolioControls.open),
+    title: "Portfolio Controls",
+    subtitle: "Search, filter, sort, and pricing mode",
+    bodyMarkup: `<div class="portfolio-controls-drawer-fields">${renderPortfolioControlFields({
+      mobile: true
+    })}</div>`,
+    footerMarkup: `
+      <button
+        type="button"
+        class="ghost-btn"
+        data-portfolio-controls-close="1"
+      >
+        Done
+      </button>
+    `,
+    closeAttr: 'data-portfolio-controls-close="1"',
+    label: "Portfolio controls",
+    rootClassName: "portfolio-controls-drawer-root",
+    overlayAttr: 'data-portfolio-controls-overlay="1"',
+    panelAttr: 'id="portfolio-controls-drawer-panel" data-portfolio-controls-panel="1"'
+  });
 }
 
 function renderCompareDrawerBody() {
@@ -4198,6 +4449,8 @@ function renderCompareDrawerBody() {
 
   const comparison = payload.marketComparison || null;
   const perMarket = Array.isArray(comparison?.perMarket) ? comparison.perMarket : [];
+  const pricingMode = normalizePricingMode(state.portfolio?.pricing?.mode || state.pricingMode);
+  const modeLabel = getPricingModeLabel(pricingMode);
   const bestBuy = comparison?.bestBuy
     ? `${formatMarketSourceLabel(comparison.bestBuy.source)} ${formatMoney(
         comparison.bestBuy.grossPrice,
@@ -4259,6 +4512,7 @@ function renderCompareDrawerBody() {
       <img src="${escapeHtml(payload.imageUrl)}" alt="${escapeHtml(payload.marketHashName)}" loading="lazy" />
       <div>
         <p class="compare-drawer-item-name">${escapeHtml(payload.marketHashName)}</p>
+        <small class="muted">${escapeHtml(payload.condition || "Unknown condition")}</small>
         <small class="muted">Qty ${escapeHtml(formatNumber(payload.quantity, 0))} | Position ${formatMoney(
     payload.lineValue,
     payload.currency || state.currency
@@ -4266,6 +4520,8 @@ function renderCompareDrawerBody() {
       </div>
     </div>
     <div class="compare-drawer-summary">
+      <p>${escapeHtml(modeLabel)} <strong>${formatMoney(payload.currentPrice, payload.currency || state.currency)}</strong></p>
+      <p>Source <strong>${escapeHtml(payload.currentPriceSource || "N/A")}</strong></p>
       <p>Best Buy <strong>${bestBuy}</strong></p>
       <p>Best Sell Net <strong>${bestSell}</strong></p>
       ${
@@ -4298,6 +4554,15 @@ function renderCompareDrawerBody() {
 function renderCompareDrawerOverlay() {
   const drawer = state.compareDrawer;
   const footerMarkup = `
+    <button
+      type="button"
+      class="ghost-btn"
+      id="compare-drawer-open-market-btn"
+      data-skin-id="${Number(drawer.skinId || 0)}"
+      ${drawer.skinId ? "" : "disabled"}
+    >
+      Go to market
+    </button>
     <button
       type="button"
       class="ghost-btn compare-drawer-refresh-btn"
@@ -4351,15 +4616,20 @@ function renderPortfolioMobileList() {
     <div class="portfolio-mobile-list">
       ${items
         .map((item) => {
+          const cacheKey = buildPortfolioCardCacheKey(item, "mobile");
+          const cachedMarkup = portfolioCardMarkupCache.mobile.get(cacheKey);
+          if (cachedMarkup) {
+            return cachedMarkup;
+          }
+
           const skinId = Number(item.skinId || 0);
           const rarityTheme = getItemRarityTheme(item);
           const itemImageUrl = getItemImageUrl(item);
           const fallbackImage = isCaseLikeItem(item) ? defaultCaseImage : defaultSkinImage;
           const oneDayClass = Number(item.oneDayChangePercent || 0) >= 0 ? "up" : "down";
           const sevenDayClass = Number(item.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
-          const isExpanded = Boolean(state.compareExpandedBySkinId[skinId]);
-
-          return `
+          const conditionLabel = getHoldingConditionLabel(item);
+          const markup = `
             <article class="portfolio-mobile-item">
               <div class="portfolio-mobile-head">
                 <img
@@ -4376,6 +4646,7 @@ function renderPortfolioMobileList() {
                     <span class="rarity-tag" style="--rarity-color: ${rarityTheme.color};">${escapeHtml(
                       rarityTheme.rarity
                     )}</span>
+                    <small class="muted portfolio-condition">${escapeHtml(conditionLabel)}</small>
                     <small class="muted">Qty ${Number(item.quantity || 0)}</small>
                   </div>
                   <small class="muted mono-cell">Steam ID: ${formatSteamItemIdCell(item)}</small>
@@ -4405,7 +4676,7 @@ function renderPortfolioMobileList() {
                   class="ghost-btn compare-market-btn btn-secondary"
                   data-skin-id="${skinId}"
                 >
-                  ${isExpanded ? "Hide Compare" : "Compare"}
+                  Compare
                 </button>
                 <button
                   type="button"
@@ -4415,17 +4686,11 @@ function renderPortfolioMobileList() {
                   Sell Suggestion
                 </button>
               </div>
-              ${
-                isExpanded
-                  ? `
-                <div class="portfolio-mobile-compare">
-                  ${renderMarketComparisonPanel(item)}
-                </div>
-              `
-                  : ""
-              }
             </article>
           `;
+          portfolioCardMarkupCache.mobile.set(cacheKey, markup);
+          trimPortfolioCardCache(portfolioCardMarkupCache.mobile);
+          return markup;
         })
         .join("")}
     </div>
@@ -4454,12 +4719,18 @@ function renderPortfolioDesktopCards() {
     <div class="portfolio-desktop-cards-grid">
       ${items
         .map((item) => {
+          const cacheKey = buildPortfolioCardCacheKey(item, "desktop");
+          const cachedMarkup = portfolioCardMarkupCache.desktop.get(cacheKey);
+          if (cachedMarkup) {
+            return cachedMarkup;
+          }
+
           const skinId = Number(item.skinId || 0);
           const rarityTheme = getItemRarityTheme(item);
           const itemImageUrl = getItemImageUrl(item);
           const fallbackImage = isCaseLikeItem(item) ? defaultCaseImage : defaultSkinImage;
           const sevenDayClass = Number(item.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
-          const isExpanded = Boolean(state.compareExpandedBySkinId[skinId]);
+          const conditionLabel = getHoldingConditionLabel(item);
           const liquidityScoreRaw = Number(
             item?.managementClue?.metrics?.liquidityScore ??
               item?.marketInsight?.liquidity?.score ??
@@ -4479,8 +4750,7 @@ function renderPortfolioDesktopCards() {
           const signalBand =
             clueConfidence >= 75 ? "strong" : clueConfidence <= 45 ? "weak" : "watch";
           const signalLabel = `${toTitle(clueAction)} ${clueConfidence}%`;
-
-          return `
+          const markup = `
             <article class="portfolio-desktop-card ${sevenDayClass}">
               <header class="portfolio-desktop-card-head">
                 <img
@@ -4504,6 +4774,7 @@ function renderPortfolioDesktopCards() {
                     <span class="rarity-tag" style="--rarity-color: ${rarityTheme.color};">${escapeHtml(
             rarityTheme.rarity
           )}</span>
+                    <small class="muted portfolio-condition">${escapeHtml(conditionLabel)}</small>
                     <small class="muted">Qty ${Number(item.quantity || 0)}</small>
                     <span class="status-badge signal-${escapeHtml(signalBand)}">${escapeHtml(signalLabel)}</span>
                   </div>
@@ -4556,7 +4827,7 @@ function renderPortfolioDesktopCards() {
                   class="ghost-btn compare-market-btn btn-secondary"
                   data-skin-id="${skinId}"
                 >
-                  ${isExpanded ? "Hide Compare" : "Compare"}
+                  Compare
                 </button>
                 <button
                   type="button"
@@ -4566,17 +4837,11 @@ function renderPortfolioDesktopCards() {
                   Sell Suggestion
                 </button>
               </div>
-              ${
-                isExpanded
-                  ? `
-                <div class="portfolio-desktop-card-expand">
-                  ${renderMarketComparisonPanel(item)}
-                </div>
-              `
-                  : ""
-              }
             </article>
           `;
+          portfolioCardMarkupCache.desktop.set(cacheKey, markup);
+          trimPortfolioCardCache(portfolioCardMarkupCache.desktop);
+          return markup;
         })
         .join("")}
     </div>
@@ -4626,7 +4891,6 @@ function renderPortfolioRows() {
       const rarityTheme = getItemRarityTheme(item);
       const itemImageUrl = getItemImageUrl(item);
       const fallbackImage = isCaseLikeItem(item) ? defaultCaseImage : defaultSkinImage;
-      const isExpanded = Boolean(state.compareExpandedBySkinId[skinId]);
 
       return `
         <tr class="holding-row">
@@ -4676,22 +4940,11 @@ function renderPortfolioRows() {
                 class="ghost-btn compare-market-btn"
                 data-skin-id="${skinId}"
               >
-                ${isExpanded ? "Hide Compare" : "Compare"}
+                Compare
               </button>
             </div>
           </td>
         </tr>
-        ${
-          isExpanded
-            ? `
-          <tr class="holding-row-details">
-            <td colspan="10">
-              ${renderMarketComparisonPanel(item)}
-            </td>
-          </tr>
-        `
-            : ""
-        }
       `;
     })
     .join("");
@@ -7345,14 +7598,14 @@ function renderApp() {
 
       <article class="panel">
         <h2>Position Inspector</h2>
-        <p class="helper-text">Paste a Steam Item ID to inspect current pricing, full item history, and scenario exits before placing a listing.</p>
+        <p class="helper-text">Paste a Steam Item ID to open a centered inspector modal without losing your current scroll position in the portfolio.</p>
         <form id="skin-form" class="form">
           <label>Steam Item ID
             <input id="steam-item-id" inputmode="numeric" pattern="[0-9]+" placeholder="e.g. 35719462921" value="${escapeHtml(state.inspectedSteamItemId)}" />
           </label>
-          <button type="submit">Inspect Position</button>
+          <button type="submit">Open Inspector</button>
         </form>
-        ${renderSkinDetails()}
+        <p class="muted">Item details, market sources, and what-if exit analytics open in the modal.</p>
       </article>
     </section>
 
@@ -7367,54 +7620,9 @@ function renderApp() {
           eyebrow: "Portfolio",
           title: "Execution Cards",
           description:
-            "Inspect opens in a centered modal. Compare expands inline inside the same card to avoid page jumps.",
+            "Inspect opens in a centered modal. Compare opens in a right-side drawer, so cards remain fixed with no grid stretch.",
           className: "portfolio-table-section",
           body: `
-            <div class="list-toolbar">
-              <label>Search
-                <input id="holdings-search" placeholder="item name or steam item id" value="${escapeHtml(
-                  state.holdingsView.q
-                )}" />
-              </label>
-              <label>Status
-                <select id="holdings-status">
-                  ${["all", "real", "cached", "stale", "unpriced", "mock"]
-                    .map(
-                      (status) =>
-                        `<option value="${status}" ${
-                          state.holdingsView.status === status ? "selected" : ""
-                        }>${status === "all" ? "All" : toTitle(status)}</option>`
-                    )
-                    .join("")}
-                </select>
-              </label>
-              <label>Signal Sort
-                <select id="holdings-sort">
-                  <option value="value_desc" ${state.holdingsView.sort === "value_desc" ? "selected" : ""}>Value high to low</option>
-                  <option value="value_asc" ${state.holdingsView.sort === "value_asc" ? "selected" : ""}>Value low to high</option>
-                  <option value="name_asc" ${state.holdingsView.sort === "name_asc" ? "selected" : ""}>Name A-Z</option>
-                  <option value="name_desc" ${state.holdingsView.sort === "name_desc" ? "selected" : ""}>Name Z-A</option>
-                  <option value="qty_desc" ${state.holdingsView.sort === "qty_desc" ? "selected" : ""}>Qty high to low</option>
-                  <option value="qty_asc" ${state.holdingsView.sort === "qty_asc" ? "selected" : ""}>Qty low to high</option>
-                  <option value="change_desc" ${state.holdingsView.sort === "change_desc" ? "selected" : ""}>7D change high to low</option>
-                  <option value="change_asc" ${state.holdingsView.sort === "change_asc" ? "selected" : ""}>7D change low to high</option>
-                  <option value="clue_sell_first" ${state.holdingsView.sort === "clue_sell_first" ? "selected" : ""}>Clue sell first</option>
-                  <option value="clue_hold_first" ${state.holdingsView.sort === "clue_hold_first" ? "selected" : ""}>Clue hold first</option>
-                </select>
-              </label>
-              <label>Per page
-                <select id="holdings-page-size">
-                  ${[10, 20, 50]
-                    .map(
-                      (n) =>
-                        `<option value="${n}" ${
-                          state.holdingsView.pageSize === n ? "selected" : ""
-                        }>${n}</option>`
-                    )
-                    .join("")}
-                </select>
-              </label>
-            </div>
             <div class="portfolio-mobile-only">
               ${renderPortfolioMobileList()}
             </div>
@@ -7563,12 +7771,18 @@ function renderApp() {
     </main>
     ${renderInspectModalOverlay()}
     ${renderCompareDrawerOverlay()}
+    ${
+      state.activeTab === "portfolio" || state.portfolioControls.open
+        ? renderPortfolioControlsDrawer()
+        : ""
+    }
     ${renderTransactionEditModal()}
   `;
 
   ensureAppEventDelegation();
   ensureDashboardStickySync();
   focusMobileDrawerIfNeeded();
+  focusPortfolioControlsIfNeeded();
   focusInspectModalIfNeeded();
   focusCompareDrawerIfNeeded();
   scheduleDashboardKpiPinnedSync();
@@ -7603,6 +7817,8 @@ function render() {
   if (state.publicPage.steamId64) {
     state.avatarMenu.open = false;
     state.tooltip.openId = "";
+    state.portfolioControls.open = false;
+    state.portfolioControls.focusPending = false;
     state.inspectModal.open = false;
     state.inspectModal.focusPending = false;
     state.compareDrawer.open = false;
@@ -7628,6 +7844,8 @@ function render() {
   if (!state.authenticated) {
     state.mobileDrawer.open = false;
     state.mobileDrawer.focusPending = false;
+    state.portfolioControls.open = false;
+    state.portfolioControls.focusPending = false;
     state.avatarMenu.open = false;
     state.tooltip.openId = "";
     state.inspectModal.open = false;
