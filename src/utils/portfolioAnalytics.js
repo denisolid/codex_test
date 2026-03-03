@@ -28,10 +28,20 @@ function pickLeader(items, comparator) {
 
   if (!picked) return null;
 
+  const rawSkinId = Number(picked.skinId || picked.id || 0);
+  const currentPrice = Number(picked.currentPrice);
+
   return {
+    skinId: Number.isInteger(rawSkinId) && rawSkinId > 0 ? rawSkinId : null,
+    primarySteamItemId: picked.primarySteamItemId
+      ? String(picked.primarySteamItemId)
+      : null,
     marketHashName: picked.marketHashName,
     sevenDayChangePercent: round2(picked.sevenDayChangePercent),
-    lineValue: round2(picked.lineValue)
+    lineValue: round2(picked.lineValue),
+    currentPrice: Number.isFinite(currentPrice) ? round2(currentPrice) : null,
+    imageUrl: picked.imageUrl || null,
+    imageUrlLarge: picked.imageUrlLarge || picked.imageUrl || null
   };
 }
 
