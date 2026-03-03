@@ -1702,7 +1702,7 @@ button:disabled,
 
 .portfolio-desktop-card-head {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 2fr) minmax(112px, 1fr);
   gap: 10px;
   align-items: start;
 }
@@ -1728,7 +1728,7 @@ button:disabled,
   background: transparent;
   object-fit: contain;
   padding: 0;
-  transform: scale(1.26);
+  transform: scale(1.34);
   transform-origin: center;
 }
 
@@ -1736,6 +1736,7 @@ button:disabled,
   display: grid;
   gap: 5px;
   min-width: 0;
+  padding-right: 2px;
 }
 
 .portfolio-desktop-card-name {
@@ -1752,9 +1753,13 @@ button:disabled,
 
 .portfolio-desktop-card-title-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr) 26px;
+  gap: 6px;
+  align-items: start;
+}
+
+.portfolio-desktop-card-title-row .tooltip-wrap {
+  justify-self: end;
 }
 
 .portfolio-desktop-card-subline {
