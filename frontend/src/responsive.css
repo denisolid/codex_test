@@ -484,6 +484,7 @@ body.mobile-drawer-open {
   display: grid;
   gap: 10px;
   margin-top: 6px;
+  align-items: start;
 }
 
 .portfolio-mobile-item {
