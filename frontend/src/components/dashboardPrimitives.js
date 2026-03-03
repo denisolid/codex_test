@@ -84,16 +84,19 @@ export function renderKPIBar({
   items = [],
   controls = "",
   status = "",
-  className = ""
+  className = "",
+  rootAttrs = ""
 } = {}) {
   const classes = joinClassNames(["dashboard-kpi-bar", className]);
+  const attrs = rootAttrs ? ` ${rootAttrs}` : "";
   const rows = (Array.isArray(items) ? items : [])
     .map((item) => {
       const tone = normalizeTone(item?.tone);
       const emphasis = item?.primary ? "kpi-item-value primary" : "kpi-item-value";
       const helper = item?.helper ? `<small class="kpi-item-helper">${escapeSafe(item.helper)}</small>` : "";
+      const itemClassName = item?.className ? ` ${escapeSafe(item.className)}` : "";
       return `
-        <article class="kpi-item tone-${tone}">
+        <article class="kpi-item tone-${tone}${itemClassName}">
           <span class="kpi-item-label">${escapeSafe(item?.label || "")}</span>
           <strong class="${emphasis}">${item?.value ?? "-"}</strong>
           ${helper}
@@ -103,7 +106,7 @@ export function renderKPIBar({
     .join("");
 
   return `
-    <section class="${classes}" aria-label="Decision KPIs">
+    <section class="${classes}" aria-label="Decision KPIs"${attrs}>
       <div class="kpi-items">${rows}</div>
       <div class="kpi-controls">
         ${status ? `<div class="kpi-refresh-status">${status}</div>` : ""}

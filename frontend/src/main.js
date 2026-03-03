@@ -253,6 +253,8 @@ let compareDrawerRequestTicket = 0;
 let txEditModalLastTriggerElement = null;
 let toastSequence = 0;
 const toastTimers = new Map();
+let dashboardStickySyncBound = false;
+let dashboardStickyRafId = 0;
 let historyChartCache = {
   key: "",
   markup: ""
@@ -665,6 +667,46 @@ function trapCompareDrawerFocus(event) {
     event.preventDefault();
     first.focus();
   }
+}
+
+function syncDashboardKpiPinnedClass() {
+  if (!app || state.activeTab !== "dashboard") return;
+  const kpiBar = app.querySelector("[data-dashboard-kpi]");
+  const heroPanel = app.querySelector("#dashboard-hero-panel") || app.querySelector("[data-dashboard-hero]");
+  if (!kpiBar || !heroPanel) return;
+
+  const topRaw = window.getComputedStyle(kpiBar).getPropertyValue("top");
+  const stickyTop = Number.parseFloat(topRaw) || 0;
+  const heroBottom = heroPanel.getBoundingClientRect().bottom;
+  const kpiTop = kpiBar.getBoundingClientRect().top;
+  const hasCrossedHero = heroBottom <= stickyTop + 1;
+  const hasReachedStickyLine = kpiTop <= stickyTop + 1 || kpiBar.classList.contains("is-pinned");
+  const isPinned = hasCrossedHero && hasReachedStickyLine;
+  const anchor = kpiBar.closest(".dashboard-kpi-anchor");
+  if (anchor instanceof HTMLElement) {
+    anchor.style.minHeight = `${kpiBar.offsetHeight}px`;
+  }
+
+  kpiBar.classList.toggle("is-pinned", isPinned);
+}
+
+function scheduleDashboardKpiPinnedSync() {
+  if (dashboardStickyRafId) return;
+  dashboardStickyRafId = requestAnimationFrame(() => {
+    dashboardStickyRafId = 0;
+    syncDashboardKpiPinnedClass();
+  });
+}
+
+function ensureDashboardStickySync() {
+  if (dashboardStickySyncBound || typeof window === "undefined") return;
+  const listener = () => {
+    if (state.activeTab !== "dashboard") return;
+    scheduleDashboardKpiPinnedSync();
+  };
+  window.addEventListener("scroll", listener, { passive: true });
+  window.addEventListener("resize", listener, { passive: true });
+  dashboardStickySyncBound = true;
 }
 
 function trapTxEditModalFocus(event) {
@@ -4689,9 +4731,9 @@ function renderHistoryChart() {
   const trendPercent = first > 0 ? (change / first) * 100 : null;
 
   const viewWidth = 920;
-  const viewHeight = 236;
+  const viewHeight = 208;
   const padX = 50;
-  const padY = 24;
+  const padY = 20;
   const plotWidth = viewWidth - padX * 2;
   const plotHeight = viewHeight - padY * 2;
   const valueRange = Math.max(max - min, 0.01);
@@ -4872,14 +4914,25 @@ function renderDashboardKpiBar() {
     (code) => `<option value="${code}" ${code === state.currency ? "selected" : ""}>${code}</option>`
   ).join("");
 
-  const controls = `
-    <span class="kpi-readiness-badge" title="Priced and fresh positions">
-      Portfolio Readiness <strong>${readyCount}/${Number(signal.holdingsCount || 0)}</strong>
+  const pricingChip = `
+    <span class="kpi-chip kpi-pricing-chip" title="Current valuation source">
+      <span>Pricing</span>
+      <strong>${escapeHtml(pricingModeLabel)}</strong>
     </span>
-    <label class="currency-picker kpi-currency-picker">
-      Currency
-      <select id="currency-select">${currencyOptions}</select>
-    </label>
+  `;
+  const controls = `
+    <div class="kpi-tertiary-row">
+      ${pricingChip}
+      <span class="kpi-readiness-badge" title="Priced and fresh positions">
+        Ready <strong>${readyCount}/${Number(signal.holdingsCount || 0)}</strong>
+      </span>
+    </div>
+    <div class="kpi-control-row">
+      <label class="currency-picker kpi-currency-picker">
+        Currency
+        <select id="currency-select">${currencyOptions}</select>
+      </label>
+    </div>
   `;
 
   return `
@@ -4887,6 +4940,7 @@ function renderDashboardKpiBar() {
       <div class="dashboard-kpi-anchor">
         ${renderKPIBar({
           className: "dashboard-kpi-sticky",
+          rootAttrs: 'data-dashboard-kpi="1"',
           status: `
             <span class="kpi-refresh-dot tone-${escapeHtml(refreshTone)}" aria-hidden="true"></span>
             <span>${escapeHtml(refreshText)}</span>
@@ -4894,15 +4948,11 @@ function renderDashboardKpiBar() {
           controls,
           items: [
             {
-              label: "Pricing Mode",
-              value: escapeHtml(pricingModeLabel),
-              tone: "neutral"
-            },
-            {
               label: "Total Portfolio Value",
               value: formatMoney(totalValue, currencyCode),
               tone: "neutral",
-              primary: true
+              primary: true,
+              className: "kpi-primary"
             },
             {
               label: "7D Change",
@@ -4948,13 +4998,14 @@ function renderDashboardHero() {
     <section class="grid">
       ${renderPanel({
         wide: true,
+        sectionId: "dashboard-hero-panel",
         className: "hero-panel dashboard-hero-panel",
         body: `
-          <div class="dashboard-hero-compact">
+          <div class="dashboard-hero-compact" data-dashboard-hero="1">
             <div class="dashboard-hero-copy">
-              <p class="eyebrow">Decision Center</p>
+              <p class="eyebrow">Dashboard</p>
               <div class="dashboard-hero-title-row">
-                <h1>Trading Terminal Dashboard</h1>
+                <h1>Portfolio Decision Center</h1>
                 <span class="tooltip-wrap" data-tooltip-wrap>
                   <button
                     type="button"
@@ -4972,19 +5023,16 @@ function renderDashboardHero() {
                     class="tooltip-bubble ${infoOpen ? "open" : ""}"
                   >
                     <strong>Dashboard intent</strong>
-                    <small>Primary KPIs stay fixed while analytics remain collapsible.</small>
+                    <small>Primary KPIs stay pinned while deep analytics stay collapsible.</small>
                     <small>Current valuation mode: ${escapeHtml(pricingModeLabel)}</small>
                   </span>
                 </span>
               </div>
-              <p class="hero-copy compact">
-                Compact command surface for rapid decisions with deep metrics available on demand.
-              </p>
             </div>
             <div class="dashboard-hero-actions">
               <button type="button" class="tab-jump-btn btn-primary" data-tab-target="portfolio">Open Portfolio</button>
-              <button type="button" class="ghost-btn tab-jump-btn btn-secondary" data-tab-target="alerts">Alerts</button>
-              <button type="button" class="ghost-btn tab-jump-btn btn-tertiary" data-tab-target="trades">Transactions</button>
+              <button type="button" class="ghost-btn tab-jump-btn btn-secondary dashboard-chip-btn" data-tab-target="alerts">Alerts</button>
+              <button type="button" class="ghost-btn tab-jump-btn btn-tertiary dashboard-chip-btn" data-tab-target="trades">Transactions</button>
             </div>
           </div>
         `
@@ -6035,12 +6083,10 @@ function renderAnalytics() {
         <span>${escapeHtml(label)}</span>
         <div class="mover-head">
           <img src="${escapeHtml(mover.imageUrl)}" alt="${escapeHtml(mover.name)}" loading="lazy" />
-          <strong>${escapeHtml(mover.name)}</strong>
+          <strong class="mover-name" title="${escapeHtml(mover.name)}">${escapeHtml(mover.name)}</strong>
         </div>
         <p>${escapeHtml(formatPercent(mover.change))}</p>
-        <small>
-          Price ${formatMoney(mover.price, currencyCode)} | Position ${formatMoney(mover.lineValue, currencyCode)}
-        </small>
+        <small>Price ${formatMoney(mover.price, currencyCode)}</small>
         <div class="row mover-actions">
           <button type="button" class="inspect-skin-btn btn-primary" data-steam-item-id="${escapeHtml(
             mover.inspectId
@@ -7279,7 +7325,6 @@ function renderApp() {
   const top7d = Number(portfolio.sevenDayChangePercent || 0);
   const top24h = Number(portfolio.oneDayChangePercent || 0);
   const topValueLabel = getPricingModeLabel(portfolio?.pricing?.mode || state.pricingMode);
-  const topbarSignal = buildPortfolioSignals();
   const showTopbarMetrics = state.activeTab !== "dashboard";
 
   const currencyOptions = SUPPORTED_CURRENCIES.map(
@@ -7484,15 +7529,7 @@ function renderApp() {
               <article class="topbar-metric topbar-dashboard-note">
                 <span>Dashboard</span>
                 <strong>Decision terminal</strong>
-                <small>
-                  Sticky KPI bar tracks ${escapeHtml(topValueLabel)} with readiness
-                  ${Math.max(
-                    Number(topbarSignal.holdingsCount || 0) -
-                      Number(topbarSignal.unpricedItems || 0) -
-                      Number(topbarSignal.staleItems || 0),
-                    0
-                  )}/${Number(topbarSignal.holdingsCount || 0)}.
-                </small>
+                <small>Primary KPIs are pinned below the hero for data-first scanning.</small>
               </article>
             `
             }
@@ -7530,9 +7567,11 @@ function renderApp() {
   `;
 
   ensureAppEventDelegation();
+  ensureDashboardStickySync();
   focusMobileDrawerIfNeeded();
   focusInspectModalIfNeeded();
   focusCompareDrawerIfNeeded();
+  scheduleDashboardKpiPinnedSync();
 
   if (
     state.activeTab === "market" &&
