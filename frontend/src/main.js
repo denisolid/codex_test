@@ -280,6 +280,8 @@ const portfolioCardMarkupCache = {
   desktop: new Map(),
   mobile: new Map()
 };
+const holdingSecondaryDataCache = new Map();
+const holdingSecondaryRequestCache = new Map();
 
 function resetPortfolioCardMarkupCache() {
   portfolioCardMarkupCache.desktop.clear();
@@ -290,6 +292,214 @@ function trimPortfolioCardCache(cacheMap) {
   if (!(cacheMap instanceof Map)) return;
   if (cacheMap.size <= PORTFOLIO_CARD_CACHE_MAX) return;
   cacheMap.clear();
+}
+
+function normalizeSecondaryText(value) {
+  if (value == null) return "-";
+  const safe = String(value).trim();
+  return safe ? safe : "-";
+}
+
+function normalizeSecondaryFloat(value) {
+  if (value == null || value === "") return "-";
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return "-";
+  return formatNumber(parsed, 5);
+}
+
+function normalizeSecondaryVolume(value) {
+  if (value == null || value === "") return "-";
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return "-";
+  return formatNumber(Math.round(parsed), 0);
+}
+
+function normalizeSecondaryDate(value) {
+  if (!value) return "-";
+  const safe = String(value).trim();
+  if (!safe) return "-";
+  const parsed = new Date(safe);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toISOString().slice(0, 10);
+  }
+  return safe.slice(0, 10) || "-";
+}
+
+function firstDefined(values = []) {
+  for (const value of values) {
+    if (value == null) continue;
+    if (typeof value === "string" && !value.trim()) continue;
+    return value;
+  }
+  return null;
+}
+
+function getHoldingSecondarySnapshot(item = {}) {
+  const skinId = Number(item.skinId || 0);
+  const cached = Number.isInteger(skinId) && skinId > 0 ? holdingSecondaryDataCache.get(skinId) : null;
+  if (cached) {
+    return {
+      status: cached.status || "ready",
+      floatValue: normalizeSecondaryText(cached.floatValue),
+      pattern: normalizeSecondaryText(cached.pattern),
+      lastSaleDate: normalizeSecondaryText(cached.lastSaleDate),
+      marketVolume: normalizeSecondaryText(cached.marketVolume),
+      listingUrl: normalizeSecondaryText(cached.listingUrl) === "-" ? "" : String(cached.listingUrl || ""),
+      error: cached.error || ""
+    };
+  }
+
+  return {
+    status: "idle",
+    floatValue: normalizeSecondaryFloat(
+      firstDefined([
+        item.floatValue,
+        item.float_value,
+        item.float,
+        item.wearFloat,
+        item.wear_float,
+        item.paintWear,
+        item.paint_wear
+      ])
+    ),
+    pattern: normalizeSecondaryText(
+      firstDefined([item.pattern, item.patternId, item.paintSeed, item.paint_seed, item.seed])
+    ),
+    lastSaleDate: normalizeSecondaryDate(firstDefined([item.currentPriceRecordedAt, item.updatedAt])),
+    marketVolume: normalizeSecondaryVolume(
+      firstDefined([
+        item.marketVolume24h,
+        item.marketVolume7d,
+        item?.marketInsight?.sellSuggestion?.volume24h
+      ])
+    ),
+    listingUrl: resolveMarketListingUrl(item),
+    error: ""
+  };
+}
+
+function getHoldingSecondaryCacheToken(rawSkinId) {
+  const skinId = Number(rawSkinId || 0);
+  if (!Number.isInteger(skinId) || skinId <= 0) return "secondary-idle";
+  const snapshot = holdingSecondaryDataCache.get(skinId);
+  if (!snapshot) return "secondary-idle";
+  return [
+    String(snapshot.status || "ready"),
+    String(snapshot.floatValue || "-"),
+    String(snapshot.pattern || "-"),
+    String(snapshot.lastSaleDate || "-"),
+    String(snapshot.marketVolume || "-"),
+    String(snapshot.listingUrl || "")
+  ].join("~");
+}
+
+async function hydrateHoldingSecondaryData(rawSkinId, rawSteamItemId = null) {
+  const skinId = Number(rawSkinId || 0);
+  if (!Number.isInteger(skinId) || skinId <= 0) return;
+
+  const existingRequest = holdingSecondaryRequestCache.get(skinId);
+  if (existingRequest) {
+    await existingRequest;
+    return;
+  }
+
+  const holding = getHoldingBySkinId(skinId);
+  if (!holding) return;
+
+  const current = getHoldingSecondarySnapshot(holding);
+  holdingSecondaryDataCache.set(skinId, {
+    ...current,
+    status: "loading",
+    error: ""
+  });
+  render();
+
+  const request = (async () => {
+    const steamItemId = String(rawSteamItemId || holding.primarySteamItemId || "").trim();
+    const [sellSuggestion, skinDetails] = await Promise.all([
+      api(withCurrency(`/market/items/${skinId}/sell-suggestion`)).catch(() => null),
+      /^\d+$/.test(steamItemId)
+        ? api(withCurrency(`/skins/by-steam-item/${encodeURIComponent(steamItemId)}`)).catch(() => null)
+        : api(withCurrency(`/skins/${skinId}`)).catch(() => null)
+    ]);
+
+    const floatValue = normalizeSecondaryFloat(
+      firstDefined([
+        holding.floatValue,
+        holding.float_value,
+        holding.float,
+        holding.wearFloat,
+        holding.wear_float,
+        holding.paintWear,
+        holding.paint_wear,
+        skinDetails?.floatValue,
+        skinDetails?.float_value,
+        skinDetails?.float,
+        skinDetails?.wearFloat,
+        skinDetails?.wear_float,
+        skinDetails?.paintWear,
+        skinDetails?.paint_wear
+      ])
+    );
+    const pattern = normalizeSecondaryText(
+      firstDefined([
+        holding.pattern,
+        holding.patternId,
+        holding.paintSeed,
+        holding.paint_seed,
+        holding.seed,
+        skinDetails?.pattern,
+        skinDetails?.patternId,
+        skinDetails?.paintSeed,
+        skinDetails?.paint_seed,
+        skinDetails?.seed
+      ])
+    );
+    const lastSaleDate = normalizeSecondaryDate(
+      firstDefined([
+        holding.currentPriceRecordedAt,
+        skinDetails?.latestPrice?.recorded_at,
+        skinDetails?.latestPrice?.recordedAt,
+        sellSuggestion?.snapshotCapturedAt,
+        sellSuggestion?.snapshot_captured_at,
+        holding.updatedAt
+      ])
+    );
+    const marketVolume = normalizeSecondaryVolume(
+      firstDefined([
+        sellSuggestion?.volume24h,
+        sellSuggestion?.volume_24h,
+        holding.marketVolume24h,
+        holding.marketVolume7d,
+        holding?.marketInsight?.sellSuggestion?.volume24h
+      ])
+    );
+
+    holdingSecondaryDataCache.set(skinId, {
+      status: "ready",
+      floatValue,
+      pattern,
+      lastSaleDate,
+      marketVolume,
+      listingUrl: resolveMarketListingUrl(holding),
+      error: ""
+    });
+  })()
+    .catch((err) => {
+      const fallback = getHoldingSecondarySnapshot(holding);
+      holdingSecondaryDataCache.set(skinId, {
+        ...fallback,
+        status: "error",
+        error: err?.message || "Failed to refresh secondary data."
+      });
+    })
+    .finally(() => {
+      holdingSecondaryRequestCache.delete(skinId);
+      render();
+    });
+
+  holdingSecondaryRequestCache.set(skinId, request);
+  await request;
 }
 
 function getPortfolioTransactionsCacheToken() {
@@ -332,7 +542,8 @@ function buildPortfolioCardCacheKey(item, variant = "desktop") {
     String(item?.primarySteamItemId || ""),
     String(clue?.action || ""),
     Math.round(Number(clue?.confidence || 0)),
-    liquidityScore
+    liquidityScore,
+    getHoldingSecondaryCacheToken(Number(item?.skinId || 0))
   ].join("|");
 }
 
@@ -1062,12 +1273,8 @@ function renderHoldingInfoTooltip(item = {}) {
 
   const tooltipId = `holding-tip-${skinId}`;
   const isOpen = state.tooltip.openId === tooltipId;
-  const floatValue =
-    item.floatValue == null ? "-" : Number.isFinite(Number(item.floatValue)) ? formatNumber(item.floatValue, 5) : "-";
-  const pattern = item.pattern ?? item.paintSeed ?? "-";
-  const lastSaleDate = String(item.currentPriceRecordedAt || item.updatedAt || "-").slice(0, 10) || "-";
-  const marketVolume = item.marketVolume24h ?? item.marketVolume7d ?? "-";
-  const listingUrl = resolveMarketListingUrl(item);
+  const secondary = getHoldingSecondarySnapshot(item);
+  const listingUrl = secondary.listingUrl || resolveMarketListingUrl(item);
 
   return `
     <span class="tooltip-wrap" data-tooltip-wrap>
@@ -1075,6 +1282,8 @@ function renderHoldingInfoTooltip(item = {}) {
         type="button"
         class="tooltip-toggle"
         data-tooltip-toggle="${escapeHtml(tooltipId)}"
+        data-tooltip-skin-id="${skinId}"
+        data-tooltip-steam-item-id="${escapeHtml(item.primarySteamItemId || "")}"
         aria-label="Show secondary item details"
         aria-describedby="${escapeHtml(tooltipId)}"
         aria-expanded="${isOpen ? "true" : "false"}"
@@ -1087,10 +1296,20 @@ function renderHoldingInfoTooltip(item = {}) {
         class="tooltip-bubble ${isOpen ? "open" : ""}"
       >
         <strong>Secondary Data</strong>
-        <small>Float: ${escapeHtml(String(floatValue))}</small>
-        <small>Pattern: ${escapeHtml(String(pattern))}</small>
-        <small>Last sale: ${escapeHtml(lastSaleDate)}</small>
-        <small>Volume: ${escapeHtml(String(marketVolume))}</small>
+        <small>Float: ${escapeHtml(secondary.floatValue)}</small>
+        <small>Pattern: ${escapeHtml(secondary.pattern)}</small>
+        <small>Last sale: ${escapeHtml(secondary.lastSaleDate)}</small>
+        <small>24h volume: ${escapeHtml(secondary.marketVolume)}</small>
+        ${
+          secondary.status === "loading"
+            ? '<small class="muted">Fetching latest secondary data...</small>'
+            : ""
+        }
+        ${
+          secondary.status === "error"
+            ? '<small class="muted">Live fetch failed. Showing known values.</small>'
+            : ""
+        }
         ${
           listingUrl
             ? `<a href="${escapeHtml(listingUrl)}" target="_blank" rel="noreferrer">Open listing</a>`
@@ -2189,8 +2408,16 @@ function onAppClick(event) {
   if (button?.matches("[data-tooltip-toggle]")) {
     event.preventDefault();
     const id = String(button.getAttribute("data-tooltip-toggle") || "").trim();
-    state.tooltip.openId = state.tooltip.openId === id ? "" : id;
+    const nextOpen = state.tooltip.openId === id ? "" : id;
+    state.tooltip.openId = nextOpen;
     render();
+    if (nextOpen) {
+      const skinId = Number(button.getAttribute("data-tooltip-skin-id") || 0);
+      const steamItemId = String(button.getAttribute("data-tooltip-steam-item-id") || "").trim();
+      if (Number.isInteger(skinId) && skinId > 0) {
+        runUiTask(() => hydrateHoldingSecondaryData(skinId, steamItemId));
+      }
+    }
     return;
   }
 
@@ -2962,6 +3189,8 @@ async function logout() {
   state.teamDashboard.payload = null;
   state.authNotice.emailConfirmToastShown = false;
   resetPortfolioCardMarkupCache();
+  holdingSecondaryDataCache.clear();
+  holdingSecondaryRequestCache.clear();
   inspectModalLastTriggerElement = null;
   compareDrawerLastTriggerElement = null;
   compareDrawerRequestTicket += 1;
@@ -3138,6 +3367,16 @@ async function refreshPortfolio(options = {}) {
     for (const skinId of holdingsValueMemory.keys()) {
       if (!liveSkinIds.has(Number(skinId))) {
         holdingsValueMemory.delete(skinId);
+      }
+    }
+    for (const skinId of holdingSecondaryDataCache.keys()) {
+      if (!liveSkinIds.has(Number(skinId))) {
+        holdingSecondaryDataCache.delete(skinId);
+      }
+    }
+    for (const skinId of holdingSecondaryRequestCache.keys()) {
+      if (!liveSkinIds.has(Number(skinId))) {
+        holdingSecondaryRequestCache.delete(skinId);
       }
     }
     if (state.compareDrawer.skinId && !liveSkinIds.has(Number(state.compareDrawer.skinId))) {
@@ -4738,15 +4977,6 @@ function renderPortfolioDesktopCards() {
           const markup = `
             <article class="portfolio-desktop-card ${sevenDayClass}">
               <header class="portfolio-desktop-card-head">
-                <div class="portfolio-desktop-card-media" style="--rarity-color: ${rarityTheme.color};">
-                  <img
-                    class="portfolio-desktop-card-thumb"
-                    src="${escapeHtml(itemImageUrl)}"
-                    alt="${escapeHtml(item.marketHashName || "CS2 item")}"
-                    loading="lazy"
-                    onerror="this.onerror=null;this.src='${escapeHtml(fallbackImage)}';"
-                  />
-                </div>
                 <div class="portfolio-desktop-card-meta">
                   <div class="portfolio-desktop-card-title-row">
                     <p class="portfolio-desktop-card-name" title="${escapeHtml(
@@ -4764,6 +4994,15 @@ function renderPortfolioDesktopCards() {
                     <small class="muted">Qty ${Number(item.quantity || 0)}</small>
                     <span class="status-badge signal-${escapeHtml(signalBand)}">${escapeHtml(signalLabel)}</span>
                   </div>
+                </div>
+                <div class="portfolio-desktop-card-media" style="--rarity-color: ${rarityTheme.color};">
+                  <img
+                    class="portfolio-desktop-card-thumb"
+                    src="${escapeHtml(itemImageUrl)}"
+                    alt="${escapeHtml(item.marketHashName || "CS2 item")}"
+                    loading="lazy"
+                    onerror="this.onerror=null;this.src='${escapeHtml(fallbackImage)}';"
+                  />
                 </div>
               </header>
               <div class="portfolio-card-core">

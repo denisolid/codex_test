@@ -307,7 +307,7 @@ body.tx-edit-modal-open {
     radial-gradient(560px 160px at 0% -25%, rgba(46, 139, 255, 0.24), transparent 72%),
     radial-gradient(560px 160px at 100% -25%, rgba(127, 93, 255, 0.2), transparent 72%);
   backdrop-filter: blur(16px) saturate(1.18);
-  overflow: hidden;
+  overflow: visible;
   box-shadow:
     0 14px 30px rgba(3, 7, 18, 0.42),
     inset 0 -1px 0 rgba(171, 197, 241, 0.18);
@@ -441,6 +441,7 @@ body.tx-edit-modal-open {
   position: absolute;
   top: calc(100% + 8px);
   right: 0;
+  z-index: 220;
   width: 218px;
   border-radius: 12px;
   border: 1px solid rgba(137, 162, 214, 0.32);
@@ -1701,15 +1702,14 @@ button:disabled,
 }
 
 .portfolio-desktop-card-head {
-  display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(112px, 1fr);
-  gap: 10px;
-  align-items: start;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .portfolio-desktop-card-media {
   width: 100%;
-  height: clamp(136px, 20vh, 178px);
+  height: clamp(170px, 22vh, 210px);
   border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--rarity-color, #7f8ba5) 62%, transparent);
   background: rgba(8, 11, 18, 0.9);
@@ -1728,15 +1728,15 @@ button:disabled,
   background: transparent;
   object-fit: contain;
   padding: 0;
-  transform: scale(1.34);
+  transform: scale(1.22);
   transform-origin: center;
 }
 
 .portfolio-desktop-card-meta {
   display: grid;
-  gap: 5px;
+  gap: 6px;
   min-width: 0;
-  padding-right: 2px;
+  padding-right: 0;
 }
 
 .portfolio-desktop-card-name {
@@ -1745,10 +1745,8 @@ button:disabled,
   font-size: 0.94rem;
   font-weight: 700;
   line-height: 1.3;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .portfolio-desktop-card-title-row {
@@ -3929,6 +3927,12 @@ a:hover {
   border-color: rgba(114, 145, 205, 0.28);
   padding-top: 12px;
   padding-bottom: 12px;
+  overflow: visible;
+  position: relative;
+}
+
+.dashboard-hero-panel .dashboard-panel-body {
+  overflow: visible;
 }
 
 .dashboard-hero-compact {
@@ -3948,6 +3952,17 @@ a:hover {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+.dashboard-hero-title-row .tooltip-wrap {
+  z-index: 24;
+}
+
+.dashboard-hero-title-row .tooltip-bubble {
+  right: 0;
+  left: auto;
+  z-index: 28;
+  width: min(220px, calc(100vw - 24px));
 }
 
 .dashboard-hero-title-row h1 {
