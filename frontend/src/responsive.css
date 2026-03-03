@@ -926,3 +926,45 @@ button:active,
   }
 }
 
+/* Dashboard terminal overrides */
+.dashboard-movers-panel .movers-grid {
+  display: grid;
+  overflow: visible;
+  scroll-snap-type: none;
+  padding-bottom: 0;
+}
+
+.dashboard-movers-panel .mover-card {
+  min-width: 0;
+  scroll-snap-align: none;
+}
+
+@media (max-width: 1023px) {
+  .dashboard-kpi-sticky {
+    top: calc(66px + env(safe-area-inset-top));
+  }
+}
+
+@media (max-width: 767px) {
+  .dashboard-hero-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-hero-actions .btn-primary,
+  .dashboard-hero-actions .btn-secondary,
+  .dashboard-hero-actions .btn-tertiary {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .compare-drawer-item-head {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+
+  .compare-drawer-item-head img {
+    width: 72px;
+    height: 56px;
+  }
+}
