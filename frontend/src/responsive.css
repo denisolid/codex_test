@@ -472,6 +472,14 @@ body.mobile-drawer-open {
   display: none;
 }
 
+.portfolio-mobile-controls {
+  display: flex;
+}
+
+.portfolio-control-bar {
+  display: none;
+}
+
 .portfolio-mobile-list {
   display: grid;
   gap: 10px;
@@ -485,6 +493,7 @@ body.mobile-drawer-open {
   padding: 10px;
   display: grid;
   gap: 10px;
+  min-height: 272px;
 }
 
 .portfolio-mobile-head {
@@ -549,6 +558,8 @@ body.mobile-drawer-open {
 }
 
 .portfolio-mobile-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -574,6 +585,10 @@ body.mobile-drawer-open {
 
 .portfolio-mobile-compare {
   margin-top: 2px;
+}
+
+.portfolio-controls-drawer-root .dashboard-drawer-panel {
+  width: 100vw;
 }
 
 .table-wrap {
@@ -695,6 +710,14 @@ button:active,
   .mobile-drawer-root,
   .portfolio-mobile-only {
     display: none;
+  }
+
+  .portfolio-mobile-controls {
+    display: none;
+  }
+
+  .portfolio-control-bar {
+    display: grid;
   }
 
   .desktop-header {
@@ -966,5 +989,13 @@ button:active,
   .compare-drawer-item-head img {
     width: 72px;
     height: 56px;
+  }
+
+  .compare-drawer-root .dashboard-drawer-footer {
+    grid-template-columns: 1fr;
+  }
+
+  .portfolio-mobile-actions {
+    grid-template-columns: 1fr;
   }
 }
