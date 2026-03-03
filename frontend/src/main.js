@@ -4660,7 +4660,6 @@ function renderPortfolioMobileList() {
                 <p><span>24H</span><strong class="pnl-text ${oneDayClass}">${formatPercent(
             item.oneDayChangePercent
           )}</strong></p>
-                <p><span>Value</span><strong>${formatMoney(item.lineValue)}</strong></p>
               </div>
               <div class="row portfolio-mobile-actions">
                 <button
@@ -4776,10 +4775,8 @@ function renderPortfolioDesktopCards() {
                   <span>7D Change</span>
                   <strong class="pnl-text ${sevenDayClass}">${formatPercent(
             item.sevenDayChangePercent
-          )}</strong></p>
-              </div>
-              <div class="portfolio-secondary-grid">
-                <p><span>Position Value</span><strong>${formatMoney(item.lineValue)}</strong></p>
+          )}</strong>
+                </p>
               </div>
               <div class="row portfolio-desktop-card-actions">
                 <button
