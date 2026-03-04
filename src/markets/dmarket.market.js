@@ -9,6 +9,7 @@ const {
 const SOURCE = "dmarket";
 const DEFAULT_API_URL = "https://api.dmarket.com/exchange/v1";
 const DEFAULT_GAME_ID = "a8db";
+const OFFER_SCAN_LIMIT = 20;
 
 function toApiBaseUrl() {
   const raw = String(dmarketApiUrl || DEFAULT_API_URL).trim();
@@ -19,16 +20,22 @@ function buildApiUrl(marketHashName) {
   const params = new URLSearchParams({
     gameId: DEFAULT_GAME_ID,
     title: String(marketHashName || ""),
-    limit: "1"
+    limit: String(OFFER_SCAN_LIMIT)
   });
 
   return `${toApiBaseUrl()}/offers-by-title?${params.toString()}`;
 }
 
 function buildListingUrl(marketHashName) {
-  return `https://dmarket.com/ingame-items/item-list/csgo-skins?searchTitle=${encodeURIComponent(
-    String(marketHashName || "")
-  )}`;
+  const title = String(marketHashName || "").trim();
+  const params = new URLSearchParams();
+  if (title) {
+    // "title" is used by DMarket's webapp; keep "searchTitle" as a backward-compatible hint.
+    params.set("title", title);
+    params.set("searchTitle", title);
+  }
+  const query = params.toString();
+  return `https://dmarket.com/ingame-items/item-list/csgo-skins${query ? `?${query}` : ""}`;
 }
 
 function toSafeHttpUrl(value) {
@@ -122,6 +129,13 @@ function extractPrice(offer = {}) {
   return null;
 }
 
+function normalizeTitle(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
 function extractBestOffer(payload = {}, requestedMarketHashName = "") {
   const list = Array.isArray(payload?.objects)
     ? payload.objects
@@ -133,20 +147,41 @@ function extractBestOffer(payload = {}, requestedMarketHashName = "") {
           ? payload.offers
           : [];
 
-  const first = list[0] || null;
-  if (!first) return null;
+  if (!list.length) return null;
+  const requestedTitle = normalizeTitle(requestedMarketHashName);
 
-  const price = extractPrice(first);
-  if (price == null) return null;
+  const pricedOffers = list
+    .map((offer) => {
+      const price = extractPrice(offer);
+      if (price == null) return null;
+      const offerTitle = normalizeTitle(
+        offer?.title || offer?.marketHashName || offer?.item?.title || offer?.item?.marketHashName
+      );
+      return {
+        offer,
+        price,
+        exactTitleMatch: Boolean(requestedTitle && offerTitle && requestedTitle === offerTitle)
+      };
+    })
+    .filter(Boolean);
+
+  if (!pricedOffers.length) return null;
+
+  const exactMatches = pricedOffers.filter((candidate) => candidate.exactTitleMatch);
+  const candidatePool = exactMatches.length ? exactMatches : pricedOffers;
+  const selected =
+    candidatePool.sort((a, b) => Number(a.price) - Number(b.price))[0] || null;
+  if (!selected) return null;
+  const offer = selected.offer;
 
   return {
-    price,
-    currency: String(first.currency || payload.currency || "USD").trim().toUpperCase(),
+    price: selected.price,
+    currency: String(offer.currency || payload.currency || "USD").trim().toUpperCase(),
     url: resolveOfferUrl(
-      first,
-      requestedMarketHashName || first.title || payload.title || ""
+      offer,
+      requestedMarketHashName || offer.title || payload.title || ""
     ),
-    raw: first
+    raw: offer
   };
 }
 
@@ -226,6 +261,7 @@ module.exports = {
   __testables: {
     extractPrice,
     toSafeHttpUrl,
-    resolveOfferUrl
+    resolveOfferUrl,
+    extractBestOffer
   }
 };

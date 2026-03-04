@@ -171,7 +171,7 @@ async function searchItemPrice(input = {}) {
       if (payload) break;
     } catch (err) {
       lastError = err;
-      const status = Number(err?.statusCode || err?.status || 0);
+      const status = Number(err?.upstreamStatus || err?.statusCode || err?.status || 0);
       if (status === 401 || status === 403) {
         continue;
       }
