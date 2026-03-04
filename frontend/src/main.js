@@ -288,6 +288,7 @@ const portfolioCardMarkupCache = {
 };
 const holdingSecondaryDataCache = new Map();
 const holdingSecondaryRequestCache = new Map();
+const compareDrawerInsightsCache = new WeakMap();
 
 function resetPortfolioCardMarkupCache() {
   portfolioCardMarkupCache.desktop.clear();
@@ -2151,6 +2152,32 @@ function closeCompareDrawer(options = {}) {
   compareDrawerLastTriggerElement = null;
 }
 
+function openCompareDrawerMarketTarget(rawUrl, rawSkinId = state.compareDrawer.skinId) {
+  const url = String(rawUrl || "").trim();
+  if (url) {
+    try {
+      const parsed = new URL(url, window.location.origin);
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        window.open(parsed.toString(), "_blank", "noopener,noreferrer");
+        return true;
+      }
+    } catch (_err) {
+      // Ignore malformed URL and fallback to market tab.
+    }
+  }
+
+  const skinId = Number(rawSkinId || state.compareDrawer.skinId || 0);
+  if (!Number.isInteger(skinId) || skinId <= 0) {
+    return false;
+  }
+  closeCompareDrawer({ restoreFocus: false });
+  state.activeTab = "market";
+  state.marketTab.skinId = String(skinId);
+  render();
+  runUiTask(() => analyzeMarketItemBySkinId(skinId));
+  return true;
+}
+
 async function refreshCompareDrawerData(options = {}) {
   const {
     skinId: rawSkinId = state.compareDrawer.skinId,
@@ -2695,15 +2722,21 @@ function onAppClick(event) {
     return;
   }
 
-  if (button?.matches("#compare-drawer-open-market-btn")) {
+  if (button?.matches("#compare-drawer-open-best-buy-btn")) {
     event.preventDefault();
-    const skinId = Number(button.getAttribute("data-skin-id") || state.compareDrawer.skinId || 0);
-    if (!Number.isInteger(skinId) || skinId <= 0) return;
-    closeCompareDrawer({ restoreFocus: false });
-    state.activeTab = "market";
-    state.marketTab.skinId = String(skinId);
-    render();
-    runUiTask(() => analyzeMarketItemBySkinId(skinId));
+    openCompareDrawerMarketTarget(
+      button.getAttribute("data-market-url"),
+      button.getAttribute("data-skin-id")
+    );
+    return;
+  }
+
+  if (button?.matches("#compare-drawer-open-best-sell-btn")) {
+    event.preventDefault();
+    openCompareDrawerMarketTarget(
+      button.getAttribute("data-market-url"),
+      button.getAttribute("data-skin-id")
+    );
     return;
   }
 
@@ -4600,6 +4633,89 @@ function formatMarketSourceLabel(source) {
   return map[String(source || "").toLowerCase()] || toTitle(source || "Market");
 }
 
+function resolveCompareDrawerFeePercent(row, feeMap = null) {
+  const inlineFee = Number(row?.feePercent);
+  if (Number.isFinite(inlineFee)) return inlineFee;
+  const sourceKey = String(row?.source || "")
+    .trim()
+    .toLowerCase();
+  const mappedFee = Number(feeMap?.[sourceKey]);
+  return Number.isFinite(mappedFee) ? mappedFee : null;
+}
+
+function getCompareDrawerInsights(payload = null) {
+  if (!payload || typeof payload !== "object") return null;
+  const comparison = payload.marketComparison || null;
+  const perMarket = Array.isArray(comparison?.perMarket) ? comparison.perMarket : [];
+  const feeMap = payload.fees || null;
+  const cached = compareDrawerInsightsCache.get(payload);
+  if (cached && cached.perMarketRef === perMarket && cached.feeMapRef === feeMap) {
+    return cached.value;
+  }
+
+  const rows = perMarket.map((row) => {
+    const available = Boolean(row?.available);
+    const buyValue = Number(row?.grossPrice);
+    const sellValue = Number(row?.netPriceAfterFees);
+    return {
+      source: String(row?.source || ""),
+      label: formatMarketSourceLabel(row?.source),
+      available,
+      buyValue: available && Number.isFinite(buyValue) ? buyValue : null,
+      sellValue: available && Number.isFinite(sellValue) ? sellValue : null,
+      currency: row?.currency || payload.currency || state.currency,
+      updatedAt: row?.updatedAt || null,
+      unavailableReason: row?.unavailableReason ? String(row.unavailableReason) : "",
+      url: typeof row?.url === "string" ? row.url.trim() : "",
+      feePercent: resolveCompareDrawerFeePercent(row, feeMap)
+    };
+  });
+
+  const buyCandidates = rows
+    .filter((entry) => Number.isFinite(entry.buyValue))
+    .sort((a, b) => Number(a.buyValue) - Number(b.buyValue));
+  const sellCandidates = rows
+    .filter((entry) => Number.isFinite(entry.sellValue))
+    .sort((a, b) => Number(b.sellValue) - Number(a.sellValue));
+
+  const lowestBuyMarket = buyCandidates[0] || null;
+  const highestSellMarket = sellCandidates[0] || null;
+  const lowestBuyValue = Number.isFinite(lowestBuyMarket?.buyValue)
+    ? Number(lowestBuyMarket.buyValue)
+    : null;
+  const highestSellNetValue = Number.isFinite(highestSellMarket?.sellValue)
+    ? Number(highestSellMarket.sellValue)
+    : null;
+  const canCalculateSpread =
+    Number.isFinite(lowestBuyValue) &&
+    Number.isFinite(highestSellNetValue) &&
+    Number(lowestBuyValue) > 0;
+  const profit = canCalculateSpread
+    ? Number(highestSellNetValue) - Number(lowestBuyValue)
+    : null;
+  const spreadPercent = canCalculateSpread
+    ? (Number(profit) / Number(lowestBuyValue)) * 100
+    : null;
+
+  const value = {
+    rows,
+    topBuyMarkets: buyCandidates.slice(0, 3),
+    topSellMarkets: sellCandidates.slice(0, 3),
+    lowestBuyMarket,
+    highestSellMarket,
+    lowestBuyValue,
+    highestSellNetValue,
+    profit,
+    spreadPercent
+  };
+  compareDrawerInsightsCache.set(payload, {
+    perMarketRef: perMarket,
+    feeMapRef: feeMap,
+    value
+  });
+  return value;
+}
+
 function getHoldingConditionLabel(item) {
   const direct = String(
     item?.exterior || item?.condition || item?.wearName || item?.wear || ""
@@ -4763,102 +4879,199 @@ function renderCompareDrawerBody() {
     return `<p class="muted">Select a mover and open compare to inspect multi-market pricing.</p>`;
   }
 
-  const comparison = payload.marketComparison || null;
-  const perMarket = Array.isArray(comparison?.perMarket) ? comparison.perMarket : [];
+  const insights = getCompareDrawerInsights(payload);
+  const rows = Array.isArray(insights?.rows) ? insights.rows : [];
   const pricingMode = normalizePricingMode(state.portfolio?.pricing?.mode || state.pricingMode);
   const modeLabel = getPricingModeLabel(pricingMode);
-  const bestBuy = comparison?.bestBuy
-    ? `${formatMarketSourceLabel(comparison.bestBuy.source)} ${formatMoney(
-        comparison.bestBuy.grossPrice,
-        payload.currency || state.currency
-      )}`
-    : "N/A";
-  const bestSell = comparison?.bestSellNet
-    ? `${formatMarketSourceLabel(comparison.bestSellNet.source)} ${formatMoney(
-        comparison.bestSellNet.netPriceAfterFees,
-        payload.currency || state.currency
-      )}`
-    : "N/A";
+  const lowestBuyMarket = insights?.lowestBuyMarket || null;
+  const highestSellMarket = insights?.highestSellMarket || null;
+  const lowestBuyValue = Number.isFinite(insights?.lowestBuyValue)
+    ? Number(insights.lowestBuyValue)
+    : null;
+  const highestSellNetValue = Number.isFinite(insights?.highestSellNetValue)
+    ? Number(insights.highestSellNetValue)
+    : null;
+  const arbitrageProfit = Number.isFinite(insights?.profit) ? Number(insights.profit) : null;
+  const arbitrageSpreadPercent = Number.isFinite(insights?.spreadPercent)
+    ? Number(insights.spreadPercent)
+    : null;
+  const arbitrageProfitClass = arbitrageProfit > 0 ? "is-positive" : "is-neutral";
 
-  const marketRows = perMarket.length
-    ? perMarket
-        .map((row) => {
-          const available = Boolean(row?.available);
+  const renderQuickList = (entries = [], valueKey = "buyValue", emptyText = "No market data") => {
+    if (!entries.length) {
+      return `<p class="muted compare-drawer-empty">${escapeHtml(emptyText)}</p>`;
+    }
+    return `
+      <ul class="compare-drawer-top-list">
+        ${entries
+          .map((entry) => {
+            const value = Number(entry?.[valueKey]);
+            return `
+              <li>
+                <span>${escapeHtml(entry?.label || "Market")}</span>
+                <strong>${Number.isFinite(value) ? formatMoney(value, entry?.currency || payload.currency) : "-"}</strong>
+              </li>
+            `;
+          })
+          .join("")}
+      </ul>
+    `;
+  };
+
+  const marketRows = rows.length
+    ? rows
+        .map((entry) => {
+          const available = Boolean(entry?.available);
+          const buyValue = Number(entry?.buyValue);
+          const sellValue = Number(entry?.sellValue);
+          const hasBuy = Number.isFinite(buyValue);
+          const hasSell = Number.isFinite(sellValue);
+          const feeValue = Number(entry?.feePercent);
+          const feeDisplay = Number.isFinite(feeValue) ? `${formatNumber(feeValue, 2)}%` : "-";
+          const marketProfit =
+            Number.isFinite(lowestBuyValue) &&
+            Number(lowestBuyValue) > 0 &&
+            hasSell
+              ? sellValue - Number(lowestBuyValue)
+              : null;
+          const profitTone =
+            marketProfit == null
+              ? "profit-neutral"
+              : marketProfit > 0
+                ? "profit-positive"
+                : marketProfit < 0
+                  ? "profit-negative"
+                  : "profit-neutral";
+          const profitLabel =
+            marketProfit == null ? "Profit" : marketProfit < 0 ? "Loss" : "Profit";
           return `
             <article class="compare-drawer-market-card ${available ? "" : "unavailable"}">
               <div class="compare-drawer-market-head">
-                <strong>${escapeHtml(formatMarketSourceLabel(row?.source))}</strong>
-                <small>${escapeHtml(available ? formatRelativeTime(row?.updatedAt) : "No data")}</small>
+                <strong>${escapeHtml(entry?.label || "Market")}</strong>
+                <small>${escapeHtml(available ? `Updated ${formatRelativeTime(entry?.updatedAt)}` : "No data")}</small>
               </div>
               ${
-                !available && row?.unavailableReason
-                  ? `<p class="muted">${escapeHtml(String(row.unavailableReason))}</p>`
+                !available && entry?.unavailableReason
+                  ? `<p class="muted compare-drawer-empty">${escapeHtml(entry.unavailableReason)}</p>`
                   : ""
               }
-              <p>Best Buy <strong>${available ? formatMoney(row?.grossPrice, row?.currency || state.currency) : "-"}</strong></p>
-              <p>Best Sell Net <strong>${
-                available ? formatMoney(row?.netPriceAfterFees, row?.currency || state.currency) : "-"
-              }</strong></p>
+              <dl class="compare-drawer-market-metrics">
+                <div class="compare-drawer-market-metric">
+                  <dt>Best Buy</dt>
+                  <dd>${hasBuy ? formatMoney(buyValue, entry?.currency || payload.currency) : "-"}</dd>
+                </div>
+                <div class="compare-drawer-market-metric">
+                  <dt>Best Sell Net</dt>
+                  <dd>${hasSell ? formatMoney(sellValue, entry?.currency || payload.currency) : "-"}</dd>
+                </div>
+                <div class="compare-drawer-market-metric">
+                  <dt>Fee</dt>
+                  <dd>${escapeHtml(feeDisplay)}</dd>
+                </div>
+                <div class="compare-drawer-market-metric ${profitTone}">
+                  <dt>${escapeHtml(profitLabel)}</dt>
+                  <dd>${
+                    marketProfit == null
+                      ? "-"
+                      : `${profitLabel} ${formatSignedMoney(
+                          marketProfit,
+                          entry?.currency || payload.currency
+                        )}`
+                  }</dd>
+                </div>
+              </dl>
               ${
-                row?.url
+                entry?.url
                   ? `<a class="link-btn ghost market-open-link" href="${escapeHtml(
-                      row.url
+                      entry.url
                     )}" target="_blank" rel="noreferrer">Open listing</a>`
-                  : '<span class="muted">No listing link</span>'
+                  : '<span class="muted compare-drawer-empty">No listing link</span>'
               }
             </article>
           `;
         })
         .join("")
-    : '<p class="muted">Market comparison data is unavailable for this item.</p>';
-
-  const fees = payload.fees || {};
-  const feeRows = ["steam", "skinport", "csfloat", "dmarket"]
-    .filter((source) => Number.isFinite(Number(fees[source])))
-    .map(
-      (source) =>
-        `<li><span>${escapeHtml(formatMarketSourceLabel(source))}</span><strong>${escapeHtml(
-          `${formatNumber(fees[source], 2)}%`
-        )}</strong></li>`
-    )
-    .join("");
+    : '<p class="muted compare-drawer-empty">Market comparison data is unavailable for this item.</p>';
 
   return `
     <div class="compare-drawer-item-head">
       <img src="${escapeHtml(payload.imageUrl)}" alt="${escapeHtml(payload.marketHashName)}" loading="lazy" />
-      <div>
+      <div class="compare-drawer-item-meta">
         <p class="compare-drawer-item-name">${escapeHtml(payload.marketHashName)}</p>
-        <small class="muted">${escapeHtml(payload.condition || "Unknown condition")}</small>
-        <small class="muted">Qty ${escapeHtml(formatNumber(payload.quantity, 0))} | Position ${formatMoney(
-    payload.lineValue,
-    payload.currency || state.currency
-  )}</small>
+        <div class="compare-drawer-item-badges">
+          <span class="compare-drawer-item-badge">Condition ${escapeHtml(
+            payload.condition || "Unknown condition"
+          )}</span>
+          <span class="compare-drawer-item-badge">Qty ${escapeHtml(formatNumber(payload.quantity, 0))}</span>
+          ${
+            Number.isFinite(Number(payload.lineValue))
+              ? `<span class="compare-drawer-item-badge">Position ${formatMoney(
+                  payload.lineValue,
+                  payload.currency || state.currency
+                )}</span>`
+              : ""
+          }
+        </div>
+        <small class="muted compare-drawer-item-note">Multi-market pricing and fee-adjusted sell opportunities</small>
       </div>
     </div>
-    <div class="compare-drawer-summary">
-      <p>${escapeHtml(modeLabel)} <strong>${formatMoney(payload.currentPrice, payload.currency || state.currency)}</strong></p>
-      <p>Source <strong>${escapeHtml(payload.currentPriceSource || "N/A")}</strong></p>
-      <p>Best Buy <strong>${bestBuy}</strong></p>
-      <p>Best Sell Net <strong>${bestSell}</strong></p>
+    <section class="compare-drawer-arb-card">
+      <p class="compare-drawer-section-eyebrow">Arbitrage Opportunity</p>
+      <div class="compare-drawer-arb-grid">
+        <article class="compare-drawer-arb-leg">
+          <span>BUY</span>
+          <strong>${escapeHtml(lowestBuyMarket?.label || "N/A")}</strong>
+          <small>${
+            Number.isFinite(lowestBuyValue)
+              ? formatMoney(lowestBuyValue, lowestBuyMarket?.currency || payload.currency)
+              : "-"
+          }</small>
+        </article>
+        <article class="compare-drawer-arb-leg">
+          <span>SELL</span>
+          <strong>${escapeHtml(highestSellMarket?.label || "N/A")}</strong>
+          <small>${
+            Number.isFinite(highestSellNetValue)
+              ? formatMoney(highestSellNetValue, highestSellMarket?.currency || payload.currency)
+              : "-"
+          }</small>
+        </article>
+      </div>
+      <div class="compare-drawer-arb-profit ${arbitrageProfitClass}">
+        <span>Estimated Profit</span>
+        <strong>${
+          arbitrageProfit == null || arbitrageSpreadPercent == null
+            ? "N/A"
+            : `${formatSignedMoney(arbitrageProfit, payload.currency || state.currency)} (${formatPercent(
+                arbitrageSpreadPercent
+              )})`
+        }</strong>
+      </div>
+    </section>
+    <div class="compare-drawer-insights-grid">
+      <section class="compare-drawer-insight-card">
+        <h4>Best Buy</h4>
+        ${renderQuickList(insights?.topBuyMarkets || [], "buyValue", "No buy prices")}
+      </section>
+      <section class="compare-drawer-insight-card">
+        <h4>Best Sell</h4>
+        ${renderQuickList(insights?.topSellMarkets || [], "sellValue", "No sell prices")}
+      </section>
+    </div>
+    <div class="compare-drawer-context">
+      <p><span>${escapeHtml(modeLabel)}</span><strong>${formatMoney(payload.currentPrice, payload.currency || state.currency)}</strong></p>
+      <p><span>Source</span><strong>${escapeHtml(payload.currentPriceSource || "N/A")}</strong></p>
       ${
         payload.generatedAt
           ? `<small class="muted">Snapshot ${escapeHtml(formatRelativeTime(payload.generatedAt))}</small>`
           : ""
       }
     </div>
-    <div class="compare-drawer-market-grid">
-      ${marketRows}
+    <div class="compare-drawer-market-section-head">
+      <h4>All Markets</h4>
+      <small class="muted">Profit/loss is based on lowest buy price</small>
     </div>
-    ${
-      feeRows
-        ? `
-      <div class="compare-drawer-fees">
-        <h4>Fees</h4>
-        <ul>${feeRows}</ul>
-      </div>
-    `
-        : ""
-    }
+    <div class="compare-drawer-market-grid">${marketRows}</div>
     ${
       drawer.error
         ? `<p class="muted compare-drawer-error" role="status" aria-live="polite">${escapeHtml(drawer.error)}</p>`
@@ -4869,15 +5082,29 @@ function renderCompareDrawerBody() {
 
 function renderCompareDrawerOverlay() {
   const drawer = state.compareDrawer;
+  const insights = getCompareDrawerInsights(drawer.payload);
+  const bestBuyUrl = String(insights?.lowestBuyMarket?.url || "").trim();
+  const bestSellUrl = String(insights?.highestSellMarket?.url || "").trim();
   const footerMarkup = `
     <button
       type="button"
-      class="ghost-btn"
-      id="compare-drawer-open-market-btn"
+      class="btn-primary compare-drawer-open-best-buy-btn"
+      id="compare-drawer-open-best-buy-btn"
+      data-market-url="${escapeHtml(bestBuyUrl)}"
       data-skin-id="${Number(drawer.skinId || 0)}"
       ${drawer.skinId ? "" : "disabled"}
     >
-      Go to market
+      Open Best Buy
+    </button>
+    <button
+      type="button"
+      class="ghost-btn btn-secondary compare-drawer-open-best-sell-btn"
+      id="compare-drawer-open-best-sell-btn"
+      data-market-url="${escapeHtml(bestSellUrl)}"
+      data-skin-id="${Number(drawer.skinId || 0)}"
+      ${drawer.skinId ? "" : "disabled"}
+    >
+      Open Best Sell
     </button>
     <button
       type="button"

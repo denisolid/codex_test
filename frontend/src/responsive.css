@@ -980,12 +980,27 @@ button:active,
   }
 
   .compare-drawer-item-head {
-    grid-template-columns: 72px minmax(0, 1fr);
+    grid-template-columns: 66px minmax(0, 1fr);
   }
 
   .compare-drawer-item-head img {
-    width: 72px;
-    height: 56px;
+    width: 66px;
+    height: 52px;
+  }
+
+  .compare-drawer-arb-grid,
+  .compare-drawer-insights-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .compare-drawer-market-section-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .compare-drawer-market-section-head small {
+    text-align: left;
   }
 
   .compare-drawer-root .dashboard-drawer-footer {
