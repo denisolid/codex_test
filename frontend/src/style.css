@@ -4593,6 +4593,42 @@ a:hover {
   gap: 8px;
 }
 
+.compare-drawer-arb-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(127, 153, 204, 0.34);
+  background: rgba(8, 13, 24, 0.7);
+  padding: 5px 9px;
+  width: fit-content;
+}
+
+.compare-drawer-arb-status strong {
+  font-size: 0.71rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.compare-drawer-arb-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #8da6d6;
+  box-shadow: 0 0 0 4px rgba(141, 166, 214, 0.18);
+}
+
+.compare-drawer-arb-status.is-opportunity {
+  border-color: rgba(74, 205, 132, 0.48);
+  background: rgba(16, 36, 26, 0.62);
+  color: #b9ffd9;
+}
+
+.compare-drawer-arb-status.is-opportunity .compare-drawer-arb-status-dot {
+  background: #56d992;
+  box-shadow: 0 0 0 4px rgba(86, 217, 146, 0.22);
+}
+
 .compare-drawer-section-eyebrow {
   margin: 0;
   text-transform: uppercase;
@@ -4728,6 +4764,12 @@ a:hover {
   font-size: 0.76rem;
 }
 
+.compare-drawer-top-list-market {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .compare-drawer-top-list strong {
   font-size: 0.8rem;
   color: #e3efff;
@@ -4803,11 +4845,41 @@ a:hover {
   background: rgba(18, 15, 16, 0.42);
 }
 
+.compare-drawer-market-card.has-arb-buy {
+  border-color: rgba(86, 217, 146, 0.52);
+  box-shadow: inset 0 0 0 1px rgba(86, 217, 146, 0.16);
+}
+
+.compare-drawer-market-card.has-arb-sell {
+  border-color: rgba(255, 188, 96, 0.54);
+  box-shadow: inset 0 0 0 1px rgba(255, 188, 96, 0.16);
+}
+
+.compare-drawer-market-card.has-arb-both {
+  border-color: rgba(106, 180, 255, 0.58);
+  box-shadow: inset 0 0 0 1px rgba(106, 180, 255, 0.2);
+}
+
 .compare-drawer-market-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
+}
+
+.compare-drawer-market-head-main {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.compare-drawer-market-title-wrap {
+  min-width: 0;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
 }
 
 .compare-drawer-market-head strong {
@@ -4817,6 +4889,73 @@ a:hover {
 .compare-drawer-market-head small {
   color: var(--text-dim);
   font-size: 0.68rem;
+}
+
+.compare-drawer-market-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  border: 1px solid rgba(172, 197, 242, 0.46);
+  background: linear-gradient(145deg, #183e6f, #2e8bff);
+  color: #f6fbff;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 24px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.compare-drawer-market-icon.market-icon-steam {
+  background: linear-gradient(145deg, #1b2a58, #1f79bb);
+}
+
+.compare-drawer-market-icon.market-icon-dmarket {
+  background: linear-gradient(145deg, #5b44ff, #2c9fff);
+}
+
+.compare-drawer-market-icon.market-icon-skinport {
+  background: linear-gradient(145deg, #0f8d66, #3ccc9f);
+}
+
+.compare-drawer-market-icon.market-icon-csfloat {
+  background: linear-gradient(145deg, #d66f23, #ffbe57);
+}
+
+.compare-drawer-market-arb-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid rgba(140, 168, 219, 0.36);
+  background: rgba(12, 21, 37, 0.8);
+  color: #d6e7ff;
+  padding: 2px 8px;
+  font-size: 0.6rem;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.compare-drawer-market-arb-tag.has-arb-buy {
+  border-color: rgba(86, 217, 146, 0.48);
+  background: rgba(25, 56, 41, 0.74);
+  color: #abffcf;
+}
+
+.compare-drawer-market-arb-tag.has-arb-sell {
+  border-color: rgba(255, 188, 96, 0.52);
+  background: rgba(64, 40, 19, 0.74);
+  color: #ffdcae;
+}
+
+.compare-drawer-market-arb-tag.has-arb-both {
+  border-color: rgba(106, 180, 255, 0.52);
+  background: rgba(27, 45, 77, 0.72);
+  color: #d6ecff;
 }
 
 .compare-drawer-market-metrics {
@@ -4855,6 +4994,20 @@ a:hover {
 
 .compare-drawer-market-metric.profit-neutral dd {
   color: #d5e2f9;
+}
+
+.compare-drawer-market-open-link {
+  width: 100%;
+  justify-content: center;
+  background: linear-gradient(135deg, #0e8f6b, #26c7a2);
+  border: 1px solid rgba(136, 250, 214, 0.4);
+  box-shadow: 0 10px 22px rgba(27, 167, 129, 0.28);
+  color: #f4fff9;
+}
+
+.compare-drawer-market-open-link:hover {
+  box-shadow: 0 12px 24px rgba(27, 167, 129, 0.34);
+  border-color: rgba(160, 255, 226, 0.52);
 }
 
 .compare-drawer-refresh-btn {
