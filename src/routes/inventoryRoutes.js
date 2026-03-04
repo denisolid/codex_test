@@ -10,6 +10,6 @@ const syncRateLimiter = createRateLimiter({
   message: "Too many sync attempts, wait before trying again."
 });
 
-router.post("/sync", syncRateLimiter, auth, ctrl.syncInventory);
+router.post("/sync", auth, syncRateLimiter, ctrl.syncInventory);
 
 module.exports = router;

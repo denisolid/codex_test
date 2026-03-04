@@ -54,3 +54,53 @@ test("rate limiter normalizes numeric path params and applies a shared key", asy
   assert.equal(secondErr.code, "RATE_LIMITED");
   assert.ok(Number(res.headers["Retry-After"]) >= 1);
 });
+
+test("rate limiter uses authenticated user id when available", async () => {
+  const limiter = createRateLimiter({
+    windowMs: 60_000,
+    max: 1,
+    message: "Too many requests"
+  });
+  const res = createResRecorder();
+
+  const firstErr = await runLimiter(
+    limiter,
+    {
+      ip: "203.0.113.10",
+      method: "POST",
+      baseUrl: "/api/inventory",
+      path: "/sync",
+      userId: "user-1"
+    },
+    res
+  );
+  assert.equal(firstErr, null);
+
+  const secondUserErr = await runLimiter(
+    limiter,
+    {
+      ip: "203.0.113.10",
+      method: "POST",
+      baseUrl: "/api/inventory",
+      path: "/sync",
+      userId: "user-2"
+    },
+    res
+  );
+  assert.equal(secondUserErr, null);
+
+  const secondHitSameUserErr = await runLimiter(
+    limiter,
+    {
+      ip: "203.0.113.10",
+      method: "POST",
+      baseUrl: "/api/inventory",
+      path: "/sync",
+      userId: "user-1"
+    },
+    res
+  );
+  assert.ok(secondHitSameUserErr);
+  assert.equal(secondHitSameUserErr.statusCode, 429);
+  assert.equal(secondHitSameUserErr.code, "RATE_LIMITED");
+});
