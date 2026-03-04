@@ -1011,6 +1011,10 @@ body.tx-edit-modal-open {
   margin-bottom: var(--space-3);
 }
 
+.market-opportunity-form {
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+}
+
 .list-toolbar {
   display: grid;
   grid-template-columns: repeat(4, minmax(130px, 1fr));
@@ -4233,6 +4237,94 @@ a:hover {
   white-space: nowrap;
 }
 
+.dashboard-arbitrage-panel .dashboard-panel-body {
+  display: grid;
+  gap: 8px;
+}
+
+.dashboard-arb-list {
+  display: grid;
+  gap: 8px;
+}
+
+.dashboard-arb-row {
+  border: 1px solid rgba(127, 153, 204, 0.24);
+  border-radius: 10px;
+  padding: 9px 10px;
+  background: rgba(8, 12, 22, 0.78);
+  display: grid;
+  gap: 3px;
+}
+
+.dashboard-arb-item {
+  font-size: 0.84rem;
+  color: #e7f1ff;
+}
+
+.dashboard-arb-leg,
+.dashboard-arb-score,
+.dashboard-arb-profit {
+  margin: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+}
+
+.dashboard-arb-leg span,
+.dashboard-arb-score span,
+.dashboard-arb-profit span {
+  color: var(--text-muted);
+}
+
+.dashboard-arb-leg strong,
+.dashboard-arb-score strong,
+.dashboard-arb-profit strong {
+  font-size: 0.79rem;
+}
+
+.dashboard-arb-score {
+  border-top: 1px solid rgba(127, 153, 204, 0.2);
+  padding-top: 5px;
+}
+
+.dashboard-arb-score small {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+.score-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  min-height: 24px;
+  border-radius: 999px;
+  border: 1px solid rgba(127, 153, 204, 0.28);
+  background: rgba(8, 14, 24, 0.75);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  color: #d7e8ff;
+  padding: 3px 8px;
+}
+
+.score-pill.positive {
+  border-color: rgba(46, 229, 143, 0.44);
+  color: var(--ui-status-positive);
+}
+
+.score-pill.warning {
+  border-color: rgba(255, 191, 87, 0.44);
+  color: var(--ui-status-warning);
+}
+
+.score-pill.negative {
+  border-color: rgba(255, 95, 134, 0.42);
+  color: var(--ui-status-negative);
+}
+
 .dashboard-deep-panel {
   border-color: rgba(126, 154, 210, 0.3);
 }
@@ -4561,6 +4653,41 @@ a:hover {
 
 .compare-drawer-arb-profit.is-positive strong {
   color: var(--ui-status-positive);
+}
+
+.compare-drawer-arb-score {
+  border-top: 1px dashed rgba(127, 153, 204, 0.3);
+  padding-top: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.compare-drawer-arb-score span {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.compare-drawer-arb-score strong {
+  font-size: 0.8rem;
+}
+
+.compare-drawer-arb-score small {
+  font-size: 0.71rem;
+  color: var(--text-dim);
+}
+
+.compare-drawer-arb-score.positive strong {
+  color: var(--ui-status-positive);
+}
+
+.compare-drawer-arb-score.warning strong {
+  color: var(--ui-status-warning);
+}
+
+.compare-drawer-arb-score.negative strong {
+  color: var(--ui-status-negative);
 }
 
 .compare-drawer-insights-grid {

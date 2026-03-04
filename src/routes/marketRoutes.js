@@ -30,6 +30,30 @@ router.get(
   requirePositiveIntParam("skinId", { message: "Invalid item id" }),
   ctrl.getLiquidityScore
 );
+router.get(
+  "/opportunities",
+  parseOptionalNumericQuery("minProfit", {
+    storeAs: "minProfit",
+    message: "minProfit must be numeric"
+  }),
+  parseOptionalNumericQuery("minSpread", {
+    storeAs: "minSpread",
+    message: "minSpread must be numeric"
+  }),
+  parseOptionalNumericQuery("minScore", {
+    storeAs: "minScore",
+    message: "minScore must be numeric"
+  }),
+  parseOptionalNumericQuery("liquidityMin", {
+    storeAs: "liquidityMin",
+    message: "liquidityMin must be numeric"
+  }),
+  parseOptionalNumericQuery("limit", {
+    storeAs: "limit",
+    message: "limit must be numeric"
+  }),
+  ctrl.getArbitrageOpportunities
+);
 router.get("/preferences", ctrl.getPricePreferences);
 router.patch("/preferences", ctrl.updatePricePreferences);
 router.post("/compare", ctrl.compareItems);

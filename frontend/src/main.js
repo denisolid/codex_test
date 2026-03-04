@@ -83,6 +83,26 @@ function createExitWhatIfState() {
   };
 }
 
+function createMarketOpportunitiesState() {
+  return {
+    loading: false,
+    loaded: false,
+    error: "",
+    generatedAt: null,
+    summary: null,
+    items: [],
+    filters: {
+      minProfit: "0",
+      minSpread: "3",
+      minScore: "0",
+      market: "all",
+      liquidityMin: "0",
+      sortBy: "profit",
+      limit: "250"
+    }
+  };
+}
+
 const state = {
   sessionBooting: true,
   authenticated: false,
@@ -215,7 +235,8 @@ const state = {
     loading: false,
     inventoryValue: null,
     autoLoaded: false,
-    insight: null
+    insight: null,
+    opportunities: createMarketOpportunitiesState()
   },
   accountNotice: "",
   steamOnboardingPending: false,
@@ -2062,6 +2083,7 @@ async function handleCurrencySelectChange(nextCurrency) {
   state.marketTab.inventoryValue = null;
   state.marketTab.autoLoaded = false;
   state.marketTab.insight = null;
+  state.marketTab.opportunities = createMarketOpportunitiesState();
   state.marketInsight = null;
 
   await refreshPortfolio();
@@ -2232,7 +2254,8 @@ async function refreshCompareDrawerData(options = {}) {
       updatedHolding.marketComparison = {
         perMarket: Array.isArray(comparisonRow.perMarket) ? comparisonRow.perMarket : [],
         bestBuy: comparisonRow.bestBuy || null,
-        bestSellNet: comparisonRow.bestSellNet || null
+        bestSellNet: comparisonRow.bestSellNet || null,
+        arbitrage: comparisonRow.arbitrage || null
       };
     }
 
@@ -3199,6 +3222,12 @@ function onAppSubmit(event) {
     return;
   }
 
+  if (form.id === "market-opportunities-form") {
+    event.preventDefault();
+    runUiTask(() => submitMarketOpportunitiesScan(event));
+    return;
+  }
+
   if (form.id === "public-settings-form") {
     event.preventDefault();
     runUiTask(() => updatePublicPortfolioSettings(event));
@@ -3284,6 +3313,7 @@ async function logout() {
   state.marketTab.inventoryValue = null;
   state.marketTab.autoLoaded = false;
   state.marketTab.insight = null;
+  state.marketTab.opportunities = createMarketOpportunitiesState();
   state.inspectedSteamItemId = "";
   state.tradeCalc.result = null;
   state.accountNotice = "";
@@ -3969,6 +3999,62 @@ async function refreshMarketInventoryValue() {
   }
 }
 
+function readMarketOpportunitiesFiltersFromDom() {
+  const filters = state.marketTab.opportunities.filters;
+  const next = {
+    minProfit:
+      document.querySelector("#market-opportunity-min-profit")?.value ?? filters.minProfit,
+    minSpread:
+      document.querySelector("#market-opportunity-min-spread")?.value ?? filters.minSpread,
+    minScore:
+      document.querySelector("#market-opportunity-min-score")?.value ?? filters.minScore,
+    market: document.querySelector("#market-opportunity-market")?.value ?? filters.market,
+    liquidityMin:
+      document.querySelector("#market-opportunity-liquidity-min")?.value ?? filters.liquidityMin,
+    sortBy: document.querySelector("#market-opportunity-sort-by")?.value ?? filters.sortBy,
+    limit: document.querySelector("#market-opportunity-limit")?.value ?? filters.limit
+  };
+  state.marketTab.opportunities.filters = {
+    ...filters,
+    ...next
+  };
+}
+
+async function refreshMarketOpportunities(options = {}) {
+  const { silent = false } = options;
+  const scanner = state.marketTab.opportunities;
+  scanner.loading = true;
+  scanner.error = "";
+  if (!silent) {
+    render();
+  }
+
+  try {
+    const filters = scanner.filters || {};
+    const query = buildQuery({
+      currency: state.currency,
+      minProfit: Number(filters.minProfit || 0),
+      minSpread: Number(filters.minSpread || 3),
+      minScore: Number(filters.minScore || 0),
+      market: filters.market === "all" ? "" : filters.market,
+      liquidityMin: Number(filters.liquidityMin || 0),
+      sortBy: String(filters.sortBy || "profit"),
+      limit: Math.max(Number(filters.limit || 250), 1)
+    });
+    const payload = await api(`/market/opportunities${query}`);
+    scanner.items = Array.isArray(payload?.items) ? payload.items : [];
+    scanner.summary = payload?.summary || null;
+    scanner.generatedAt = payload?.generatedAt || null;
+    scanner.loaded = true;
+  } catch (err) {
+    scanner.error = err.message || "Failed to load opportunities.";
+    setError(scanner.error);
+  } finally {
+    scanner.loading = false;
+    render();
+  }
+}
+
 async function analyzeMarketItemBySkinId(rawSkinId) {
   clearError();
   const skinId = Number(rawSkinId);
@@ -4025,6 +4111,12 @@ async function submitMarketInventoryRefresh(e) {
     document.querySelector("#market-commission")?.value || state.marketTab.commissionPercent
   );
   await refreshMarketInventoryValue();
+}
+
+async function submitMarketOpportunitiesScan(e) {
+  e.preventDefault();
+  readMarketOpportunitiesFiltersFromDom();
+  await refreshMarketOpportunities();
 }
 
 function resetAlertForm() {
@@ -4633,6 +4725,24 @@ function formatMarketSourceLabel(source) {
   return map[String(source || "").toLowerCase()] || toTitle(source || "Market");
 }
 
+function getOpportunityScoreTone(score) {
+  const value = Number(score || 0);
+  if (value >= 90) return "positive";
+  if (value >= 70) return "neutral";
+  if (value >= 50) return "warning";
+  return "negative";
+}
+
+function formatOpportunityLabel(label, score) {
+  const direct = String(label || "").trim();
+  if (direct) return direct;
+  const value = Number(score || 0);
+  if (value >= 90) return "Strong opportunity";
+  if (value >= 70) return "Good opportunity";
+  if (value >= 50) return "Risky";
+  return "Weak";
+}
+
 function resolveCompareDrawerFeePercent(row, feeMap = null) {
   const inlineFee = Number(row?.feePercent);
   if (Number.isFinite(inlineFee)) return inlineFee;
@@ -4885,17 +4995,41 @@ function renderCompareDrawerBody() {
   const modeLabel = getPricingModeLabel(pricingMode);
   const lowestBuyMarket = insights?.lowestBuyMarket || null;
   const highestSellMarket = insights?.highestSellMarket || null;
+  const backendArbitrage = payload?.marketComparison?.arbitrage || null;
+  const backendBuyMarketLabel = backendArbitrage?.buyMarket
+    ? formatMarketSourceLabel(backendArbitrage.buyMarket)
+    : "";
+  const backendSellMarketLabel = backendArbitrage?.sellMarket
+    ? formatMarketSourceLabel(backendArbitrage.sellMarket)
+    : "";
   const lowestBuyValue = Number.isFinite(insights?.lowestBuyValue)
     ? Number(insights.lowestBuyValue)
     : null;
   const highestSellNetValue = Number.isFinite(insights?.highestSellNetValue)
     ? Number(insights.highestSellNetValue)
     : null;
-  const arbitrageProfit = Number.isFinite(insights?.profit) ? Number(insights.profit) : null;
-  const arbitrageSpreadPercent = Number.isFinite(insights?.spreadPercent)
-    ? Number(insights.spreadPercent)
+  const arbitrageProfit = Number.isFinite(backendArbitrage?.profit)
+    ? Number(backendArbitrage.profit)
+    : Number.isFinite(insights?.profit)
+      ? Number(insights.profit)
+      : null;
+  const arbitrageSpreadPercent = Number.isFinite(backendArbitrage?.spreadPercent)
+    ? Number(backendArbitrage.spreadPercent)
+    : Number.isFinite(insights?.spreadPercent)
+      ? Number(insights.spreadPercent)
+      : null;
+  const arbitrageScore = Number.isFinite(backendArbitrage?.opportunityScore)
+    ? Number(backendArbitrage.opportunityScore)
     : null;
+  const arbitrageScoreLabel = formatOpportunityLabel(
+    backendArbitrage?.scoreCategory,
+    arbitrageScore
+  );
+  const profitableArbitrage =
+    backendArbitrage?.isOpportunity === true ||
+    (Number(arbitrageProfit || 0) > 0 && Number(arbitrageSpreadPercent || 0) > 3);
   const arbitrageProfitClass = arbitrageProfit > 0 ? "is-positive" : "is-neutral";
+  const arbitrageScoreTone = getOpportunityScoreTone(arbitrageScore);
 
   const renderQuickList = (entries = [], valueKey = "buyValue", emptyText = "No market data") => {
     if (!entries.length) {
@@ -5016,37 +5150,52 @@ function renderCompareDrawerBody() {
       </div>
     </div>
     <section class="compare-drawer-arb-card">
-      <p class="compare-drawer-section-eyebrow">Arbitrage Opportunity</p>
-      <div class="compare-drawer-arb-grid">
-        <article class="compare-drawer-arb-leg">
-          <span>BUY</span>
-          <strong>${escapeHtml(lowestBuyMarket?.label || "N/A")}</strong>
-          <small>${
-            Number.isFinite(lowestBuyValue)
-              ? formatMoney(lowestBuyValue, lowestBuyMarket?.currency || payload.currency)
-              : "-"
-          }</small>
-        </article>
-        <article class="compare-drawer-arb-leg">
-          <span>SELL</span>
-          <strong>${escapeHtml(highestSellMarket?.label || "N/A")}</strong>
-          <small>${
-            Number.isFinite(highestSellNetValue)
-              ? formatMoney(highestSellNetValue, highestSellMarket?.currency || payload.currency)
-              : "-"
-          }</small>
-        </article>
-      </div>
-      <div class="compare-drawer-arb-profit ${arbitrageProfitClass}">
-        <span>Estimated Profit</span>
-        <strong>${
-          arbitrageProfit == null || arbitrageSpreadPercent == null
-            ? "N/A"
-            : `${formatSignedMoney(arbitrageProfit, payload.currency || state.currency)} (${formatPercent(
-                arbitrageSpreadPercent
-              )})`
-        }</strong>
-      </div>
+      <p class="compare-drawer-section-eyebrow">Arbitrage Insight</p>
+      ${
+        profitableArbitrage
+          ? `
+        <div class="compare-drawer-arb-grid">
+          <article class="compare-drawer-arb-leg">
+            <span>BUY</span>
+            <strong>${escapeHtml(backendBuyMarketLabel || lowestBuyMarket?.label || "N/A")}</strong>
+            <small>${
+              Number.isFinite(lowestBuyValue)
+                ? formatMoney(lowestBuyValue, lowestBuyMarket?.currency || payload.currency)
+                : "-"
+            }</small>
+          </article>
+          <article class="compare-drawer-arb-leg">
+            <span>SELL</span>
+            <strong>${escapeHtml(backendSellMarketLabel || highestSellMarket?.label || "N/A")}</strong>
+            <small>${
+              Number.isFinite(highestSellNetValue)
+                ? formatMoney(highestSellNetValue, highestSellMarket?.currency || payload.currency)
+                : "-"
+            }</small>
+          </article>
+        </div>
+        <div class="compare-drawer-arb-profit ${arbitrageProfitClass}">
+          <span>Estimated Profit</span>
+          <strong>${
+            arbitrageProfit == null || arbitrageSpreadPercent == null
+              ? "N/A"
+              : `${formatSignedMoney(arbitrageProfit, payload.currency || state.currency)} (${formatPercent(
+                  arbitrageSpreadPercent
+                )})`
+          }</strong>
+        </div>
+        <div class="compare-drawer-arb-score ${escapeHtml(arbitrageScoreTone)}">
+          <span>Opportunity Score</span>
+          <strong>${
+            arbitrageScore == null
+              ? "N/A"
+              : `${formatNumber(arbitrageScore, 0)} / 100`
+          }</strong>
+          <small>${escapeHtml(arbitrageScoreLabel)}</small>
+        </div>
+      `
+          : '<p class="muted compare-drawer-empty">No profitable arbitrage detected across markets</p>'
+      }
     </section>
     <div class="compare-drawer-insights-grid">
       <section class="compare-drawer-insight-card">
@@ -5083,8 +5232,13 @@ function renderCompareDrawerBody() {
 function renderCompareDrawerOverlay() {
   const drawer = state.compareDrawer;
   const insights = getCompareDrawerInsights(drawer.payload);
-  const bestBuyUrl = String(insights?.lowestBuyMarket?.url || "").trim();
-  const bestSellUrl = String(insights?.highestSellMarket?.url || "").trim();
+  const backendArbitrage = drawer?.payload?.marketComparison?.arbitrage || null;
+  const bestBuyUrl = String(
+    backendArbitrage?.buyUrl || insights?.lowestBuyMarket?.url || ""
+  ).trim();
+  const bestSellUrl = String(
+    backendArbitrage?.sellUrl || insights?.highestSellMarket?.url || ""
+  ).trim();
   const footerMarkup = `
     <button
       type="button"
@@ -6798,6 +6952,71 @@ function renderBacktestPanel() {
   `;
 }
 
+function renderDashboardArbitragePanel() {
+  const arbitrage = state.portfolio?.arbitrage || {};
+  const opportunities = Array.isArray(arbitrage?.topOpportunities)
+    ? arbitrage.topOpportunities
+    : [];
+  const currencyCode = state.portfolio?.currency || state.currency;
+
+  const body = opportunities.length
+    ? `
+      <div class="dashboard-arb-list">
+        ${opportunities
+          .slice(0, 5)
+          .map((row) => {
+            const score = Number(row?.opportunityScore || 0);
+            const scoreTone = getOpportunityScoreTone(score);
+            const scoreLabel = formatOpportunityLabel(row?.scoreCategory, score);
+            return `
+              <article class="dashboard-arb-row">
+                <strong class="dashboard-arb-item">${escapeHtml(row?.itemName || "Tracked Item")}</strong>
+                <p class="dashboard-arb-leg">
+                  <span>Buy ${escapeHtml(formatMarketSourceLabel(row?.buyMarket))}</span>
+                  <strong>${formatMoney(row?.buyPrice, currencyCode)}</strong>
+                </p>
+                <p class="dashboard-arb-leg">
+                  <span>Sell ${escapeHtml(formatMarketSourceLabel(row?.sellMarket))}</span>
+                  <strong>${formatMoney(row?.sellNet, currencyCode)}</strong>
+                </p>
+                <p class="dashboard-arb-profit up">
+                  <span>Profit</span>
+                  <strong>${formatSignedMoney(row?.profit, currencyCode)} (${formatPercent(
+                row?.spreadPercent
+              )})</strong>
+                </p>
+                <p class="dashboard-arb-score">
+                  <span>Score</span>
+                  <strong class="score-pill ${escapeHtml(scoreTone)}">${escapeHtml(
+                `${formatNumber(score, 0)}/100`
+              )}</strong>
+                  <small>${escapeHtml(scoreLabel)}</small>
+                </p>
+              </article>
+            `;
+          })
+          .join("")}
+      </div>
+    `
+    : '<p class="muted">No profitable arbitrage opportunities detected right now.</p>';
+
+  return renderPanel({
+    className: "dashboard-arbitrage-panel",
+    title: "Arbitrage Opportunities",
+    subtitle: "Top 5 opportunities sorted by profit.",
+    actions: `
+      <button
+        type="button"
+        class="ghost-btn tab-jump-btn btn-secondary"
+        data-tab-target="market"
+      >
+        View All Opportunities
+      </button>
+    `,
+    body
+  });
+}
+
 function renderAnalytics() {
   const analytics = state.portfolio?.analytics;
   if (!analytics) return "";
@@ -6907,6 +7126,7 @@ function renderAnalytics() {
           </div>
         `
       })}
+      ${renderDashboardArbitragePanel()}
     </section>
   `;
 }
@@ -7498,6 +7718,8 @@ function renderMarketTab() {
   const marketOptions = buildHoldingOptions(state.marketTab.skinId);
   const valuation = state.marketTab.inventoryValue;
   const insight = state.marketTab.insight;
+  const scanner = state.marketTab.opportunities || createMarketOpportunitiesState();
+  const scanFilters = scanner.filters || createMarketOpportunitiesState().filters;
   const suggestion = insight?.sellSuggestion || null;
   const liquidity = insight?.liquidity || null;
   const hasSuggestionForSelected =
@@ -7540,6 +7762,52 @@ function renderMarketTab() {
       </table>
     `
     : '<p class="muted">No valuation yet. Click "Refresh valuation".</p>';
+  const opportunityRows = Array.isArray(scanner.items) ? scanner.items : [];
+  const opportunityMarkup = opportunityRows.length
+    ? `
+      <table>
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Buy Market</th>
+            <th>Buy Price</th>
+            <th>Sell Market</th>
+            <th>Sell Net</th>
+            <th>Profit</th>
+            <th>Spread %</th>
+            <th>Score</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${opportunityRows
+            .map((row) => {
+              const score = Number(row?.opportunityScore || 0);
+              const scoreTone = getOpportunityScoreTone(score);
+              return `
+                <tr>
+                  <td>${escapeHtml(row?.itemName || "Tracked Item")}</td>
+                  <td>${escapeHtml(formatMarketSourceLabel(row?.buyMarket))}</td>
+                  <td>${formatMoney(row?.buyPrice, state.portfolio?.currency || state.currency)}</td>
+                  <td>${escapeHtml(formatMarketSourceLabel(row?.sellMarket))}</td>
+                  <td>${formatMoney(row?.sellNet, state.portfolio?.currency || state.currency)}</td>
+                  <td><strong class="pnl-text up">${formatSignedMoney(
+                    row?.profit,
+                    state.portfolio?.currency || state.currency
+                  )}</strong></td>
+                  <td>${formatPercent(row?.spreadPercent)}</td>
+                  <td>
+                    <span class="score-pill ${escapeHtml(scoreTone)}">${escapeHtml(
+                `${formatNumber(score, 0)}/100`
+              )}</span>
+                  </td>
+                </tr>
+              `;
+            })
+            .join("")}
+        </tbody>
+      </table>
+    `
+    : '<p class="muted">No profitable opportunities for current filters.</p>';
 
   return `
     <section class="grid">
@@ -7634,6 +7902,94 @@ function renderMarketTab() {
         }
         `
         }
+      </article>
+
+      <article class="panel wide">
+        <h2>Market Arbitrage Scanner</h2>
+        <form id="market-opportunities-form" class="trade-calc-grid market-opportunity-form">
+          <label>Min Profit
+            <input
+              id="market-opportunity-min-profit"
+              type="number"
+              min="0"
+              step="0.01"
+              value="${escapeHtml(scanFilters.minProfit)}"
+            />
+          </label>
+          <label>Min Spread %
+            <input
+              id="market-opportunity-min-spread"
+              type="number"
+              min="0"
+              step="0.01"
+              value="${escapeHtml(scanFilters.minSpread)}"
+            />
+          </label>
+          <label>Min Score
+            <input
+              id="market-opportunity-min-score"
+              type="number"
+              min="0"
+              max="100"
+              step="1"
+              value="${escapeHtml(scanFilters.minScore)}"
+            />
+          </label>
+          <label>Market
+            <select id="market-opportunity-market">
+              <option value="all" ${scanFilters.market === "all" ? "selected" : ""}>All</option>
+              <option value="steam" ${scanFilters.market === "steam" ? "selected" : ""}>Steam</option>
+              <option value="skinport" ${scanFilters.market === "skinport" ? "selected" : ""}>Skinport</option>
+              <option value="csfloat" ${scanFilters.market === "csfloat" ? "selected" : ""}>CSFloat</option>
+              <option value="dmarket" ${scanFilters.market === "dmarket" ? "selected" : ""}>DMarket</option>
+            </select>
+          </label>
+          <label>Liquidity Min
+            <input
+              id="market-opportunity-liquidity-min"
+              type="number"
+              min="0"
+              step="1"
+              value="${escapeHtml(scanFilters.liquidityMin)}"
+            />
+          </label>
+          <label>Sort
+            <select id="market-opportunity-sort-by">
+              <option value="profit" ${scanFilters.sortBy === "profit" ? "selected" : ""}>Profit</option>
+              <option value="spread" ${scanFilters.sortBy === "spread" ? "selected" : ""}>Spread</option>
+              <option value="score" ${scanFilters.sortBy === "score" ? "selected" : ""}>Score</option>
+            </select>
+          </label>
+          <label>Limit
+            <input
+              id="market-opportunity-limit"
+              type="number"
+              min="1"
+              max="1000"
+              step="1"
+              value="${escapeHtml(scanFilters.limit)}"
+            />
+          </label>
+          <button type="submit" ${scanner.loading ? "disabled" : ""}>
+            ${scanner.loading ? "Scanning..." : "Scan Opportunities"}
+          </button>
+        </form>
+        <p class="helper-text">
+          ${
+            scanner.summary
+              ? `Scanned ${Number(scanner.summary.scannedItems || 0)} items. Found ${Number(
+                  scanner.summary.opportunities || 0
+                )} opportunities.`
+              : "Scan your synced items to detect buy/sell arbitrage across Steam, Skinport, CSFloat, and DMarket."
+          }
+          ${
+            scanner.generatedAt
+              ? ` Updated ${escapeHtml(formatRelativeTime(scanner.generatedAt))}.`
+              : ""
+          }
+        </p>
+        ${scanner.error ? `<p class="muted">${escapeHtml(scanner.error)}</p>` : ""}
+        ${opportunityMarkup}
       </article>
     </section>
   `;
@@ -8324,6 +8680,13 @@ function renderApp() {
     !state.marketTab.autoLoaded
   ) {
     runUiTask(() => refreshMarketInventoryValue());
+  }
+  if (
+    state.activeTab === "market" &&
+    !state.marketTab.opportunities.loading &&
+    !state.marketTab.opportunities.loaded
+  ) {
+    runUiTask(() => refreshMarketOpportunities({ silent: true }));
   }
 
   if (state.activeTab === "trades") {

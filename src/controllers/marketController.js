@@ -1,6 +1,7 @@
 const asyncHandler = require("../utils/asyncHandler");
 const marketService = require("../services/marketService");
 const marketComparisonService = require("../services/marketComparisonService");
+const marketOpportunityService = require("../services/marketOpportunityService");
 const AppError = require("../utils/AppError");
 
 function parseItemsPayload(input) {
@@ -91,4 +92,19 @@ exports.refreshComparisonCache = asyncHandler(async (req, res) => {
     refreshedItems: data.items.length,
     summary: data.summary
   });
+});
+
+exports.getArbitrageOpportunities = asyncHandler(async (req, res) => {
+  const data = await marketOpportunityService.getArbitrageOpportunities(req.userId, {
+    currency: req.query.currency,
+    pricingMode: req.query.pricingMode,
+    minProfit: req.validated?.minProfit,
+    minSpreadPercent: req.validated?.minSpread,
+    minScore: req.validated?.minScore,
+    liquidityMin: req.validated?.liquidityMin,
+    sortBy: req.query.sortBy || req.query.sort,
+    markets: req.query.markets || req.query.market,
+    limit: req.validated?.limit
+  });
+  res.json(data);
 });

@@ -10,7 +10,7 @@ const {
   __testables: { extractBestListing }
 } = require("../src/markets/csfloat.market");
 const {
-  __testables: { resolveOfferUrl, extractPrice }
+  __testables: { resolveOfferUrl, extractPrice, extractBestOffer }
 } = require("../src/markets/dmarket.market");
 const {
   __testables: { normalizeItemsPayload }
@@ -63,8 +63,39 @@ test("dmarket offer URL resolver prefers exact item page and falls back to searc
   const fallback = resolveOfferUrl({}, "Fracture Case");
   assert.equal(
     fallback,
-    "https://dmarket.com/ingame-items/item-list/csgo-skins?searchTitle=Fracture%20Case"
+    "https://dmarket.com/ingame-items/item-list/csgo-skins?title=Fracture+Case&searchTitle=Fracture+Case"
   );
+});
+
+test("dmarket offer extractor picks the cheapest exact title match", () => {
+  const row = extractBestOffer(
+    {
+      objects: [
+        {
+          title: "Desert Eagle | Urban Rubble (Minimal Wear)",
+          price: {
+            USD: "169"
+          }
+        },
+        {
+          title: "Desert Eagle | Urban Rubble (Minimal Wear)",
+          price: {
+            USD: "99"
+          }
+        },
+        {
+          title: "Desert Eagle | Urban Rubble (Factory New)",
+          price: {
+            USD: "85"
+          }
+        }
+      ]
+    },
+    "Desert Eagle | Urban Rubble (Minimal Wear)"
+  );
+
+  assert.ok(row);
+  assert.equal(row.price, 0.99);
 });
 
 test("dmarket price extractor prefers USD minor-unit price over amount", () => {

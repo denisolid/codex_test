@@ -66,6 +66,9 @@ async function fetchJsonWithRetry(url, options = {}) {
           `Market request failed with status ${status}`,
           isRetryableStatus(status) ? status : 502
         );
+        // Keep the real upstream status for adapter-specific fallback logic.
+        error.upstreamStatus = status;
+        error.status = status;
         if (retryAfterSeconds > 0) {
           error.retryAfterMs = retryAfterSeconds * 1000;
         }

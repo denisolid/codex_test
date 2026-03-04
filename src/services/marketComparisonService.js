@@ -18,6 +18,7 @@ const {
   convertAmount,
   ensureFreshFxRates
 } = require("./currencyService");
+const arbitrageEngine = require("./arbitrageEngineService");
 const {
   marketCompareCacheTtlMinutes,
   marketCompareConcurrency,
@@ -91,13 +92,37 @@ function normalizeItems(items = []) {
     seen.add(marketHashName);
 
     const quantity = Math.max(Number(item?.quantity || 0), 0);
+    const sevenDayChangePercent = Number(
+      item?.sevenDayChangePercent ??
+        item?.seven_day_change_percent ??
+        item?.change7dPercent ??
+        item?.priceChange7dPercent
+    );
+    const liquiditySales = Number(
+      item?.liquiditySales ??
+        item?.salesCount ??
+        item?.sales ??
+        item?.volume24h ??
+        item?.marketVolume24h ??
+        item?.marketVolume7d
+    );
+    const liquidityScore = Number(
+      item?.liquidityScore ??
+        item?.managementClue?.metrics?.liquidityScore ??
+        item?.marketComparison?.liquidityScore
+    );
     normalized.push({
       skinId: Number(item?.skinId || item?.skin_id || 0) || null,
       marketHashName,
       quantity,
       steamPrice: Number(item?.steamPrice || item?.currentPrice || 0),
       steamCurrency: normalizeText(item?.steamCurrency || item?.currency || "USD") || "USD",
-      steamRecordedAt: item?.steamRecordedAt || item?.currentPriceRecordedAt || null
+      steamRecordedAt: item?.steamRecordedAt || item?.currentPriceRecordedAt || null,
+      sevenDayChangePercent: Number.isFinite(sevenDayChangePercent)
+        ? sevenDayChangePercent
+        : null,
+      liquiditySales: Number.isFinite(liquiditySales) ? liquiditySales : null,
+      liquidityScore: Number.isFinite(liquidityScore) ? liquidityScore : null
     });
   }
 
@@ -427,6 +452,7 @@ exports.compareItems = async (items = [], options = {}) => {
       fees: buildFeeSummary(),
       generatedAt: new Date().toISOString(),
       ttlMinutes: CACHE_TTL_MINUTES,
+      opportunities: [],
       items: [],
       summary: {
         totalValueSelected: 0,
@@ -434,7 +460,9 @@ exports.compareItems = async (items = [], options = {}) => {
         totalValueBestSellNet: 0,
         totalValueLowestBuy: 0,
         pricedItemsCount: 0,
-        unavailableItemsCount: 0
+        unavailableItemsCount: 0,
+        arbitrageCandidatesCount: 0,
+        arbitrageOpportunitiesCount: 0
       }
     };
   }
@@ -535,6 +563,14 @@ exports.compareItems = async (items = [], options = {}) => {
     const steamUnit = Number(steam?.grossPrice || 0);
     const bestBuyUnit = Number(bestBuy?.grossPrice || 0);
     const bestSellNetUnit = Number(bestSellNet?.netPriceAfterFees || 0);
+    const arbitrage = arbitrageEngine.evaluateItemOpportunity({
+      skinId: item.skinId,
+      marketHashName: item.marketHashName,
+      perMarket,
+      sevenDayChangePercent: item.sevenDayChangePercent,
+      liquiditySales: item.liquiditySales,
+      liquidityScore: item.liquidityScore
+    });
 
     summary.totalValueSelected += selectedLineValue;
     summary.totalValueSteam += steamUnit * quantity;
@@ -571,6 +607,7 @@ exports.compareItems = async (items = [], options = {}) => {
       selectedPricingSource: selected?.source || null,
       selectedUnitPrice,
       selectedLineValue,
+      arbitrage,
       totalsByMode: {
         steam: roundPrice(steamUnit * quantity),
         best_sell_net: roundPrice(bestSellNetUnit * quantity),
@@ -578,6 +615,23 @@ exports.compareItems = async (items = [], options = {}) => {
       }
     };
   });
+  const rankedOpportunities = arbitrageEngine.rankOpportunities(
+    enrichedItems.map((item) => item.arbitrage),
+    {
+      limit: 5,
+      minProfit: 0,
+      minSpreadPercent: arbitrageEngine.MIN_SPREAD_PERCENT,
+      sortBy: "profit"
+    }
+  );
+  summary.arbitrageCandidatesCount = enrichedItems.length;
+  summary.arbitrageOpportunitiesCount = arbitrageEngine.rankOpportunities(
+    enrichedItems.map((item) => item.arbitrage),
+    {
+      minProfit: 0,
+      minSpreadPercent: arbitrageEngine.MIN_SPREAD_PERCENT
+    }
+  ).length;
 
   return {
     currency: displayCurrency,
@@ -585,6 +639,7 @@ exports.compareItems = async (items = [], options = {}) => {
     fees: buildFeeSummary(),
     generatedAt: new Date().toISOString(),
     ttlMinutes: options.ttlMinutes || CACHE_TTL_MINUTES,
+    opportunities: rankedOpportunities,
     items: enrichedItems,
     summary: {
       ...summary,
