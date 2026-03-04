@@ -86,6 +86,24 @@ function normalizeCsfloatPrice(value) {
   return normalizePriceNumber(raw);
 }
 
+function describeCsfloatFetchError(err) {
+  const status = Number(err?.upstreamStatus || err?.statusCode || err?.status || 0);
+  if (status === 401 || status === 403) {
+    return "CSFloat authentication failed. Check CSFLOAT_API_KEY.";
+  }
+  if (status === 429) {
+    return "CSFloat rate limit reached. Retry shortly.";
+  }
+  if (status >= 500) {
+    return "CSFloat is temporarily unavailable.";
+  }
+  const message = String(err?.message || "").toLowerCase();
+  if (message.includes("timed out")) {
+    return "CSFloat request timed out.";
+  }
+  return "CSFloat data unavailable.";
+}
+
 function extractBestListing(payload, marketHashName = "") {
   const list = Array.isArray(payload?.data)
     ? payload.data
@@ -211,6 +229,7 @@ async function batchGetPrices(items = [], options = {}) {
     return {};
   }
 
+  const failuresByName = {};
   const rows = await mapWithConcurrency(
     list,
     async (marketHashName) => {
@@ -226,7 +245,8 @@ async function batchGetPrices(items = [], options = {}) {
               price
             }
           : null;
-      } catch (_err) {
+      } catch (err) {
+        failuresByName[marketHashName] = describeCsfloatFetchError(err);
         return null;
       }
     },
@@ -239,6 +259,24 @@ async function batchGetPrices(items = [], options = {}) {
     byName[row.marketHashName] = row.price;
   }
 
+  if (Object.keys(failuresByName).length) {
+    const uniqueReasons = Array.from(
+      new Set(
+        Object.values(failuresByName)
+          .map((value) => String(value || "").trim())
+          .filter(Boolean)
+      )
+    );
+    const sourceUnavailableReason = uniqueReasons.length === 1 ? uniqueReasons[0] : null;
+    Object.defineProperty(byName, "__meta", {
+      value: {
+        failuresByName,
+        sourceUnavailableReason
+      },
+      enumerable: false
+    });
+  }
+
   return byName;
 }
 
@@ -249,6 +287,7 @@ module.exports = {
   __testables: {
     extractBestListing,
     toSafeHttpUrl,
-    buildHeaderVariantMap
+    buildHeaderVariantMap,
+    describeCsfloatFetchError
   }
 };

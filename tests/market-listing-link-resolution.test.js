@@ -7,7 +7,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY || "service-role";
 
 const {
-  __testables: { extractBestListing }
+  __testables: { extractBestListing, describeCsfloatFetchError }
 } = require("../src/markets/csfloat.market");
 const {
   __testables: { resolveOfferUrl, extractPrice, extractBestOffer }
@@ -46,6 +46,13 @@ test("csfloat listing extractor falls back to id-based listing URL", () => {
   const row = extractBestListing(payload, "Fracture Case");
   assert.ok(row);
   assert.equal(row.url, "https://csfloat.com/item/99887766");
+});
+
+test("csfloat fetch error mapper returns actionable reason for auth failures", () => {
+  assert.equal(
+    describeCsfloatFetchError({ upstreamStatus: 403 }),
+    "CSFloat authentication failed. Check CSFLOAT_API_KEY."
+  );
 });
 
 test("dmarket offer URL resolver prefers exact item page and falls back to search", () => {
