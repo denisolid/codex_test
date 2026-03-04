@@ -64,6 +64,18 @@ test("csfloat key sanitizer removes wrappers and whitespace", () => {
     sanitizeApiKey(" 'a b c 1 2 3' "),
     "abc123"
   );
+  assert.equal(
+    sanitizeApiKey("Bearer abc123"),
+    "abc123"
+  );
+  assert.equal(
+    sanitizeApiKey("Authorization: Bearer abc123"),
+    "abc123"
+  );
+  assert.equal(
+    sanitizeApiKey("CSFLOAT_API_KEY=\"abc123\""),
+    "abc123"
+  );
 });
 
 test("dmarket offer URL resolver prefers exact item page and falls back to search", () => {

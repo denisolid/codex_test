@@ -48,11 +48,35 @@ function sanitizeApiKey(rawValue) {
   let value = String(rawValue || "").trim();
   if (!value) return "";
 
-  // Render/UI copy-paste often stores quoted values (e.g. "abc" or 'abc').
-  const hasDoubleQuotes = value.startsWith("\"") && value.endsWith("\"");
-  const hasSingleQuotes = value.startsWith("'") && value.endsWith("'");
-  if ((hasDoubleQuotes || hasSingleQuotes) && value.length >= 2) {
-    value = value.slice(1, -1).trim();
+  function stripWrappedQuotes(input) {
+    let current = String(input || "").trim();
+    while (current.length >= 2) {
+      const first = current[0];
+      const last = current[current.length - 1];
+      const isQuotedPair =
+        (first === "\"" && last === "\"") || (first === "'" && last === "'");
+      if (!isQuotedPair) break;
+      current = current.slice(1, -1).trim();
+    }
+    return current;
+  }
+
+  value = stripWrappedQuotes(value);
+  const knownPrefixes = [
+    /^csfloat_api_key\s*=\s*/i,
+    /^authorization\s*:\s*/i,
+    /^bearer\s+/i
+  ];
+  let changed = true;
+  while (changed && value) {
+    changed = false;
+    for (const pattern of knownPrefixes) {
+      const next = stripWrappedQuotes(value.replace(pattern, "").trim());
+      if (next !== value) {
+        value = next;
+        changed = true;
+      }
+    }
   }
 
   // CSFloat keys are single-token credentials; whitespace makes auth fail.
