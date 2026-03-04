@@ -279,7 +279,14 @@ exports.getPortfolio = async (userId, options = {}) => {
         quantity: item.quantity,
         steamPrice: item.currentPrice,
         steamCurrency: "USD",
-        steamRecordedAt: item.currentPriceRecordedAt
+        steamRecordedAt: item.currentPriceRecordedAt,
+        sevenDayChangePercent: item.sevenDayChangePercent,
+        liquiditySales:
+          item.marketVolume24h ??
+          item.marketVolume7d ??
+          item?.marketInsight?.sellSuggestion?.volume24h ??
+          item?.managementClue?.metrics?.liquidityScore,
+        liquidityScore: item?.managementClue?.metrics?.liquidityScore
       })),
       {
         userId,
@@ -340,9 +347,11 @@ exports.getPortfolio = async (userId, options = {}) => {
             bestBuy: comparison.bestBuy,
             bestSellNet: comparison.bestSellNet,
             perMarket: comparison.perMarket,
-            selectedPricingSource: comparison.selectedPricingSource
+            selectedPricingSource: comparison.selectedPricingSource,
+            arbitrage: comparison.arbitrage || null
           }
         : null,
+      arbitrage: comparison?.arbitrage || null,
       managementClue: clue
         ? {
             ...clue,
@@ -484,6 +493,14 @@ exports.getPortfolio = async (userId, options = {}) => {
             : null
       },
       fees: marketComparison?.fees || null
+    },
+    arbitrage: {
+      generatedAt: marketComparison?.generatedAt || null,
+      ttlSeconds: 60,
+      opportunitiesCount: Number(marketComparison?.summary?.arbitrageOpportunitiesCount || 0),
+      topOpportunities: Array.isArray(marketComparison?.opportunities)
+        ? marketComparison.opportunities
+        : []
     },
     currency: displayCurrency,
     items: displayItems
