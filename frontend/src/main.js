@@ -4048,7 +4048,11 @@ async function refreshMarketOpportunities(options = {}) {
     scanner.loaded = true;
   } catch (err) {
     scanner.error = err.message || "Failed to load opportunities.";
-    setError(scanner.error);
+    // Prevent auto-fetch loops when endpoint is unavailable (e.g., older backend without this route).
+    scanner.loaded = true;
+    if (!silent) {
+      setError(scanner.error);
+    }
   } finally {
     scanner.loading = false;
     render();
