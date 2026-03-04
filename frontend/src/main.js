@@ -2346,9 +2346,19 @@ function openCompareDrawerBySkinId(rawSkinId, triggerElement = null) {
       Array.isArray(state.compareDrawer.payload.marketComparison.perMarket) &&
       state.compareDrawer.payload.marketComparison.perMarket.length
   );
+  const hasCsfloatData = Boolean(
+    state.compareDrawer.payload?.marketComparison?.perMarket &&
+      Array.isArray(state.compareDrawer.payload.marketComparison.perMarket) &&
+      state.compareDrawer.payload.marketComparison.perMarket.some((row) => {
+        if (String(row?.source || "").trim().toLowerCase() !== "csfloat") return false;
+        return Boolean(row?.available) && Number.isFinite(Number(row?.grossPrice));
+      })
+  );
 
-  if (!hasPerMarket) {
-    runUiTask(() => refreshCompareDrawerData({ skinId, forceRefresh: true }));
+  if (!hasPerMarket || !hasCsfloatData) {
+    runUiTask(
+      () => refreshCompareDrawerData({ skinId, forceRefresh: !hasCsfloatData })
+    );
   }
 }
 
@@ -8541,6 +8551,8 @@ function renderSteamSyncPanel() {
   const profile = state.authProfile || {};
   const steamLinked = Boolean(profile.steamLinked);
   const steamLinkUrl = buildSteamAuthStartUrl("link");
+  const syncCooldownSeconds = getSyncCooldownSecondsRemaining();
+  const syncDisabled = state.syncingInventory || syncCooldownSeconds > 0;
 
   if (!steamLinked) {
     return `

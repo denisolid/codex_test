@@ -74,10 +74,31 @@ function toUnavailable(source, currency, unavailableReason = null) {
   };
 }
 
-function getUnavailableReasonForSource(source) {
+function getUnavailableReasonForSource(
+  source,
+  marketHashName = "",
+  liveDiagnosticsBySource = null
+) {
   if (source === "csfloat" && !String(csfloatApiKey || "").trim()) {
     return "Missing CSFloat API key";
   }
+
+  const sourceDiagnostics =
+    liveDiagnosticsBySource && typeof liveDiagnosticsBySource === "object"
+      ? liveDiagnosticsBySource[source]
+      : null;
+  if (!sourceDiagnostics || typeof sourceDiagnostics !== "object") {
+    return null;
+  }
+
+  const marketReason = String(
+    sourceDiagnostics?.failuresByName?.[marketHashName] || ""
+  ).trim();
+  if (marketReason) return marketReason;
+
+  const sourceReason = String(sourceDiagnostics?.sourceUnavailableReason || "").trim();
+  if (sourceReason) return sourceReason;
+
   return null;
 }
 
@@ -277,6 +298,7 @@ function buildFeeSummary() {
 
 async function fetchLiveMarketData(itemsBySource = {}, displayCurrency, options = {}) {
   const result = {};
+  const diagnosticsBySource = {};
   const rowsToStore = [];
   const fetchCurrency = String(options.fetchCurrency || "USD")
     .trim()
@@ -288,6 +310,7 @@ async function fetchLiveMarketData(itemsBySource = {}, displayCurrency, options 
     const sourceItems = Array.isArray(itemsBySource[source]) ? itemsBySource[source] : [];
     if (!sourceItems.length) {
       result[source] = {};
+      diagnosticsBySource[source] = {};
       continue;
     }
 
@@ -297,8 +320,16 @@ async function fetchLiveMarketData(itemsBySource = {}, displayCurrency, options 
       timeoutMs: Number(options.timeoutMs || marketCompareTimeoutMs || 9000),
       maxRetries: Number(options.maxRetries || marketCompareMaxRetries || 3)
     });
+    const adapterMeta = byName && typeof byName === "object" ? byName.__meta : null;
 
     result[source] = {};
+    diagnosticsBySource[source] = {
+      failuresByName:
+        adapterMeta && adapterMeta.failuresByName && typeof adapterMeta.failuresByName === "object"
+          ? adapterMeta.failuresByName
+          : {},
+      sourceUnavailableReason: String(adapterMeta?.sourceUnavailableReason || "").trim() || null
+    };
     for (const [marketHashName, rawRecord] of Object.entries(byName || {})) {
       const normalized = normalizeLiveRecord(rawRecord, displayCurrency);
       if (!normalized) continue;
@@ -314,7 +345,10 @@ async function fetchLiveMarketData(itemsBySource = {}, displayCurrency, options 
     await marketPriceRepo.upsertRows(rowsToStore);
   }
 
-  return result;
+  return {
+    recordsBySource: result,
+    diagnosticsBySource
+  };
 }
 
 function buildSteamFallback(item, displayCurrency) {
@@ -487,17 +521,20 @@ exports.compareItems = async (items = [], options = {}) => {
   }
 
   let liveBySource = {};
+  let liveDiagnosticsBySource = {};
   if (allowLiveFetch) {
     const hasPending = SOURCE_ORDER.some(
       (source) => Array.isArray(staleItemsBySource[source]) && staleItemsBySource[source].length
     );
     if (hasPending) {
-      liveBySource = await fetchLiveMarketData(staleItemsBySource, displayCurrency, {
+      const liveData = await fetchLiveMarketData(staleItemsBySource, displayCurrency, {
         fetchCurrency: "USD",
         concurrency: options.concurrency,
         timeoutMs: options.timeoutMs,
         maxRetries: options.maxRetries
       });
+      liveBySource = liveData?.recordsBySource || {};
+      liveDiagnosticsBySource = liveData?.diagnosticsBySource || {};
     }
   }
 
@@ -544,7 +581,11 @@ exports.compareItems = async (items = [], options = {}) => {
       return toUnavailable(
         source,
         displayCurrency,
-        getUnavailableReasonForSource(source)
+        getUnavailableReasonForSource(
+          source,
+          item.marketHashName,
+          liveDiagnosticsBySource
+        )
       );
     });
 
