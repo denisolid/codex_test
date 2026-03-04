@@ -17,6 +17,18 @@ function createRateLimiter({ windowMs, max, message }) {
       .replace(/\/\d+(?=\/|$)/g, "/:id");
   }
 
+  function getClientIdentity(req) {
+    const userId = String(req.userId || req.authUser?.id || "").trim();
+    if (userId) {
+      return `user:${userId}`;
+    }
+    const ip = String(req.ip || req.socket?.remoteAddress || "").trim();
+    if (ip) {
+      return `ip:${ip}`;
+    }
+    return "ip:unknown";
+  }
+
   function cleanup(now) {
     if (now - lastCleanupAt < cleanupIntervalMs) {
       return;
@@ -50,7 +62,7 @@ function createRateLimiter({ windowMs, max, message }) {
     cleanup(now);
 
     const routeKey = normalizePath(`${req.baseUrl || ""}${req.path || ""}`);
-    const key = `${req.ip}:${String(req.method || "GET").toUpperCase()}:${routeKey}`;
+    const key = `${getClientIdentity(req)}:${String(req.method || "GET").toUpperCase()}:${routeKey}`;
     const entry = hits.get(key);
 
     if (!entry || now > entry.resetAt) {
