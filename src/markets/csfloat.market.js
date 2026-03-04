@@ -44,13 +44,29 @@ function toSafeHttpUrl(value) {
   }
 }
 
+function sanitizeApiKey(rawValue) {
+  let value = String(rawValue || "").trim();
+  if (!value) return "";
+
+  // Render/UI copy-paste often stores quoted values (e.g. "abc" or 'abc').
+  const hasDoubleQuotes = value.startsWith("\"") && value.endsWith("\"");
+  const hasSingleQuotes = value.startsWith("'") && value.endsWith("'");
+  if ((hasDoubleQuotes || hasSingleQuotes) && value.length >= 2) {
+    value = value.slice(1, -1).trim();
+  }
+
+  // CSFloat keys are single-token credentials; whitespace makes auth fail.
+  value = value.replace(/\s+/g, "");
+  return value;
+}
+
 function buildHeaderVariantMap() {
   const baseHeaders = {
     Accept: "application/json",
     "User-Agent": "cs2-portfolio-analyzer/1.0"
   };
 
-  const apiKey = String(csfloatApiKey || "").trim();
+  const apiKey = sanitizeApiKey(csfloatApiKey);
   if (!apiKey) {
     return [baseHeaders];
   }
@@ -288,6 +304,7 @@ module.exports = {
     extractBestListing,
     toSafeHttpUrl,
     buildHeaderVariantMap,
-    describeCsfloatFetchError
+    describeCsfloatFetchError,
+    sanitizeApiKey
   }
 };

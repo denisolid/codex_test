@@ -7,7 +7,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY || "service-role";
 
 const {
-  __testables: { extractBestListing, describeCsfloatFetchError }
+  __testables: { extractBestListing, describeCsfloatFetchError, sanitizeApiKey }
 } = require("../src/markets/csfloat.market");
 const {
   __testables: { resolveOfferUrl, extractPrice, extractBestOffer }
@@ -52,6 +52,17 @@ test("csfloat fetch error mapper returns actionable reason for auth failures", (
   assert.equal(
     describeCsfloatFetchError({ upstreamStatus: 403 }),
     "CSFloat authentication failed. Check CSFLOAT_API_KEY."
+  );
+});
+
+test("csfloat key sanitizer removes wrappers and whitespace", () => {
+  assert.equal(
+    sanitizeApiKey("  \"abc123\"  "),
+    "abc123"
+  );
+  assert.equal(
+    sanitizeApiKey(" 'a b c 1 2 3' "),
+    "abc123"
   );
 });
 
