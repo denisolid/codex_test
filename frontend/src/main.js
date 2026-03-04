@@ -103,6 +103,15 @@ function createMarketOpportunitiesState() {
   };
 }
 
+function formatCountdownLabel(totalSeconds) {
+  const seconds = Math.max(Math.ceil(Number(totalSeconds || 0)), 0);
+  if (seconds <= 0) return "0s";
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes <= 0) return `${rest}s`;
+  return `${minutes}m ${rest}s`;
+}
+
 const state = {
   sessionBooting: true,
   authenticated: false,
@@ -173,6 +182,7 @@ const state = {
   exitWhatIf: createExitWhatIfState(),
   error: "",
   syncingInventory: false,
+  syncRateLimitedUntil: 0,
   syncSummary: null,
   currency: normalizeCurrencyCode(localStorage.getItem(CURRENCY_STORAGE_KEY) || "USD"),
   pricingMode: normalizePricingMode(
@@ -1203,6 +1213,14 @@ function renderDesktopHeader(userEmailLabel, userEmailTitle) {
   const notificationCount = Number(state.alertEvents?.length || 0);
   const hasMoreTabs = HEADER_MORE_TABS.length > 0;
   const moreTabActive = HEADER_MORE_TABS.some((tab) => tab.id === state.activeTab);
+  const syncCooldownSeconds = getSyncCooldownSecondsRemaining();
+  const syncDisabled = state.syncingInventory || syncCooldownSeconds > 0;
+  const syncTitle =
+    syncCooldownSeconds > 0
+      ? `Sync rate limited. Try again in ${formatCountdownLabel(syncCooldownSeconds)}.`
+      : state.syncingInventory
+        ? "Syncing inventory"
+        : "Sync inventory";
   return `
     <header class="desktop-header" role="banner">
       <a href="#" class="desktop-brand" data-desktop-home aria-label="Go to dashboard">
@@ -1277,7 +1295,8 @@ function renderDesktopHeader(userEmailLabel, userEmailTitle) {
           class="ghost-btn header-icon-btn"
           id="header-sync-btn"
           aria-label="Sync inventory"
-          title="Sync inventory"
+          title="${escapeHtml(syncTitle)}"
+          ${syncDisabled ? "disabled" : ""}
         >
           &#x21bb;
         </button>
@@ -1740,7 +1759,15 @@ async function api(path, options = {}) {
     state.authProfile = null;
   }
   if (!res.ok) {
-    throw new Error(payload.error || "Request failed");
+    const err = new Error(payload.error || "Request failed");
+    err.status = Number(res.status || 0);
+    err.code = String(payload?.code || "").trim();
+    const retryAfterRaw = res.headers.get("Retry-After");
+    const retryAfterSeconds = Number(retryAfterRaw);
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+      err.retryAfterSeconds = retryAfterSeconds;
+    }
+    throw err;
   }
 
   state.authenticated = true;
@@ -1750,6 +1777,12 @@ async function api(path, options = {}) {
 function withCurrency(path) {
   const separator = path.includes("?") ? "&" : "?";
   return `${path}${separator}currency=${encodeURIComponent(state.currency)}`;
+}
+
+function getSyncCooldownSecondsRemaining() {
+  const untilTs = Number(state.syncRateLimitedUntil || 0);
+  if (!Number.isFinite(untilTs) || untilTs <= 0) return 0;
+  return Math.max(Math.ceil((untilTs - Date.now()) / 1000), 0);
 }
 
 function clampInt(value, min, max) {
@@ -3341,12 +3374,21 @@ async function logout() {
 
 async function syncInventory() {
   if (state.syncingInventory) return;
+  const cooldownSeconds = getSyncCooldownSecondsRemaining();
+  if (cooldownSeconds > 0) {
+    notify(
+      "warning",
+      `Sync rate limited. Try again in ${formatCountdownLabel(cooldownSeconds)}.`
+    );
+    return;
+  }
   clearError();
   state.syncingInventory = true;
   render();
   try {
     const result = await api("/inventory/sync", { method: "POST" });
     state.syncSummary = result;
+    state.syncRateLimitedUntil = 0;
     if (state.steamOnboardingPending) {
       state.accountNotice = "Inventory synced successfully. Your portfolio is ready.";
       state.steamOnboardingPending = false;
@@ -3359,8 +3401,18 @@ async function syncInventory() {
       )} priced.`
     );
   } catch (err) {
+    if (Number(err?.status || 0) === 429) {
+      const retryAfter = Math.max(Math.ceil(Number(err?.retryAfterSeconds || 60)), 1);
+      state.syncRateLimitedUntil = Date.now() + retryAfter * 1000;
+      notify(
+        "warning",
+        `Too many sync attempts. Try again in ${formatCountdownLabel(retryAfter)}.`
+      );
+    }
     setError(err.message);
-    notify("warning", "Inventory sync failed. Please try again.");
+    if (Number(err?.status || 0) !== 429) {
+      notify("warning", "Inventory sync failed. Please try again.");
+    }
     state.alerts = [
       {
         severity: "warning",
@@ -5820,9 +5872,12 @@ function renderDashboardKpiBar() {
     0
   );
   const refreshMarker = state.syncSummary?.syncedAt || portfolio?.updatedAt || portfolio?.generatedAt || "";
+  const syncCooldownSeconds = getSyncCooldownSecondsRemaining();
   const refreshTone = state.portfolioLoading || state.syncingInventory ? "warning" : "neutral";
   const refreshText = state.syncingInventory
     ? "Syncing inventory..."
+    : syncCooldownSeconds > 0
+      ? `Sync rate limited (${formatCountdownLabel(syncCooldownSeconds)})`
     : state.portfolioLoading
       ? "Refreshing snapshot..."
       : refreshMarker
@@ -8012,6 +8067,8 @@ function renderSettingsTab() {
     ? `${window.location.origin}/u/${encodeURIComponent(profile.steamId64 || "")}`
     : "";
   const pricingMode = normalizePricingMode(state.portfolio?.pricing?.mode || state.pricingMode);
+  const syncCooldownSeconds = getSyncCooldownSecondsRemaining();
+  const syncDisabled = state.syncingInventory || syncCooldownSeconds > 0;
   const currencyOptions = SUPPORTED_CURRENCIES.map(
     (code) =>
       `<option value="${code}" ${code === state.currency ? "selected" : ""}>${code}</option>`
@@ -8437,10 +8494,12 @@ function renderSteamSyncPanel() {
         </article>
       </div>
       <div class="row">
-        <button id="sync-btn" ${state.syncingInventory ? "disabled" : ""}>
+        <button id="sync-btn" ${syncDisabled ? "disabled" : ""}>
           ${
             state.syncingInventory
               ? '<span class="loading-inline"><span class="spinner"></span>Syncing inventory...</span>'
+              : syncCooldownSeconds > 0
+                ? `Try again in ${escapeHtml(formatCountdownLabel(syncCooldownSeconds))}`
               : "Sync Inventory"
           }
         </button>
@@ -8449,6 +8508,10 @@ function renderSteamSyncPanel() {
       ${
         state.syncingInventory
           ? '<p class="muted sync-note">Fetching inventory and market prices. This can take up to a minute.</p>'
+          : syncCooldownSeconds > 0
+            ? `<p class="muted sync-note">Too many sync attempts. Retry in ${escapeHtml(
+                formatCountdownLabel(syncCooldownSeconds)
+              )}.</p>`
           : ""
       }
       ${renderSyncSummary()}
