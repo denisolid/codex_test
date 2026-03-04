@@ -4781,6 +4781,37 @@ function formatMarketSourceLabel(source) {
   return map[String(source || "").toLowerCase()] || toTitle(source || "Market");
 }
 
+function getMarketSourceKey(source) {
+  const raw = String(source || "")
+    .trim()
+    .toLowerCase();
+  if (!raw) return "market";
+  if (raw === "dm" || raw === "dmarket") return "dmarket";
+  if (raw === "steam") return "steam";
+  if (raw === "skinport") return "skinport";
+  if (raw === "csfloat" || raw === "cs float") return "csfloat";
+  return raw;
+}
+
+function getMarketIconAbbreviation(source) {
+  const key = getMarketSourceKey(source);
+  const map = {
+    steam: "ST",
+    skinport: "SP",
+    csfloat: "CF",
+    dmarket: "DM"
+  };
+  return map[key] || "MK";
+}
+
+function renderMarketSourceIcon(source) {
+  const key = getMarketSourceKey(source);
+  const iconText = getMarketIconAbbreviation(key);
+  return `<span class="compare-drawer-market-icon market-icon-${escapeHtml(
+    key
+  )}" aria-hidden="true">${escapeHtml(iconText)}</span>`;
+}
+
 function getOpportunityScoreTone(score) {
   const value = Number(score || 0);
   if (value >= 90) return "positive";
@@ -4823,9 +4854,11 @@ function getCompareDrawerInsights(payload = null) {
     const available = Boolean(row?.available);
     const buyValue = Number(row?.grossPrice);
     const sellValue = Number(row?.netPriceAfterFees);
+    const sourceKey = getMarketSourceKey(row?.source);
     return {
       source: String(row?.source || ""),
-      label: formatMarketSourceLabel(row?.source),
+      sourceKey,
+      label: formatMarketSourceLabel(sourceKey),
       available,
       buyValue: available && Number.isFinite(buyValue) ? buyValue : null,
       sellValue: available && Number.isFinite(sellValue) ? sellValue : null,
@@ -5086,6 +5119,12 @@ function renderCompareDrawerBody() {
     (Number(arbitrageProfit || 0) > 0 && Number(arbitrageSpreadPercent || 0) > 3);
   const arbitrageProfitClass = arbitrageProfit > 0 ? "is-positive" : "is-neutral";
   const arbitrageScoreTone = getOpportunityScoreTone(arbitrageScore);
+  const arbitrageBuySourceKey = getMarketSourceKey(
+    backendArbitrage?.buyMarket || lowestBuyMarket?.source
+  );
+  const arbitrageSellSourceKey = getMarketSourceKey(
+    backendArbitrage?.sellMarket || highestSellMarket?.source
+  );
 
   const renderQuickList = (entries = [], valueKey = "buyValue", emptyText = "No market data") => {
     if (!entries.length) {
@@ -5098,7 +5137,10 @@ function renderCompareDrawerBody() {
             const value = Number(entry?.[valueKey]);
             return `
               <li>
-                <span>${escapeHtml(entry?.label || "Market")}</span>
+                <span class="compare-drawer-top-list-market">
+                  ${renderMarketSourceIcon(entry?.sourceKey || entry?.source || entry?.label)}
+                  <span>${escapeHtml(entry?.label || "Market")}</span>
+                </span>
                 <strong>${Number.isFinite(value) ? formatMoney(value, entry?.currency || payload.currency) : "-"}</strong>
               </li>
             `;
@@ -5134,10 +5176,49 @@ function renderCompareDrawerBody() {
                   : "profit-neutral";
           const profitLabel =
             marketProfit == null ? "Profit" : marketProfit < 0 ? "Loss" : "Profit";
+          const sourceKey = getMarketSourceKey(entry?.sourceKey || entry?.source);
+          const isArbBuyMarket =
+            profitableArbitrage &&
+            sourceKey !== "market" &&
+            sourceKey === arbitrageBuySourceKey;
+          const isArbSellMarket =
+            profitableArbitrage &&
+            sourceKey !== "market" &&
+            sourceKey === arbitrageSellSourceKey;
+          const arbitrageRoleLabel =
+            isArbBuyMarket && isArbSellMarket
+              ? "Arb Buy/Sell"
+              : isArbBuyMarket
+                ? "Arb Buy"
+                : isArbSellMarket
+                  ? "Arb Sell"
+                  : "";
+          const arbitrageRoleClass =
+            isArbBuyMarket && isArbSellMarket
+              ? "has-arb-both"
+              : isArbBuyMarket
+                ? "has-arb-buy"
+                : isArbSellMarket
+                  ? "has-arb-sell"
+                  : "";
           return `
-            <article class="compare-drawer-market-card ${available ? "" : "unavailable"}">
+            <article class="compare-drawer-market-card ${available ? "" : "unavailable"} ${escapeHtml(
+              arbitrageRoleClass
+            )}">
               <div class="compare-drawer-market-head">
-                <strong>${escapeHtml(entry?.label || "Market")}</strong>
+                <div class="compare-drawer-market-head-main">
+                  ${renderMarketSourceIcon(sourceKey)}
+                  <div class="compare-drawer-market-title-wrap">
+                    <strong>${escapeHtml(entry?.label || "Market")}</strong>
+                    ${
+                      arbitrageRoleLabel
+                        ? `<span class="compare-drawer-market-arb-tag ${escapeHtml(
+                            arbitrageRoleClass
+                          )}">${escapeHtml(arbitrageRoleLabel)}</span>`
+                        : ""
+                    }
+                  </div>
+                </div>
                 <small>${escapeHtml(available ? `Updated ${formatRelativeTime(entry?.updatedAt)}` : "No data")}</small>
               </div>
               ${
@@ -5172,7 +5253,7 @@ function renderCompareDrawerBody() {
               </dl>
               ${
                 entry?.url
-                  ? `<a class="link-btn ghost market-open-link" href="${escapeHtml(
+                  ? `<a class="link-btn market-open-link compare-drawer-market-open-link" href="${escapeHtml(
                       entry.url
                     )}" target="_blank" rel="noreferrer">Open listing</a>`
                   : '<span class="muted compare-drawer-empty">No listing link</span>'
@@ -5207,6 +5288,10 @@ function renderCompareDrawerBody() {
     </div>
     <section class="compare-drawer-arb-card">
       <p class="compare-drawer-section-eyebrow">Arbitrage Insight</p>
+      <div class="compare-drawer-arb-status ${profitableArbitrage ? "is-opportunity" : "is-none"}">
+        <span class="compare-drawer-arb-status-dot" aria-hidden="true"></span>
+        <strong>${profitableArbitrage ? "Opportunity Detected" : "No Arbitrage Signal"}</strong>
+      </div>
       ${
         profitableArbitrage
           ? `
