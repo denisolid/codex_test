@@ -10,6 +10,13 @@ function applyPriceSourceFilter(query) {
   return query.not("source", "ilike", "%mock%");
 }
 
+function applyHistorySourceFilter(query, options = {}) {
+  if (options.excludeMock === true) {
+    return query.not("source", "ilike", "%mock%");
+  }
+  return applyPriceSourceFilter(query);
+}
+
 function normalizeSkinIds(skinIds = []) {
   return Array.from(
     new Set(
@@ -143,18 +150,24 @@ exports.getHistoryBySkinId = async (skinId, limit = 30) => {
   return data || [];
 };
 
-exports.getHistoryBySkinIdSince = async (skinId, sinceDate, limit = 2000) => {
+exports.getHistoryBySkinIdSince = async (
+  skinId,
+  sinceDate,
+  limit = 2000,
+  options = {}
+) => {
   const sinceIso =
     sinceDate instanceof Date ? sinceDate.toISOString() : String(sinceDate);
 
-  const { data, error } = await applyPriceSourceFilter(
+  const { data, error } = await applyHistorySourceFilter(
     supabaseAdmin
       .from("price_history")
-      .select("price, currency, recorded_at")
+      .select("price, currency, source, recorded_at")
       .eq("skin_id", skinId)
       .gte("recorded_at", sinceIso)
       .order("recorded_at", { ascending: false })
-      .limit(limit)
+      .limit(limit),
+    options
   );
 
   if (error) {
@@ -164,7 +177,12 @@ exports.getHistoryBySkinIdSince = async (skinId, sinceDate, limit = 2000) => {
   return data || [];
 };
 
-exports.getHistoryBySkinIdsSince = async (skinIds, sinceDate, limit = 12000) => {
+exports.getHistoryBySkinIdsSince = async (
+  skinIds,
+  sinceDate,
+  limit = 12000,
+  options = {}
+) => {
   if (!Array.isArray(skinIds) || !skinIds.length) {
     return [];
   }
@@ -172,14 +190,15 @@ exports.getHistoryBySkinIdsSince = async (skinIds, sinceDate, limit = 12000) => 
   const sinceIso =
     sinceDate instanceof Date ? sinceDate.toISOString() : String(sinceDate);
 
-  const { data, error } = await applyPriceSourceFilter(
+  const { data, error } = await applyHistorySourceFilter(
     supabaseAdmin
       .from("price_history")
-      .select("skin_id, price, currency, recorded_at")
+      .select("skin_id, price, currency, source, recorded_at")
       .in("skin_id", skinIds)
       .gte("recorded_at", sinceIso)
       .order("recorded_at", { ascending: false })
-      .limit(limit)
+      .limit(limit),
+    options
   );
 
   if (error) {
@@ -218,6 +237,7 @@ exports.deleteMockPriceRows = async () => {
 
 exports.__testables = {
   applyPriceSourceFilter,
+  applyHistorySourceFilter,
   normalizeSkinIds,
   isMissingRpcError
 };

@@ -47,3 +47,19 @@ test("buildDailyCarryForwardSeries returns empty when there is no row and no see
 
   assert.deepEqual(series, []);
 });
+
+test("buildDailyCarryForwardSeries does not prefill days before first observed when disabled", () => {
+  const rows = [{ price: 13, recorded_at: "2026-01-03T18:00:00.000Z", source: "steam" }];
+
+  const series = buildDailyCarryForwardSeries(rows, {
+    startDate: "2026-01-01T00:00:00.000Z",
+    endDate: "2026-01-05T23:59:59.000Z",
+    backfillFromFirstObserved: false
+  });
+
+  assert.deepEqual(
+    series.map((row) => String(row.recorded_at).slice(0, 10)),
+    ["2026-01-05", "2026-01-04", "2026-01-03"]
+  );
+  assert.deepEqual(series.map((row) => row.price), [13, 13, 13]);
+});
