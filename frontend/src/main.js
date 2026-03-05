@@ -4885,10 +4885,27 @@ function getMarketIconAbbreviation(source) {
   return map[key] || "MK";
 }
 
+function getMarketIconPath(source) {
+  const key = getMarketSourceKey(source);
+  const map = {
+    steam: "/market-icon-steam.png",
+    skinport: "/market-icon-skinport.png",
+    csfloat: "/market-icon-csfloat.png",
+    dmarket: "/market-icon-dmarket.png"
+  };
+  return map[key] || "";
+}
+
 function renderMarketSourceIcon(source) {
   const key = getMarketSourceKey(source);
+  const iconPath = getMarketIconPath(key);
+  if (iconPath) {
+    return `<span class="compare-drawer-market-icon market-icon-${escapeHtml(
+      key
+    )}" aria-hidden="true"><img src="${escapeHtml(iconPath)}" alt="" loading="lazy" decoding="async" /></span>`;
+  }
   const iconText = getMarketIconAbbreviation(key);
-  return `<span class="compare-drawer-market-icon market-icon-${escapeHtml(
+  return `<span class="compare-drawer-market-icon market-icon-fallback market-icon-${escapeHtml(
     key
   )}" aria-hidden="true">${escapeHtml(iconText)}</span>`;
 }
