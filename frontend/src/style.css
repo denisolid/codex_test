@@ -1813,10 +1813,30 @@ body.ui-sync-blocked .app-shell {
   line-height: 1.5;
 }
 
+.portfolio-top-grid {
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.portfolio-top-grid .panel {
+  padding: 14px 15px;
+}
+
+.portfolio-top-grid .panel > h2 {
+  padding-bottom: 8px;
+  margin-bottom: 10px;
+}
+
+.portfolio-top-grid .helper-text {
+  margin-bottom: 7px;
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
 .steam-sync-panel {
   display: grid;
   align-content: start;
-  gap: 8px;
+  gap: 6px;
 }
 
 .steam-sync-panel .helper-text,
@@ -1829,19 +1849,87 @@ body.ui-sync-blocked .app-shell {
 }
 
 .steam-sync-panel .sub-kpi-grid {
-  gap: 8px;
+  gap: 6px;
 }
 
 .steam-sync-panel .sub-kpi-card {
-  padding: 10px;
+  padding: 8px;
+  gap: 3px;
+}
+
+.steam-sync-panel .sub-kpi-card span {
+  font-size: 0.72rem;
+}
+
+.steam-sync-panel .sub-kpi-card strong {
+  font-size: 1.02rem;
+  line-height: 1.2;
 }
 
 .steam-sync-panel .row {
   margin: 0;
+  gap: 8px;
+}
+
+.steam-sync-panel button,
+.steam-sync-panel .link-btn,
+.position-inspector-panel button {
+  min-height: 36px;
+  padding: 8px 12px;
 }
 
 .steam-sync-panel .sync-summary {
   margin-top: 0;
+  padding: 9px 10px;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.steam-sync-panel .sync-summary p {
+  margin: 4px 0;
+}
+
+.steam-sync-panel .sync-summary-details {
+  margin-top: 6px;
+}
+
+.steam-sync-panel .sync-summary-details summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.steam-sync-panel .sync-summary-details .sync-list {
+  margin: 4px 0 0;
+  padding-left: 16px;
+}
+
+.steam-sync-panel .sync-summary-details .sync-list li {
+  margin: 3px 0;
+}
+
+.position-inspector-panel {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+}
+
+.position-inspector-panel .helper-text,
+.position-inspector-panel .muted {
+  margin: 0;
+}
+
+.position-inspector-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+  margin: 0;
+}
+
+.position-inspector-form button {
+  min-width: 176px;
+  white-space: nowrap;
 }
 
 .empty-state {

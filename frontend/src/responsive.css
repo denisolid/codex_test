@@ -966,6 +966,15 @@ button:active,
 }
 
 @media (max-width: 767px) {
+  .position-inspector-form {
+    grid-template-columns: 1fr;
+  }
+
+  .position-inspector-form button {
+    width: 100%;
+    min-width: 0;
+  }
+
   .dashboard-hero-actions {
     width: 100%;
     display: grid;

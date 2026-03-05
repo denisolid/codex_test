@@ -3522,6 +3522,15 @@ function renderSyncSummary() {
         )}: ${Number(x.previousQuantity || 0)} -> ${Number(x.newQuantity || 0)}</span></li>`
     )
     .join("");
+  const renderPreviewDetails = (title, previewMarkup) => {
+    if (!previewMarkup) return "";
+    return `
+      <details class="sync-summary-details">
+        <summary>${escapeHtml(title)}</summary>
+        <ul class="sync-list">${previewMarkup}</ul>
+      </details>
+    `;
+  };
 
   return `
     <div class="sync-summary">
@@ -3534,21 +3543,9 @@ function renderSyncSummary() {
       )} | Unpriced: ${Number(s.unpricedItemsCount || 0)} | Excluded: ${Number(
         s.excludedItemsCount || 0
       )} | Ownership changes: ${Number(s.ownershipChangesCount || 0)}</p>
-      ${
-        ownershipPreview
-          ? `<p class="muted">Ownership changes (first 4):</p><ul class="sync-list">${ownershipPreview}</ul>`
-          : ""
-      }
-      ${
-        unpricedPreview
-          ? `<p class="muted">Unpriced (first 4):</p><ul class="sync-list">${unpricedPreview}</ul>`
-          : ""
-      }
-      ${
-        excludedPreview
-          ? `<p class="muted">Excluded (first 4):</p><ul class="sync-list">${excludedPreview}</ul>`
-          : ""
-      }
+      ${renderPreviewDetails("Ownership changes (first 4)", ownershipPreview)}
+      ${renderPreviewDetails("Unpriced items (first 4)", unpricedPreview)}
+      ${renderPreviewDetails("Excluded items (first 4)", excludedPreview)}
     </div>
   `;
 }
@@ -8838,7 +8835,7 @@ function renderSteamSyncPanel() {
   return `
     <article class="panel steam-sync-panel">
       <h2>Steam Sync</h2>
-      <p class="helper-text">SteamID is connected from your login. Click <strong>Sync Inventory</strong> to import items and refresh market prices.</p>
+      <p class="helper-text">SteamID is linked. Click <strong>Sync Inventory</strong> to refresh items and market prices.</p>
       ${onboardingNotice}
       <div class="sub-kpi-grid">
         <article class="sub-kpi-card">
@@ -8907,19 +8904,19 @@ function renderApp() {
   `;
 
   const portfolioContent = `
-    <section class="grid dashboard-grid">
+    <section class="grid dashboard-grid portfolio-top-grid">
       ${renderSteamSyncPanel()}
 
-      <article class="panel">
+      <article class="panel position-inspector-panel">
         <h2>Position Inspector</h2>
-        <p class="helper-text">Paste a Steam Item ID to open a centered inspector modal without losing your current scroll position in the portfolio.</p>
-        <form id="skin-form" class="form">
+        <p class="helper-text">Paste a Steam Item ID to open the inspector modal without losing your portfolio position.</p>
+        <form id="skin-form" class="form position-inspector-form">
           <label>Steam Item ID
             <input id="steam-item-id" inputmode="numeric" pattern="[0-9]+" placeholder="e.g. 35719462921" value="${escapeHtml(state.inspectedSteamItemId)}" />
           </label>
           <button type="submit">Open Inspector</button>
         </form>
-        <p class="muted">Item details, market sources, and what-if exit analytics open in the modal.</p>
+        <p class="muted">Item details, market sources, and exit what-if analytics open in the modal.</p>
       </article>
     </section>
 
