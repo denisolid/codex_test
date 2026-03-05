@@ -2405,11 +2405,10 @@ async function handleTabSwitch(tab) {
   const ticket = ++tabSwitchTicket;
   const target = String(tab || "");
   const requiresLoad =
-    target === "portfolio" ||
-    (target === "team" &&
+    target === "team" &&
       String(state.authProfile?.planTier || "free").toLowerCase() === "team" &&
       !state.teamDashboard.loading &&
-      !state.teamDashboard.payload);
+      !state.teamDashboard.payload;
 
   if (state.headerTabMenu.open) {
     state.headerTabMenu.open = false;
@@ -2436,7 +2435,7 @@ async function handleTabSwitch(tab) {
 
   try {
     if (target === "portfolio") {
-      await refreshVisibleMarketComparisons();
+      runUiTask(() => refreshVisibleMarketComparisons());
     }
 
     if (
