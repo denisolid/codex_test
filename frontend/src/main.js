@@ -92,12 +92,13 @@ function createMarketOpportunitiesState() {
     summary: null,
     items: [],
     filters: {
-      minProfit: "0",
-      minSpread: "3",
-      minScore: "0",
+      minProfit: "0.5",
+      minSpread: "5",
+      minScore: "70",
       market: "all",
       liquidityMin: "0",
-      sortBy: "profit",
+      showRisky: "0",
+      sortBy: "score",
       limit: "250"
     }
   };
@@ -4122,6 +4123,9 @@ async function refreshMarketInventoryValue() {
 
 function readMarketOpportunitiesFiltersFromDom() {
   const filters = state.marketTab.opportunities.filters;
+  const showRiskyChecked = Boolean(
+    document.querySelector("#market-opportunity-show-risky")?.checked
+  );
   const next = {
     minProfit:
       document.querySelector("#market-opportunity-min-profit")?.value ?? filters.minProfit,
@@ -4132,6 +4136,7 @@ function readMarketOpportunitiesFiltersFromDom() {
     market: document.querySelector("#market-opportunity-market")?.value ?? filters.market,
     liquidityMin:
       document.querySelector("#market-opportunity-liquidity-min")?.value ?? filters.liquidityMin,
+    showRisky: showRiskyChecked ? "1" : "0",
     sortBy: document.querySelector("#market-opportunity-sort-by")?.value ?? filters.sortBy,
     limit: document.querySelector("#market-opportunity-limit")?.value ?? filters.limit
   };
@@ -4152,14 +4157,21 @@ async function refreshMarketOpportunities(options = {}) {
 
   try {
     const filters = scanner.filters || {};
+    const showRisky = String(filters.showRisky || "0") === "1";
+    const minScoreRaw = Number(filters.minScore || 0);
+    const minScoreQuery =
+      showRisky && minScoreRaw >= 70
+        ? 50
+        : minScoreRaw;
     const query = buildQuery({
       currency: state.currency,
       minProfit: Number(filters.minProfit || 0),
-      minSpread: Number(filters.minSpread || 3),
-      minScore: Number(filters.minScore || 0),
+      minSpread: Number(filters.minSpread || 5),
+      minScore: minScoreQuery,
       market: filters.market === "all" ? "" : filters.market,
       liquidityMin: Number(filters.liquidityMin || 0),
-      sortBy: String(filters.sortBy || "profit"),
+      showRisky: showRisky ? "1" : "",
+      sortBy: String(filters.sortBy || "score"),
       limit: Math.max(Number(filters.limit || 250), 1)
     });
     const payload = await api(`/market/opportunities${query}`);
@@ -4893,10 +4905,30 @@ function formatOpportunityLabel(label, score) {
   const direct = String(label || "").trim();
   if (direct) return direct;
   const value = Number(score || 0);
-  if (value >= 90) return "Strong opportunity";
-  if (value >= 70) return "Good opportunity";
+  if (value >= 90) return "Strong";
+  if (value >= 70) return "Good";
   if (value >= 50) return "Risky";
   return "Weak";
+}
+
+function formatArbitrageReasonLabel(reasonCode) {
+  const key = String(reasonCode || "")
+    .trim()
+    .toLowerCase();
+  const map = {
+    low_liquidity: "Low liquidity",
+    extreme_spread: "Extreme spread",
+    insufficient_market_data: "Insufficient market data",
+    spread_below_min: "Spread below baseline",
+    non_positive_profit: "Non-positive profit"
+  };
+  return map[key] || "Filtered by anti-fake checks";
+}
+
+function isArbitrageDebugEnabled() {
+  const host = String(window?.location?.hostname || "").trim().toLowerCase();
+  const query = String(window?.location?.search || "").trim().toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || query.includes("debug=1");
 }
 
 function resolveCompareDrawerFeePercent(row, feeMap = null) {
@@ -5179,6 +5211,7 @@ function renderCompareDrawerBody() {
   const lowestBuyMarket = insights?.lowestBuyMarket || null;
   const highestSellMarket = insights?.highestSellMarket || null;
   const backendArbitrage = payload?.marketComparison?.arbitrage || null;
+  const antiFake = backendArbitrage?.antiFake || null;
   const backendBuyMarketLabel = backendArbitrage?.buyMarket
     ? formatMarketSourceLabel(backendArbitrage.buyMarket)
     : "";
@@ -5208,9 +5241,25 @@ function renderCompareDrawerBody() {
     backendArbitrage?.scoreCategory,
     arbitrageScore
   );
-  const profitableArbitrage =
-    backendArbitrage?.isOpportunity === true ||
-    (Number(arbitrageProfit || 0) > 0 && Number(arbitrageSpreadPercent || 0) > 3);
+  const antiFakeReasonCodes = Array.isArray(antiFake?.reasons)
+    ? antiFake.reasons.filter(Boolean)
+    : [];
+  const antiFakeReasonLabels = Array.isArray(antiFake?.reasonLabels)
+    ? antiFake.reasonLabels.filter(Boolean)
+    : antiFakeReasonCodes.map((reason) => formatArbitrageReasonLabel(reason));
+  const hasBackendArbitrageVerdict =
+    backendArbitrage && typeof backendArbitrage.isOpportunity === "boolean";
+  const isRealisticArbitrage =
+    hasBackendArbitrageVerdict &&
+    backendArbitrage.isOpportunity === true &&
+    (arbitrageScore == null || arbitrageScore >= 50);
+  const unrealisticByScore = arbitrageScore != null && arbitrageScore < 50;
+  const shouldShowUnrealisticNotice =
+    Boolean(backendArbitrage) &&
+    (backendArbitrage.isOpportunity !== true || unrealisticByScore);
+  const profitableArbitrage = hasBackendArbitrageVerdict
+    ? isRealisticArbitrage
+    : Number(arbitrageProfit || 0) > 0 && Number(arbitrageSpreadPercent || 0) >= 5;
   const arbitrageProfitClass = arbitrageProfit > 0 ? "is-positive" : "is-neutral";
   const arbitrageScoreTone = getOpportunityScoreTone(arbitrageScore);
   const arbitrageBuySourceKey = getMarketSourceKey(
@@ -5219,6 +5268,29 @@ function renderCompareDrawerBody() {
   const arbitrageSellSourceKey = getMarketSourceKey(
     backendArbitrage?.sellMarket || highestSellMarket?.source
   );
+  const fallbackReasonLabels = !antiFakeReasonLabels.length && shouldShowUnrealisticNotice
+    ? [
+        backendArbitrage?.isOpportunity === false
+          ? "Not passing anti-fake liquidity/spread checks"
+          : "Score below realism threshold"
+      ]
+    : [];
+  const effectiveReasonLabels = antiFakeReasonLabels.length
+    ? antiFakeReasonLabels
+    : fallbackReasonLabels;
+  const debugQuoteSnapshot = backendArbitrage?.debug?.rawQuotesByMarket || null;
+  const debugMarkup =
+    shouldShowUnrealisticNotice &&
+    isArbitrageDebugEnabled() &&
+    debugQuoteSnapshot &&
+    typeof debugQuoteSnapshot === "object"
+      ? `
+        <details class="compare-drawer-arb-debug">
+          <summary>Why filtered?</summary>
+          <pre>${escapeHtml(JSON.stringify(debugQuoteSnapshot, null, 2))}</pre>
+        </details>
+      `
+      : "";
 
   const renderQuickList = (entries = [], valueKey = "buyValue", emptyText = "No market data") => {
     if (!entries.length) {
@@ -5384,7 +5456,13 @@ function renderCompareDrawerBody() {
       <p class="compare-drawer-section-eyebrow">Arbitrage Insight</p>
       <div class="compare-drawer-arb-status ${profitableArbitrage ? "is-opportunity" : "is-none"}">
         <span class="compare-drawer-arb-status-dot" aria-hidden="true"></span>
-        <strong>${profitableArbitrage ? "Opportunity Detected" : "No Arbitrage Signal"}</strong>
+        <strong>${
+          profitableArbitrage
+            ? "Opportunity Detected"
+            : shouldShowUnrealisticNotice
+              ? "Not a Realistic Arbitrage Opportunity"
+              : "No Arbitrage Signal"
+        }</strong>
       </div>
       ${
         profitableArbitrage
@@ -5429,7 +5507,23 @@ function renderCompareDrawerBody() {
           <small>${escapeHtml(arbitrageScoreLabel)}</small>
         </div>
       `
-          : '<p class="muted compare-drawer-empty">No profitable arbitrage detected across markets</p>'
+          : shouldShowUnrealisticNotice
+            ? `
+        <div class="compare-drawer-arb-warning">
+          <p class="muted compare-drawer-empty">Not a realistic arbitrage opportunity right now.</p>
+          ${
+            effectiveReasonLabels.length
+              ? `<ul class="compare-drawer-arb-reasons">
+                  ${effectiveReasonLabels
+                    .map((reason) => `<li>${escapeHtml(reason)}</li>`)
+                    .join("")}
+                </ul>`
+              : ""
+          }
+          ${debugMarkup}
+        </div>
+      `
+            : '<p class="muted compare-drawer-empty">No profitable arbitrage detected across markets</p>'
       }
     </section>
     <div class="compare-drawer-insights-grid">
@@ -8201,10 +8295,18 @@ function renderMarketTab() {
           </label>
           <label>Sort
             <select id="market-opportunity-sort-by">
+              <option value="score" ${scanFilters.sortBy === "score" ? "selected" : ""}>Score</option>
               <option value="profit" ${scanFilters.sortBy === "profit" ? "selected" : ""}>Profit</option>
               <option value="spread" ${scanFilters.sortBy === "spread" ? "selected" : ""}>Spread</option>
-              <option value="score" ${scanFilters.sortBy === "score" ? "selected" : ""}>Score</option>
             </select>
+          </label>
+          <label class="checkbox-field">
+            <span>Show Risky</span>
+            <input
+              id="market-opportunity-show-risky"
+              type="checkbox"
+              ${String(scanFilters.showRisky || "0") === "1" ? "checked" : ""}
+            />
           </label>
           <label>Limit
             <input

@@ -660,17 +660,15 @@ exports.compareItems = async (items = [], options = {}) => {
     enrichedItems.map((item) => item.arbitrage),
     {
       limit: 5,
-      minProfit: 0,
-      minSpreadPercent: arbitrageEngine.MIN_SPREAD_PERCENT,
-      sortBy: "profit"
+      includeRisky: false,
+      sortBy: "score"
     }
   );
   summary.arbitrageCandidatesCount = enrichedItems.length;
   summary.arbitrageOpportunitiesCount = arbitrageEngine.rankOpportunities(
     enrichedItems.map((item) => item.arbitrage),
     {
-      minProfit: 0,
-      minSpreadPercent: arbitrageEngine.MIN_SPREAD_PERCENT
+      includeRisky: false
     }
   ).length;
 
