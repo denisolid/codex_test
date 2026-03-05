@@ -8,7 +8,7 @@ import {
   getRarityColor,
   isCaseLikeItem,
   normalizeRarity,
-  resolveItemImageUrl
+  resolveItemImageUrl,
 } from "./rarity";
 import { renderSkinCard, renderSkinCardSkeleton } from "./components/skinCard";
 import { renderAvatarMenu } from "./components/avatarMenu";
@@ -20,7 +20,7 @@ import {
   renderKPIBar,
   renderPanel,
   renderStatGrid,
-  renderStatTile
+  renderStatTile,
 } from "./components/dashboardPrimitives";
 const app = document.querySelector("#app");
 const SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "UAH", "PLN", "CZK"];
@@ -30,7 +30,7 @@ const DASHBOARD_DETAILS_STORAGE_KEY = "cs2sa:dashboard_details_open";
 const PRICING_MODE_LABELS = {
   steam: "Steam Price",
   best_sell_net: "Best Sell Net",
-  lowest_buy: "Lowest Buy"
+  lowest_buy: "Lowest Buy",
 };
 const SEARCH_RENDER_DEBOUNCE_MS = 120;
 const TOAST_MAX_VISIBLE = 4;
@@ -79,7 +79,7 @@ function createExitWhatIfState() {
     targetSellPrice: "0",
     commissionPercent: "13",
     result: null,
-    loading: false
+    loading: false,
   };
 }
 
@@ -99,8 +99,8 @@ function createMarketOpportunitiesState() {
       liquidityMin: "0",
       showRisky: "0",
       sortBy: "score",
-      limit: "250"
-    }
+      limit: "250",
+    },
   };
 }
 
@@ -136,28 +136,28 @@ const state = {
     steamItemId: "",
     skin: null,
     marketInsight: null,
-    exitWhatIf: createExitWhatIfState()
+    exitWhatIf: createExitWhatIfState(),
   },
   tabSwitch: {
     loading: false,
-    target: ""
+    target: "",
   },
   mobileDrawer: {
     open: false,
-    focusPending: false
+    focusPending: false,
   },
   portfolioControls: {
     open: false,
-    focusPending: false
+    focusPending: false,
   },
   avatarMenu: {
-    open: false
+    open: false,
   },
   headerTabMenu: {
-    open: false
+    open: false,
   },
   tooltip: {
-    openId: ""
+    openId: "",
   },
   globalSearch: "",
   activeTab: "dashboard",
@@ -167,30 +167,32 @@ const state = {
     status: "all",
     sort: "value_desc",
     page: 1,
-    pageSize: 10
+    pageSize: 10,
   },
   transactionsView: {
     q: "",
     type: "all",
     sort: "date_desc",
     page: 1,
-    pageSize: 10
+    pageSize: 10,
   },
   csvImport: {
     running: false,
-    summary: null
+    summary: null,
   },
   exitWhatIf: createExitWhatIfState(),
   error: "",
   syncingInventory: false,
   syncRateLimitedUntil: 0,
   syncSummary: null,
-  currency: normalizeCurrencyCode(localStorage.getItem(CURRENCY_STORAGE_KEY) || "USD"),
+  currency: normalizeCurrencyCode(
+    localStorage.getItem(CURRENCY_STORAGE_KEY) || "USD",
+  ),
   pricingMode: normalizePricingMode(
-    localStorage.getItem(PRICING_MODE_STORAGE_KEY) || "lowest_buy"
+    localStorage.getItem(PRICING_MODE_STORAGE_KEY) || "lowest_buy",
   ),
   dashboardUi: {
-    detailsExpanded: readDashboardDetailsPreference()
+    detailsExpanded: readDashboardDetailsPreference(),
   },
   compareDrawer: {
     open: false,
@@ -199,7 +201,7 @@ const state = {
     error: "",
     skinId: 0,
     marketHashName: "",
-    payload: null
+    payload: null,
   },
   compareRefreshing: false,
   txSubmitting: false,
@@ -208,7 +210,7 @@ const state = {
     type: "buy",
     quantity: "1",
     unitPrice: "0",
-    commissionPercent: "13"
+    commissionPercent: "13",
   },
   txEditModal: {
     open: false,
@@ -219,7 +221,7 @@ const state = {
     unitPrice: "0",
     commissionPercent: "13",
     executedAt: "",
-    submitting: false
+    submitting: false,
   },
   tradeCalc: {
     buyPrice: "0",
@@ -227,7 +229,7 @@ const state = {
     quantity: "1",
     commissionPercent: "13",
     loading: false,
-    result: null
+    result: null,
   },
   alertForm: {
     mode: "create",
@@ -238,7 +240,7 @@ const state = {
     direction: "both",
     cooldownMinutes: "60",
     enabled: true,
-    submitting: false
+    submitting: false,
   },
   marketTab: {
     skinId: "",
@@ -247,7 +249,7 @@ const state = {
     inventoryValue: null,
     autoLoaded: false,
     insight: null,
-    opportunities: createMarketOpportunitiesState()
+    opportunities: createMarketOpportunitiesState(),
   },
   accountNotice: "",
   steamOnboardingPending: false,
@@ -256,27 +258,27 @@ const state = {
     watchlist: [],
     leaderboard: [],
     newSteamId: "",
-    loading: false
+    loading: false,
   },
   publicPage: {
     steamId64: null,
     loading: false,
     payload: null,
-    error: ""
+    error: "",
   },
   backtest: {
     days: "90",
     loading: false,
-    result: null
+    result: null,
   },
   teamDashboard: {
     loading: false,
-    payload: null
+    payload: null,
   },
   authNotice: {
-    emailConfirmToastShown: false
+    emailConfirmToastShown: false,
   },
-  toasts: []
+  toasts: [],
 };
 
 const holdingsValueMemory = new Map();
@@ -298,7 +300,7 @@ let dashboardStickySyncBound = false;
 let dashboardStickyRafId = 0;
 let historyChartCache = {
   key: "",
-  markup: ""
+  markup: "",
 };
 const APP_TABS = [
   { id: "dashboard", label: "Dashboard", hint: "Performance" },
@@ -308,15 +310,19 @@ const APP_TABS = [
   { id: "social", label: "Watchlist", hint: "Community" },
   { id: "market", label: "Market", hint: "Pricing" },
   { id: "team", label: "Team", hint: "Creator Ops" },
-  { id: "settings", label: "Settings", hint: "Account" }
+  { id: "settings", label: "Settings", hint: "Account" },
 ];
 const HEADER_PRIMARY_TAB_IDS = new Set(["dashboard", "portfolio"]);
-const HEADER_PRIMARY_TABS = APP_TABS.filter((tab) => HEADER_PRIMARY_TAB_IDS.has(tab.id));
-const HEADER_MORE_TABS = APP_TABS.filter((tab) => !HEADER_PRIMARY_TAB_IDS.has(tab.id));
+const HEADER_PRIMARY_TABS = APP_TABS.filter((tab) =>
+  HEADER_PRIMARY_TAB_IDS.has(tab.id),
+);
+const HEADER_MORE_TABS = APP_TABS.filter(
+  (tab) => !HEADER_PRIMARY_TAB_IDS.has(tab.id),
+);
 const PORTFOLIO_CARD_CACHE_MAX = 800;
 const portfolioCardMarkupCache = {
   desktop: new Map(),
-  mobile: new Map()
+  mobile: new Map(),
 };
 const holdingSecondaryDataCache = new Map();
 const holdingSecondaryRequestCache = new Map();
@@ -375,7 +381,10 @@ function firstDefined(values = []) {
 
 function getHoldingSecondarySnapshot(item = {}) {
   const skinId = Number(item.skinId || 0);
-  const cached = Number.isInteger(skinId) && skinId > 0 ? holdingSecondaryDataCache.get(skinId) : null;
+  const cached =
+    Number.isInteger(skinId) && skinId > 0
+      ? holdingSecondaryDataCache.get(skinId)
+      : null;
   if (cached) {
     return {
       status: cached.status || "ready",
@@ -383,8 +392,11 @@ function getHoldingSecondarySnapshot(item = {}) {
       pattern: normalizeSecondaryText(cached.pattern),
       lastSaleDate: normalizeSecondaryText(cached.lastSaleDate),
       marketVolume: normalizeSecondaryText(cached.marketVolume),
-      listingUrl: normalizeSecondaryText(cached.listingUrl) === "-" ? "" : String(cached.listingUrl || ""),
-      error: cached.error || ""
+      listingUrl:
+        normalizeSecondaryText(cached.listingUrl) === "-"
+          ? ""
+          : String(cached.listingUrl || ""),
+      error: cached.error || "",
     };
   }
 
@@ -398,22 +410,30 @@ function getHoldingSecondarySnapshot(item = {}) {
         item.wearFloat,
         item.wear_float,
         item.paintWear,
-        item.paint_wear
-      ])
+        item.paint_wear,
+      ]),
     ),
     pattern: normalizeSecondaryText(
-      firstDefined([item.pattern, item.patternId, item.paintSeed, item.paint_seed, item.seed])
+      firstDefined([
+        item.pattern,
+        item.patternId,
+        item.paintSeed,
+        item.paint_seed,
+        item.seed,
+      ]),
     ),
-    lastSaleDate: normalizeSecondaryDate(firstDefined([item.currentPriceRecordedAt, item.updatedAt])),
+    lastSaleDate: normalizeSecondaryDate(
+      firstDefined([item.currentPriceRecordedAt, item.updatedAt]),
+    ),
     marketVolume: normalizeSecondaryVolume(
       firstDefined([
         item.marketVolume24h,
         item.marketVolume7d,
-        item?.marketInsight?.sellSuggestion?.volume24h
-      ])
+        item?.marketInsight?.sellSuggestion?.volume24h,
+      ]),
     ),
     listingUrl: resolveMarketListingUrl(item),
-    error: ""
+    error: "",
   };
 }
 
@@ -428,7 +448,7 @@ function getHoldingSecondaryCacheToken(rawSkinId) {
     String(snapshot.pattern || "-"),
     String(snapshot.lastSaleDate || "-"),
     String(snapshot.marketVolume || "-"),
-    String(snapshot.listingUrl || "")
+    String(snapshot.listingUrl || ""),
   ].join("~");
 }
 
@@ -449,17 +469,25 @@ async function hydrateHoldingSecondaryData(rawSkinId, rawSteamItemId = null) {
   holdingSecondaryDataCache.set(skinId, {
     ...current,
     status: "loading",
-    error: ""
+    error: "",
   });
   render();
 
   const request = (async () => {
-    const steamItemId = String(rawSteamItemId || holding.primarySteamItemId || "").trim();
+    const steamItemId = String(
+      rawSteamItemId || holding.primarySteamItemId || "",
+    ).trim();
     const [sellSuggestion, skinDetails] = await Promise.all([
-      api(withCurrency(`/market/items/${skinId}/sell-suggestion`)).catch(() => null),
+      api(withCurrency(`/market/items/${skinId}/sell-suggestion`)).catch(
+        () => null,
+      ),
       /^\d+$/.test(steamItemId)
-        ? api(withCurrency(`/skins/by-steam-item/${encodeURIComponent(steamItemId)}`)).catch(() => null)
-        : api(withCurrency(`/skins/${skinId}`)).catch(() => null)
+        ? api(
+            withCurrency(
+              `/skins/by-steam-item/${encodeURIComponent(steamItemId)}`,
+            ),
+          ).catch(() => null)
+        : api(withCurrency(`/skins/${skinId}`)).catch(() => null),
     ]);
 
     const floatValue = normalizeSecondaryFloat(
@@ -477,8 +505,8 @@ async function hydrateHoldingSecondaryData(rawSkinId, rawSteamItemId = null) {
         skinDetails?.wearFloat,
         skinDetails?.wear_float,
         skinDetails?.paintWear,
-        skinDetails?.paint_wear
-      ])
+        skinDetails?.paint_wear,
+      ]),
     );
     const pattern = normalizeSecondaryText(
       firstDefined([
@@ -491,8 +519,8 @@ async function hydrateHoldingSecondaryData(rawSkinId, rawSteamItemId = null) {
         skinDetails?.patternId,
         skinDetails?.paintSeed,
         skinDetails?.paint_seed,
-        skinDetails?.seed
-      ])
+        skinDetails?.seed,
+      ]),
     );
     const lastSaleDate = normalizeSecondaryDate(
       firstDefined([
@@ -501,8 +529,8 @@ async function hydrateHoldingSecondaryData(rawSkinId, rawSteamItemId = null) {
         skinDetails?.latestPrice?.recordedAt,
         sellSuggestion?.snapshotCapturedAt,
         sellSuggestion?.snapshot_captured_at,
-        holding.updatedAt
-      ])
+        holding.updatedAt,
+      ]),
     );
     const marketVolume = normalizeSecondaryVolume(
       firstDefined([
@@ -510,8 +538,8 @@ async function hydrateHoldingSecondaryData(rawSkinId, rawSteamItemId = null) {
         sellSuggestion?.volume_24h,
         holding.marketVolume24h,
         holding.marketVolume7d,
-        holding?.marketInsight?.sellSuggestion?.volume24h
-      ])
+        holding?.marketInsight?.sellSuggestion?.volume24h,
+      ]),
     );
 
     holdingSecondaryDataCache.set(skinId, {
@@ -521,7 +549,7 @@ async function hydrateHoldingSecondaryData(rawSkinId, rawSteamItemId = null) {
       lastSaleDate,
       marketVolume,
       listingUrl: resolveMarketListingUrl(holding),
-      error: ""
+      error: "",
     });
   })()
     .catch((err) => {
@@ -529,7 +557,7 @@ async function hydrateHoldingSecondaryData(rawSkinId, rawSteamItemId = null) {
       holdingSecondaryDataCache.set(skinId, {
         ...fallback,
         status: "error",
-        error: err?.message || "Failed to refresh secondary data."
+        error: err?.message || "Failed to refresh secondary data.",
       });
     })
     .finally(() => {
@@ -556,7 +584,7 @@ function buildPortfolioCardCacheKey(item, variant = "desktop") {
     item?.managementClue?.metrics?.liquidityScore ??
       item?.marketInsight?.liquidity?.score ??
       item?.marketComparison?.liquidityScore ??
-      0
+      0,
   );
   const liquidityScore = Number.isFinite(liquidityScoreRaw)
     ? Math.max(Math.min(Math.round(liquidityScoreRaw), 100), 0)
@@ -582,7 +610,7 @@ function buildPortfolioCardCacheKey(item, variant = "desktop") {
     String(clue?.action || ""),
     Math.round(Number(clue?.confidence || 0)),
     liquidityScore,
-    getHoldingSecondaryCacheToken(Number(item?.skinId || 0))
+    getHoldingSecondaryCacheToken(Number(item?.skinId || 0)),
   ].join("|");
 }
 
@@ -620,7 +648,9 @@ function clearError() {
 }
 
 function normalizeToastType(type) {
-  const safe = String(type || "info").trim().toLowerCase();
+  const safe = String(type || "info")
+    .trim()
+    .toLowerCase();
   if (safe === "success" || safe === "warning" || safe === "error") return safe;
   return "info";
 }
@@ -650,7 +680,7 @@ function toggleToastExpanded(rawId) {
     changed = true;
     return {
       ...toast,
-      expanded: !toast.expanded
+      expanded: !toast.expanded,
     };
   });
   if (changed) {
@@ -663,7 +693,10 @@ function notify(type, message, options = {}) {
   if (!safeMessage) return null;
 
   const id = ++toastSequence;
-  const timeoutMs = Math.max(Number(options.timeoutMs || TOAST_DEFAULT_TIMEOUT_MS), 1200);
+  const timeoutMs = Math.max(
+    Number(options.timeoutMs || TOAST_DEFAULT_TIMEOUT_MS),
+    1200,
+  );
   const pinned = Boolean(options.pinned);
   const details = String(options.details || "").trim();
   const toast = {
@@ -672,7 +705,7 @@ function notify(type, message, options = {}) {
     message: safeMessage,
     details,
     expanded: false,
-    pinned
+    pinned,
   };
 
   state.toasts = [...state.toasts, toast].slice(-TOAST_MAX_VISIBLE);
@@ -716,7 +749,8 @@ function renderToastHost() {
   const host = ensureToastHost();
   const rows = (Array.isArray(state.toasts) ? state.toasts : [])
     .map((toast) => {
-      const role = toast.type === "error" || toast.type === "warning" ? "alert" : "status";
+      const role =
+        toast.type === "error" || toast.type === "warning" ? "alert" : "status";
       const hasDetails = Boolean(toast.details);
       return `
         <article class="toast ${escapeHtml(toast.type)}" role="${role}">
@@ -776,7 +810,7 @@ function flushAuthNotices() {
     notify(
       "warning",
       `Email for ${state.authProfile?.email || "your account"} is not confirmed yet.`,
-      { pinned: true, timeoutMs: 12000 }
+      { pinned: true, timeoutMs: 12000 },
     );
     state.authNotice.emailConfirmToastShown = true;
   } else if (!emailUnconfirmed) {
@@ -796,23 +830,38 @@ function isGlobalUiBlocked() {
 }
 
 function syncBodyUiLocks() {
-  document.body.classList.toggle("mobile-drawer-open", Boolean(state.mobileDrawer.open));
-  document.body.classList.toggle("portfolio-controls-open", Boolean(state.portfolioControls.open));
-  document.body.classList.toggle("inspect-modal-open", Boolean(state.inspectModal.open));
-  document.body.classList.toggle("compare-drawer-open", Boolean(state.compareDrawer.open));
-  document.body.classList.toggle("tx-edit-modal-open", Boolean(state.txEditModal.open));
+  document.body.classList.toggle(
+    "mobile-drawer-open",
+    Boolean(state.mobileDrawer.open),
+  );
+  document.body.classList.toggle(
+    "portfolio-controls-open",
+    Boolean(state.portfolioControls.open),
+  );
+  document.body.classList.toggle(
+    "inspect-modal-open",
+    Boolean(state.inspectModal.open),
+  );
+  document.body.classList.toggle(
+    "compare-drawer-open",
+    Boolean(state.compareDrawer.open),
+  );
+  document.body.classList.toggle(
+    "tx-edit-modal-open",
+    Boolean(state.txEditModal.open),
+  );
   document.body.classList.toggle("ui-sync-blocked", isGlobalUiBlocked());
   syncBodyScrollLock();
 }
 
 function hasBlockingOverlayOpen() {
   return Boolean(
-      state.mobileDrawer.open ||
-      state.portfolioControls.open ||
-      state.inspectModal.open ||
-      state.compareDrawer.open ||
-      state.txEditModal.open ||
-      isGlobalUiBlocked()
+    state.mobileDrawer.open ||
+    state.portfolioControls.open ||
+    state.inspectModal.open ||
+    state.compareDrawer.open ||
+    state.txEditModal.open ||
+    isGlobalUiBlocked(),
   );
 }
 
@@ -899,8 +948,8 @@ function trapMobileDrawerFocus(event) {
 
   const focusable = Array.from(
     drawerPanel.querySelectorAll(
-      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-    )
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
   ).filter((el) => el instanceof HTMLElement);
 
   if (!focusable.length) {
@@ -958,7 +1007,8 @@ function closePortfolioControlsDrawer(options = {}) {
 }
 
 function focusPortfolioControlsIfNeeded() {
-  if (!state.portfolioControls.open || !state.portfolioControls.focusPending) return;
+  if (!state.portfolioControls.open || !state.portfolioControls.focusPending)
+    return;
   state.portfolioControls.focusPending = false;
 
   const panel = document.querySelector("[data-portfolio-controls-panel]");
@@ -980,8 +1030,8 @@ function trapPortfolioControlsFocus(event) {
 
   const focusable = Array.from(
     panel.querySelectorAll(
-      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-    )
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
   ).filter((el) => el instanceof HTMLElement);
 
   if (!focusable.length) {
@@ -1013,7 +1063,7 @@ function focusInspectModalIfNeeded() {
 
   state.inspectModal.focusPending = false;
   const firstFocusable = modal.querySelector(
-    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
   );
   if (firstFocusable instanceof HTMLElement) {
     firstFocusable.focus();
@@ -1032,8 +1082,8 @@ function trapInspectModalFocus(event) {
 
   const focusable = Array.from(
     modal.querySelectorAll(
-      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-    )
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
   ).filter((el) => !el.hasAttribute("disabled"));
 
   if (!focusable.length) {
@@ -1086,8 +1136,8 @@ function trapCompareDrawerFocus(event) {
 
   const focusable = Array.from(
     panel.querySelectorAll(
-      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-    )
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
   ).filter((el) => el instanceof HTMLElement);
 
   if (!focusable.length) {
@@ -1115,7 +1165,9 @@ function trapCompareDrawerFocus(event) {
 function syncDashboardKpiPinnedClass() {
   if (!app || state.activeTab !== "dashboard") return;
   const kpiBar = app.querySelector("[data-dashboard-kpi]");
-  const heroPanel = app.querySelector("#dashboard-hero-panel") || app.querySelector("[data-dashboard-hero]");
+  const heroPanel =
+    app.querySelector("#dashboard-hero-panel") ||
+    app.querySelector("[data-dashboard-hero]");
   if (!kpiBar || !heroPanel) return;
 
   const topRaw = window.getComputedStyle(kpiBar).getPropertyValue("top");
@@ -1123,7 +1175,8 @@ function syncDashboardKpiPinnedClass() {
   const heroBottom = heroPanel.getBoundingClientRect().bottom;
   const kpiTop = kpiBar.getBoundingClientRect().top;
   const hasCrossedHero = heroBottom <= stickyTop + 1;
-  const hasReachedStickyLine = kpiTop <= stickyTop + 1 || kpiBar.classList.contains("is-pinned");
+  const hasReachedStickyLine =
+    kpiTop <= stickyTop + 1 || kpiBar.classList.contains("is-pinned");
   const isPinned = hasCrossedHero && hasReachedStickyLine;
   const anchor = kpiBar.closest(".dashboard-kpi-anchor");
   if (anchor instanceof HTMLElement) {
@@ -1159,8 +1212,8 @@ function trapTxEditModalFocus(event) {
 
   const focusable = Array.from(
     dialog.querySelectorAll(
-      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-    )
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
   ).filter((el) => !el.hasAttribute("disabled"));
 
   if (!focusable.length) {
@@ -1219,7 +1272,9 @@ function closeAvatarMenu(options = {}) {
 function renderDesktopHeader(userEmailLabel, userEmailTitle) {
   const notificationCount = Number(state.alertEvents?.length || 0);
   const hasMoreTabs = HEADER_MORE_TABS.length > 0;
-  const moreTabActive = HEADER_MORE_TABS.some((tab) => tab.id === state.activeTab);
+  const moreTabActive = HEADER_MORE_TABS.some(
+    (tab) => tab.id === state.activeTab,
+  );
   const syncCooldownSeconds = getSyncCooldownSecondsRemaining();
   const syncDisabled = state.syncingInventory || syncCooldownSeconds > 0;
   const syncTitle =
@@ -1245,7 +1300,7 @@ function renderDesktopHeader(userEmailLabel, userEmailTitle) {
           >
             ${escapeHtml(tab.label)}
           </button>
-        `
+        `,
         ).join("")}
         ${
           hasMoreTabs
@@ -1279,7 +1334,7 @@ function renderDesktopHeader(userEmailLabel, userEmailTitle) {
                 >
                   ${escapeHtml(tab.label)}
                 </button>
-              `
+              `,
               ).join("")}
             </div>
           </div>
@@ -1330,7 +1385,7 @@ function renderDesktopHeader(userEmailLabel, userEmailTitle) {
           userLabel: userEmailLabel,
           userTitle: userEmailTitle,
           notificationCount,
-          escapeHtml
+          escapeHtml,
         })}
       </div>
     </header>
@@ -1354,9 +1409,14 @@ function resolveMarketListingUrl(item = {}) {
   const perMarket = Array.isArray(item?.marketComparison?.perMarket)
     ? item.marketComparison.perMarket
     : [];
-  const direct = perMarket.find((row) => typeof row?.url === "string" && row.url.trim());
+  const direct = perMarket.find(
+    (row) => typeof row?.url === "string" && row.url.trim(),
+  );
   if (direct?.url) return String(direct.url);
-  if (typeof item?.marketListingUrl === "string" && item.marketListingUrl.trim()) {
+  if (
+    typeof item?.marketListingUrl === "string" &&
+    item.marketListingUrl.trim()
+  ) {
     return item.marketListingUrl;
   }
   return "";
@@ -1417,7 +1477,8 @@ function renderHoldingInfoTooltip(item = {}) {
 
 function buildSteamAuthStartUrl(mode = "login") {
   const steamMode = String(mode || "login").toLowerCase();
-  const path = steamMode === "link" ? "/auth/steam/link/start" : "/auth/steam/start";
+  const path =
+    steamMode === "link" ? "/auth/steam/link/start" : "/auth/steam/start";
   const url = new URL(`${API_URL}${path}`);
   const next = `${window.location.origin}/auth-callback.html`;
   url.searchParams.set("next", next);
@@ -1449,7 +1510,9 @@ function buildAuthProfile(payload) {
   const metadata = user?.user_metadata || {};
   const explicit = payload?.emailConfirmed;
   const fallback = Boolean(user.email_confirmed_at || user.confirmed_at);
-  const steamId64 = String(profile.steamId64 || metadata.steam_id64 || "").trim();
+  const steamId64 = String(
+    profile.steamId64 || metadata.steam_id64 || "",
+  ).trim();
 
   return {
     email: String(user.email || ""),
@@ -1458,7 +1521,8 @@ function buildAuthProfile(payload) {
     steamLinked: Boolean(steamId64) || Boolean(profile.linkedSteam),
     steamDisplayName:
       String(profile.displayName || metadata.display_name || "").trim() || null,
-    steamAvatarUrl: String(profile.avatarUrl || metadata.avatar_url || "").trim() || null,
+    steamAvatarUrl:
+      String(profile.avatarUrl || metadata.avatar_url || "").trim() || null,
     publicPortfolioEnabled: profile.publicPortfolioEnabled !== false,
     ownershipAlertsEnabled: profile.ownershipAlertsEnabled !== false,
     planTier: String(profile.planTier || "free").toLowerCase(),
@@ -1466,7 +1530,8 @@ function buildAuthProfile(payload) {
     planSeats: Number(profile.planSeats || 1),
     planStartedAt: profile.planStartedAt || null,
     entitlements: profile.entitlements || null,
-    provider: String(profile.provider || metadata.provider || "").trim() || "email"
+    provider:
+      String(profile.provider || metadata.provider || "").trim() || "email",
   };
 }
 
@@ -1480,7 +1545,7 @@ function formatMoney(amount, currencyCode = state.currency) {
       style: "currency",
       currency: code,
       minimumFractionDigits: 2,
-      maximumFractionDigits: maxFractionDigits
+      maximumFractionDigits: maxFractionDigits,
     }).format(value);
   } catch (_err) {
     return `${code} ${value.toFixed(maxFractionDigits)}`;
@@ -1518,12 +1583,15 @@ function formatDateTime(isoValue) {
     month: "short",
     day: "2-digit",
     hour: "2-digit",
-    minute: "2-digit"
+    minute: "2-digit",
   });
 }
 
 function getPricingModeLabel(mode) {
-  return PRICING_MODE_LABELS[normalizePricingMode(mode)] || PRICING_MODE_LABELS.lowest_buy;
+  return (
+    PRICING_MODE_LABELS[normalizePricingMode(mode)] ||
+    PRICING_MODE_LABELS.lowest_buy
+  );
 }
 
 function formatSignedMoney(amount, currencyCode = state.currency) {
@@ -1536,7 +1604,7 @@ function formatSignedMoney(amount, currencyCode = state.currency) {
 function buildPortfolioSignals() {
   const analytics = state.portfolio?.analytics || {};
   const holdingsCount = Number(
-    analytics.holdingsCount || state.portfolio?.items?.length || 0
+    analytics.holdingsCount || state.portfolio?.items?.length || 0,
   );
   const staleItems = Number(state.portfolio?.staleItemsCount || 0);
   const unpricedItems = Number(state.portfolio?.unpricedItemsCount || 0);
@@ -1561,9 +1629,11 @@ function buildPortfolioSignals() {
   const breadthPenalty =
     analytics?.breadth?.advancerRatioPercent == null
       ? 0
-      : Math.max(0, 50 - Number(analytics.breadth.advancerRatioPercent || 0)) * 0.24;
+      : Math.max(0, 50 - Number(analytics.breadth.advancerRatioPercent || 0)) *
+        0.24;
   const riskScore = Math.min(100, Math.round(baseRiskScore + breadthPenalty));
-  const riskBand = riskScore >= 70 ? "high" : riskScore >= 45 ? "medium" : "low";
+  const riskBand =
+    riskScore >= 70 ? "high" : riskScore >= 45 ? "medium" : "low";
 
   return {
     holdingsCount,
@@ -1572,7 +1642,7 @@ function buildPortfolioSignals() {
     liquidityScore,
     liquidityBand,
     riskScore,
-    riskBand
+    riskBand,
   };
 }
 
@@ -1620,7 +1690,8 @@ function getNextHoldingsSort(field) {
 
 function renderHoldingsSortButton(label, field) {
   const direction = getHoldingsSortDirection(field);
-  const arrow = direction === "asc" ? "\u2191" : direction === "desc" ? "\u2193" : "\u2195";
+  const arrow =
+    direction === "asc" ? "\u2191" : direction === "desc" ? "\u2193" : "\u2195";
   const active = direction !== "none" ? "active" : "";
 
   return `
@@ -1635,7 +1706,11 @@ function renderHoldingsSortButton(label, field) {
   `;
 }
 
-function formatCounterValue(value, format = "number", currencyCode = state.currency) {
+function formatCounterValue(
+  value,
+  format = "number",
+  currencyCode = state.currency,
+) {
   if (format === "money") return formatMoney(value, currencyCode);
   if (format === "percent") return formatPercent(value);
   if (format === "integer") return formatNumber(value, 0);
@@ -1651,11 +1726,15 @@ function animateMetricCounters() {
 
     const format = String(node.getAttribute("data-count-format") || "number");
     const currencyCode = normalizeCurrencyCode(
-      node.getAttribute("data-count-currency") || state.currency
+      node.getAttribute("data-count-currency") || state.currency,
     );
-    const key = String(node.getAttribute("data-count-key") || `metric-${index}`);
+    const key = String(
+      node.getAttribute("data-count-key") || `metric-${index}`,
+    );
     const hasPrevious = metricCounterMemory.has(key);
-    const previous = hasPrevious ? Number(metricCounterMemory.get(key)) : target * 0.85;
+    const previous = hasPrevious
+      ? Number(metricCounterMemory.get(key))
+      : target * 0.85;
 
     if (Math.abs(previous - target) < 0.01) {
       node.textContent = formatCounterValue(target, format, currencyCode);
@@ -1708,7 +1787,11 @@ function formatRiskBadge(level) {
 
 function getItemRarityTheme(item = {}) {
   const rarity = normalizeRarity(item.rarity, item.marketHashName);
-  const color = getRarityColor(item.rarity, item.marketHashName, item.rarityColor);
+  const color = getRarityColor(
+    item.rarity,
+    item.marketHashName,
+    item.rarityColor,
+  );
   return { rarity, color };
 }
 
@@ -1724,13 +1807,15 @@ function formatManagementClue(clue) {
   const moveLabel = Number.isFinite(expectedMove)
     ? `${expectedMove > 0 ? "+" : ""}${expectedMove.toFixed(2)}% 7D est`
     : "No projection";
-  const title = Array.isArray(clue.reasons) ? clue.reasons.join(" | ") : "Item guidance";
+  const title = Array.isArray(clue.reasons)
+    ? clue.reasons.join(" | ")
+    : "Item guidance";
 
   return `
     <div class="hint-cell" title="${escapeHtml(title)}">
       <span class="hint-badge ${escapeHtml(action)}">${escapeHtml(
-    `${toTitle(action)} ${confidence}%`
-  )}</span>
+        `${toTitle(action)} ${confidence}%`,
+      )}</span>
       <small>${escapeHtml(moveLabel)}</small>
     </div>
   `;
@@ -1739,15 +1824,17 @@ function formatManagementClue(clue) {
 async function api(path, options = {}) {
   const baseHeaders = {
     "Content-Type": "application/json",
-    ...(options.headers || {})
+    ...(options.headers || {}),
   };
   const hasAuthHeader = (headers) =>
-    Object.keys(headers || {}).some((key) => String(key).toLowerCase() === "authorization");
+    Object.keys(headers || {}).some(
+      (key) => String(key).toLowerCase() === "authorization",
+    );
   const request = (headers) =>
     fetch(`${API_URL}${path}`, {
       ...options,
       credentials: "include",
-      headers
+      headers,
     });
 
   let headers = withAuthHeaders(baseHeaders);
@@ -1808,7 +1895,7 @@ function paginate(items, page, pageSize) {
     items: items.slice(start, start + safePageSize),
     page: safePage,
     pages,
-    total
+    total,
   };
 }
 
@@ -1856,7 +1943,7 @@ function parseTransactionCsv(text) {
   for (const key of required) {
     if (idx(key) === -1) {
       throw new Error(
-        `CSV header missing "${key}". Required: skinId,type,quantity,unitPrice.`
+        `CSV header missing "${key}". Required: skinId,type,quantity,unitPrice.`,
       );
     }
   }
@@ -1873,7 +1960,10 @@ function parseTransactionCsv(text) {
         idx("commissionpercent") === -1
           ? 13
           : Number(raw[idx("commissionpercent")]),
-      executedAt: idx("executedat") === -1 ? undefined : raw[idx("executedat")] || undefined
+      executedAt:
+        idx("executedat") === -1
+          ? undefined
+          : raw[idx("executedat")] || undefined,
     };
     rows.push({ row, lineNo: i + 1 });
   }
@@ -1895,12 +1985,17 @@ function sortByDate(a, b, key, asc = false) {
 
 function buildItemNameMap() {
   return Object.fromEntries(
-    (state.portfolio?.items || []).map((item) => [Number(item.skinId), item.marketHashName])
+    (state.portfolio?.items || []).map((item) => [
+      Number(item.skinId),
+      item.marketHashName,
+    ]),
   );
 }
 
 function getFilteredHoldings() {
-  const items = Array.isArray(state.portfolio?.items) ? [...state.portfolio.items] : [];
+  const items = Array.isArray(state.portfolio?.items)
+    ? [...state.portfolio.items]
+    : [];
   const q = sanitizeForSearch(state.holdingsView.q);
   const status = String(state.holdingsView.status || "all").toLowerCase();
   const sort = String(state.holdingsView.sort || "value_desc");
@@ -1910,13 +2005,16 @@ function getFilteredHoldings() {
       !q ||
       sanitizeForSearch(item.marketHashName).includes(q) ||
       sanitizeForSearch(item.primarySteamItemId).includes(q);
-    const matchesStatus = status === "all" || sanitizeForSearch(item.priceStatus) === status;
+    const matchesStatus =
+      status === "all" || sanitizeForSearch(item.priceStatus) === status;
     return matchesQ && matchesStatus;
   });
 
   filtered.sort((a, b) => {
     const rankAction = (item, mode) => {
-      const action = String(item?.managementClue?.action || "watch").toLowerCase();
+      const action = String(
+        item?.managementClue?.action || "watch",
+      ).toLowerCase();
       if (mode === "sell_first") {
         if (action === "sell") return 0;
         if (action === "watch") return 1;
@@ -1926,13 +2024,30 @@ function getFilteredHoldings() {
       if (action === "watch") return 1;
       return 2;
     };
-    if (sort === "value_asc") return Number(a.lineValue || 0) - Number(b.lineValue || 0);
-    if (sort === "name_asc") return String(a.marketHashName || "").localeCompare(String(b.marketHashName || ""));
-    if (sort === "name_desc") return String(b.marketHashName || "").localeCompare(String(a.marketHashName || ""));
-    if (sort === "qty_desc") return Number(b.quantity || 0) - Number(a.quantity || 0);
-    if (sort === "qty_asc") return Number(a.quantity || 0) - Number(b.quantity || 0);
-    if (sort === "change_desc") return Number(b.sevenDayChangePercent || 0) - Number(a.sevenDayChangePercent || 0);
-    if (sort === "change_asc") return Number(a.sevenDayChangePercent || 0) - Number(b.sevenDayChangePercent || 0);
+    if (sort === "value_asc")
+      return Number(a.lineValue || 0) - Number(b.lineValue || 0);
+    if (sort === "name_asc")
+      return String(a.marketHashName || "").localeCompare(
+        String(b.marketHashName || ""),
+      );
+    if (sort === "name_desc")
+      return String(b.marketHashName || "").localeCompare(
+        String(a.marketHashName || ""),
+      );
+    if (sort === "qty_desc")
+      return Number(b.quantity || 0) - Number(a.quantity || 0);
+    if (sort === "qty_asc")
+      return Number(a.quantity || 0) - Number(b.quantity || 0);
+    if (sort === "change_desc")
+      return (
+        Number(b.sevenDayChangePercent || 0) -
+        Number(a.sevenDayChangePercent || 0)
+      );
+    if (sort === "change_asc")
+      return (
+        Number(a.sevenDayChangePercent || 0) -
+        Number(b.sevenDayChangePercent || 0)
+      );
     if (sort === "clue_sell_first") {
       return rankAction(a, "sell_first") - rankAction(b, "sell_first");
     }
@@ -1942,7 +2057,11 @@ function getFilteredHoldings() {
     return Number(b.lineValue || 0) - Number(a.lineValue || 0);
   });
 
-  return paginate(filtered, state.holdingsView.page, state.holdingsView.pageSize);
+  return paginate(
+    filtered,
+    state.holdingsView.page,
+    state.holdingsView.pageSize,
+  );
 }
 
 function getFilteredTransactions() {
@@ -1954,20 +2073,29 @@ function getFilteredTransactions() {
 
   const filtered = rows.filter((tx) => {
     const txType = sanitizeForSearch(tx.type);
-    const name = sanitizeForSearch(itemNameBySkinId[Number(tx.skin_id)] || `skin #${tx.skin_id}`);
+    const name = sanitizeForSearch(
+      itemNameBySkinId[Number(tx.skin_id)] || `skin #${tx.skin_id}`,
+    );
     const matchesType = type === "all" || txType === type;
-    const matchesQ = !q || name.includes(q) || String(tx.skin_id || "").includes(q);
+    const matchesQ =
+      !q || name.includes(q) || String(tx.skin_id || "").includes(q);
     return matchesType && matchesQ;
   });
 
   filtered.sort((a, b) => {
     if (sort === "date_asc") return sortByDate(a, b, "executed_at", true);
-    if (sort === "net_desc") return Number(b.net_total || 0) - Number(a.net_total || 0);
-    if (sort === "net_asc") return Number(a.net_total || 0) - Number(b.net_total || 0);
+    if (sort === "net_desc")
+      return Number(b.net_total || 0) - Number(a.net_total || 0);
+    if (sort === "net_asc")
+      return Number(a.net_total || 0) - Number(b.net_total || 0);
     return sortByDate(a, b, "executed_at", false);
   });
 
-  return paginate(filtered, state.transactionsView.page, state.transactionsView.pageSize);
+  return paginate(
+    filtered,
+    state.transactionsView.page,
+    state.transactionsView.pageSize,
+  );
 }
 
 function computeItemTradeStats(skinId) {
@@ -2013,7 +2141,7 @@ function computeItemTradeStats(skinId) {
       type: tx.type,
       quantity: txQty,
       unitPrice,
-      netTotal: txNet
+      netTotal: txNet,
     });
   }
 
@@ -2021,7 +2149,7 @@ function computeItemTradeStats(skinId) {
     avgEntryPrice: qty > 0 ? cost / qty : null,
     openQuantity: qty,
     realizedPnl: realized,
-    timeline: timeline.reverse()
+    timeline: timeline.reverse(),
   };
 }
 
@@ -2059,11 +2187,17 @@ function hydrateTabDefaults() {
   const holdings = getHoldingsList();
   const firstSkinId = holdings[0]?.skinId ? String(holdings[0].skinId) : "";
 
-  if (!state.alertForm.skinId || !holdings.some((h) => String(h.skinId) === String(state.alertForm.skinId))) {
+  if (
+    !state.alertForm.skinId ||
+    !holdings.some((h) => String(h.skinId) === String(state.alertForm.skinId))
+  ) {
     state.alertForm.skinId = firstSkinId;
   }
 
-  if (!state.marketTab.skinId || !holdings.some((h) => String(h.skinId) === String(state.marketTab.skinId))) {
+  if (
+    !state.marketTab.skinId ||
+    !holdings.some((h) => String(h.skinId) === String(state.marketTab.skinId))
+  ) {
     state.marketTab.skinId = firstSkinId;
   }
 }
@@ -2092,7 +2226,7 @@ async function savePricePreferences(patch = {}, options = {}) {
   try {
     const payload = await api("/market/preferences", {
       method: "PATCH",
-      body: JSON.stringify(patch)
+      body: JSON.stringify(patch),
     });
     if (payload?.pricingMode) {
       state.pricingMode = normalizePricingMode(payload.pricingMode);
@@ -2116,9 +2250,9 @@ async function handleCurrencySelectChange(nextCurrency) {
   await savePricePreferences(
     {
       preferredCurrency: nextCurrency,
-      pricingMode: state.pricingMode
+      pricingMode: state.pricingMode,
     },
-    { silent: true }
+    { silent: true },
   );
   state.marketTab.inventoryValue = null;
   state.marketTab.autoLoaded = false;
@@ -2146,9 +2280,9 @@ async function handlePricingModeChange(nextMode) {
   await savePricePreferences(
     {
       pricingMode: normalized,
-      preferredCurrency: state.currency
+      preferredCurrency: state.currency,
     },
-    { silent: true }
+    { silent: true },
   );
 
   await refreshPortfolio({ silent: true });
@@ -2162,7 +2296,7 @@ function buildComparisonItemsPayload(items = []) {
       quantity: Number(item.quantity || 0),
       steamPrice: Number(item.steamPrice || item.currentPrice || 0),
       steamCurrency: state.portfolio?.currency || state.currency,
-      steamRecordedAt: item.currentPriceRecordedAt || null
+      steamRecordedAt: item.currentPriceRecordedAt || null,
     }))
     .filter((row) => row.marketHashName);
 }
@@ -2176,23 +2310,29 @@ function getHoldingBySkinId(rawSkinId) {
 
 function buildCompareDrawerSnapshotFromHolding(holding, options = {}) {
   if (!holding) return null;
-  const fallbackImage = isCaseLikeItem(holding) ? defaultCaseImage : defaultSkinImage;
+  const fallbackImage = isCaseLikeItem(holding)
+    ? defaultCaseImage
+    : defaultSkinImage;
   const imageUrl = getItemImageUrl(holding) || fallbackImage;
   const comparison = holding?.marketComparison || null;
 
   return {
     skinId: Number(holding.skinId || 0),
-    marketHashName: String(holding.marketHashName || options.marketHashName || "Tracked Item"),
+    marketHashName: String(
+      holding.marketHashName || options.marketHashName || "Tracked Item",
+    ),
     condition: getHoldingConditionLabel(holding),
     quantity: Number(holding.quantity || 0),
     imageUrl,
     currency: holding.currency || state.portfolio?.currency || state.currency,
     currentPrice: Number(holding.currentPrice || 0),
-    currentPriceSource: String(holding.selectedPricingSource || holding.currentPriceSource || "").trim(),
+    currentPriceSource: String(
+      holding.selectedPricingSource || holding.currentPriceSource || "",
+    ).trim(),
     lineValue: Number(holding.lineValue || 0),
     marketComparison: comparison,
     fees: options.fees || state.portfolio?.pricing?.fees || null,
-    generatedAt: options.generatedAt || null
+    generatedAt: options.generatedAt || null,
   };
 }
 
@@ -2214,7 +2354,10 @@ function closeCompareDrawer(options = {}) {
   compareDrawerLastTriggerElement = null;
 }
 
-function openCompareDrawerMarketTarget(rawUrl, rawSkinId = state.compareDrawer.skinId) {
+function openCompareDrawerMarketTarget(
+  rawUrl,
+  rawSkinId = state.compareDrawer.skinId,
+) {
   const url = String(rawUrl || "").trim();
   if (url) {
     try {
@@ -2244,7 +2387,7 @@ async function refreshCompareDrawerData(options = {}) {
   const {
     skinId: rawSkinId = state.compareDrawer.skinId,
     forceRefresh = false,
-    notifyOnSuccess = false
+    notifyOnSuccess = false,
   } = options;
   const skinId = Number(rawSkinId || 0);
   if (!Number.isInteger(skinId) || skinId <= 0) return;
@@ -2258,7 +2401,8 @@ async function refreshCompareDrawerData(options = {}) {
 
   const payloadItems = buildComparisonItemsPayload([holding]);
   if (!payloadItems.length) {
-    state.compareDrawer.error = "Market comparison payload is unavailable for this item.";
+    state.compareDrawer.error =
+      "Market comparison payload is unavailable for this item.";
     state.compareDrawer.loading = false;
     render();
     return;
@@ -2277,14 +2421,15 @@ async function refreshCompareDrawerData(options = {}) {
         pricingMode: state.pricingMode,
         forceRefresh: Boolean(forceRefresh),
         allowLiveFetch: true,
-        currency: state.currency
-      })
+        currency: state.currency,
+      }),
     });
     if (ticket !== compareDrawerRequestTicket) return;
     const comparisonRow =
-      (Array.isArray(comparisonPayload?.items) ? comparisonPayload.items : []).find(
-        (row) => Number(row?.skinId || 0) === skinId
-      ) || null;
+      (Array.isArray(comparisonPayload?.items)
+        ? comparisonPayload.items
+        : []
+      ).find((row) => Number(row?.skinId || 0) === skinId) || null;
     if (!comparisonRow) {
       throw new Error("No market comparison data returned for this item.");
     }
@@ -2292,27 +2437,34 @@ async function refreshCompareDrawerData(options = {}) {
     const updatedHolding = getHoldingBySkinId(skinId) || holding;
     if (updatedHolding) {
       updatedHolding.marketComparison = {
-        perMarket: Array.isArray(comparisonRow.perMarket) ? comparisonRow.perMarket : [],
+        perMarket: Array.isArray(comparisonRow.perMarket)
+          ? comparisonRow.perMarket
+          : [],
         bestBuy: comparisonRow.bestBuy || null,
         bestSellNet: comparisonRow.bestSellNet || null,
-        arbitrage: comparisonRow.arbitrage || null
+        arbitrage: comparisonRow.arbitrage || null,
       };
     }
 
-    const snapshot = buildCompareDrawerSnapshotFromHolding(updatedHolding || holding, {
-      fees: comparisonPayload?.fees || state.portfolio?.pricing?.fees || null,
-      generatedAt: comparisonPayload?.generatedAt || null
-    });
+    const snapshot = buildCompareDrawerSnapshotFromHolding(
+      updatedHolding || holding,
+      {
+        fees: comparisonPayload?.fees || state.portfolio?.pricing?.fees || null,
+        generatedAt: comparisonPayload?.generatedAt || null,
+      },
+    );
     state.compareDrawer.payload = snapshot;
-    state.compareDrawer.marketHashName = snapshot?.marketHashName || state.compareDrawer.marketHashName;
+    state.compareDrawer.marketHashName =
+      snapshot?.marketHashName || state.compareDrawer.marketHashName;
     if (notifyOnSuccess) {
       notify("success", "Comparison data refreshed.");
     }
   } catch (err) {
     if (ticket !== compareDrawerRequestTicket) return;
-    state.compareDrawer.error = err.message || "Failed to load comparison data.";
+    state.compareDrawer.error =
+      err.message || "Failed to load comparison data.";
     notify("error", state.compareDrawer.error, {
-      details: String(err?.stack || "").trim()
+      details: String(err?.stack || "").trim(),
     });
   } finally {
     if (ticket === compareDrawerRequestTicket) {
@@ -2345,26 +2497,35 @@ function openCompareDrawerBySkinId(rawSkinId, triggerElement = null) {
   state.compareDrawer.error = "";
   state.compareDrawer.skinId = skinId;
   state.compareDrawer.payload = buildCompareDrawerSnapshotFromHolding(holding);
-  state.compareDrawer.marketHashName = String(holding.marketHashName || `Skin #${skinId}`);
+  state.compareDrawer.marketHashName = String(
+    holding.marketHashName || `Skin #${skinId}`,
+  );
   render();
 
   const hasPerMarket = Boolean(
     state.compareDrawer.payload?.marketComparison?.perMarket &&
-      Array.isArray(state.compareDrawer.payload.marketComparison.perMarket) &&
-      state.compareDrawer.payload.marketComparison.perMarket.length
+    Array.isArray(state.compareDrawer.payload.marketComparison.perMarket) &&
+    state.compareDrawer.payload.marketComparison.perMarket.length,
   );
   const hasCsfloatData = Boolean(
     state.compareDrawer.payload?.marketComparison?.perMarket &&
-      Array.isArray(state.compareDrawer.payload.marketComparison.perMarket) &&
-      state.compareDrawer.payload.marketComparison.perMarket.some((row) => {
-        if (String(row?.source || "").trim().toLowerCase() !== "csfloat") return false;
-        return Boolean(row?.available) && Number.isFinite(Number(row?.grossPrice));
-      })
+    Array.isArray(state.compareDrawer.payload.marketComparison.perMarket) &&
+    state.compareDrawer.payload.marketComparison.perMarket.some((row) => {
+      if (
+        String(row?.source || "")
+          .trim()
+          .toLowerCase() !== "csfloat"
+      )
+        return false;
+      return (
+        Boolean(row?.available) && Number.isFinite(Number(row?.grossPrice))
+      );
+    }),
   );
 
   if (!hasPerMarket || !hasCsfloatData) {
-    runUiTask(
-      () => refreshCompareDrawerData({ skinId, forceRefresh: !hasCsfloatData })
+    runUiTask(() =>
+      refreshCompareDrawerData({ skinId, forceRefresh: !hasCsfloatData }),
     );
   }
 }
@@ -2388,8 +2549,8 @@ async function refreshVisibleMarketComparisons() {
         pricingMode: state.pricingMode,
         forceRefresh: true,
         allowLiveFetch: true,
-        currency: state.currency
-      })
+        currency: state.currency,
+      }),
     });
     await refreshPortfolio({ silent: true });
   } catch (err) {
@@ -2406,9 +2567,9 @@ async function handleTabSwitch(tab) {
   const target = String(tab || "");
   const requiresLoad =
     target === "team" &&
-      String(state.authProfile?.planTier || "free").toLowerCase() === "team" &&
-      !state.teamDashboard.loading &&
-      !state.teamDashboard.payload;
+    String(state.authProfile?.planTier || "free").toLowerCase() === "team" &&
+    !state.teamDashboard.loading &&
+    !state.teamDashboard.payload;
 
   if (state.headerTabMenu.open) {
     state.headerTabMenu.open = false;
@@ -2499,7 +2660,10 @@ function onAppClick(event) {
     closeAvatarMenu({ restoreFocus: false });
   }
 
-  if (state.headerTabMenu.open && !target.closest("[data-header-tab-menu-root]")) {
+  if (
+    state.headerTabMenu.open &&
+    !target.closest("[data-header-tab-menu-root]")
+  ) {
     state.headerTabMenu.open = false;
     render();
   }
@@ -2542,7 +2706,9 @@ function onAppClick(event) {
   const homeLink = target.closest("[data-desktop-home]");
   if (homeLink) {
     event.preventDefault();
-    handleTabSwitch("dashboard").catch((err) => setError(err.message || "Request failed"));
+    handleTabSwitch("dashboard").catch((err) =>
+      setError(err.message || "Request failed"),
+    );
     return;
   }
 
@@ -2568,7 +2734,9 @@ function onAppClick(event) {
     render();
     if (nextOpen) {
       const skinId = Number(button.getAttribute("data-tooltip-skin-id") || 0);
-      const steamItemId = String(button.getAttribute("data-tooltip-steam-item-id") || "").trim();
+      const steamItemId = String(
+        button.getAttribute("data-tooltip-steam-item-id") || "",
+      ).trim();
       if (Number.isInteger(skinId) && skinId > 0) {
         runUiTask(() => hydrateHoldingSecondaryData(skinId, steamItemId));
       }
@@ -2607,14 +2775,20 @@ function onAppClick(event) {
 
   if (button?.matches("[data-avatar-action]")) {
     event.preventDefault();
-    const action = String(button.getAttribute("data-avatar-action") || "").trim();
+    const action = String(
+      button.getAttribute("data-avatar-action") || "",
+    ).trim();
     closeAvatarMenu({ restoreFocus: false });
     if (action === "profile" || action === "settings" || action === "billing") {
-      handleTabSwitch("settings").catch((err) => setError(err.message || "Request failed"));
+      handleTabSwitch("settings").catch((err) =>
+        setError(err.message || "Request failed"),
+      );
       return;
     }
     if (action === "notifications") {
-      handleTabSwitch("alerts").catch((err) => setError(err.message || "Request failed"));
+      handleTabSwitch("alerts").catch((err) =>
+        setError(err.message || "Request failed"),
+      );
       return;
     }
     if (action === "logout") {
@@ -2666,7 +2840,9 @@ function onAppClick(event) {
   }
 
   if (
-    button?.matches("#refresh-btn, #mobile-nav-refresh-btn, #mobile-drawer-refresh-btn")
+    button?.matches(
+      "#refresh-btn, #mobile-nav-refresh-btn, #mobile-drawer-refresh-btn",
+    )
   ) {
     event.preventDefault();
     runUiTask(() => refreshPortfolio());
@@ -2681,13 +2857,17 @@ function onAppClick(event) {
 
   if (button?.matches("[data-header-action='create-alert']")) {
     event.preventDefault();
-    handleTabSwitch("alerts").catch((err) => setError(err.message || "Request failed"));
+    handleTabSwitch("alerts").catch((err) =>
+      setError(err.message || "Request failed"),
+    );
     return;
   }
 
   if (button?.matches("[data-header-action='add-transaction']")) {
     event.preventDefault();
-    handleTabSwitch("trades").catch((err) => setError(err.message || "Request failed"));
+    handleTabSwitch("trades").catch((err) =>
+      setError(err.message || "Request failed"),
+    );
     return;
   }
 
@@ -2703,14 +2883,18 @@ function onAppClick(event) {
     if (state.txEditModal.open) {
       closeTxEditModal({ restoreFocus: false });
     }
-    handleTabSwitch(tab).catch((err) => setError(err.message || "Request failed"));
+    handleTabSwitch(tab).catch((err) =>
+      setError(err.message || "Request failed"),
+    );
     return;
   }
 
   if (button?.matches(".tab-jump-btn")) {
     event.preventDefault();
     const tab = button.getAttribute("data-tab-target");
-    handleTabSwitch(tab).catch((err) => setError(err.message || "Request failed"));
+    handleTabSwitch(tab).catch((err) =>
+      setError(err.message || "Request failed"),
+    );
     return;
   }
 
@@ -2722,7 +2906,9 @@ function onAppClick(event) {
 
   if (button?.matches(".holdings-sort-btn")) {
     event.preventDefault();
-    const nextSort = String(button.getAttribute("data-sort-next") || "value_desc");
+    const nextSort = String(
+      button.getAttribute("data-sort-next") || "value_desc",
+    );
     state.holdingsView.sort = nextSort;
     const sortSelect = document.querySelector("#holdings-sort");
     if (sortSelect) {
@@ -2737,7 +2923,7 @@ function onAppClick(event) {
     state.holdingsView.page = clampInt(
       button.getAttribute("data-page"),
       1,
-      Math.max(getFilteredHoldings().pages, 1)
+      Math.max(getFilteredHoldings().pages, 1),
     );
     render();
     return;
@@ -2757,7 +2943,7 @@ function onAppClick(event) {
     event.preventDefault();
     openCompareDrawerBySkinId(
       dashboardArbitrageRow.getAttribute("data-skin-id"),
-      dashboardArbitrageRow
+      dashboardArbitrageRow,
     );
     return;
   }
@@ -2771,7 +2957,10 @@ function onAppClick(event) {
 
   if (button?.matches(".inspect-skin-btn")) {
     event.preventDefault();
-    triggerInspectBySteamItemId(button.getAttribute("data-steam-item-id"), button);
+    triggerInspectBySteamItemId(
+      button.getAttribute("data-steam-item-id"),
+      button,
+    );
     return;
   }
 
@@ -2808,7 +2997,7 @@ function onAppClick(event) {
     event.preventDefault();
     openCompareDrawerMarketTarget(
       button.getAttribute("data-market-url"),
-      button.getAttribute("data-skin-id")
+      button.getAttribute("data-skin-id"),
     );
     return;
   }
@@ -2817,7 +3006,7 @@ function onAppClick(event) {
     event.preventDefault();
     openCompareDrawerMarketTarget(
       button.getAttribute("data-market-url"),
-      button.getAttribute("data-skin-id")
+      button.getAttribute("data-skin-id"),
     );
     return;
   }
@@ -2828,8 +3017,8 @@ function onAppClick(event) {
       refreshCompareDrawerData({
         skinId: state.compareDrawer.skinId,
         forceRefresh: true,
-        notifyOnSuccess: true
-      })
+        notifyOnSuccess: true,
+      }),
     );
     return;
   }
@@ -2859,7 +3048,7 @@ function onAppClick(event) {
     state.transactionsView.page = clampInt(
       button.getAttribute("data-page"),
       1,
-      Math.max(getFilteredTransactions().pages, 1)
+      Math.max(getFilteredTransactions().pages, 1),
     );
     render();
     return;
@@ -2890,8 +3079,8 @@ function onAppClick(event) {
     runUiTask(() =>
       toggleAlertEnabled(
         button.getAttribute("data-alert-id"),
-        button.getAttribute("data-enabled") === "true"
-      )
+        button.getAttribute("data-enabled") === "true",
+      ),
     );
     return;
   }
@@ -2919,8 +3108,8 @@ function onAppClick(event) {
     runUiTask(() =>
       toggleWatchFromLeaderboard(
         button.getAttribute("data-steam-id"),
-        button.getAttribute("data-watching") === "1"
-      )
+        button.getAttribute("data-watching") === "1",
+      ),
     );
     return;
   }
@@ -3023,7 +3212,7 @@ function onAppKeydown(event) {
     event.preventDefault();
     openCompareDrawerBySkinId(
       dashboardArbitrageRow.getAttribute("data-skin-id"),
-      dashboardArbitrageRow
+      dashboardArbitrageRow,
     );
     return;
   }
@@ -3055,7 +3244,11 @@ function onAppInput(event) {
     return;
   }
 
-  if (target.matches("#holdings-search, #holdings-search-mobile, [data-holdings-search]")) {
+  if (
+    target.matches(
+      "#holdings-search, #holdings-search-mobile, [data-holdings-search]",
+    )
+  ) {
     state.holdingsView.q = target.value;
     state.globalSearch = target.value;
     state.holdingsView.page = 1;
@@ -3139,7 +3332,7 @@ function onAppChange(event) {
 
   if (
     target.matches(
-      "#pricing-mode-select, #pricing-mode-select-mobile, #settings-pricing-mode, [data-pricing-mode-select]"
+      "#pricing-mode-select, #pricing-mode-select-mobile, #settings-pricing-mode, [data-pricing-mode-select]",
     )
   ) {
     const nextMode = normalizePricingMode(target.value);
@@ -3147,20 +3340,32 @@ function onAppChange(event) {
     return;
   }
 
-  if (target.matches("#holdings-status, #holdings-status-mobile, [data-holdings-status]")) {
+  if (
+    target.matches(
+      "#holdings-status, #holdings-status-mobile, [data-holdings-status]",
+    )
+  ) {
     state.holdingsView.status = target.value;
     state.holdingsView.page = 1;
     render();
     return;
   }
 
-  if (target.matches("#holdings-sort, #holdings-sort-mobile, [data-holdings-sort]")) {
+  if (
+    target.matches(
+      "#holdings-sort, #holdings-sort-mobile, [data-holdings-sort]",
+    )
+  ) {
     state.holdingsView.sort = target.value;
     render();
     return;
   }
 
-  if (target.matches("#holdings-page-size, #holdings-page-size-mobile, [data-holdings-page-size]")) {
+  if (
+    target.matches(
+      "#holdings-page-size, #holdings-page-size-mobile, [data-holdings-page-size]",
+    )
+  ) {
     state.holdingsView.pageSize = clampInt(target.value, 1, 200);
     state.holdingsView.page = 1;
     render();
@@ -3356,7 +3561,7 @@ async function logout() {
     error: "",
     skinId: 0,
     marketHashName: "",
-    payload: null
+    payload: null,
   };
   state.tabSwitch.loading = false;
   state.tabSwitch.target = "";
@@ -3376,7 +3581,7 @@ async function logout() {
     unitPrice: "0",
     commissionPercent: "13",
     executedAt: "",
-    submitting: false
+    submitting: false,
   };
   state.exitWhatIf = createExitWhatIfState();
   resetAlertForm();
@@ -3421,7 +3626,7 @@ async function syncInventory(options = {}) {
     if (!automatic) {
       notify(
         "warning",
-        `Sync rate limited. Try again in ${formatCountdownLabel(cooldownSeconds)}.`
+        `Sync rate limited. Try again in ${formatCountdownLabel(cooldownSeconds)}.`,
       );
     }
     return false;
@@ -3438,7 +3643,8 @@ async function syncInventory(options = {}) {
     state.syncSummary = result;
     state.syncRateLimitedUntil = 0;
     if (state.steamOnboardingPending) {
-      state.accountNotice = "Inventory synced successfully. Your portfolio is ready.";
+      state.accountNotice =
+        "Inventory synced successfully. Your portfolio is ready.";
       state.steamOnboardingPending = false;
     }
     await refreshPortfolio({ silent: automatic });
@@ -3446,20 +3652,23 @@ async function syncInventory(options = {}) {
       notify(
         "success",
         `Inventory synced: ${Number(result?.itemsSynced || 0)} items, ${Number(
-          result?.pricedItems || 0
-        )} priced.`
+          result?.pricedItems || 0,
+        )} priced.`,
       );
     }
     return true;
   } catch (err) {
     const status = Number(err?.status || 0);
     if (status === 429) {
-      const retryAfter = Math.max(Math.ceil(Number(err?.retryAfterSeconds || 60)), 1);
+      const retryAfter = Math.max(
+        Math.ceil(Number(err?.retryAfterSeconds || 60)),
+        1,
+      );
       state.syncRateLimitedUntil = Date.now() + retryAfter * 1000;
       if (!automatic) {
         notify(
           "warning",
-          `Too many sync attempts. Try again in ${formatCountdownLabel(retryAfter)}.`
+          `Too many sync attempts. Try again in ${formatCountdownLabel(retryAfter)}.`,
         );
       }
     }
@@ -3473,9 +3682,9 @@ async function syncInventory(options = {}) {
         {
           severity: "warning",
           code: "SYNC_FAILED",
-          message: `Inventory sync failed: ${err.message}`
+          message: `Inventory sync failed: ${err.message}`,
         },
-        ...(state.alerts || []).filter((a) => a.code !== "SYNC_FAILED")
+        ...(state.alerts || []).filter((a) => a.code !== "SYNC_FAILED"),
       ];
     } else if (status !== 429) {
       notify("warning", `Auto inventory sync failed: ${err.message}`);
@@ -3503,14 +3712,14 @@ function renderSyncSummary() {
     .slice(0, 4)
     .map(
       (x) =>
-        `<li><strong>${escapeHtml(x.marketHashName)}</strong> <span class="muted">(${escapeHtml(x.reason)})</span></li>`
+        `<li><strong>${escapeHtml(x.marketHashName)}</strong> <span class="muted">(${escapeHtml(x.reason)})</span></li>`,
     )
     .join("");
   const excludedPreview = (s.excludedItems || [])
     .slice(0, 4)
     .map(
       (x) =>
-        `<li><strong>${escapeHtml(x.marketHashName)}</strong> <span class="muted">(${escapeHtml(x.reason)})</span></li>`
+        `<li><strong>${escapeHtml(x.marketHashName)}</strong> <span class="muted">(${escapeHtml(x.reason)})</span></li>`,
     )
     .join("");
   const ownershipPreview = (s.ownershipChanges || [])
@@ -3518,8 +3727,8 @@ function renderSyncSummary() {
     .map(
       (x) =>
         `<li><strong>${escapeHtml(x.marketHashName)}</strong> <span class="muted">${escapeHtml(
-          toTitle(x.changeType)
-        )}: ${Number(x.previousQuantity || 0)} -> ${Number(x.newQuantity || 0)}</span></li>`
+          toTitle(x.changeType),
+        )}: ${Number(x.previousQuantity || 0)} -> ${Number(x.newQuantity || 0)}</span></li>`,
     )
     .join("");
   const renderPreviewDetails = (title, previewMarkup) => {
@@ -3536,12 +3745,12 @@ function renderSyncSummary() {
     <div class="sync-summary">
       <p><strong>Last sync:</strong> ${escapeHtml(s.syncedAt || "-")}</p>
       <p>Source: ${escapeHtml(s.inventorySource || "-")} | Cache hits: ${Number(
-        s.priceCacheHitCount || 0
+        s.priceCacheHitCount || 0,
       )}</p>
       <p>Synced: ${Number(s.itemsSynced || 0)} | Priced: ${Number(
-        s.pricedItems || 0
+        s.pricedItems || 0,
       )} | Unpriced: ${Number(s.unpricedItemsCount || 0)} | Excluded: ${Number(
-        s.excludedItemsCount || 0
+        s.excludedItemsCount || 0,
       )} | Ownership changes: ${Number(s.ownershipChangesCount || 0)}</p>
       ${renderPreviewDetails("Ownership changes (first 4)", ownershipPreview)}
       ${renderPreviewDetails("Unpriced items (first 4)", unpricedPreview)}
@@ -3560,7 +3769,7 @@ async function refreshPortfolio(options = {}) {
 
   try {
     const portfolioPath = withCurrency(
-      `/portfolio?pricingMode=${encodeURIComponent(state.pricingMode)}`
+      `/portfolio?pricingMode=${encodeURIComponent(state.pricingMode)}`,
     );
     const [
       mePayload,
@@ -3571,25 +3780,24 @@ async function refreshPortfolio(options = {}) {
       eventsPayload,
       ownershipEventsPayload,
       watchlistPayload,
-      leaderboardPayload
-    ] =
-      await Promise.all([
-        api("/auth/me"),
-        api(portfolioPath),
-        api(withCurrency(`/portfolio/history?days=${state.historyDays}`)),
-        api("/transactions"),
-        api("/alerts").catch(() => ({ items: [] })),
-        api("/alerts/events?limit=50").catch(() => ({ items: [] })),
-        api("/alerts/ownership-events?limit=50").catch(() => ({ items: [] })),
-        api(withCurrency("/social/watchlist")).catch(() => ({ items: [] })),
-        api(
-          withCurrency(
-            `/social/leaderboard?scope=${encodeURIComponent(
-              state.social.scope || "global"
-            )}&limit=25`
-          )
-        ).catch(() => ({ items: [] }))
-      ]);
+      leaderboardPayload,
+    ] = await Promise.all([
+      api("/auth/me"),
+      api(portfolioPath),
+      api(withCurrency(`/portfolio/history?days=${state.historyDays}`)),
+      api("/transactions"),
+      api("/alerts").catch(() => ({ items: [] })),
+      api("/alerts/events?limit=50").catch(() => ({ items: [] })),
+      api("/alerts/ownership-events?limit=50").catch(() => ({ items: [] })),
+      api(withCurrency("/social/watchlist")).catch(() => ({ items: [] })),
+      api(
+        withCurrency(
+          `/social/leaderboard?scope=${encodeURIComponent(
+            state.social.scope || "global",
+          )}&limit=25`,
+        ),
+      ).catch(() => ({ items: [] })),
+    ]);
 
     state.authProfile = buildAuthProfile(mePayload);
     state.portfolio = portfolio;
@@ -3603,8 +3811,12 @@ async function refreshPortfolio(options = {}) {
     }
     state.history = history.points || [];
     state.transactions = Array.isArray(txPayload?.items) ? txPayload.items : [];
-    state.alertsFeed = Array.isArray(alertsPayload?.items) ? alertsPayload.items : [];
-    state.alertEvents = Array.isArray(eventsPayload?.items) ? eventsPayload.items : [];
+    state.alertsFeed = Array.isArray(alertsPayload?.items)
+      ? alertsPayload.items
+      : [];
+    state.alertEvents = Array.isArray(eventsPayload?.items)
+      ? eventsPayload.items
+      : [];
     state.ownershipAlertEvents = Array.isArray(ownershipEventsPayload?.items)
       ? ownershipEventsPayload.items
       : [];
@@ -3620,7 +3832,7 @@ async function refreshPortfolio(options = {}) {
     const liveSkinIds = new Set(
       (Array.isArray(portfolio?.items) ? portfolio.items : [])
         .map((item) => Number(item?.skinId))
-        .filter((id) => Number.isInteger(id) && id > 0)
+        .filter((id) => Number.isInteger(id) && id > 0),
     );
     for (const skinId of holdingsValueMemory.keys()) {
       if (!liveSkinIds.has(Number(skinId))) {
@@ -3637,7 +3849,10 @@ async function refreshPortfolio(options = {}) {
         holdingSecondaryRequestCache.delete(skinId);
       }
     }
-    if (state.compareDrawer.skinId && !liveSkinIds.has(Number(state.compareDrawer.skinId))) {
+    if (
+      state.compareDrawer.skinId &&
+      !liveSkinIds.has(Number(state.compareDrawer.skinId))
+    ) {
       state.compareDrawer.open = false;
       state.compareDrawer.focusPending = false;
       state.compareDrawer.loading = false;
@@ -3649,10 +3864,16 @@ async function refreshPortfolio(options = {}) {
     } else if (state.compareDrawer.skinId) {
       const liveHolding = getHoldingBySkinId(state.compareDrawer.skinId);
       if (liveHolding) {
-        state.compareDrawer.payload = buildCompareDrawerSnapshotFromHolding(liveHolding, {
-          fees: state.compareDrawer.payload?.fees || state.portfolio?.pricing?.fees || null,
-          generatedAt: state.compareDrawer.payload?.generatedAt || null
-        });
+        state.compareDrawer.payload = buildCompareDrawerSnapshotFromHolding(
+          liveHolding,
+          {
+            fees:
+              state.compareDrawer.payload?.fees ||
+              state.portfolio?.pricing?.fees ||
+              null,
+            generatedAt: state.compareDrawer.payload?.generatedAt || null,
+          },
+        );
       }
     }
 
@@ -3669,15 +3890,27 @@ async function refreshPortfolio(options = {}) {
     }
 
     const maxHoldingsPages = Math.max(
-      Math.ceil((state.portfolio?.items?.length || 0) / state.holdingsView.pageSize),
-      1
+      Math.ceil(
+        (state.portfolio?.items?.length || 0) / state.holdingsView.pageSize,
+      ),
+      1,
     );
-    state.holdingsView.page = clampInt(state.holdingsView.page, 1, maxHoldingsPages);
+    state.holdingsView.page = clampInt(
+      state.holdingsView.page,
+      1,
+      maxHoldingsPages,
+    );
     const maxTxPages = Math.max(
-      Math.ceil((state.transactions.length || 0) / state.transactionsView.pageSize),
-      1
+      Math.ceil(
+        (state.transactions.length || 0) / state.transactionsView.pageSize,
+      ),
+      1,
     );
-    state.transactionsView.page = clampInt(state.transactionsView.page, 1, maxTxPages);
+    state.transactionsView.page = clampInt(
+      state.transactionsView.page,
+      1,
+      maxTxPages,
+    );
 
     if (state.activeTab === "portfolio" && !silent) {
       runUiTask(() => refreshVisibleMarketComparisons());
@@ -3718,10 +3951,10 @@ async function refreshSocialData(options = {}) {
       api(
         withCurrency(
           `/social/leaderboard?scope=${encodeURIComponent(
-            state.social.scope || "global"
-          )}&limit=25`
-        )
-      )
+            state.social.scope || "global",
+          )}&limit=25`,
+        ),
+      ),
     ]);
 
     state.social.watchlist = Array.isArray(watchlistPayload?.items)
@@ -3755,7 +3988,7 @@ async function addWatchlistEntry(e) {
   try {
     await api("/social/watchlist", {
       method: "POST",
-      body: JSON.stringify({ steamId64 })
+      body: JSON.stringify({ steamId64 }),
     });
     state.social.newSteamId = "";
     await refreshSocialData({ silent: true });
@@ -3776,7 +4009,7 @@ async function removeWatchlistEntry(steamId64) {
 
   try {
     await api(`/social/watchlist/${encodeURIComponent(safeSteamId64)}`, {
-      method: "DELETE"
+      method: "DELETE",
     });
     await refreshSocialData({ silent: true });
   } catch (err) {
@@ -3799,7 +4032,7 @@ async function toggleWatchFromLeaderboard(steamId64, isWatching) {
   try {
     await api("/social/watchlist", {
       method: "POST",
-      body: JSON.stringify({ steamId64: String(steamId64 || "").trim() })
+      body: JSON.stringify({ steamId64: String(steamId64 || "").trim() }),
     });
     await refreshSocialData({ silent: true });
   } catch (err) {
@@ -3812,12 +4045,14 @@ async function toggleWatchFromLeaderboard(steamId64, isWatching) {
 async function updatePublicPortfolioSettings(e) {
   e.preventDefault();
   clearError();
-  const enabled = Boolean(document.querySelector("#public-portfolio-enabled")?.checked);
+  const enabled = Boolean(
+    document.querySelector("#public-portfolio-enabled")?.checked,
+  );
 
   try {
     await api("/social/settings", {
       method: "PATCH",
-      body: JSON.stringify({ publicPortfolioEnabled: enabled })
+      body: JSON.stringify({ publicPortfolioEnabled: enabled }),
     });
     await refreshPortfolio({ silent: true });
     state.accountNotice = enabled
@@ -3825,7 +4060,7 @@ async function updatePublicPortfolioSettings(e) {
       : "Public portfolio disabled.";
     notify(
       "success",
-      enabled ? "Public portfolio enabled." : "Public portfolio disabled."
+      enabled ? "Public portfolio enabled." : "Public portfolio disabled.",
     );
     render();
   } catch (err) {
@@ -3836,12 +4071,14 @@ async function updatePublicPortfolioSettings(e) {
 async function updateOwnershipAlertSettings(e) {
   e.preventDefault();
   clearError();
-  const enabled = Boolean(document.querySelector("#ownership-alerts-enabled")?.checked);
+  const enabled = Boolean(
+    document.querySelector("#ownership-alerts-enabled")?.checked,
+  );
 
   try {
     await api("/alerts/ownership-settings", {
       method: "PATCH",
-      body: JSON.stringify({ enabled })
+      body: JSON.stringify({ enabled }),
     });
     await refreshPortfolio({ silent: true });
     state.accountNotice = enabled
@@ -3851,7 +4088,7 @@ async function updateOwnershipAlertSettings(e) {
       "success",
       enabled
         ? "Ownership-change alerts enabled."
-        : "Ownership-change alerts disabled."
+        : "Ownership-change alerts disabled.",
     );
     render();
   } catch (err) {
@@ -3874,7 +4111,7 @@ async function downloadCsv(path, filename) {
   clearError();
   const res = await fetch(`${API_URL}${path}`, {
     credentials: "include",
-    headers: withAuthHeaders({})
+    headers: withAuthHeaders({}),
   });
 
   if (!res.ok) {
@@ -3888,7 +4125,10 @@ async function downloadCsv(path, filename) {
 
 async function exportPortfolioCsv() {
   try {
-    await downloadCsv(withCurrency("/portfolio/export.csv"), "portfolio-export.csv");
+    await downloadCsv(
+      withCurrency("/portfolio/export.csv"),
+      "portfolio-export.csv",
+    );
   } catch (err) {
     setError(err.message);
   }
@@ -3948,7 +4188,7 @@ async function updatePlanTier(planTier) {
   try {
     await api("/monetization/plan", {
       method: "PATCH",
-      body: JSON.stringify({ planTier })
+      body: JSON.stringify({ planTier }),
     });
     await refreshPortfolio({ silent: true });
     if (String(planTier || "").toLowerCase() === "team") {
@@ -3984,13 +4224,13 @@ async function loadPublicPortfolio(options = {}) {
     const path = withCurrency(
       `/public/u/${encodeURIComponent(steamId64)}?historyDays=30${
         window.location.search ? `&${window.location.search.slice(1)}` : ""
-      }`
+      }`,
     );
     const res = await fetch(`${API_URL}${path}`, {
       credentials: "include",
       headers: withAuthHeaders({
-        "Content-Type": "application/json"
-      })
+        "Content-Type": "application/json",
+      }),
     });
     const payload = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -4029,16 +4269,18 @@ async function fetchInspectionBundleBySteamItemId(rawId) {
     throw new Error("Steam item ID must contain only digits.");
   }
 
-  const skin = await api(withCurrency(`/skins/by-steam-item/${encodeURIComponent(id)}`));
+  const skin = await api(
+    withCurrency(`/skins/by-steam-item/${encodeURIComponent(id)}`),
+  );
   const holding = (state.portfolio?.items || []).find(
-    (item) => Number(item.skinId) === Number(skin.id)
+    (item) => Number(item.skinId) === Number(skin.id),
   );
 
   let marketInsight = null;
   try {
     const [sellSuggestion, liquidity] = await Promise.all([
       api(withCurrency(`/market/items/${skin.id}/sell-suggestion`)),
-      api(withCurrency(`/market/items/${skin.id}/liquidity`))
+      api(withCurrency(`/market/items/${skin.id}/liquidity`)),
     ]);
     marketInsight = { sellSuggestion, liquidity };
   } catch (_err) {
@@ -4052,8 +4294,8 @@ async function fetchInspectionBundleBySteamItemId(rawId) {
     exitDefaults: {
       quantity: String(Math.max(Number(holding?.quantity || 1), 1)),
       targetSellPrice: String(Number(skin?.latestPrice?.price || 0).toFixed(2)),
-      result: null
-    }
+      result: null,
+    },
   };
 }
 
@@ -4076,13 +4318,15 @@ async function openInspectModalBySteamItemId(rawId) {
   try {
     const payload = await fetchInspectionBundleBySteamItemId(id);
     if (!payload) return;
-    state.marketTab.skinId = String(payload.skin?.id || state.marketTab.skinId || "");
+    state.marketTab.skinId = String(
+      payload.skin?.id || state.marketTab.skinId || "",
+    );
     state.inspectModal.skin = payload.skin;
     state.inspectModal.marketInsight = payload.marketInsight;
     state.inspectModal.exitWhatIf = {
       ...state.inspectModal.exitWhatIf,
       ...payload.exitDefaults,
-      loading: false
+      loading: false,
     };
   } catch (err) {
     state.inspectModal.error = err.message || "Failed to inspect item.";
@@ -4094,7 +4338,11 @@ async function openInspectModalBySteamItemId(rawId) {
 
 async function refreshMarketInventoryValue() {
   const commissionPercent = Number(state.marketTab.commissionPercent);
-  if (!Number.isFinite(commissionPercent) || commissionPercent < 0 || commissionPercent >= 100) {
+  if (
+    !Number.isFinite(commissionPercent) ||
+    commissionPercent < 0 ||
+    commissionPercent >= 100
+  ) {
     setError("Market commission must be between 0 and 99.99.");
     return;
   }
@@ -4104,7 +4352,7 @@ async function refreshMarketInventoryValue() {
   try {
     const query = buildQuery({
       currency: state.currency,
-      commissionPercent
+      commissionPercent,
     });
     const value = await api(`/market/inventory/value${query}`);
     state.marketTab.inventoryValue = value;
@@ -4120,25 +4368,35 @@ async function refreshMarketInventoryValue() {
 function readMarketOpportunitiesFiltersFromDom() {
   const filters = state.marketTab.opportunities.filters;
   const showRiskyChecked = Boolean(
-    document.querySelector("#market-opportunity-show-risky")?.checked
+    document.querySelector("#market-opportunity-show-risky")?.checked,
   );
   const next = {
     minProfit:
-      document.querySelector("#market-opportunity-min-profit")?.value ?? filters.minProfit,
+      document.querySelector("#market-opportunity-min-profit")?.value ??
+      filters.minProfit,
     minSpread:
-      document.querySelector("#market-opportunity-min-spread")?.value ?? filters.minSpread,
+      document.querySelector("#market-opportunity-min-spread")?.value ??
+      filters.minSpread,
     minScore:
-      document.querySelector("#market-opportunity-min-score")?.value ?? filters.minScore,
-    market: document.querySelector("#market-opportunity-market")?.value ?? filters.market,
+      document.querySelector("#market-opportunity-min-score")?.value ??
+      filters.minScore,
+    market:
+      document.querySelector("#market-opportunity-market")?.value ??
+      filters.market,
     liquidityMin:
-      document.querySelector("#market-opportunity-liquidity-min")?.value ?? filters.liquidityMin,
+      document.querySelector("#market-opportunity-liquidity-min")?.value ??
+      filters.liquidityMin,
     showRisky: showRiskyChecked ? "1" : "0",
-    sortBy: document.querySelector("#market-opportunity-sort-by")?.value ?? filters.sortBy,
-    limit: document.querySelector("#market-opportunity-limit")?.value ?? filters.limit
+    sortBy:
+      document.querySelector("#market-opportunity-sort-by")?.value ??
+      filters.sortBy,
+    limit:
+      document.querySelector("#market-opportunity-limit")?.value ??
+      filters.limit,
   };
   state.marketTab.opportunities.filters = {
     ...filters,
-    ...next
+    ...next,
   };
 }
 
@@ -4155,10 +4413,7 @@ async function refreshMarketOpportunities(options = {}) {
     const filters = scanner.filters || {};
     const showRisky = String(filters.showRisky || "0") === "1";
     const minScoreRaw = Number(filters.minScore || 0);
-    const minScoreQuery =
-      showRisky && minScoreRaw >= 70
-        ? 50
-        : minScoreRaw;
+    const minScoreQuery = showRisky && minScoreRaw >= 70 ? 50 : minScoreRaw;
     const query = buildQuery({
       currency: state.currency,
       minProfit: Number(filters.minProfit || 0),
@@ -4168,7 +4423,7 @@ async function refreshMarketOpportunities(options = {}) {
       liquidityMin: Number(filters.liquidityMin || 0),
       showRisky: showRisky ? "1" : "",
       sortBy: String(filters.sortBy || "score"),
-      limit: Math.max(Number(filters.limit || 250), 1)
+      limit: Math.max(Number(filters.limit || 250), 1),
     });
     const payload = await api(`/market/opportunities${query}`);
     scanner.items = Array.isArray(payload?.items) ? payload.items : [];
@@ -4197,7 +4452,11 @@ async function analyzeMarketItemBySkinId(rawSkinId) {
   }
 
   const commissionPercent = Number(state.marketTab.commissionPercent);
-  if (!Number.isFinite(commissionPercent) || commissionPercent < 0 || commissionPercent >= 100) {
+  if (
+    !Number.isFinite(commissionPercent) ||
+    commissionPercent < 0 ||
+    commissionPercent >= 100
+  ) {
     setError("Market commission must be between 0 and 99.99.");
     return;
   }
@@ -4210,11 +4469,11 @@ async function analyzeMarketItemBySkinId(rawSkinId) {
   try {
     const query = buildQuery({
       currency: state.currency,
-      commissionPercent
+      commissionPercent,
     });
     const [sellSuggestion, liquidity] = await Promise.all([
       api(`/market/items/${skinId}/sell-suggestion${query}`),
-      api(`/market/items/${skinId}/liquidity`)
+      api(`/market/items/${skinId}/liquidity`),
     ]);
     state.marketTab.insight = { sellSuggestion, liquidity, skinId };
   } catch (err) {
@@ -4233,7 +4492,7 @@ async function submitMarketAnalyze(e) {
     document.querySelector("#market-commission");
   state.marketTab.skinId = String(skinId || "");
   state.marketTab.commissionPercent = String(
-    commissionInput?.value || state.marketTab.commissionPercent
+    commissionInput?.value || state.marketTab.commissionPercent,
   );
   await analyzeMarketItemBySkinId(skinId);
 }
@@ -4241,7 +4500,8 @@ async function submitMarketAnalyze(e) {
 async function submitMarketInventoryRefresh(e) {
   e.preventDefault();
   state.marketTab.commissionPercent = String(
-    document.querySelector("#market-commission")?.value || state.marketTab.commissionPercent
+    document.querySelector("#market-commission")?.value ||
+      state.marketTab.commissionPercent,
   );
   await refreshMarketInventoryValue();
 }
@@ -4263,13 +4523,15 @@ function resetAlertForm() {
     direction: "both",
     cooldownMinutes: "60",
     enabled: true,
-    submitting: false
+    submitting: false,
   };
 }
 
 function startEditAlert(rawAlertId) {
   const alertId = Number(rawAlertId);
-  const alert = (state.alertsFeed || []).find((row) => Number(row.id) === alertId);
+  const alert = (state.alertsFeed || []).find(
+    (row) => Number(row.id) === alertId,
+  );
   if (!alert) return;
 
   state.alertForm.mode = "edit";
@@ -4298,18 +4560,26 @@ async function submitAlertForm(e) {
   if (state.alertForm.submitting) return;
 
   const skinId = Number(document.querySelector("#alert-skin-id")?.value);
-  const targetPriceRaw = document.querySelector("#alert-target-price")?.value ?? "";
-  const pctRaw = document.querySelector("#alert-percent-threshold")?.value ?? "";
-  const direction = String(document.querySelector("#alert-direction")?.value || "both");
-  const cooldownMinutes = Number(document.querySelector("#alert-cooldown")?.value);
+  const targetPriceRaw =
+    document.querySelector("#alert-target-price")?.value ?? "";
+  const pctRaw =
+    document.querySelector("#alert-percent-threshold")?.value ?? "";
+  const direction = String(
+    document.querySelector("#alert-direction")?.value || "both",
+  );
+  const cooldownMinutes = Number(
+    document.querySelector("#alert-cooldown")?.value,
+  );
   const enabled = Boolean(document.querySelector("#alert-enabled")?.checked);
 
-  state.alertForm.skinId = String(document.querySelector("#alert-skin-id")?.value || "");
+  state.alertForm.skinId = String(
+    document.querySelector("#alert-skin-id")?.value || "",
+  );
   state.alertForm.targetPrice = String(targetPriceRaw);
   state.alertForm.percentChangeThreshold = String(pctRaw);
   state.alertForm.direction = direction;
   state.alertForm.cooldownMinutes = String(
-    document.querySelector("#alert-cooldown")?.value || ""
+    document.querySelector("#alert-cooldown")?.value || "",
   );
   state.alertForm.enabled = enabled;
 
@@ -4324,7 +4594,10 @@ async function submitAlertForm(e) {
     setError("Set at least one trigger: target price or % change.");
     return;
   }
-  if (targetPrice != null && (!Number.isFinite(targetPrice) || targetPrice < 0)) {
+  if (
+    targetPrice != null &&
+    (!Number.isFinite(targetPrice) || targetPrice < 0)
+  ) {
     setError("Target price must be a number >= 0.");
     return;
   }
@@ -4354,19 +4627,19 @@ async function submitAlertForm(e) {
       percentChangeThreshold,
       direction,
       cooldownMinutes,
-      enabled
+      enabled,
     };
 
     if (state.alertForm.mode === "edit" && state.alertForm.alertId) {
       await api(`/alerts/${Number(state.alertForm.alertId)}`, {
         method: "PATCH",
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
       });
       notify("success", "Alert updated.");
     } else {
       await api("/alerts", {
         method: "POST",
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
       });
       notify("success", "Alert created.");
     }
@@ -4387,7 +4660,10 @@ async function removeAlert(rawAlertId) {
   if (!Number.isInteger(alertId) || alertId <= 0) return;
   try {
     await api(`/alerts/${alertId}`, { method: "DELETE" });
-    if (state.alertForm.mode === "edit" && Number(state.alertForm.alertId) === alertId) {
+    if (
+      state.alertForm.mode === "edit" &&
+      Number(state.alertForm.alertId) === alertId
+    ) {
       resetAlertForm();
     }
     await refreshPortfolio();
@@ -4404,7 +4680,7 @@ async function toggleAlertEnabled(rawAlertId, enabled) {
   try {
     await api(`/alerts/${alertId}`, {
       method: "PATCH",
-      body: JSON.stringify({ enabled: Boolean(enabled) })
+      body: JSON.stringify({ enabled: Boolean(enabled) }),
     });
     await refreshPortfolio();
     notify("success", enabled ? "Alert enabled." : "Alert paused.");
@@ -4423,20 +4699,23 @@ async function calculateTrade(e) {
   const sellPrice = Number(document.querySelector("#calc-sell-price")?.value);
   const quantity = Number(document.querySelector("#calc-quantity")?.value);
   const commissionPercent = Number(
-    document.querySelector("#calc-commission")?.value
+    document.querySelector("#calc-commission")?.value,
   );
 
   state.tradeCalc.buyPrice = String(
-    document.querySelector("#calc-buy-price")?.value ?? state.tradeCalc.buyPrice
+    document.querySelector("#calc-buy-price")?.value ??
+      state.tradeCalc.buyPrice,
   );
   state.tradeCalc.sellPrice = String(
-    document.querySelector("#calc-sell-price")?.value ?? state.tradeCalc.sellPrice
+    document.querySelector("#calc-sell-price")?.value ??
+      state.tradeCalc.sellPrice,
   );
   state.tradeCalc.quantity = String(
-    document.querySelector("#calc-quantity")?.value ?? state.tradeCalc.quantity
+    document.querySelector("#calc-quantity")?.value ?? state.tradeCalc.quantity,
   );
   state.tradeCalc.commissionPercent = String(
-    document.querySelector("#calc-commission")?.value ?? state.tradeCalc.commissionPercent
+    document.querySelector("#calc-commission")?.value ??
+      state.tradeCalc.commissionPercent,
   );
 
   state.tradeCalc.loading = true;
@@ -4450,8 +4729,8 @@ async function calculateTrade(e) {
         sellPrice,
         quantity,
         commissionPercent,
-        currency: state.currency
-      })
+        currency: state.currency,
+      }),
     });
 
     state.tradeCalc.result = result;
@@ -4469,17 +4748,27 @@ async function submitTransaction(e) {
   if (state.txSubmitting) return;
 
   const skinId = Number(document.querySelector("#tx-skin-id")?.value);
-  const type = String(document.querySelector("#tx-type")?.value || "buy").toLowerCase();
+  const type = String(
+    document.querySelector("#tx-type")?.value || "buy",
+  ).toLowerCase();
   const quantity = Number(document.querySelector("#tx-quantity")?.value);
   const unitPrice = Number(document.querySelector("#tx-unit-price")?.value);
-  const commissionPercent = Number(document.querySelector("#tx-commission")?.value);
+  const commissionPercent = Number(
+    document.querySelector("#tx-commission")?.value,
+  );
 
-  state.txForm.skinId = String(document.querySelector("#tx-skin-id")?.value || "");
+  state.txForm.skinId = String(
+    document.querySelector("#tx-skin-id")?.value || "",
+  );
   state.txForm.type = type;
-  state.txForm.quantity = String(document.querySelector("#tx-quantity")?.value || "");
-  state.txForm.unitPrice = String(document.querySelector("#tx-unit-price")?.value || "");
+  state.txForm.quantity = String(
+    document.querySelector("#tx-quantity")?.value || "",
+  );
+  state.txForm.unitPrice = String(
+    document.querySelector("#tx-unit-price")?.value || "",
+  );
   state.txForm.commissionPercent = String(
-    document.querySelector("#tx-commission")?.value || ""
+    document.querySelector("#tx-commission")?.value || "",
   );
 
   if (!Number.isInteger(skinId) || skinId <= 0) {
@@ -4519,8 +4808,8 @@ async function submitTransaction(e) {
         quantity,
         unitPrice,
         commissionPercent,
-        currency: "USD"
-      })
+        currency: "USD",
+      }),
     });
     await refreshPortfolio();
     notify("success", "Transaction saved.");
@@ -4550,10 +4839,12 @@ function openTxEditModal(rawTxId, triggerElement = null) {
     unitPrice: String(Number(tx.unit_price || 0)),
     commissionPercent: String(Number(tx.commission_percent || 0)),
     executedAt: String(tx.executed_at || "").slice(0, 16),
-    submitting: false
+    submitting: false,
   };
   txEditModalLastTriggerElement =
-    triggerElement instanceof HTMLElement ? triggerElement : document.activeElement;
+    triggerElement instanceof HTMLElement
+      ? triggerElement
+      : document.activeElement;
   render();
   requestAnimationFrame(() => {
     const firstInput = document.querySelector("#tx-edit-type");
@@ -4575,7 +4866,7 @@ function closeTxEditModal(options = {}) {
     unitPrice: "0",
     commissionPercent: "13",
     executedAt: "",
-    submitting: false
+    submitting: false,
   };
   render();
   if (restoreFocus && txEditModalLastTriggerElement instanceof HTMLElement) {
@@ -4592,18 +4883,32 @@ async function submitTransactionEdit(event) {
   if (!state.txEditModal.open || state.txEditModal.submitting) return;
 
   const txId = Number(state.txEditModal.id);
-  const type = String(document.querySelector("#tx-edit-type")?.value || "buy").toLowerCase();
+  const type = String(
+    document.querySelector("#tx-edit-type")?.value || "buy",
+  ).toLowerCase();
   const quantity = Number(document.querySelector("#tx-edit-quantity")?.value);
-  const unitPrice = Number(document.querySelector("#tx-edit-unit-price")?.value);
-  const commissionPercent = Number(document.querySelector("#tx-edit-commission")?.value);
-  const executedAtRaw = String(document.querySelector("#tx-edit-executed-at")?.value || "").trim();
-  const executedAt = executedAtRaw ? new Date(executedAtRaw).toISOString() : null;
+  const unitPrice = Number(
+    document.querySelector("#tx-edit-unit-price")?.value,
+  );
+  const commissionPercent = Number(
+    document.querySelector("#tx-edit-commission")?.value,
+  );
+  const executedAtRaw = String(
+    document.querySelector("#tx-edit-executed-at")?.value || "",
+  ).trim();
+  const executedAt = executedAtRaw
+    ? new Date(executedAtRaw).toISOString()
+    : null;
 
   state.txEditModal.type = type;
-  state.txEditModal.quantity = String(document.querySelector("#tx-edit-quantity")?.value || "");
-  state.txEditModal.unitPrice = String(document.querySelector("#tx-edit-unit-price")?.value || "");
+  state.txEditModal.quantity = String(
+    document.querySelector("#tx-edit-quantity")?.value || "",
+  );
+  state.txEditModal.unitPrice = String(
+    document.querySelector("#tx-edit-unit-price")?.value || "",
+  );
   state.txEditModal.commissionPercent = String(
-    document.querySelector("#tx-edit-commission")?.value || ""
+    document.querySelector("#tx-edit-commission")?.value || "",
   );
   state.txEditModal.executedAt = executedAtRaw;
 
@@ -4648,8 +4953,8 @@ async function submitTransactionEdit(event) {
         unitPrice,
         commissionPercent,
         executedAt,
-        currency: "USD"
-      })
+        currency: "USD",
+      }),
     });
     await refreshPortfolio();
     notify("success", "Transaction updated.");
@@ -4704,14 +5009,14 @@ async function importTransactionsCsv(e) {
             unitPrice: payload.unitPrice,
             commissionPercent: payload.commissionPercent,
             executedAt: payload.executedAt,
-            currency: "USD"
-          })
+            currency: "USD",
+          }),
         });
         imported += 1;
       } catch (err) {
         failed.push({
           lineNo: entry.lineNo,
-          message: err.message
+          message: err.message,
         });
       }
     }
@@ -4719,14 +5024,14 @@ async function importTransactionsCsv(e) {
     state.csvImport.summary = {
       total: parsed.length,
       imported,
-      failed
+      failed,
     };
     await refreshPortfolio();
     notify(
       failed.length ? "warning" : "success",
       failed.length
         ? `CSV imported ${imported}/${parsed.length}. ${failed.length} rows failed.`
-        : `CSV imported ${imported} rows successfully.`
+        : `CSV imported ${imported} rows successfully.`,
     );
   } catch (err) {
     setError(err.message);
@@ -4740,12 +5045,12 @@ function getInspectContextSnapshot(context = "inline") {
   if (context === "modal") {
     return {
       skin: state.inspectModal.skin,
-      exitWhatIf: state.inspectModal.exitWhatIf
+      exitWhatIf: state.inspectModal.exitWhatIf,
     };
   }
   return {
     skin: state.skin,
-    exitWhatIf: state.exitWhatIf
+    exitWhatIf: state.exitWhatIf,
   };
 }
 
@@ -4757,13 +5062,13 @@ async function calculateExitWhatIf(e, context = "inline") {
 
   const form = e.target instanceof HTMLFormElement ? e.target : null;
   const quantityRaw = String(
-    form?.querySelector('[data-exit-field="quantity"]')?.value || ""
+    form?.querySelector('[data-exit-field="quantity"]')?.value || "",
   );
   const targetPriceRaw = String(
-    form?.querySelector('[data-exit-field="target-price"]')?.value || ""
+    form?.querySelector('[data-exit-field="target-price"]')?.value || "",
   );
   const commissionRaw = String(
-    form?.querySelector('[data-exit-field="commission"]')?.value || ""
+    form?.querySelector('[data-exit-field="commission"]')?.value || "",
   );
 
   const quantity = Number(quantityRaw);
@@ -4793,7 +5098,8 @@ async function calculateExitWhatIf(e, context = "inline") {
 
   const itemStats = computeItemTradeStats(Number(inspectContext.skin.id));
   const buyPrice =
-    itemStats.avgEntryPrice || Number(inspectContext.skin.latestPrice?.price || 0);
+    itemStats.avgEntryPrice ||
+    Number(inspectContext.skin.latestPrice?.price || 0);
 
   inspectContext.exitWhatIf.loading = true;
   render();
@@ -4805,12 +5111,12 @@ async function calculateExitWhatIf(e, context = "inline") {
         sellPrice: targetSellPrice,
         quantity,
         commissionPercent,
-        currency: state.currency
-      })
+        currency: state.currency,
+      }),
     });
     inspectContext.exitWhatIf.result = {
       ...result,
-      referenceBuyPrice: buyPrice
+      referenceBuyPrice: buyPrice,
     };
   } catch (err) {
     setError(err.message);
@@ -4840,8 +5146,8 @@ function renderPortfolioCardGrid() {
         .map((item) =>
           renderSkinCard(item, {
             escapeHtml,
-            formatMoney
-          })
+            formatMoney,
+          }),
         )
         .join("")}
     </div>
@@ -4853,7 +5159,7 @@ function formatMarketSourceLabel(source) {
     steam: "Steam",
     skinport: "Skinport",
     csfloat: "CSFloat",
-    dmarket: "DMarket"
+    dmarket: "DMarket",
   };
   return map[String(source || "").toLowerCase()] || toTitle(source || "Market");
 }
@@ -4876,7 +5182,7 @@ function getMarketIconAbbreviation(source) {
     steam: "ST",
     skinport: "SP",
     csfloat: "CF",
-    dmarket: "DM"
+    dmarket: "DM",
   };
   return map[key] || "MK";
 }
@@ -4887,7 +5193,7 @@ function getMarketIconPath(source) {
     steam: "/market-icon-steam.png",
     skinport: "/market-icon-skinport.png",
     csfloat: "/market-icon-csfloat.png",
-    dmarket: "/market-icon-dmarket.png"
+    dmarket: "/market-icon-dmarket.png",
   };
   return map[key] || "";
 }
@@ -4897,12 +5203,12 @@ function renderMarketSourceIcon(source) {
   const iconPath = getMarketIconPath(key);
   if (iconPath) {
     return `<span class="compare-drawer-market-icon market-icon-${escapeHtml(
-      key
+      key,
     )}" aria-hidden="true"><img src="${escapeHtml(iconPath)}" alt="" loading="lazy" decoding="async" /></span>`;
   }
   const iconText = getMarketIconAbbreviation(key);
   return `<span class="compare-drawer-market-icon market-icon-fallback market-icon-${escapeHtml(
-    key
+    key,
   )}" aria-hidden="true">${escapeHtml(iconText)}</span>`;
 }
 
@@ -4933,15 +5239,21 @@ function formatArbitrageReasonLabel(reasonCode) {
     extreme_spread: "Extreme spread",
     insufficient_market_data: "Insufficient market data",
     spread_below_min: "Spread below baseline",
-    non_positive_profit: "Non-positive profit"
+    non_positive_profit: "Non-positive profit",
   };
   return map[key] || "Filtered by anti-fake checks";
 }
 
 function isArbitrageDebugEnabled() {
-  const host = String(window?.location?.hostname || "").trim().toLowerCase();
-  const query = String(window?.location?.search || "").trim().toLowerCase();
-  return host === "localhost" || host === "127.0.0.1" || query.includes("debug=1");
+  const host = String(window?.location?.hostname || "")
+    .trim()
+    .toLowerCase();
+  const query = String(window?.location?.search || "")
+    .trim()
+    .toLowerCase();
+  return (
+    host === "localhost" || host === "127.0.0.1" || query.includes("debug=1")
+  );
 }
 
 function resolveCompareDrawerFeePercent(row, feeMap = null) {
@@ -4957,10 +5269,16 @@ function resolveCompareDrawerFeePercent(row, feeMap = null) {
 function getCompareDrawerInsights(payload = null) {
   if (!payload || typeof payload !== "object") return null;
   const comparison = payload.marketComparison || null;
-  const perMarket = Array.isArray(comparison?.perMarket) ? comparison.perMarket : [];
+  const perMarket = Array.isArray(comparison?.perMarket)
+    ? comparison.perMarket
+    : [];
   const feeMap = payload.fees || null;
   const cached = compareDrawerInsightsCache.get(payload);
-  if (cached && cached.perMarketRef === perMarket && cached.feeMapRef === feeMap) {
+  if (
+    cached &&
+    cached.perMarketRef === perMarket &&
+    cached.feeMapRef === feeMap
+  ) {
     return cached.value;
   }
 
@@ -4978,9 +5296,11 @@ function getCompareDrawerInsights(payload = null) {
       sellValue: available && Number.isFinite(sellValue) ? sellValue : null,
       currency: row?.currency || payload.currency || state.currency,
       updatedAt: row?.updatedAt || null,
-      unavailableReason: row?.unavailableReason ? String(row.unavailableReason) : "",
+      unavailableReason: row?.unavailableReason
+        ? String(row.unavailableReason)
+        : "",
       url: typeof row?.url === "string" ? row.url.trim() : "",
-      feePercent: resolveCompareDrawerFeePercent(row, feeMap)
+      feePercent: resolveCompareDrawerFeePercent(row, feeMap),
     };
   });
 
@@ -5019,19 +5339,19 @@ function getCompareDrawerInsights(payload = null) {
     lowestBuyValue,
     highestSellNetValue,
     profit,
-    spreadPercent
+    spreadPercent,
   };
   compareDrawerInsightsCache.set(payload, {
     perMarketRef: perMarket,
     feeMapRef: feeMap,
-    value
+    value,
   });
   return value;
 }
 
 function getHoldingConditionLabel(item) {
   const direct = String(
-    item?.exterior || item?.condition || item?.wearName || item?.wear || ""
+    item?.exterior || item?.condition || item?.wearName || item?.wear || "",
   ).trim();
   if (direct) return direct;
   const marketHashName = String(item?.marketHashName || "");
@@ -5047,7 +5367,7 @@ function renderPortfolioPricingControls() {
     `Steam ${formatNumber(fees.steam, 2)}%`,
     `Skinport ${formatNumber(fees.skinport, 2)}%`,
     `CSFloat ${formatNumber(fees.csfloat, 2)}%`,
-    `DMarket ${formatNumber(fees.dmarket, 2)}%`
+    `DMarket ${formatNumber(fees.dmarket, 2)}%`,
   ].join(" | ");
 
   return `
@@ -5069,15 +5389,20 @@ function renderPortfolioPricingControls() {
     </div>
     <p class="helper-text market-fee-note" title="Net sell value subtracts marketplace fees before comparing venues.">
       Portfolio valuation mode: <strong>${escapeHtml(getPricingModeLabel(mode))}</strong>. Fee model: ${escapeHtml(
-    feeText
-  )}.
+        feeText,
+      )}.
     </p>
   `;
 }
 
-function renderPortfolioControlFields({ mobile = false, mode = state.pricingMode } = {}) {
+function renderPortfolioControlFields({
+  mobile = false,
+  mode = state.pricingMode,
+} = {}) {
   const suffix = mobile ? "-mobile" : "";
-  const controlClass = mobile ? "portfolio-control-field mobile" : "portfolio-control-field";
+  const controlClass = mobile
+    ? "portfolio-control-field mobile"
+    : "portfolio-control-field";
   return `
     <label class="${controlClass}">Search
       <input
@@ -5094,7 +5419,7 @@ function renderPortfolioControlFields({ mobile = false, mode = state.pricingMode
             (status) =>
               `<option value="${status}" ${
                 state.holdingsView.status === status ? "selected" : ""
-              }>${status === "all" ? "All" : toTitle(status)}</option>`
+              }>${status === "all" ? "All" : toTitle(status)}</option>`,
           )
           .join("")}
       </select>
@@ -5120,7 +5445,7 @@ function renderPortfolioControlFields({ mobile = false, mode = state.pricingMode
             (n) =>
               `<option value="${n}" ${
                 state.holdingsView.pageSize === n ? "selected" : ""
-              }>${n}</option>`
+              }>${n}</option>`,
           )
           .join("")}
       </select>
@@ -5154,9 +5479,11 @@ function renderPortfolioControlsDrawer() {
     open: Boolean(state.portfolioControls.open),
     title: "Portfolio Controls",
     subtitle: "Search, filter, sort, and pricing mode",
-    bodyMarkup: `<div class="portfolio-controls-drawer-fields">${renderPortfolioControlFields({
-      mobile: true
-    })}</div>`,
+    bodyMarkup: `<div class="portfolio-controls-drawer-fields">${renderPortfolioControlFields(
+      {
+        mobile: true,
+      },
+    )}</div>`,
     footerMarkup: `
       <button
         type="button"
@@ -5170,7 +5497,8 @@ function renderPortfolioControlsDrawer() {
     label: "Portfolio controls",
     rootClassName: "portfolio-controls-drawer-root",
     overlayAttr: 'data-portfolio-controls-overlay="1"',
-    panelAttr: 'id="portfolio-controls-drawer-panel" data-portfolio-controls-panel="1"'
+    panelAttr:
+      'id="portfolio-controls-drawer-panel" data-portfolio-controls-panel="1"',
   });
 }
 
@@ -5213,13 +5541,15 @@ function renderCompareDrawerBody() {
 
   if (!payload) {
     return wrapCompareDrawerBodyWithLoadingState(
-      '<p class="muted">Select a mover and open compare to inspect multi-market pricing.</p>'
+      '<p class="muted">Select a mover and open compare to inspect multi-market pricing.</p>',
     );
   }
 
   const insights = getCompareDrawerInsights(payload);
   const rows = Array.isArray(insights?.rows) ? insights.rows : [];
-  const pricingMode = normalizePricingMode(state.portfolio?.pricing?.mode || state.pricingMode);
+  const pricingMode = normalizePricingMode(
+    state.portfolio?.pricing?.mode || state.pricingMode,
+  );
   const modeLabel = getPricingModeLabel(pricingMode);
   const lowestBuyMarket = insights?.lowestBuyMarket || null;
   const highestSellMarket = insights?.highestSellMarket || null;
@@ -5242,7 +5572,9 @@ function renderCompareDrawerBody() {
     : Number.isFinite(insights?.profit)
       ? Number(insights.profit)
       : null;
-  const arbitrageSpreadPercent = Number.isFinite(backendArbitrage?.spreadPercent)
+  const arbitrageSpreadPercent = Number.isFinite(
+    backendArbitrage?.spreadPercent,
+  )
     ? Number(backendArbitrage.spreadPercent)
     : Number.isFinite(insights?.spreadPercent)
       ? Number(insights.spreadPercent)
@@ -5252,7 +5584,7 @@ function renderCompareDrawerBody() {
     : null;
   const arbitrageScoreLabel = formatOpportunityLabel(
     backendArbitrage?.scoreCategory,
-    arbitrageScore
+    arbitrageScore,
   );
   const antiFakeReasonCodes = Array.isArray(antiFake?.reasons)
     ? antiFake.reasons.filter(Boolean)
@@ -5272,22 +5604,25 @@ function renderCompareDrawerBody() {
     (backendArbitrage.isOpportunity !== true || unrealisticByScore);
   const profitableArbitrage = hasBackendArbitrageVerdict
     ? isRealisticArbitrage
-    : Number(arbitrageProfit || 0) > 0 && Number(arbitrageSpreadPercent || 0) >= 5;
-  const arbitrageProfitClass = arbitrageProfit > 0 ? "is-positive" : "is-neutral";
+    : Number(arbitrageProfit || 0) > 0 &&
+      Number(arbitrageSpreadPercent || 0) >= 5;
+  const arbitrageProfitClass =
+    arbitrageProfit > 0 ? "is-positive" : "is-neutral";
   const arbitrageScoreTone = getOpportunityScoreTone(arbitrageScore);
   const arbitrageBuySourceKey = getMarketSourceKey(
-    backendArbitrage?.buyMarket || lowestBuyMarket?.source
+    backendArbitrage?.buyMarket || lowestBuyMarket?.source,
   );
   const arbitrageSellSourceKey = getMarketSourceKey(
-    backendArbitrage?.sellMarket || highestSellMarket?.source
+    backendArbitrage?.sellMarket || highestSellMarket?.source,
   );
-  const fallbackReasonLabels = !antiFakeReasonLabels.length && shouldShowUnrealisticNotice
-    ? [
-        backendArbitrage?.isOpportunity === false
-          ? "Not passing anti-fake liquidity/spread checks"
-          : "Score below realism threshold"
-      ]
-    : [];
+  const fallbackReasonLabels =
+    !antiFakeReasonLabels.length && shouldShowUnrealisticNotice
+      ? [
+          backendArbitrage?.isOpportunity === false
+            ? "Not passing anti-fake liquidity/spread checks"
+            : "Score below realism threshold",
+        ]
+      : [];
   const effectiveReasonLabels = antiFakeReasonLabels.length
     ? antiFakeReasonLabels
     : fallbackReasonLabels;
@@ -5305,7 +5640,11 @@ function renderCompareDrawerBody() {
       `
       : "";
 
-  const renderQuickList = (entries = [], valueKey = "buyValue", emptyText = "No market data") => {
+  const renderQuickList = (
+    entries = [],
+    valueKey = "buyValue",
+    emptyText = "No market data",
+  ) => {
     if (!entries.length) {
       return `<p class="muted compare-drawer-empty">${escapeHtml(emptyText)}</p>`;
     }
@@ -5338,7 +5677,9 @@ function renderCompareDrawerBody() {
           const hasBuy = Number.isFinite(buyValue);
           const hasSell = Number.isFinite(sellValue);
           const feeValue = Number(entry?.feePercent);
-          const feeDisplay = Number.isFinite(feeValue) ? `${formatNumber(feeValue, 2)}%` : "-";
+          const feeDisplay = Number.isFinite(feeValue)
+            ? `${formatNumber(feeValue, 2)}%`
+            : "-";
           const marketProfit =
             Number.isFinite(lowestBuyValue) &&
             Number(lowestBuyValue) > 0 &&
@@ -5354,8 +5695,14 @@ function renderCompareDrawerBody() {
                   ? "profit-negative"
                   : "profit-neutral";
           const profitLabel =
-            marketProfit == null ? "Profit" : marketProfit < 0 ? "Loss" : "Profit";
-          const sourceKey = getMarketSourceKey(entry?.sourceKey || entry?.source);
+            marketProfit == null
+              ? "Profit"
+              : marketProfit < 0
+                ? "Loss"
+                : "Profit";
+          const sourceKey = getMarketSourceKey(
+            entry?.sourceKey || entry?.source,
+          );
           const isArbBuyMarket =
             profitableArbitrage &&
             sourceKey !== "market" &&
@@ -5382,7 +5729,7 @@ function renderCompareDrawerBody() {
                   : "";
           return `
             <article class="compare-drawer-market-card ${available ? "" : "unavailable"} ${escapeHtml(
-              arbitrageRoleClass
+              arbitrageRoleClass,
             )}">
               <div class="compare-drawer-market-head">
                 <div class="compare-drawer-market-head-main">
@@ -5392,7 +5739,7 @@ function renderCompareDrawerBody() {
                     ${
                       arbitrageRoleLabel
                         ? `<span class="compare-drawer-market-arb-tag ${escapeHtml(
-                            arbitrageRoleClass
+                            arbitrageRoleClass,
                           )}">${escapeHtml(arbitrageRoleLabel)}</span>`
                         : ""
                     }
@@ -5425,7 +5772,7 @@ function renderCompareDrawerBody() {
                       ? "-"
                       : `${profitLabel} ${formatSignedMoney(
                           marketProfit,
-                          entry?.currency || payload.currency
+                          entry?.currency || payload.currency,
                         )}`
                   }</dd>
                 </div>
@@ -5433,7 +5780,7 @@ function renderCompareDrawerBody() {
               ${
                 entry?.url
                   ? `<a class="link-btn market-open-link compare-drawer-market-open-link" href="${escapeHtml(
-                      entry.url
+                      entry.url,
                     )}" target="_blank" rel="noreferrer">Open listing</a>`
                   : '<span class="muted compare-drawer-empty">No listing link</span>'
               }
@@ -5450,14 +5797,14 @@ function renderCompareDrawerBody() {
         <p class="compare-drawer-item-name">${escapeHtml(payload.marketHashName)}</p>
         <div class="compare-drawer-item-badges">
           <span class="compare-drawer-item-badge">Condition ${escapeHtml(
-            payload.condition || "Unknown condition"
+            payload.condition || "Unknown condition",
           )}</span>
           <span class="compare-drawer-item-badge">Qty ${escapeHtml(formatNumber(payload.quantity, 0))}</span>
           ${
             Number.isFinite(Number(payload.lineValue))
               ? `<span class="compare-drawer-item-badge">Position ${formatMoney(
                   payload.lineValue,
-                  payload.currency || state.currency
+                  payload.currency || state.currency,
                 )}</span>`
               : ""
           }
@@ -5486,7 +5833,10 @@ function renderCompareDrawerBody() {
             <strong>${escapeHtml(backendBuyMarketLabel || lowestBuyMarket?.label || "N/A")}</strong>
             <small>${
               Number.isFinite(lowestBuyValue)
-                ? formatMoney(lowestBuyValue, lowestBuyMarket?.currency || payload.currency)
+                ? formatMoney(
+                    lowestBuyValue,
+                    lowestBuyMarket?.currency || payload.currency,
+                  )
                 : "-"
             }</small>
           </article>
@@ -5495,7 +5845,10 @@ function renderCompareDrawerBody() {
             <strong>${escapeHtml(backendSellMarketLabel || highestSellMarket?.label || "N/A")}</strong>
             <small>${
               Number.isFinite(highestSellNetValue)
-                ? formatMoney(highestSellNetValue, highestSellMarket?.currency || payload.currency)
+                ? formatMoney(
+                    highestSellNetValue,
+                    highestSellMarket?.currency || payload.currency,
+                  )
                 : "-"
             }</small>
           </article>
@@ -5506,7 +5859,7 @@ function renderCompareDrawerBody() {
             arbitrageProfit == null || arbitrageSpreadPercent == null
               ? "N/A"
               : `${formatSignedMoney(arbitrageProfit, payload.currency || state.currency)} (${formatPercent(
-                  arbitrageSpreadPercent
+                  arbitrageSpreadPercent,
                 )})`
           }</strong>
         </div>
@@ -5576,10 +5929,10 @@ function renderCompareDrawerOverlay() {
   const insights = getCompareDrawerInsights(drawer.payload);
   const backendArbitrage = drawer?.payload?.marketComparison?.arbitrage || null;
   const bestBuyUrl = String(
-    backendArbitrage?.buyUrl || insights?.lowestBuyMarket?.url || ""
+    backendArbitrage?.buyUrl || insights?.lowestBuyMarket?.url || "",
   ).trim();
   const bestSellUrl = String(
-    backendArbitrage?.sellUrl || insights?.highestSellMarket?.url || ""
+    backendArbitrage?.sellUrl || insights?.highestSellMarket?.url || "",
   ).trim();
   const footerMarkup = `
     <button
@@ -5622,7 +5975,7 @@ function renderCompareDrawerOverlay() {
     label: "Compare markets",
     rootClassName: "compare-drawer-root",
     overlayAttr: 'data-compare-drawer-overlay="1"',
-    panelAttr: 'data-compare-drawer-panel="1"'
+    panelAttr: 'data-compare-drawer-panel="1"',
   });
 }
 
@@ -5630,11 +5983,14 @@ function renderPortfolioMobileList() {
   if (state.portfolioLoading) {
     return `
       <div class="portfolio-mobile-list">
-        ${Array.from({ length: 5 }, (_, idx) => `
+        ${Array.from(
+          { length: 5 },
+          (_, idx) => `
           <article class="portfolio-mobile-item is-skeleton" data-skeleton-index="${idx}">
             <div class="table-row-skeleton"></div>
           </article>
-        `).join("")}
+        `,
+        ).join("")}
       </div>
     `;
   }
@@ -5664,9 +6020,13 @@ function renderPortfolioMobileList() {
           const skinId = Number(item.skinId || 0);
           const rarityTheme = getItemRarityTheme(item);
           const itemImageUrl = getItemImageUrl(item);
-          const fallbackImage = isCaseLikeItem(item) ? defaultCaseImage : defaultSkinImage;
-          const oneDayClass = Number(item.oneDayChangePercent || 0) >= 0 ? "up" : "down";
-          const sevenDayClass = Number(item.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
+          const fallbackImage = isCaseLikeItem(item)
+            ? defaultCaseImage
+            : defaultSkinImage;
+          const oneDayClass =
+            Number(item.oneDayChangePercent || 0) >= 0 ? "up" : "down";
+          const sevenDayClass =
+            Number(item.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
           const conditionLabel = getHoldingConditionLabel(item);
           const markup = `
             <article class="portfolio-mobile-item">
@@ -5683,7 +6043,7 @@ function renderPortfolioMobileList() {
                   <p class="portfolio-mobile-name">${escapeHtml(item.marketHashName || "-")}</p>
                   <div class="portfolio-mobile-subline">
                     <span class="rarity-tag" style="--rarity-color: ${rarityTheme.color};">${escapeHtml(
-                      rarityTheme.rarity
+                      rarityTheme.rarity,
                     )}</span>
                     <small class="muted portfolio-condition">${escapeHtml(conditionLabel)}</small>
                     <small class="muted">Qty ${Number(item.quantity || 0)}</small>
@@ -5694,11 +6054,11 @@ function renderPortfolioMobileList() {
               <div class="portfolio-mobile-stats">
                 <p><span>Price</span><strong>${formatMoney(item.currentPrice)}</strong></p>
                 <p><span>7D</span><strong class="pnl-text ${sevenDayClass}">${formatPercent(
-            item.sevenDayChangePercent
-          )}</strong></p>
+                  item.sevenDayChangePercent,
+                )}</strong></p>
                 <p><span>24H</span><strong class="pnl-text ${oneDayClass}">${formatPercent(
-            item.oneDayChangePercent
-          )}</strong></p>
+                  item.oneDayChangePercent,
+                )}</strong></p>
               </div>
               <div class="row portfolio-mobile-actions">
                 <button
@@ -5739,11 +6099,14 @@ function renderPortfolioDesktopCards() {
   if (state.portfolioLoading) {
     return `
       <div class="portfolio-desktop-cards-grid">
-        ${Array.from({ length: 8 }, (_, idx) => `
+        ${Array.from(
+          { length: 8 },
+          (_, idx) => `
           <article class="portfolio-desktop-card is-skeleton" data-skeleton-index="${idx}">
             <div class="table-row-skeleton"></div>
           </article>
-        `).join("")}
+        `,
+        ).join("")}
       </div>
     `;
   }
@@ -5766,13 +6129,24 @@ function renderPortfolioDesktopCards() {
           const skinId = Number(item.skinId || 0);
           const rarityTheme = getItemRarityTheme(item);
           const itemImageUrl = getItemImageUrl(item);
-          const fallbackImage = isCaseLikeItem(item) ? defaultCaseImage : defaultSkinImage;
-          const sevenDayClass = Number(item.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
+          const fallbackImage = isCaseLikeItem(item)
+            ? defaultCaseImage
+            : defaultSkinImage;
+          const sevenDayClass =
+            Number(item.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
           const conditionLabel = getHoldingConditionLabel(item);
-          const clueAction = String(item?.managementClue?.action || "watch").toLowerCase();
-          const clueConfidence = Math.round(Number(item?.managementClue?.confidence || 0));
+          const clueAction = String(
+            item?.managementClue?.action || "watch",
+          ).toLowerCase();
+          const clueConfidence = Math.round(
+            Number(item?.managementClue?.confidence || 0),
+          );
           const signalBand =
-            clueConfidence >= 75 ? "strong" : clueConfidence <= 45 ? "weak" : "watch";
+            clueConfidence >= 75
+              ? "strong"
+              : clueConfidence <= 45
+                ? "weak"
+                : "watch";
           const signalLabel = `${toTitle(clueAction)} ${clueConfidence}%`;
           const markup = `
             <article class="portfolio-desktop-card ${sevenDayClass}">
@@ -5780,7 +6154,7 @@ function renderPortfolioDesktopCards() {
                 <div class="portfolio-desktop-card-meta">
                   <div class="portfolio-desktop-card-title-row">
                     <p class="portfolio-desktop-card-name" title="${escapeHtml(
-                      item.marketHashName || "-"
+                      item.marketHashName || "-",
                     )}">
                       ${escapeHtml(item.marketHashName || "-")}
                     </p>
@@ -5788,8 +6162,8 @@ function renderPortfolioDesktopCards() {
                   </div>
                   <div class="portfolio-desktop-card-subline">
                     <span class="rarity-tag" style="--rarity-color: ${rarityTheme.color};">${escapeHtml(
-            rarityTheme.rarity
-          )}</span>
+                      rarityTheme.rarity,
+                    )}</span>
                     <small class="muted portfolio-condition">${escapeHtml(conditionLabel)}</small>
                     <small class="muted">Qty ${Number(item.quantity || 0)}</small>
                     <span class="status-badge signal-${escapeHtml(signalBand)}">${escapeHtml(signalLabel)}</span>
@@ -5813,8 +6187,8 @@ function renderPortfolioDesktopCards() {
                 <p class="portfolio-core-move ${sevenDayClass}">
                   <span>7D Change</span>
                   <strong class="pnl-text ${sevenDayClass}">${formatPercent(
-            item.sevenDayChangePercent
-          )}</strong>
+                    item.sevenDayChangePercent,
+                  )}</strong>
                 </p>
               </div>
               <div class="row portfolio-desktop-card-actions">
@@ -5860,7 +6234,7 @@ function renderPortfolioRows() {
           <tr class="holding-row is-skeleton" data-skeleton-index="${idx}">
             <td colspan="10"><div class="table-row-skeleton"></div></td>
           </tr>
-        `
+        `,
       )
       .join("");
   }
@@ -5883,18 +6257,23 @@ function renderPortfolioRows() {
       const lineValue = Number(item.lineValue || 0);
       const prevLineValue = holdingsValueMemory.get(skinId);
       const flashClass =
-        Number.isFinite(prevLineValue) && Math.abs(prevLineValue - lineValue) >= 0.01
+        Number.isFinite(prevLineValue) &&
+        Math.abs(prevLineValue - lineValue) >= 0.01
           ? lineValue >= prevLineValue
             ? "flash-up"
             : "flash-down"
           : "";
       holdingsValueMemory.set(skinId, lineValue);
 
-      const oneDayClass = Number(item.oneDayChangePercent || 0) >= 0 ? "up" : "down";
-      const sevenDayClass = Number(item.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
+      const oneDayClass =
+        Number(item.oneDayChangePercent || 0) >= 0 ? "up" : "down";
+      const sevenDayClass =
+        Number(item.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
       const rarityTheme = getItemRarityTheme(item);
       const itemImageUrl = getItemImageUrl(item);
-      const fallbackImage = isCaseLikeItem(item) ? defaultCaseImage : defaultSkinImage;
+      const fallbackImage = isCaseLikeItem(item)
+        ? defaultCaseImage
+        : defaultSkinImage;
 
       return `
         <tr class="holding-row">
@@ -5958,7 +6337,7 @@ function renderHistoryChart() {
   const points = (Array.isArray(state.history) ? state.history : [])
     .map((point) => ({
       date: String(point.date || ""),
-      value: Number(point.totalValue || 0)
+      value: Number(point.totalValue || 0),
     }))
     .filter((point) => point.date && Number.isFinite(point.value));
 
@@ -6009,24 +6388,24 @@ function renderHistoryChart() {
     .join(" ");
   const areaPath = `M ${coords[0].x.toFixed(2)},${(viewHeight - padY).toFixed(2)} L ${coords
     .map((coord) => `${coord.x.toFixed(2)},${coord.y.toFixed(2)}`)
-    .join(" L ")} L ${coords[coords.length - 1].x.toFixed(2)},${(viewHeight - padY).toFixed(
-    2
-  )} Z`;
+    .join(" L ")} L ${coords[coords.length - 1].x.toFixed(2)},${(
+    viewHeight - padY
+  ).toFixed(2)} Z`;
 
   const yTicks = [max, max - valueRange / 2, min].map((value) => ({
     value,
-    y: padY + ((max - value) / valueRange) * plotHeight
+    y: padY + ((max - value) / valueRange) * plotHeight,
   }));
 
   const midIndex = Math.floor(coords.length / 2);
   const xTicks = [
     { x: coords[0].x, label: points[0].date },
     { x: coords[midIndex].x, label: points[midIndex].date },
-    { x: coords[coords.length - 1].x, label: points[points.length - 1].date }
+    { x: coords[coords.length - 1].x, label: points[points.length - 1].date },
   ];
   const uniqueXTicks = xTicks.filter(
     (tick, index, list) =>
-      list.findIndex((candidate) => candidate.label === tick.label) === index
+      list.findIndex((candidate) => candidate.label === tick.label) === index,
   );
   const hoverDots = coords
     .map(
@@ -6040,7 +6419,7 @@ function renderHistoryChart() {
         >
           <title>${escapeHtml(points[index].date)} | ${escapeHtml(formatMoney(points[index].value, currencyCode))}</title>
         </circle>
-      `
+      `,
     )
     .join("");
   const hotspotDots = coords
@@ -6063,8 +6442,7 @@ function renderHistoryChart() {
       <div class="history-toolbar-left">
         <h3>${state.historyDays === 180 ? "6-Month Performance" : `${state.historyDays}-Day Performance`}</h3>
         <div class="history-range">
-          ${HISTORY_RANGE_OPTIONS
-          .map(
+          ${HISTORY_RANGE_OPTIONS.map(
             (d) => `
             <button
               type="button"
@@ -6073,9 +6451,8 @@ function renderHistoryChart() {
             >
               ${d === 180 ? "6M" : `${d}D`}
             </button>
-          `
-          )
-          .join("")}
+          `,
+          ).join("")}
         </div>
       </div>
       <div class="history-toolbar-right">
@@ -6095,12 +6472,12 @@ function renderHistoryChart() {
           .map(
             (tick) => `
               <line x1="${padX}" y1="${tick.y.toFixed(2)}" x2="${viewWidth - padX}" y2="${tick.y.toFixed(
-                2
+                2,
               )}" class="value-chart-grid" />
               <text x="${(padX - 8).toFixed(2)}" y="${(tick.y + 4).toFixed(2)}" text-anchor="end" class="value-chart-label">${escapeHtml(
-                formatMoney(tick.value, currencyCode)
+                formatMoney(tick.value, currencyCode),
               )}</text>
-            `
+            `,
           )
           .join("")}
         <line x1="${padX}" y1="${padY}" x2="${padX}" y2="${viewHeight - padY}" class="value-chart-axis" />
@@ -6109,20 +6486,22 @@ function renderHistoryChart() {
         <polyline class="value-chart-line" points="${linePoints}" />
         ${hoverDots}
         <circle cx="${coords[coords.length - 1].x.toFixed(2)}" cy="${coords[
-    coords.length - 1
-  ].y.toFixed(2)}" r="4" class="value-chart-dot" />
+          coords.length - 1
+        ].y.toFixed(2)}" r="4" class="value-chart-dot" />
         ${uniqueXTicks
           .map(
             (tick) => `
               <line x1="${tick.x.toFixed(2)}" y1="${(viewHeight - padY).toFixed(
-                2
-              )}" x2="${tick.x.toFixed(2)}" y2="${(viewHeight - padY + 4).toFixed(
-                2
-              )}" class="value-chart-axis" />
+                2,
+              )}" x2="${tick.x.toFixed(2)}" y2="${(
+                viewHeight -
+                padY +
+                4
+              ).toFixed(2)}" class="value-chart-axis" />
               <text x="${tick.x.toFixed(2)}" y="${(viewHeight - padY + 18).toFixed(2)}" text-anchor="middle" class="value-chart-label">${escapeHtml(
-                tick.label
+                tick.label,
               )}</text>
-            `
+            `,
           )
           .join("")}
       </svg>
@@ -6140,7 +6519,7 @@ function renderHistoryChart() {
   `;
   historyChartCache = {
     key: cacheKey,
-    markup
+    markup,
   };
   return markup;
 }
@@ -6149,29 +6528,39 @@ function renderDashboardKpiBar() {
   const portfolio = state.portfolio || {};
   const currencyCode = portfolio.currency || state.currency;
   const signal = buildPortfolioSignals();
-  const pricingModeLabel = getPricingModeLabel(portfolio?.pricing?.mode || state.pricingMode);
+  const pricingModeLabel = getPricingModeLabel(
+    portfolio?.pricing?.mode || state.pricingMode,
+  );
   const totalValue = Number(portfolio.totalValue || 0);
   const sevenDay = Number(portfolio.sevenDayChangePercent || 0);
   const unrealized = Number(portfolio.unrealizedProfit || 0);
   const readyCount = Math.max(
-    Number(signal.holdingsCount || 0) - Number(signal.unpricedItems || 0) - Number(signal.staleItems || 0),
-    0
+    Number(signal.holdingsCount || 0) -
+      Number(signal.unpricedItems || 0) -
+      Number(signal.staleItems || 0),
+    0,
   );
-  const refreshMarker = state.syncSummary?.syncedAt || portfolio?.updatedAt || portfolio?.generatedAt || "";
+  const refreshMarker =
+    state.syncSummary?.syncedAt ||
+    portfolio?.updatedAt ||
+    portfolio?.generatedAt ||
+    "";
   const syncCooldownSeconds = getSyncCooldownSecondsRemaining();
-  const refreshTone = state.portfolioLoading || state.syncingInventory ? "warning" : "neutral";
+  const refreshTone =
+    state.portfolioLoading || state.syncingInventory ? "warning" : "neutral";
   const refreshText = state.syncingInventory
     ? "Syncing inventory..."
     : syncCooldownSeconds > 0
       ? `Sync rate limited (${formatCountdownLabel(syncCooldownSeconds)})`
-    : state.portfolioLoading
-      ? "Refreshing snapshot..."
-      : refreshMarker
-        ? `Updated ${formatRelativeTime(refreshMarker)}`
-        : "Live snapshot";
+      : state.portfolioLoading
+        ? "Refreshing snapshot..."
+        : refreshMarker
+          ? `Updated ${formatRelativeTime(refreshMarker)}`
+          : "Live snapshot";
 
   const currencyOptions = SUPPORTED_CURRENCIES.map(
-    (code) => `<option value="${code}" ${code === state.currency ? "selected" : ""}>${code}</option>`
+    (code) =>
+      `<option value="${code}" ${code === state.currency ? "selected" : ""}>${code}</option>`,
   ).join("");
 
   const pricingChip = `
@@ -6212,19 +6601,19 @@ function renderDashboardKpiBar() {
               value: formatMoney(totalValue, currencyCode),
               tone: "neutral",
               primary: true,
-              className: "kpi-primary"
+              className: "kpi-primary",
             },
             {
               label: "7D Change",
               value: formatPercent(sevenDay),
-              tone: sevenDay >= 0 ? "positive" : "negative"
+              tone: sevenDay >= 0 ? "positive" : "negative",
             },
             {
               label: "Unrealized P/L",
               value: formatSignedMoney(unrealized, currencyCode),
-              tone: unrealized >= 0 ? "positive" : "negative"
-            }
-          ]
+              tone: unrealized >= 0 ? "positive" : "negative",
+            },
+          ],
         })}
       </div>
     </section>
@@ -6250,7 +6639,9 @@ function renderDashboardChartSkeleton() {
 
 function renderDashboardHero() {
   const portfolio = state.portfolio || {};
-  const pricingModeLabel = getPricingModeLabel(portfolio?.pricing?.mode || state.pricingMode);
+  const pricingModeLabel = getPricingModeLabel(
+    portfolio?.pricing?.mode || state.pricingMode,
+  );
   const infoTooltipId = "dashboard-hero-info-tip";
   const infoOpen = state.tooltip.openId === infoTooltipId;
 
@@ -6295,7 +6686,7 @@ function renderDashboardHero() {
               <button type="button" class="ghost-btn tab-jump-btn btn-tertiary dashboard-chip-btn" data-tab-target="trades">Transactions</button>
             </div>
           </div>
-        `
+        `,
       })}
     </section>
   `;
@@ -6359,22 +6750,22 @@ function renderTradeCalculator() {
         <form id="trade-calc-form" class="trade-calc-grid compact-calc">
           <label>Buy Price
             <input id="calc-buy-price" type="number" step="0.01" min="0" value="${escapeHtml(
-              state.tradeCalc.buyPrice
+              state.tradeCalc.buyPrice,
             )}" />
           </label>
           <label>Sell Price
             <input id="calc-sell-price" type="number" step="0.01" min="0" value="${escapeHtml(
-              state.tradeCalc.sellPrice
+              state.tradeCalc.sellPrice,
             )}" />
           </label>
           <label>Quantity
             <input id="calc-quantity" type="number" step="1" min="1" value="${escapeHtml(
-              state.tradeCalc.quantity
+              state.tradeCalc.quantity,
             )}" />
           </label>
           <label>Commission %
             <input id="calc-commission" type="number" step="0.01" min="0" max="99.99" value="${escapeHtml(
-              state.tradeCalc.commissionPercent
+              state.tradeCalc.commissionPercent,
             )}" />
           </label>
           <button type="submit" class="btn-primary" ${state.tradeCalc.loading ? "disabled" : ""}>
@@ -6387,29 +6778,45 @@ function renderTradeCalculator() {
   `;
 }
 
-function buildTransactionPreview(type, quantityValue, unitPriceValue, commissionPercentValue) {
+function buildTransactionPreview(
+  type,
+  quantityValue,
+  unitPriceValue,
+  commissionPercentValue,
+) {
   const qty = Math.max(Number(quantityValue || 0), 0);
   const unitPrice = Math.max(Number(unitPriceValue || 0), 0);
   const commissionPercent = Math.max(Number(commissionPercentValue || 0), 0);
   const gross = qty * unitPrice;
   const commissionAmount = gross * (commissionPercent / 100);
   const net = Math.max(gross - commissionAmount, 0);
-  const cashImpact = String(type || "buy").toLowerCase() === "sell" ? net : -gross;
+  const cashImpact =
+    String(type || "buy").toLowerCase() === "sell" ? net : -gross;
   return {
     gross,
     commissionAmount,
     net,
-    cashImpact
+    cashImpact,
   };
 }
 
 function syncTransactionPreviewFromInputs() {
-  const type = String(document.querySelector("#tx-type")?.value || state.txForm.type || "buy");
-  const quantityValue = document.querySelector("#tx-quantity")?.value ?? state.txForm.quantity;
-  const unitPriceValue = document.querySelector("#tx-unit-price")?.value ?? state.txForm.unitPrice;
+  const type = String(
+    document.querySelector("#tx-type")?.value || state.txForm.type || "buy",
+  );
+  const quantityValue =
+    document.querySelector("#tx-quantity")?.value ?? state.txForm.quantity;
+  const unitPriceValue =
+    document.querySelector("#tx-unit-price")?.value ?? state.txForm.unitPrice;
   const commissionValue =
-    document.querySelector("#tx-commission")?.value ?? state.txForm.commissionPercent;
-  const preview = buildTransactionPreview(type, quantityValue, unitPriceValue, commissionValue);
+    document.querySelector("#tx-commission")?.value ??
+    state.txForm.commissionPercent;
+  const preview = buildTransactionPreview(
+    type,
+    quantityValue,
+    unitPriceValue,
+    commissionValue,
+  );
 
   const grossEl = document.querySelector('[data-tx-preview="gross"]');
   const commissionEl = document.querySelector('[data-tx-preview="commission"]');
@@ -6421,7 +6828,8 @@ function syncTransactionPreviewFromInputs() {
     titleEl.textContent = type === "sell" ? "Sell Order" : "Buy Order";
   }
   if (grossEl) grossEl.textContent = formatMoney(preview.gross, "USD");
-  if (commissionEl) commissionEl.textContent = formatMoney(preview.commissionAmount, "USD");
+  if (commissionEl)
+    commissionEl.textContent = formatMoney(preview.commissionAmount, "USD");
   if (netEl) netEl.textContent = formatMoney(preview.net, "USD");
   if (impactEl) {
     impactEl.textContent = formatSignedMoney(preview.cashImpact, "USD");
@@ -6432,20 +6840,37 @@ function syncTransactionPreviewFromInputs() {
 
 function syncTransactionEditPreviewFromInputs() {
   if (!state.txEditModal.open) return;
-  const type = String(document.querySelector("#tx-edit-type")?.value || state.txEditModal.type || "buy");
-  const quantityValue = document.querySelector("#tx-edit-quantity")?.value ?? state.txEditModal.quantity;
-  const unitPriceValue = document.querySelector("#tx-edit-unit-price")?.value ?? state.txEditModal.unitPrice;
+  const type = String(
+    document.querySelector("#tx-edit-type")?.value ||
+      state.txEditModal.type ||
+      "buy",
+  );
+  const quantityValue =
+    document.querySelector("#tx-edit-quantity")?.value ??
+    state.txEditModal.quantity;
+  const unitPriceValue =
+    document.querySelector("#tx-edit-unit-price")?.value ??
+    state.txEditModal.unitPrice;
   const commissionValue =
-    document.querySelector("#tx-edit-commission")?.value ?? state.txEditModal.commissionPercent;
-  const preview = buildTransactionPreview(type, quantityValue, unitPriceValue, commissionValue);
+    document.querySelector("#tx-edit-commission")?.value ??
+    state.txEditModal.commissionPercent;
+  const preview = buildTransactionPreview(
+    type,
+    quantityValue,
+    unitPriceValue,
+    commissionValue,
+  );
 
   const grossEl = document.querySelector('[data-tx-edit-preview="gross"]');
-  const commissionEl = document.querySelector('[data-tx-edit-preview="commission"]');
+  const commissionEl = document.querySelector(
+    '[data-tx-edit-preview="commission"]',
+  );
   const netEl = document.querySelector('[data-tx-edit-preview="net"]');
   const impactEl = document.querySelector('[data-tx-edit-preview="impact"]');
 
   if (grossEl) grossEl.textContent = formatMoney(preview.gross, "USD");
-  if (commissionEl) commissionEl.textContent = formatMoney(preview.commissionAmount, "USD");
+  if (commissionEl)
+    commissionEl.textContent = formatMoney(preview.commissionAmount, "USD");
   if (netEl) netEl.textContent = formatMoney(preview.net, "USD");
   if (impactEl) {
     impactEl.textContent = formatSignedMoney(preview.cashImpact, "USD");
@@ -6456,9 +6881,10 @@ function syncTransactionEditPreviewFromInputs() {
 
 function renderTransactionManager() {
   const holdings = getHoldingsList();
-  const selectedSkinId = state.txForm.skinId || String(holdings[0]?.skinId || "");
+  const selectedSkinId =
+    state.txForm.skinId || String(holdings[0]?.skinId || "");
   const itemNameBySkinId = Object.fromEntries(
-    holdings.map((item) => [Number(item.skinId), item.marketHashName])
+    holdings.map((item) => [Number(item.skinId), item.marketHashName]),
   );
 
   const itemOptions = buildHoldingOptions(selectedSkinId);
@@ -6466,7 +6892,7 @@ function renderTransactionManager() {
     state.txForm.type,
     state.txForm.quantity,
     state.txForm.unitPrice,
-    state.txForm.commissionPercent
+    state.txForm.commissionPercent,
   );
 
   const txPaginated = getFilteredTransactions();
@@ -6481,8 +6907,11 @@ function renderTransactionManager() {
           const fallbackNet =
             Number(tx.quantity || 0) *
             Number(tx.unit_price || 0) *
-            (type === "sell" ? 1 - Number(tx.commission_percent || 0) / 100 : 1);
-          const netTotal = tx.net_total == null ? fallbackNet : Number(tx.net_total || 0);
+            (type === "sell"
+              ? 1 - Number(tx.commission_percent || 0) / 100
+              : 1);
+          const netTotal =
+            tx.net_total == null ? fallbackNet : Number(tx.net_total || 0);
           const cashImpact = type === "sell" ? netTotal : -Math.abs(netTotal);
           const cashClass = cashImpact >= 0 ? "up" : "down";
           return `
@@ -6518,7 +6947,7 @@ function renderTransactionManager() {
                 .slice(0, 5)
                 .map((f) => `line ${f.lineNo} (${escapeHtml(f.message)})`)
                 .join(", ")}</p>`
-            : "<p class=\"muted\">No failed rows.</p>"
+            : '<p class="muted">No failed rows.</p>'
         }
       </div>
     `
@@ -6545,17 +6974,17 @@ function renderTransactionManager() {
             </label>
             <label>Quantity
               <input id="tx-quantity" type="number" step="1" min="1" value="${escapeHtml(
-                state.txForm.quantity
+                state.txForm.quantity,
               )}" />
             </label>
             <label>Unit Price (USD)
               <input id="tx-unit-price" type="number" step="0.01" min="0" value="${escapeHtml(
-                state.txForm.unitPrice
+                state.txForm.unitPrice,
               )}" />
             </label>
             <label>Commission %
               <input id="tx-commission" type="number" step="0.01" min="0" max="99.99" value="${escapeHtml(
-                state.txForm.commissionPercent
+                state.txForm.commissionPercent,
               )}" />
             </label>
             <button type="submit" class="btn-primary" ${state.txSubmitting || !holdings.length ? "disabled" : ""}>
@@ -6571,10 +7000,7 @@ function renderTransactionManager() {
               <p><span>Net</span><strong data-tx-preview="net">${formatMoney(txPreview.net, "USD")}</strong></p>
               <p><span>Cash Impact</span><strong data-tx-preview="impact" class="pnl-text ${
                 txPreview.cashImpact >= 0 ? "up" : "down"
-              }">${formatSignedMoney(
-                txPreview.cashImpact,
-                "USD"
-              )}</strong></p>
+              }">${formatSignedMoney(txPreview.cashImpact, "USD")}</strong></p>
             </div>
           </aside>
         </div>
@@ -6618,7 +7044,7 @@ function renderTransactionManager() {
                   (n) =>
                     `<option value="${n}" ${
                       state.transactionsView.pageSize === n ? "selected" : ""
-                    }>${n}</option>`
+                    }>${n}</option>`,
                 )
                 .join("")}
             </select>
@@ -6672,7 +7098,7 @@ function renderTransactionEditModal() {
     modal.type,
     modal.quantity,
     modal.unitPrice,
-    modal.commissionPercent
+    modal.commissionPercent,
   );
 
   return `
@@ -6701,37 +7127,34 @@ function renderTransactionEditModal() {
             </label>
             <label>Quantity
               <input id="tx-edit-quantity" type="number" step="1" min="1" value="${escapeHtml(
-                modal.quantity
+                modal.quantity,
               )}" />
             </label>
             <label>Unit Price (USD)
               <input id="tx-edit-unit-price" type="number" step="0.01" min="0" value="${escapeHtml(
-                modal.unitPrice
+                modal.unitPrice,
               )}" />
             </label>
             <label>Commission %
               <input id="tx-edit-commission" type="number" step="0.01" min="0" max="99.99" value="${escapeHtml(
-                modal.commissionPercent
+                modal.commissionPercent,
               )}" />
             </label>
             <label>Executed At
               <input id="tx-edit-executed-at" type="datetime-local" value="${escapeHtml(
-                modal.executedAt
+                modal.executedAt,
               )}" />
             </label>
             <div class="calc-result compact">
               <p><span>Gross</span><strong data-tx-edit-preview="gross">${formatMoney(preview.gross, "USD")}</strong></p>
               <p><span>Commission</span><strong data-tx-edit-preview="commission">${formatMoney(
                 preview.commissionAmount,
-                "USD"
+                "USD",
               )}</strong></p>
               <p><span>Net</span><strong data-tx-edit-preview="net">${formatMoney(preview.net, "USD")}</strong></p>
               <p><span>Cash Impact</span><strong data-tx-edit-preview="impact" class="pnl-text ${
                 preview.cashImpact >= 0 ? "up" : "down"
-              }">${formatSignedMoney(
-                preview.cashImpact,
-                "USD"
-              )}</strong></p>
+              }">${formatSignedMoney(preview.cashImpact, "USD")}</strong></p>
             </div>
             <div class="row">
               <button type="submit" class="btn-primary" ${modal.submitting ? "disabled" : ""}>
@@ -6750,7 +7173,7 @@ function renderSkinValueGraph(historyRows) {
   const points = (Array.isArray(historyRows) ? historyRows : [])
     .map((row) => ({
       date: String(row.recorded_at || "").slice(0, 10),
-      value: Number(row.price || 0)
+      value: Number(row.price || 0),
     }))
     .filter((row) => row.date && Number.isFinite(row.value))
     .sort((a, b) => a.date.localeCompare(b.date));
@@ -6800,17 +7223,19 @@ function renderSkinValueGraph(historyRows) {
 
   const areaPath = `M ${coords[0].x.toFixed(2)},${baseY.toFixed(2)} L ${coords
     .map((coord) => `${coord.x.toFixed(2)},${coord.y.toFixed(2)}`)
-    .join(" L ")} L ${coords[coords.length - 1].x.toFixed(2)},${baseY.toFixed(2)} Z`;
+    .join(
+      " L ",
+    )} L ${coords[coords.length - 1].x.toFixed(2)},${baseY.toFixed(2)} Z`;
 
   const yTicks = [max, max - range / 2, min].map((value) => ({
     label: formatMoney(value),
-    y: padY + ((max - value) / range) * plotHeight
+    y: padY + ((max - value) / range) * plotHeight,
   }));
 
   const xTickRows = [
     { label: first.date, x: coords[0].x },
     { label: middle.date, x: coords[Math.floor(coords.length / 2)].x },
-    { label: latest.date, x: coords[coords.length - 1].x }
+    { label: latest.date, x: coords[coords.length - 1].x },
   ];
 
   const latestCoord = coords[coords.length - 1];
@@ -6843,9 +7268,9 @@ function renderSkinValueGraph(historyRows) {
             (tick) => `
               <line x1="${padX}" y1="${tick.y.toFixed(2)}" x2="${viewWidth - padX}" y2="${tick.y.toFixed(2)}" class="value-chart-grid" />
               <text x="${(padX - 6).toFixed(2)}" y="${(tick.y + 4).toFixed(2)}" text-anchor="end" class="value-chart-label">${escapeHtml(
-                tick.label
+                tick.label,
               )}</text>
-            `
+            `,
           )
           .join("")}
         <line x1="${padX}" y1="${padY}" x2="${padX}" y2="${viewHeight - padY}" class="value-chart-axis" />
@@ -6854,16 +7279,16 @@ function renderSkinValueGraph(historyRows) {
         <polyline class="value-chart-line" points="${polylinePoints}" />
         <circle cx="${latestCoord.x.toFixed(2)}" cy="${latestCoord.y.toFixed(2)}" r="3.5" class="value-chart-dot" />
         <text x="${Math.min(latestCoord.x + 8, viewWidth - padX - 30).toFixed(2)}" y="${Math.max(latestCoord.y - 8, padY + 10).toFixed(2)}" class="value-chart-point-label">${escapeHtml(
-          formatMoney(latest.value)
+          formatMoney(latest.value),
         )}</text>
         ${xTickRows
           .map(
             (tick) => `
               <line x1="${tick.x.toFixed(2)}" y1="${baseY.toFixed(2)}" x2="${tick.x.toFixed(2)}" y2="${(baseY + 4).toFixed(2)}" class="value-chart-axis" />
               <text x="${tick.x.toFixed(2)}" y="${(baseY + 16).toFixed(2)}" text-anchor="middle" class="value-chart-label">${escapeHtml(
-                tick.label
+                tick.label,
               )}</text>
-            `
+            `,
           )
           .join("")}
       </svg>
@@ -6881,8 +7306,12 @@ function renderSkinValueGraph(historyRows) {
 function renderSkinDetails(context = "inline") {
   const isModal = context === "modal";
   const inspectSkin = isModal ? state.inspectModal.skin : state.skin;
-  const inspectMarketInsight = isModal ? state.inspectModal.marketInsight : state.marketInsight;
-  const inspectExitWhatIf = isModal ? state.inspectModal.exitWhatIf : state.exitWhatIf;
+  const inspectMarketInsight = isModal
+    ? state.inspectModal.marketInsight
+    : state.marketInsight;
+  const inspectExitWhatIf = isModal
+    ? state.inspectModal.exitWhatIf
+    : state.exitWhatIf;
 
   if (!inspectSkin) {
     return isModal
@@ -6892,13 +7321,17 @@ function renderSkinDetails(context = "inline") {
 
   const skinId = Number(inspectSkin.id || 0);
   const latest = inspectSkin.latestPrice;
-  const history = Array.isArray(inspectSkin.priceHistory) ? inspectSkin.priceHistory : [];
+  const history = Array.isArray(inspectSkin.priceHistory)
+    ? inspectSkin.priceHistory
+    : [];
   const tradeStats = computeItemTradeStats(skinId);
   const holding = (state.portfolio?.items || []).find(
-    (item) => Number(item.skinId) === Number(skinId)
+    (item) => Number(item.skinId) === Number(skinId),
   );
   const inspectName = String(
-    inspectSkin.market_hash_name || inspectSkin.marketHashName || "Unknown item"
+    inspectSkin.market_hash_name ||
+      inspectSkin.marketHashName ||
+      "Unknown item",
   );
   const inspectVisualItem = {
     marketHashName: inspectName || holding?.marketHashName,
@@ -6913,12 +7346,13 @@ function renderSkinDetails(context = "inline") {
       inspectSkin.imageUrl ||
       holding?.imageUrl ||
       holding?.image_url,
-    weapon: inspectSkin.weapon || holding?.weapon || ""
+    weapon: inspectSkin.weapon || holding?.weapon || "",
   };
   const inspectFallbackImage = isCaseLikeItem(inspectVisualItem)
     ? defaultCaseImage
     : defaultSkinImage;
-  const inspectImageUrl = getItemImageUrl(inspectVisualItem) || inspectFallbackImage;
+  const inspectImageUrl =
+    getItemImageUrl(inspectVisualItem) || inspectFallbackImage;
   const managementClue = holding?.managementClue || null;
   const graphMarkup = renderSkinValueGraph(history);
   const timelineMarkup = tradeStats.timeline.length
@@ -6928,11 +7362,11 @@ function renderSkinDetails(context = "inline") {
           (tx) =>
             `<li>${escapeHtml(tx.date)} | <strong>${escapeHtml(toTitle(tx.type))}</strong> ${tx.quantity} @ ${formatMoney(
               tx.unitPrice,
-              "USD"
-            )} (${formatMoney(tx.netTotal, "USD")} net)</li>`
+              "USD",
+            )} (${formatMoney(tx.netTotal, "USD")} net)</li>`,
         )
         .join("")}</ul>`
-    : "<p class=\"muted\">No transactions for this item yet.</p>";
+    : '<p class="muted">No transactions for this item yet.</p>';
 
   const marketInsightMarkup = inspectMarketInsight?.sellSuggestion
     ? `
@@ -6944,20 +7378,20 @@ function renderSkinDetails(context = "inline") {
               (tier) =>
                 `<li>${escapeHtml(toTitle(tier.tier))}: <strong>${formatMoney(
                   tier.listPrice,
-                  tier.currency || state.currency
+                  tier.currency || state.currency,
                 )}</strong> (net ${formatMoney(
                   tier.estimatedNet,
-                  tier.currency || state.currency
-                )})</li>`
+                  tier.currency || state.currency,
+                )})</li>`,
             )
             .join("")}
         </ul>
         ${
           inspectMarketInsight?.liquidity
             ? `<p>Liquidity: <strong>${formatNumber(
-                inspectMarketInsight.liquidity.score
+                inspectMarketInsight.liquidity.score,
               )}/100 (${escapeHtml(
-                toTitle(inspectMarketInsight.liquidity.band)
+                toTitle(inspectMarketInsight.liquidity.band),
               )})</strong></p>`
             : ""
         }
@@ -6971,16 +7405,16 @@ function renderSkinDetails(context = "inline") {
       <div class="calc-result">
         <p><span>Reference Buy Price</span><strong>${formatMoney(
           exitResult.referenceBuyPrice,
-          exitResult.currency || state.currency
+          exitResult.currency || state.currency,
         )}</strong></p>
         <p><span>Net Profit</span><strong>${formatMoney(
           exitResult.netProfit,
-          exitResult.currency || state.currency
+          exitResult.currency || state.currency,
         )}</strong></p>
         <p><span>ROI</span><strong>${formatPercent(exitResult.roiPercent)}</strong></p>
         <p><span>Break-even</span><strong>${formatMoney(
           exitResult.breakEvenSellPrice,
-          exitResult.currency || state.currency
+          exitResult.currency || state.currency,
         )}</strong></p>
       </div>
     `
@@ -6992,8 +7426,8 @@ function renderSkinDetails(context = "inline") {
           (row) =>
             `<li>${escapeHtml(String(row.recorded_at || "").slice(0, 10))}: <strong>${formatMoney(
               row.price,
-              row.currency || state.currency
-            )}</strong> ${escapeHtml(row.currency || "")}</li>`
+              row.currency || state.currency,
+            )}</strong> ${escapeHtml(row.currency || "")}</li>`,
         )
         .join("")}</ul>`
     : `<p class="muted">No price history yet for this item.</p>`;
@@ -7007,22 +7441,26 @@ function renderSkinDetails(context = "inline") {
         </div>
         <p class="muted">
           Volatility: <strong>${formatPercent(
-            managementClue?.metrics?.volatilityDailyPercent
+            managementClue?.metrics?.volatilityDailyPercent,
           )}</strong> daily std-dev |
           7D projected move: <strong>${formatPercent(
-            managementClue?.prediction?.expectedMovePercent
+            managementClue?.prediction?.expectedMovePercent,
           )}</strong>
         </p>
         <p class="muted">
           Predicted 7D range:
           <strong>${formatMoney(
             managementClue?.prediction?.rangeLow,
-            managementClue?.prediction?.currency || state.portfolio?.currency || state.currency
+            managementClue?.prediction?.currency ||
+              state.portfolio?.currency ||
+              state.currency,
           )}</strong>
           -
           <strong>${formatMoney(
             managementClue?.prediction?.rangeHigh,
-            managementClue?.prediction?.currency || state.portfolio?.currency || state.currency
+            managementClue?.prediction?.currency ||
+              state.portfolio?.currency ||
+              state.currency,
           )}</strong>
         </p>
         <ul class="sync-list">
@@ -7034,7 +7472,9 @@ function renderSkinDetails(context = "inline") {
     `
     : "";
 
-  const formId = isModal ? "inspect-modal-exit-whatif-form" : "exit-whatif-form";
+  const formId = isModal
+    ? "inspect-modal-exit-whatif-form"
+    : "exit-whatif-form";
   const cardClass = isModal ? "skin-card inspect-modal-skin-card" : "skin-card";
 
   return `
@@ -7089,21 +7529,21 @@ function renderSkinDetails(context = "inline") {
       <p class="muted">Transaction timeline (latest 12):</p>
       ${timelineMarkup}
       <form id="${formId}" class="trade-calc-grid inspect-exit-whatif-form" data-inspect-context="${escapeHtml(
-        context
+        context,
       )}">
         <label>Exit Quantity
           <input data-exit-field="quantity" type="number" step="1" min="1" value="${escapeHtml(
-            inspectExitWhatIf.quantity
+            inspectExitWhatIf.quantity,
           )}" />
         </label>
         <label>Target Sell Price
           <input data-exit-field="target-price" type="number" step="0.01" min="0" value="${escapeHtml(
-            inspectExitWhatIf.targetSellPrice
+            inspectExitWhatIf.targetSellPrice,
           )}" />
         </label>
         <label>Commission %
           <input data-exit-field="commission" type="number" step="0.01" min="0" max="99.99" value="${escapeHtml(
-            inspectExitWhatIf.commissionPercent
+            inspectExitWhatIf.commissionPercent,
           )}" />
         </label>
         <button type="submit" ${inspectExitWhatIf.loading ? "disabled" : ""}>
@@ -7130,7 +7570,7 @@ function renderInspectModalOverlay() {
     error: modal.error ? escapeHtml(modal.error) : "",
     heading: escapeHtml(heading),
     subheading: escapeHtml(subheading),
-    bodyMarkup: renderSkinDetails("modal")
+    bodyMarkup: renderSkinDetails("modal"),
   });
 }
 
@@ -7149,8 +7589,8 @@ function renderAlerts() {
         <article class="dashboard-alert-card ${escapeHtml(severity)}">
           <div class="dashboard-alert-copy">
             <span class="status-badge ${escapeHtml(severity === "warning" ? "unpriced" : severity)}">${escapeHtml(
-        toTitle(severity)
-      )}</span>
+              toTitle(severity),
+            )}</span>
             <p>${escapeHtml(alert.message || "Portfolio alert")}</p>
           </div>
           <div class="dashboard-alert-actions">
@@ -7286,7 +7726,7 @@ function renderBacktestPanel() {
         <form id="backtest-form" class="trade-calc-grid">
           <label>Days
             <input id="backtest-days" type="number" min="7" max="1095" value="${escapeHtml(
-              state.backtest.days
+              state.backtest.days,
             )}" />
           </label>
           <button type="submit" ${state.backtest.loading ? "disabled" : ""}>
@@ -7305,22 +7745,22 @@ function renderBacktestPanel() {
             ? `
           <div class="sub-kpi-grid">
             <article class="sub-kpi-card"><span>Total Return</span><strong>${formatPercent(
-              metrics.totalReturnPercent
+              metrics.totalReturnPercent,
             )}</strong></article>
             <article class="sub-kpi-card"><span>Annualized Return</span><strong>${formatPercent(
-              metrics.annualizedReturnPercent
+              metrics.annualizedReturnPercent,
             )}</strong></article>
             <article class="sub-kpi-card"><span>Max Drawdown</span><strong>${formatPercent(
-              metrics.maxDrawdownPercent
+              metrics.maxDrawdownPercent,
             )}</strong></article>
             <article class="sub-kpi-card"><span>Daily Volatility</span><strong>${formatPercent(
-              metrics.volatilityDailyPercent
+              metrics.volatilityDailyPercent,
             )}</strong></article>
             <article class="sub-kpi-card"><span>Win Rate</span><strong>${formatPercent(
-              metrics.winRatePercent
+              metrics.winRatePercent,
             )}</strong></article>
             <article class="sub-kpi-card"><span>Period</span><strong>${escapeHtml(
-              `${Number(result.days || 0)} days`
+              `${Number(result.days || 0)} days`,
             )}</strong></article>
           </div>
         `
@@ -7347,13 +7787,16 @@ function renderDashboardArbitragePanel() {
           .map((row) => {
             const score = Number(row?.opportunityScore || 0);
             const scoreTone = getOpportunityScoreTone(score);
-            const scoreLabel = formatOpportunityLabel(row?.scoreCategory, score);
+            const scoreLabel = formatOpportunityLabel(
+              row?.scoreCategory,
+              score,
+            );
             const skinId = Number(row?.itemId || row?.skinId || 0);
             const isRowClickable = Number.isInteger(skinId) && skinId > 0;
             const itemName = String(row?.itemName || "Tracked Item");
             const rowInteractionAttributes = isRowClickable
               ? `data-skin-id="${escapeHtml(String(skinId))}" tabindex="0" role="button" aria-label="Compare ${escapeHtml(
-                  itemName
+                  itemName,
                 )}"`
               : `aria-disabled="true"`;
             return `
@@ -7372,14 +7815,14 @@ function renderDashboardArbitragePanel() {
                 <p class="dashboard-arb-profit up">
                   <span>Profit</span>
                   <strong>${formatSignedMoney(row?.profit, currencyCode)} (${formatPercent(
-                row?.spreadPercent
-              )})</strong>
+                    row?.spreadPercent,
+                  )})</strong>
                 </p>
                 <p class="dashboard-arb-score">
                   <span>Score</span>
                   <strong class="score-pill ${escapeHtml(scoreTone)}">${escapeHtml(
-                `${formatNumber(score, 0)}/100`
-              )}</strong>
+                    `${formatNumber(score, 0)}/100`,
+                  )}</strong>
                   <small>${escapeHtml(scoreLabel)}</small>
                 </p>
               </article>
@@ -7407,7 +7850,7 @@ function renderDashboardArbitragePanel() {
         View All Opportunities
       </button>
     `,
-    body
+    body,
   });
 }
 
@@ -7429,25 +7872,34 @@ function renderAnalytics() {
       !holdingById && mover.marketHashName
         ? holdings.find(
             (item) =>
-              String(item.marketHashName || "").trim().toLowerCase() ===
-              String(mover.marketHashName || "").trim().toLowerCase()
+              String(item.marketHashName || "")
+                .trim()
+                .toLowerCase() ===
+              String(mover.marketHashName || "")
+                .trim()
+                .toLowerCase(),
           ) || null
         : null;
     const holding = holdingById || holdingByName;
     const skinId = Number(holding?.skinId || rawSkinId || 0);
     const moverItem = holding || mover;
     const imageUrl = getItemImageUrl(moverItem);
-    const fallbackImage = isCaseLikeItem(moverItem) ? defaultCaseImage : defaultSkinImage;
-    const inspectId = String(holding?.primarySteamItemId || mover.primarySteamItemId || "").trim();
+    const fallbackImage = isCaseLikeItem(moverItem)
+      ? defaultCaseImage
+      : defaultSkinImage;
+    const inspectId = String(
+      holding?.primarySteamItemId || mover.primarySteamItemId || "",
+    ).trim();
     return {
       skinId,
-      name: mover.marketHashName || holding?.marketHashName || `Skin #${skinId}`,
+      name:
+        mover.marketHashName || holding?.marketHashName || `Skin #${skinId}`,
       change: mover.sevenDayChangePercent,
       price: Number(holding?.currentPrice ?? mover.currentPrice ?? 0),
       lineValue: Number(mover.lineValue ?? holding?.lineValue ?? 0),
       imageUrl,
       fallbackImage,
-      inspectId
+      inspectId,
     };
   };
   const gainer = resolveMover(topGainer);
@@ -7484,7 +7936,7 @@ function renderAnalytics() {
         <small>Price ${formatMoney(mover.price, currencyCode)}</small>
         <div class="row mover-actions">
           <button type="button" class="inspect-skin-btn btn-primary" data-steam-item-id="${escapeHtml(
-            mover.inspectId
+            mover.inspectId,
           )}" ${mover.inspectId ? "" : "disabled"}>Inspect</button>
           <button
             type="button"
@@ -7508,7 +7960,7 @@ function renderAnalytics() {
       ${renderDashboardArbitragePanel()}
       ${renderPanel({
         className: "dashboard-chart-panel",
-        body: chartBody
+        body: chartBody,
       })}
       ${renderPanel({
         className: "dashboard-movers-panel",
@@ -7519,7 +7971,7 @@ function renderAnalytics() {
             ${buildMoverCard(gainer, "Top Gainer", "up")}
             ${buildMoverCard(loser, "Top Loser", "down")}
           </div>
-        `
+        `,
       })}
     </section>
   `;
@@ -7539,16 +7991,29 @@ function renderDashboardDeepAnalytics() {
   const healthTiles = [
     renderStatTile({
       label: "Liquidity",
-      value: signal.liquidityScore == null ? "-" : `${Number(signal.liquidityScore)}/100`,
+      value:
+        signal.liquidityScore == null
+          ? "-"
+          : `${Number(signal.liquidityScore)}/100`,
       hint: "Fresh and priced coverage",
-      tone: signal.liquidityBand === "low" ? "negative" : signal.liquidityBand === "medium" ? "warning" : "positive"
+      tone:
+        signal.liquidityBand === "low"
+          ? "negative"
+          : signal.liquidityBand === "medium"
+            ? "warning"
+            : "positive",
     }),
     renderStatTile({
       label: "Risk",
       value: `${Number(signal.riskScore || 0)}/100`,
       hint: `Concentration ${toTitle(analytics.concentrationRisk || "unknown")}`,
-      tone: signal.riskBand === "high" ? "negative" : signal.riskBand === "medium" ? "warning" : "positive"
-    })
+      tone:
+        signal.riskBand === "high"
+          ? "negative"
+          : signal.riskBand === "medium"
+            ? "warning"
+            : "positive",
+    }),
   ];
   if (!allFresh) {
     healthTiles.push(
@@ -7556,14 +8021,14 @@ function renderDashboardDeepAnalytics() {
         label: "Unpriced",
         value: escapeHtml(formatNumber(unpricedItems, 0)),
         hint: "Missing valuation source",
-        tone: unpricedItems > 0 ? "warning" : "neutral"
+        tone: unpricedItems > 0 ? "warning" : "neutral",
       }),
       renderStatTile({
         label: "Stale",
         value: escapeHtml(formatNumber(staleItems, 0)),
         hint: "Older than freshness threshold",
-        tone: staleItems > 0 ? "warning" : "neutral"
-      })
+        tone: staleItems > 0 ? "warning" : "neutral",
+      }),
     );
   }
 
@@ -7572,38 +8037,44 @@ function renderDashboardDeepAnalytics() {
       label: "Holdings",
       value: escapeHtml(formatNumber(analytics.holdingsCount, 0)),
       hint: "Open positions",
-      tone: "neutral"
+      tone: "neutral",
     }),
     renderStatTile({
       label: "Top 1 Weight",
       value: escapeHtml(formatPercent(analytics.concentrationTop1Percent)),
       hint: "Single-position concentration",
-      tone: "neutral"
+      tone: "neutral",
     }),
     renderStatTile({
       label: "Top 3 Weight",
       value: escapeHtml(formatPercent(analytics.concentrationTop3Percent)),
       hint: "Cluster concentration",
-      tone: "neutral"
+      tone: "neutral",
     }),
     renderStatTile({
       label: "Effective Holdings",
       value: escapeHtml(formatNumber(analytics.effectiveHoldings)),
       hint: "Diversification footprint",
-      tone: "neutral"
+      tone: "neutral",
     }),
     renderStatTile({
       label: "Weighted 7D Move",
       value: escapeHtml(formatPercent(analytics.weightedAverageMove7dPercent)),
       hint: "Portfolio-level momentum",
-      tone: Number(analytics.weightedAverageMove7dPercent || 0) >= 0 ? "positive" : "negative"
+      tone:
+        Number(analytics.weightedAverageMove7dPercent || 0) >= 0
+          ? "positive"
+          : "negative",
     }),
     renderStatTile({
       label: "Breadth",
       value: escapeHtml(formatPercent(breadth.advancerRatioPercent)),
       hint: "Advancers ratio",
-      tone: Number(breadth.advancerRatioPercent || 0) >= 50 ? "positive" : "warning"
-    })
+      tone:
+        Number(breadth.advancerRatioPercent || 0) >= 50
+          ? "positive"
+          : "warning",
+    }),
   ];
 
   const detailPanels = detailsOpen
@@ -7636,7 +8107,7 @@ function renderDashboardDeepAnalytics() {
           <div class="dashboard-deep-summary">
             ${renderStatGrid({
               className: "dashboard-health-grid",
-              tiles: healthTiles
+              tiles: healthTiles,
             })}
             ${
               allFresh
@@ -7648,10 +8119,10 @@ function renderDashboardDeepAnalytics() {
             <h3>Portfolio Structure</h3>
             ${renderStatGrid({
               className: "dashboard-structure-grid",
-              tiles: structureTiles
+              tiles: structureTiles,
             })}
           </div>
-        `
+        `,
       })}
     </section>
     ${detailPanels}
@@ -7714,31 +8185,31 @@ function renderTeamTab() {
         <div class="sub-kpi-grid">
           <article class="sub-kpi-card"><span>Total Value</span><strong>${formatMoney(
             summary.totalValue,
-            data?.currency || state.currency
+            data?.currency || state.currency,
           )}</strong></article>
           <article class="sub-kpi-card"><span>Holdings</span><strong>${formatNumber(
             summary.holdingsCount,
-            0
+            0,
           )}</strong></article>
           <article class="sub-kpi-card"><span>Top 5 Weight</span><strong>${formatPercent(
-            summary.top5WeightPercent
+            summary.top5WeightPercent,
           )}</strong></article>
           <article class="sub-kpi-card"><span>Followers</span><strong>${formatNumber(
             creator.followers,
-            0
+            0,
           )}</strong></article>
           <article class="sub-kpi-card"><span>Views / Referrals (30D)</span><strong>${escapeHtml(
-            `${Number(creator.views30d || 0)} / ${Number(creator.referrals30d || 0)}`
+            `${Number(creator.views30d || 0)} / ${Number(creator.referrals30d || 0)}`,
           )}</strong></article>
           <article class="sub-kpi-card"><span>Unpriced / Stale</span><strong>${escapeHtml(
-            `${formatPercent(summary.unpricedRatioPercent)} / ${formatPercent(summary.staleRatioPercent)}`
+            `${formatPercent(summary.unpricedRatioPercent)} / ${formatPercent(summary.staleRatioPercent)}`,
           )}</strong></article>
         </div>
         <p class="helper-text">
           Ownership changes (last 50 sync events): Acquired ${Number(
-            breakdown.acquired || 0
+            breakdown.acquired || 0,
           )}, Increased ${Number(breakdown.increased || 0)}, Decreased ${Number(
-            breakdown.decreased || 0
+            breakdown.decreased || 0,
           )}, Disposed ${Number(breakdown.disposed || 0)}.
         </p>
       </article>
@@ -7749,9 +8220,8 @@ function renderTeamTab() {
 function renderTabNav() {
   return `
     <nav class="sidebar-nav">
-      ${APP_TABS
-        .map(
-          (tab) => `
+      ${APP_TABS.map(
+        (tab) => `
           <button
             type="button"
             class="ghost-btn tab-btn sidebar-nav-item ${state.activeTab === tab.id ? "active" : ""}"
@@ -7760,9 +8230,8 @@ function renderTabNav() {
             <span>${escapeHtml(tab.label)}</span>
             <small>${escapeHtml(tab.hint)}</small>
           </button>
-        `
-        )
-        .join("")}
+        `,
+      ).join("")}
     </nav>
   `;
 }
@@ -7782,13 +8251,19 @@ function renderAlertsCenter() {
       <div class="alert-card-list">
         ${alertRows
           .map((alert) => {
-            const nextCheckRaw = alert.nextCheckAt || alert.lastCheckedAt || alert.updatedAt || alert.createdAt;
+            const nextCheckRaw =
+              alert.nextCheckAt ||
+              alert.lastCheckedAt ||
+              alert.updatedAt ||
+              alert.createdAt;
             const triggerBits = [
-              alert.targetPrice == null ? null : `Target ${formatMoney(alert.targetPrice, "USD")}`,
+              alert.targetPrice == null
+                ? null
+                : `Target ${formatMoney(alert.targetPrice, "USD")}`,
               alert.percentChangeThreshold == null
                 ? null
                 : `Move ${formatPercent(alert.percentChangeThreshold)}`,
-              `Direction ${toTitle(alert.direction || "both")}`
+              `Direction ${toTitle(alert.direction || "both")}`,
             ]
               .filter(Boolean)
               .join(" | ");
@@ -7798,7 +8273,9 @@ function renderAlertsCenter() {
                   <div>
                     <p class="alert-config-title">${escapeHtml(alert.marketHashName || `Skin #${alert.skinId}`)}</p>
                     <small class="muted">Next check: ${escapeHtml(
-                      nextCheckRaw ? `${formatDateTime(nextCheckRaw)} (${formatRelativeTime(nextCheckRaw)})` : "pending"
+                      nextCheckRaw
+                        ? `${formatDateTime(nextCheckRaw)} (${formatRelativeTime(nextCheckRaw)})`
+                        : "pending",
                     )}</small>
                   </div>
                   ${
@@ -7811,7 +8288,7 @@ function renderAlertsCenter() {
                 <p class="muted">Cooldown ${Number(alert.cooldownMinutes || 0)}m</p>
                 <div class="row alert-config-actions">
                   <button type="button" class="ghost-btn alert-edit-btn btn-secondary" data-alert-id="${Number(
-                    alert.id
+                    alert.id,
                   )}">Edit</button>
                   <button
                     type="button"
@@ -7822,7 +8299,7 @@ function renderAlertsCenter() {
                     ${alert.enabled ? "Pause" : "Enable"}
                   </button>
                   <button type="button" class="ghost-btn alert-delete-btn btn-tertiary" data-alert-id="${Number(
-                    alert.id
+                    alert.id,
                   )}">Delete</button>
                 </div>
               </article>
@@ -7845,13 +8322,17 @@ function renderAlertsCenter() {
             .map(
               (event) => `
                 <tr>
-                  <td>${escapeHtml(String(event.triggeredAt || "").slice(0, 19).replace("T", " "))}</td>
+                  <td>${escapeHtml(
+                    String(event.triggeredAt || "")
+                      .slice(0, 19)
+                      .replace("T", " "),
+                  )}</td>
                   <td>${escapeHtml(event.marketHashName || `Skin #${event.skinId}`)}</td>
                   <td>${escapeHtml(toTitle(event.triggerType || "-"))}</td>
                   <td>${formatMoney(event.marketPrice, "USD")}</td>
                   <td>${formatPercent(event.changePercent)}</td>
                 </tr>
-              `
+              `,
             )
             .join("")}
         </tbody>
@@ -7871,19 +8352,26 @@ function renderAlertsCenter() {
             .map(
               (event) => `
                 <tr>
-                  <td>${escapeHtml(String(event.createdAt || event.syncedAt || "").slice(0, 19).replace("T", " "))}</td>
+                  <td>${escapeHtml(
+                    String(event.createdAt || event.syncedAt || "")
+                      .slice(0, 19)
+                      .replace("T", " "),
+                  )}</td>
                   <td>${escapeHtml(event.marketHashName || `Skin #${event.skinId}`)}</td>
                   <td>${escapeHtml(toTitle(event.changeType || "-"))}</td>
-                  <td>${Number(event.previousQuantity || 0)} -> ${Number(event.newQuantity || 0)} (${Number(
-                event.quantityDelta || 0
-              ) > 0 ? "+" : ""}${Number(event.quantityDelta || 0)})</td>
+                  <td>${Number(event.previousQuantity || 0)} -> ${Number(event.newQuantity || 0)} (${
+                    Number(event.quantityDelta || 0) > 0 ? "+" : ""
+                  }${Number(event.quantityDelta || 0)})</td>
                   <td>${
                     event.estimatedValueDelta == null
                       ? "-"
-                      : formatMoney(event.estimatedValueDelta, event.currency || "USD")
+                      : formatMoney(
+                          event.estimatedValueDelta,
+                          event.currency || "USD",
+                        )
                   }</td>
                 </tr>
-              `
+              `,
             )
             .join("")}
         </tbody>
@@ -7905,7 +8393,7 @@ function renderAlertsCenter() {
             </label>
             <label>Target Price (USD)
               <input id="alert-target-price" type="number" min="0" step="0.01" value="${escapeHtml(
-                state.alertForm.targetPrice
+                state.alertForm.targetPrice,
               )}" />
               <small class="field-help">Trigger when market price reaches this level.</small>
             </label>
@@ -7914,7 +8402,7 @@ function renderAlertsCenter() {
             <legend>Trigger</legend>
             <label>% Change Trigger
               <input id="alert-percent-threshold" type="number" min="0" step="0.01" value="${escapeHtml(
-                state.alertForm.percentChangeThreshold
+                state.alertForm.percentChangeThreshold,
               )}" />
               <small class="field-help">Use for momentum alerts if target price is empty.</small>
             </label>
@@ -7931,7 +8419,7 @@ function renderAlertsCenter() {
             <legend>Delivery</legend>
             <label>Cooldown (minutes)
               <input id="alert-cooldown" type="number" min="0" step="1" value="${escapeHtml(
-                state.alertForm.cooldownMinutes
+                state.alertForm.cooldownMinutes,
               )}" />
               <small class="field-help">Minimum delay before same alert can trigger again.</small>
             </label>
@@ -7975,10 +8463,14 @@ function renderAlertsCenter() {
 }
 
 function renderSocialTab() {
-  const watchRows = Array.isArray(state.social.watchlist) ? state.social.watchlist : [];
-  const boardRows = Array.isArray(state.social.leaderboard) ? state.social.leaderboard : [];
+  const watchRows = Array.isArray(state.social.watchlist)
+    ? state.social.watchlist
+    : [];
+  const boardRows = Array.isArray(state.social.leaderboard)
+    ? state.social.leaderboard
+    : [];
   const watchlistBySteamId = new Set(
-    watchRows.map((row) => String(row.steamId64 || "").trim()).filter(Boolean)
+    watchRows.map((row) => String(row.steamId64 || "").trim()).filter(Boolean),
   );
 
   const watchlistMarkup = watchRows.length
@@ -8003,15 +8495,15 @@ function renderSocialTab() {
                   <td>
                     <div class="row">
                       <a class="link-btn ghost" href="/u/${encodeURIComponent(
-                        row.steamId64 || ""
+                        row.steamId64 || "",
                       )}" target="_blank" rel="noreferrer">Open</a>
                       <button type="button" class="ghost-btn watch-remove-btn" data-steam-id="${escapeHtml(
-                        row.steamId64 || ""
+                        row.steamId64 || "",
                       )}">Remove</button>
                     </div>
                   </td>
                 </tr>
-              `
+              `,
             )
             .join("")}
         </tbody>
@@ -8046,7 +8538,7 @@ function renderSocialTab() {
                   <td>
                     <div class="row">
                       <a class="link-btn ghost" href="/u/${encodeURIComponent(
-                        steamId64
+                        steamId64,
                       )}" target="_blank" rel="noreferrer">Open</a>
                       <button
                         type="button"
@@ -8112,25 +8604,34 @@ function renderMarketTab() {
   const marketOptions = buildHoldingOptions(state.marketTab.skinId);
   const valuation = state.marketTab.inventoryValue;
   const insight = state.marketTab.insight;
-  const scanner = state.marketTab.opportunities || createMarketOpportunitiesState();
-  const scanFilters = scanner.filters || createMarketOpportunitiesState().filters;
+  const scanner =
+    state.marketTab.opportunities || createMarketOpportunitiesState();
+  const scanFilters =
+    scanner.filters || createMarketOpportunitiesState().filters;
   const suggestion = insight?.sellSuggestion || null;
   const liquidity = insight?.liquidity || null;
   const hasSuggestionForSelected =
-    suggestion && Number(suggestion.skinId) === Number(state.marketTab.skinId || 0);
+    suggestion &&
+    Number(suggestion.skinId) === Number(state.marketTab.skinId || 0);
   const selectedSkin = holdings.find(
-    (item) => String(item.skinId) === String(state.marketTab.skinId || "")
+    (item) => String(item.skinId) === String(state.marketTab.skinId || ""),
   );
-  const selectedName = selectedSkin?.marketHashName || `Skin #${state.marketTab.skinId}`;
+  const selectedName =
+    selectedSkin?.marketHashName || `Skin #${state.marketTab.skinId}`;
 
   const valuationRows = Array.isArray(valuation?.items) ? valuation.items : [];
   const totalGrossLabel = valuation
-    ? formatMoney(valuation.totalValueGross, valuation.currency || state.currency)
+    ? formatMoney(
+        valuation.totalValueGross,
+        valuation.currency || state.currency,
+      )
     : "-";
   const totalNetLabel = valuation
     ? formatMoney(valuation.totalValueNet, valuation.currency || state.currency)
     : "-";
-  const itemsCountLabel = valuation ? formatNumber(valuation.itemsCount, 0) : "-";
+  const itemsCountLabel = valuation
+    ? formatNumber(valuation.itemsCount, 0)
+    : "-";
   const valuationMarkup = valuationRows.length
     ? `
       <table>
@@ -8149,7 +8650,7 @@ function renderMarketTab() {
                   <td>${formatMoney(row.lineValueGross, valuation.currency || state.currency)}</td>
                   <td>${formatMoney(row.lineValueNet, valuation.currency || state.currency)}</td>
                 </tr>
-              `
+              `,
             )
             .join("")}
         </tbody>
@@ -8186,13 +8687,13 @@ function renderMarketTab() {
                   <td>${formatMoney(row?.sellNet, state.portfolio?.currency || state.currency)}</td>
                   <td><strong class="pnl-text up">${formatSignedMoney(
                     row?.profit,
-                    state.portfolio?.currency || state.currency
+                    state.portfolio?.currency || state.currency,
                   )}</strong></td>
                   <td>${formatPercent(row?.spreadPercent)}</td>
                   <td>
                     <span class="score-pill ${escapeHtml(scoreTone)}">${escapeHtml(
-                `${formatNumber(score, 0)}/100`
-              )}</span>
+                      `${formatNumber(score, 0)}/100`,
+                    )}</span>
                   </td>
                 </tr>
               `;
@@ -8210,7 +8711,7 @@ function renderMarketTab() {
         <form id="market-inventory-form" class="trade-calc-grid">
           <label>Commission %
             <input id="market-commission" type="number" min="0" max="99.99" step="0.01" value="${escapeHtml(
-              state.marketTab.commissionPercent
+              state.marketTab.commissionPercent,
             )}" />
           </label>
           <button type="submit" ${state.marketTab.loading ? "disabled" : ""}>
@@ -8242,7 +8743,7 @@ function renderMarketTab() {
           </label>
           <label>Commission %
             <input id="market-commission-inline" type="number" min="0" max="99.99" step="0.01" value="${escapeHtml(
-              state.marketTab.commissionPercent
+              state.marketTab.commissionPercent,
             )}" />
           </label>
           <button type="submit" ${state.marketTab.loading || !holdings.length ? "disabled" : ""}>
@@ -8282,7 +8783,7 @@ function renderMarketTab() {
                     <td>${formatMoney(tier.estimatedNet, tier.currency || state.currency)}</td>
                     <td>${escapeHtml(toTitle(tier.expectedFill))}</td>
                   </tr>
-                `
+                `,
               )
               .join("")}
           </tbody>
@@ -8290,7 +8791,7 @@ function renderMarketTab() {
         ${
           liquidity
             ? `<p class="helper-text">Liquidity: <strong>${formatNumber(
-                liquidity.score
+                liquidity.score,
               )}/100</strong> (${escapeHtml(toTitle(liquidity.band))})</p>`
             : ""
         }
@@ -8380,7 +8881,7 @@ function renderMarketTab() {
           ${
             scanner.summary
               ? `Scanned ${Number(scanner.summary.scannedItems || 0)} items. Found ${Number(
-                  scanner.summary.opportunities || 0
+                  scanner.summary.opportunities || 0,
                 )} opportunities.`
               : "Scan your synced items to detect buy/sell arbitrage across Steam, Skinport, CSFloat, and DMarket."
           }
@@ -8409,12 +8910,14 @@ function renderSettingsTab() {
   const publicUrl = steamLinked
     ? `${window.location.origin}/u/${encodeURIComponent(profile.steamId64 || "")}`
     : "";
-  const pricingMode = normalizePricingMode(state.portfolio?.pricing?.mode || state.pricingMode);
+  const pricingMode = normalizePricingMode(
+    state.portfolio?.pricing?.mode || state.pricingMode,
+  );
   const syncCooldownSeconds = getSyncCooldownSecondsRemaining();
   const syncDisabled = state.syncingInventory || syncCooldownSeconds > 0;
   const currencyOptions = SUPPORTED_CURRENCIES.map(
     (code) =>
-      `<option value="${code}" ${code === state.currency ? "selected" : ""}>${code}</option>`
+      `<option value="${code}" ${code === state.currency ? "selected" : ""}>${code}</option>`,
   ).join("");
 
   return `
@@ -8437,9 +8940,11 @@ function renderSettingsTab() {
           </article>
         </div>
         <p class="muted">
-          ${steamLinked
-            ? "Steam login is connected to this account. You can relink to switch or refresh profile data."
-            : "No Steam account linked yet. Link now to enable Steam sign-in and one-account access."}
+          ${
+            steamLinked
+              ? "Steam login is connected to this account. You can relink to switch or refresh profile data."
+              : "No Steam account linked yet. Link now to enable Steam sign-in and one-account access."
+          }
         </p>
         <div class="row">
           <a class="link-btn" href="${escapeHtml(steamLinkUrl)}">
@@ -8449,7 +8954,7 @@ function renderSettingsTab() {
         ${
           steamLinked
             ? `<p class="helper-text">Public URL: <a href="${escapeHtml(publicUrl)}" target="_blank" rel="noreferrer">${escapeHtml(
-                publicUrl
+                publicUrl,
               )}</a></p>`
             : ""
         }
@@ -8507,7 +9012,7 @@ function renderSettingsTab() {
         </div>
         <p class="helper-text">
           Entitlements: Alerts ${Number(entitlements.maxAlerts || 0)}, History up to ${Number(
-            entitlements.maxHistoryDays || 30
+            entitlements.maxHistoryDays || 30,
           )} days, CSV export ${entitlements.csvExport ? "enabled" : "disabled"}, Backtesting ${
             entitlements.backtesting ? "enabled" : "disabled"
           }.
@@ -8552,7 +9057,9 @@ function renderPublicPortfolioPage() {
   const isSignedIn = Boolean(state.authenticated);
   const userEmailTitle = String(state.authProfile?.email || "").trim();
   const userEmailLabel = getHeaderEmailLabel();
-  const historyPoints = Array.isArray(payload?.history?.points) ? payload.history.points : [];
+  const historyPoints = Array.isArray(payload?.history?.points)
+    ? payload.history.points
+    : [];
   const items = Array.isArray(portfolio.items) ? portfolio.items : [];
   const historyPreview = historyPoints.slice(-10);
 
@@ -8562,8 +9069,8 @@ function renderPublicPortfolioPage() {
           (point) =>
             `<li>${escapeHtml(point.date)}: <strong>${formatMoney(
               point.totalValue,
-              portfolio.currency || state.currency
-            )}</strong></li>`
+              portfolio.currency || state.currency,
+            )}</strong></li>`,
         )
         .join("")}</ul>`
     : '<p class="muted">No history points yet.</p>';
@@ -8626,7 +9133,7 @@ function renderPublicPortfolioPage() {
             isSignedIn
               ? `
                 <span class="user-chip" title="${escapeHtml(userEmailTitle)}">${escapeHtml(
-                  userEmailLabel
+                  userEmailLabel,
                 )}</span>
                 <a class="link-btn ghost" href="/">Back to Dashboard</a>
               `
@@ -8646,7 +9153,7 @@ function renderPublicPortfolioPage() {
               ? "<h1>Loading profile...</h1>"
               : page.error
                 ? `<h1>Could not load profile</h1><div class="error" role="alert" aria-live="assertive">${escapeHtml(
-                    page.error
+                    page.error,
                   )}</div>`
                 : `<h1>${escapeHtml(profile.displayName || `Steam ${profile.steamId64 || ""}`)}</h1>`
           }
@@ -8654,7 +9161,7 @@ function renderPublicPortfolioPage() {
             page.error
               ? '<p class="muted">This profile may be private, missing, or temporarily unavailable.</p>'
               : `<p class="helper-text">SteamID64: <code>${escapeHtml(
-                  profile.steamId64 || "-"
+                  profile.steamId64 || "-",
                 )}</code></p>`
           }
           ${
@@ -8664,7 +9171,7 @@ function renderPublicPortfolioPage() {
                     <span>Total Value</span>
                     <strong>${formatMoney(
                       portfolio.totalValue,
-                      portfolio.currency || state.currency
+                      portfolio.currency || state.currency,
                     )}</strong>
                   </article>
                   <article class="sub-kpi-card">
@@ -8715,7 +9222,7 @@ function renderPublicHome() {
             isSignedIn
               ? `
                 <span class="user-chip" title="${escapeHtml(userEmailTitle)}">${escapeHtml(
-                  userEmailLabel
+                  userEmailLabel,
                 )}</span>
                 <a class="link-btn ghost" href="/">Back to Dashboard</a>
               `
@@ -8858,7 +9365,7 @@ function renderSteamSyncPanel() {
               ? '<span class="loading-inline"><span class="spinner"></span>Syncing inventory...</span>'
               : syncCooldownSeconds > 0
                 ? `Try again in ${escapeHtml(formatCountdownLabel(syncCooldownSeconds))}`
-              : "Sync Inventory"
+                : "Sync Inventory"
           }
         </button>
         <a class="link-btn ghost" href="${escapeHtml(steamLinkUrl)}">Relink Steam</a>
@@ -8868,9 +9375,9 @@ function renderSteamSyncPanel() {
           ? '<p class="muted sync-note">Fetching inventory and market prices. This can take up to a minute.</p>'
           : syncCooldownSeconds > 0
             ? `<p class="muted sync-note">Too many sync attempts. Retry in ${escapeHtml(
-                formatCountdownLabel(syncCooldownSeconds)
+                formatCountdownLabel(syncCooldownSeconds),
               )}.</p>`
-          : ""
+            : ""
       }
       ${renderSyncSummary()}
     </article>
@@ -8879,8 +9386,10 @@ function renderSteamSyncPanel() {
 
 function renderApp() {
   const portfolio = state.portfolio || {};
-  const oneDayTrendClass = Number(portfolio.oneDayChangePercent || 0) >= 0 ? "up" : "down";
-  const trendClass = Number(portfolio.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
+  const oneDayTrendClass =
+    Number(portfolio.oneDayChangePercent || 0) >= 0 ? "up" : "down";
+  const trendClass =
+    Number(portfolio.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
   const holdingsPage = getFilteredHoldings();
   const userEmailTitle = String(state.authProfile?.email || "").trim();
   const userEmailLabel = getHeaderEmailLabel();
@@ -8888,11 +9397,13 @@ function renderApp() {
   const topValue = Number(portfolio.totalValue || 0);
   const top7d = Number(portfolio.sevenDayChangePercent || 0);
   const top24h = Number(portfolio.oneDayChangePercent || 0);
-  const topValueLabel = getPricingModeLabel(portfolio?.pricing?.mode || state.pricingMode);
-  const showTopbarMetrics = state.activeTab !== "dashboard";
+  const topValueLabel = getPricingModeLabel(
+    portfolio?.pricing?.mode || state.pricingMode,
+  );
 
   const currencyOptions = SUPPORTED_CURRENCIES.map(
-    (code) => `<option value="${code}" ${code === state.currency ? "selected" : ""}>${code}</option>`
+    (code) =>
+      `<option value="${code}" ${code === state.currency ? "selected" : ""}>${code}</option>`,
   ).join("");
 
   const dashboardContent = `
@@ -8928,10 +9439,6 @@ function renderApp() {
         </p>
         ${renderPortfolioPricingControls()}
         ${renderSection({
-          eyebrow: "Portfolio",
-          title: "Execution Cards",
-          description:
-            "Inspect opens in a centered modal. Compare opens in a right-side drawer, so cards remain fixed with no grid stretch.",
           className: "portfolio-table-section",
           body: `
             <div class="portfolio-mobile-only">
@@ -8940,7 +9447,7 @@ function renderApp() {
             <div class="portfolio-desktop-cards">
               ${renderPortfolioDesktopCards()}
             </div>
-          `
+          `,
         })}
         <div class="pagination-bar">
           <button
@@ -8984,24 +9491,24 @@ function renderApp() {
       ? dashboardContent
       : state.activeTab === "portfolio"
         ? portfolioContent
-      : state.activeTab === "trades"
-        ? tradesContent
-        : state.activeTab === "alerts"
-          ? renderAlertsCenter()
-          : state.activeTab === "social"
-            ? renderSocialTab()
-            : state.activeTab === "team"
-              ? renderTeamTab()
-              : state.activeTab === "market"
-                ? renderMarketTab()
-                : renderSettingsTab();
+        : state.activeTab === "trades"
+          ? tradesContent
+          : state.activeTab === "alerts"
+            ? renderAlertsCenter()
+            : state.activeTab === "social"
+              ? renderSocialTab()
+              : state.activeTab === "team"
+                ? renderTeamTab()
+                : state.activeTab === "market"
+                  ? renderMarketTab()
+                  : renderSettingsTab();
 
   app.innerHTML = `
     <main class="layout app-shell">
       ${renderMobileNav({
         title: "CS2 Portfolio Analyzer",
         drawerOpen: state.mobileDrawer.open,
-        escapeHtml
+        escapeHtml,
       })}
       ${renderMobileDrawer({
         open: state.mobileDrawer.open,
@@ -9010,67 +9517,55 @@ function renderApp() {
         userLabel: userEmailLabel,
         userTitle: userEmailTitle,
         loading: state.tabSwitch.loading,
-        escapeHtml
+        escapeHtml,
       })}
       ${renderDesktopHeader(userEmailLabel, userEmailTitle)}
       <section class="app-main">
+        ${
+          state.activeTab === "dashboard"
+            ? ""
+            : `
         <header class="topbar premium-topbar">
           <div class="topbar-metrics">
-            ${
-              showTopbarMetrics
-                ? `
-              <article class="topbar-metric metric-glow">
-                <span>${escapeHtml(topValueLabel)} Value</span>
-                <strong
-                  class="metric-number"
-                  data-count-key="topbar-total-value"
-                  data-count-format="money"
-                  data-count-currency="${escapeHtml(currencyCode)}"
-                  data-count-to="${topValue}"
-                >
-                  ${formatMoney(topValue, currencyCode)}
-                </strong>
-              </article>
-              <article class="topbar-metric ${trendClass}">
-                <span>7D Change</span>
-                <strong
-                  class="metric-number"
-                  data-count-key="topbar-seven-day"
-                  data-count-format="percent"
-                  data-count-to="${top7d}"
-                >
-                  ${formatPercent(top7d)}
-                </strong>
-                <small class="pnl-text ${oneDayTrendClass}">24H ${formatPercent(top24h)}</small>
-              </article>
-            `
-                : `
-              <article class="topbar-metric topbar-dashboard-note">
-                <span>Dashboard</span>
-                <strong>Decision terminal</strong>
-                <small>Primary KPIs are pinned below the hero for data-first scanning.</small>
-              </article>
-            `
-            }
+            <article class="topbar-metric metric-glow">
+              <span>${escapeHtml(topValueLabel)} Value</span>
+              <strong
+                class="metric-number"
+                data-count-key="topbar-total-value"
+                data-count-format="money"
+                data-count-currency="${escapeHtml(currencyCode)}"
+                data-count-to="${topValue}"
+              >
+                ${formatMoney(topValue, currencyCode)}
+              </strong>
+            </article>
+            <article class="topbar-metric ${trendClass}">
+              <span>7D Change</span>
+              <strong
+                class="metric-number"
+                data-count-key="topbar-seven-day"
+                data-count-format="percent"
+                data-count-to="${top7d}"
+              >
+                ${formatPercent(top7d)}
+              </strong>
+              <small class="pnl-text ${oneDayTrendClass}">24H ${formatPercent(top24h)}</small>
+            </article>
           </div>
           <div class="top-actions">
-            ${
-              state.activeTab === "dashboard"
-                ? ""
-                : `
-              <label class="currency-picker">
-                Currency
-                <select id="currency-select">${currencyOptions}</select>
-              </label>
-            `
-            }
+            <label class="currency-picker">
+              Currency
+              <select id="currency-select">${currencyOptions}</select>
+            </label>
           </div>
         </header>
+        `
+        }
         ${
           state.tabSwitch.loading
             ? `<div class="tab-switch-indicator-slot" aria-live="polite">
                 <div class="tab-switch-indicator" role="status">Loading ${escapeHtml(
-                  toTitle(state.tabSwitch.target || state.activeTab || "tab")
+                  toTitle(state.tabSwitch.target || state.activeTab || "tab"),
                 )}...</div>
               </div>`
             : ""
@@ -9153,7 +9648,7 @@ function render() {
       unitPrice: "0",
       commissionPercent: "13",
       executedAt: "",
-      submitting: false
+      submitting: false,
     };
     renderPublicPortfolioPage();
     syncBodyUiLocks();
@@ -9183,7 +9678,7 @@ function render() {
       unitPrice: "0",
       commissionPercent: "13",
       executedAt: "",
-      submitting: false
+      submitting: false,
     };
     renderPublicHome();
     syncBodyUiLocks();
@@ -9214,7 +9709,8 @@ function hydrateAppNoticesFromUrl() {
   if (steamOnboarding) {
     state.activeTab = "dashboard";
     state.steamOnboardingPending = true;
-    state.accountNotice = "Steam connected successfully. You're connected, click sync now.";
+    state.accountNotice =
+      "Steam connected successfully. You're connected, click sync now.";
   }
 
   window.history.replaceState({}, "", "/");
@@ -9227,7 +9723,7 @@ async function bootstrapSession() {
   if (state.publicPage.steamId64) {
     await Promise.all([
       loadPublicPortfolio({ silent: true }),
-      refreshAuthProfile()
+      refreshAuthProfile(),
     ]);
   } else {
     await refreshPortfolio({ silent: true });
@@ -9243,4 +9739,3 @@ bootstrapSession().catch(() => {
   state.sessionBooting = false;
   render();
 });
-
