@@ -5158,7 +5158,12 @@ a:hover {
 
 .compare-drawer-market-open-link {
   width: 100%;
+  display: flex;
+  align-items: center;
   justify-content: center;
+  text-align: center;
+  font-size: 0.88rem;
+  line-height: 1;
   background: linear-gradient(135deg, #0e8f6b, #26c7a2);
   border: 1px solid rgba(136, 250, 214, 0.4);
   box-shadow: 0 10px 22px rgba(27, 167, 129, 0.28);
