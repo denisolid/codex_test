@@ -5009,10 +5009,6 @@ a:hover {
   font-size: var(--ui-font-h3);
 }
 
-.topbar-dashboard-note {
-  min-width: min(460px, 100%);
-}
-
 .tab-switch-indicator-slot {
   min-height: 34px;
 }
