@@ -4,6 +4,7 @@ const priceRepo = require("../repositories/priceHistoryRepository");
 const inventoryRepo = require("../repositories/inventoryRepository");
 const priceProviderService = require("./priceProviderService");
 const { derivePriceStatus } = require("../utils/priceStatus");
+const { buildDailyCarryForwardSeries } = require("../utils/historySeries");
 const {
   resolveCurrency,
   convertUsdAmount,
@@ -82,29 +83,46 @@ exports.getSkinDetails = async (skinId, options = {}) => {
       }
     : null;
 
-  const sixMonthsAgo = new Date();
+  const rangeEnd = new Date();
+  const sixMonthsAgo = new Date(rangeEnd);
   sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
-  const historyRaw = await priceRepo.getHistoryBySkinIdSince(
-    skinId,
-    sixMonthsAgo,
-    4000
-  );
-  const seenDates = new Set();
-  const history = [];
+  const [historyRaw, baselineBySkin] = await Promise.all([
+    priceRepo.getHistoryBySkinIdSince(skinId, sixMonthsAgo, 20000),
+    priceRepo.getLatestPricesBeforeDate([skinId], sixMonthsAgo)
+  ]);
 
-  for (const row of historyRaw) {
-    const day = String(row.recorded_at || "").slice(0, 10);
-    if (!day || seenDates.has(day)) continue;
-    seenDates.add(day);
-    history.push({
+  const baselinePrice = Number(baselineBySkin[skinId]);
+  let seedRow = null;
+  if (Number.isFinite(baselinePrice) && baselinePrice >= 0) {
+    seedRow = {
+      price: baselinePrice,
+      currency: "USD",
+      source: "baseline-before-range",
+      recorded_at: sixMonthsAgo.toISOString()
+    };
+  } else if (latestPrice && Number.isFinite(Number(latestPrice.price))) {
+    seedRow = {
+      price: Number(latestPrice.price),
+      currency: "USD",
+      source: latestPrice.source || "latest-price-fallback",
+      recorded_at: latestPrice.recorded_at || rangeEnd.toISOString()
+    };
+  }
+
+  const history = buildDailyCarryForwardSeries(historyRaw, {
+    startDate: sixMonthsAgo,
+    endDate: rangeEnd,
+    seedRow,
+    descending: true
+  })
+    .slice(0, 185)
+    .map((row) => ({
       ...row,
       price: convertUsdAmount(Number(row.price || 0), displayCurrency),
       currency: displayCurrency,
       ...derivePriceStatus(row)
-    });
-    if (history.length >= 185) break;
-  }
+    }));
 
   return {
     ...skin,
