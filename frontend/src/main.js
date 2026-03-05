@@ -6901,6 +6901,28 @@ function renderSkinDetails(context = "inline") {
   const holding = (state.portfolio?.items || []).find(
     (item) => Number(item.skinId) === Number(skinId)
   );
+  const inspectName = String(
+    inspectSkin.market_hash_name || inspectSkin.marketHashName || "Unknown item"
+  );
+  const inspectVisualItem = {
+    marketHashName: inspectName || holding?.marketHashName,
+    imageUrlLarge:
+      inspectSkin.image_url_large ||
+      inspectSkin.imageUrlLarge ||
+      holding?.imageUrlLarge ||
+      holding?.image_url_large ||
+      holding?.image_url,
+    imageUrl:
+      inspectSkin.image_url ||
+      inspectSkin.imageUrl ||
+      holding?.imageUrl ||
+      holding?.image_url,
+    weapon: inspectSkin.weapon || holding?.weapon || ""
+  };
+  const inspectFallbackImage = isCaseLikeItem(inspectVisualItem)
+    ? defaultCaseImage
+    : defaultSkinImage;
+  const inspectImageUrl = getItemImageUrl(inspectVisualItem) || inspectFallbackImage;
   const managementClue = holding?.managementClue || null;
   const graphMarkup = renderSkinValueGraph(history);
   const timelineMarkup = tradeStats.timeline.length
@@ -7021,9 +7043,21 @@ function renderSkinDetails(context = "inline") {
 
   return `
     <div class="${cardClass}">
-      <h3>${escapeHtml(inspectSkin.market_hash_name)}</h3>
-      <p>Item ID: <strong>${Number(inspectSkin.id || 0) || "-"}</strong></p>
-      <p>${escapeHtml(inspectSkin.weapon || "-")} | ${escapeHtml(inspectSkin.exterior || "-")} | ${escapeHtml(inspectSkin.rarity || "-")}</p>
+      <div class="inspect-item-head">
+        <img
+          class="inspect-item-image"
+          src="${escapeHtml(inspectImageUrl)}"
+          alt="${escapeHtml(inspectName || "CS2 item")}"
+          loading="lazy"
+          decoding="async"
+          onerror="this.onerror=null;this.src='${escapeHtml(inspectFallbackImage)}';"
+        />
+        <div class="inspect-item-head-copy">
+          <h3>${escapeHtml(inspectName)}</h3>
+          <p>Item ID: <strong>${Number(inspectSkin.id || 0) || "-"}</strong></p>
+          <p>${escapeHtml(inspectSkin.weapon || "-")} | ${escapeHtml(inspectSkin.exterior || "-")} | ${escapeHtml(inspectSkin.rarity || "-")}</p>
+        </div>
+      </div>
       <p>Latest Price: <strong>${latest ? `${formatMoney(latest.price)} ${escapeHtml(latest.currency)}` : "N/A"}</strong></p>
       <p>Price Source: <strong>${latest ? escapeHtml(latest.source || "unknown") : "-"}</strong></p>
       <p>Price Status: ${latest ? formatPriceStatusBadge(latest.status) : "-"}</p>
@@ -7306,9 +7340,10 @@ function renderDashboardArbitragePanel() {
   const opportunities = Array.isArray(arbitrage?.topOpportunities)
     ? arbitrage.topOpportunities
     : [];
+  const hasOpportunities = opportunities.length > 0;
   const currencyCode = state.portfolio?.currency || state.currency;
 
-  const body = opportunities.length
+  const body = hasOpportunities
     ? `
       <div class="dashboard-arb-list">
         ${opportunities
@@ -7326,7 +7361,9 @@ function renderDashboardArbitragePanel() {
                 )}"`
               : `aria-disabled="true"`;
             return `
-              <article class="dashboard-arb-row ${isRowClickable ? "dashboard-arb-row-clickable" : ""}" ${rowInteractionAttributes}>
+              <article class="dashboard-arb-row dashboard-arb-row-opportunity ${
+                isRowClickable ? "dashboard-arb-row-clickable" : ""
+              }" ${rowInteractionAttributes}>
                 <strong class="dashboard-arb-item">${escapeHtml(row?.itemName || "Tracked Item")}</strong>
                 <p class="dashboard-arb-leg">
                   <span>Buy ${escapeHtml(formatMarketSourceLabel(row?.buyMarket))}</span>
@@ -7358,7 +7395,11 @@ function renderDashboardArbitragePanel() {
     : '<p class="muted">No profitable arbitrage opportunities detected right now.</p>';
 
   return renderPanel({
-    className: "dashboard-arbitrage-panel",
+    className: `dashboard-arbitrage-panel ${
+      hasOpportunities
+        ? "dashboard-arbitrage-panel-live"
+        : "dashboard-arbitrage-panel-empty"
+    }`,
     title: "Arbitrage Opportunities",
     subtitle: "Top 5 opportunities sorted by profit.",
     actions: `
@@ -7468,6 +7509,7 @@ function renderAnalytics() {
 
   return `
     <section class="grid dashboard-operations-grid">
+      ${renderDashboardArbitragePanel()}
       ${renderPanel({
         className: "dashboard-chart-panel",
         body: chartBody
@@ -7483,7 +7525,6 @@ function renderAnalytics() {
           </div>
         `
       })}
-      ${renderDashboardArbitragePanel()}
     </section>
   `;
 }
