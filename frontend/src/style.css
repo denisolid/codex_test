@@ -2856,6 +2856,32 @@ thead th {
   font-size: 1rem;
 }
 
+.inspect-item-head {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.inspect-item-image {
+  width: 104px;
+  height: 78px;
+  border-radius: 10px;
+  border: 1px solid rgba(127, 153, 204, 0.32);
+  background: rgba(8, 12, 20, 0.9);
+  object-fit: contain;
+  padding: 3px;
+}
+
+.inspect-item-head-copy p {
+  margin: 0 0 4px;
+}
+
+.inspect-item-head-copy p:last-child {
+  margin-bottom: 0;
+}
+
 .inspect-modal-overlay {
   position: fixed;
   inset: 0;
@@ -3340,6 +3366,21 @@ a:hover {
   }
 }
 
+@keyframes arb-opportunity-sweep {
+  0% {
+    transform: translateX(-18%);
+    opacity: 0.3;
+  }
+  50% {
+    transform: translateX(18%);
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(-18%);
+    opacity: 0.3;
+  }
+}
+
 @keyframes inspect-overlay-in {
   from {
     opacity: 0;
@@ -3765,6 +3806,16 @@ a:hover {
   .inspect-modal-content {
     padding: 10px 12px 14px;
   }
+
+  .inspect-item-head {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .inspect-item-image {
+    width: min(100%, 180px);
+    height: 120px;
+  }
 }
 
 @media (max-width: 560px) {
@@ -4127,6 +4178,10 @@ a:hover {
   grid-column: span 4;
 }
 
+.dashboard-operations-grid .dashboard-arbitrage-panel {
+  grid-column: span 12;
+}
+
 .chart-empty-shell {
   min-height: 240px;
   display: grid;
@@ -4307,6 +4362,39 @@ a:hover {
   gap: 8px;
 }
 
+.dashboard-arbitrage-panel-live {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(76, 227, 169, 0.42);
+  background:
+    linear-gradient(160deg, rgba(10, 25, 24, 0.88), rgba(11, 22, 33, 0.93)),
+    radial-gradient(360px 160px at 12% -18%, rgba(37, 204, 150, 0.2), transparent 75%);
+}
+
+.dashboard-arbitrage-panel-live::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  background:
+    linear-gradient(118deg, transparent 28%, rgba(91, 245, 191, 0.18) 45%, transparent 62%),
+    radial-gradient(460px 140px at 90% 0%, rgba(92, 177, 255, 0.14), transparent 74%);
+  animation: arb-opportunity-sweep 4.8s ease-in-out infinite;
+}
+
+.dashboard-arbitrage-panel-live .dashboard-panel-head,
+.dashboard-arbitrage-panel-live .dashboard-panel-body {
+  position: relative;
+  z-index: 1;
+}
+
+.dashboard-arbitrage-panel-empty {
+  border-color: rgba(127, 153, 204, 0.3);
+  background:
+    linear-gradient(170deg, rgba(10, 16, 29, 0.88), rgba(8, 13, 24, 0.9)),
+    radial-gradient(400px 140px at 0% 0%, rgba(104, 133, 187, 0.14), transparent 72%);
+}
+
 .dashboard-arb-list {
   display: grid;
   gap: 8px;
@@ -4319,6 +4407,13 @@ a:hover {
   background: rgba(8, 12, 22, 0.78);
   display: grid;
   gap: 3px;
+}
+
+.dashboard-arb-row-opportunity {
+  border-color: rgba(75, 220, 161, 0.36);
+  background:
+    linear-gradient(170deg, rgba(10, 27, 23, 0.84), rgba(11, 23, 34, 0.9)),
+    radial-gradient(320px 110px at 0% -15%, rgba(58, 218, 166, 0.16), transparent 72%);
 }
 
 .dashboard-arb-row-clickable {
