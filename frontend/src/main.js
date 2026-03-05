@@ -790,22 +790,28 @@ function getHeaderEmailLabel() {
   return `${email.slice(0, 29)}...`;
 }
 
+function isGlobalUiBlocked() {
+  return Boolean(state.syncingInventory);
+}
+
 function syncBodyUiLocks() {
   document.body.classList.toggle("mobile-drawer-open", Boolean(state.mobileDrawer.open));
   document.body.classList.toggle("portfolio-controls-open", Boolean(state.portfolioControls.open));
   document.body.classList.toggle("inspect-modal-open", Boolean(state.inspectModal.open));
   document.body.classList.toggle("compare-drawer-open", Boolean(state.compareDrawer.open));
   document.body.classList.toggle("tx-edit-modal-open", Boolean(state.txEditModal.open));
+  document.body.classList.toggle("ui-sync-blocked", isGlobalUiBlocked());
   syncBodyScrollLock();
 }
 
 function hasBlockingOverlayOpen() {
   return Boolean(
-    state.mobileDrawer.open ||
+      state.mobileDrawer.open ||
       state.portfolioControls.open ||
       state.inspectModal.open ||
       state.compareDrawer.open ||
-      state.txEditModal.open
+      state.txEditModal.open ||
+      isGlobalUiBlocked()
   );
 }
 
@@ -2746,6 +2752,16 @@ function onAppClick(event) {
     return;
   }
 
+  const dashboardArbitrageRow = target.closest(".dashboard-arb-row-clickable");
+  if (dashboardArbitrageRow) {
+    event.preventDefault();
+    openCompareDrawerBySkinId(
+      dashboardArbitrageRow.getAttribute("data-skin-id"),
+      dashboardArbitrageRow
+    );
+    return;
+  }
+
   const tile = target.closest(".portfolio-skin-card-clickable");
   if (tile) {
     event.preventDefault();
@@ -3000,9 +3016,20 @@ function onAppKeydown(event) {
     return;
   }
 
+  if (event.key !== "Enter" && event.key !== " ") return;
+
+  const dashboardArbitrageRow = target.closest(".dashboard-arb-row-clickable");
+  if (dashboardArbitrageRow) {
+    event.preventDefault();
+    openCompareDrawerBySkinId(
+      dashboardArbitrageRow.getAttribute("data-skin-id"),
+      dashboardArbitrageRow
+    );
+    return;
+  }
+
   const tile = target.closest(".portfolio-skin-card-clickable");
   if (!tile) return;
-  if (event.key !== "Enter" && event.key !== " ") return;
   event.preventDefault();
   triggerInspectBySteamItemId(tile.getAttribute("data-steam-item-id"), tile);
 }
@@ -3361,6 +3388,9 @@ async function logout() {
   state.tradeCalc.result = null;
   state.accountNotice = "";
   state.steamOnboardingPending = false;
+  state.syncingInventory = false;
+  state.syncRateLimitedUntil = 0;
+  state.syncSummary = null;
   state.social.watchlist = [];
   state.social.leaderboard = [];
   state.social.newSteamId = "";
@@ -3382,19 +3412,27 @@ async function logout() {
   render();
 }
 
-async function syncInventory() {
-  if (state.syncingInventory) return;
+async function syncInventory(options = {}) {
+  const { automatic = false } = options;
+  if (state.syncingInventory) return false;
+
   const cooldownSeconds = getSyncCooldownSecondsRemaining();
   if (cooldownSeconds > 0) {
-    notify(
-      "warning",
-      `Sync rate limited. Try again in ${formatCountdownLabel(cooldownSeconds)}.`
-    );
-    return;
+    if (!automatic) {
+      notify(
+        "warning",
+        `Sync rate limited. Try again in ${formatCountdownLabel(cooldownSeconds)}.`
+      );
+    }
+    return false;
   }
-  clearError();
+
+  if (!automatic) {
+    clearError();
+  }
   state.syncingInventory = true;
   render();
+
   try {
     const result = await api("/inventory/sync", { method: "POST" });
     state.syncSummary = result;
@@ -3403,38 +3441,59 @@ async function syncInventory() {
       state.accountNotice = "Inventory synced successfully. Your portfolio is ready.";
       state.steamOnboardingPending = false;
     }
-    await refreshPortfolio();
-    notify(
-      "success",
-      `Inventory synced: ${Number(result?.itemsSynced || 0)} items, ${Number(
-        result?.pricedItems || 0
-      )} priced.`
-    );
-  } catch (err) {
-    if (Number(err?.status || 0) === 429) {
-      const retryAfter = Math.max(Math.ceil(Number(err?.retryAfterSeconds || 60)), 1);
-      state.syncRateLimitedUntil = Date.now() + retryAfter * 1000;
+    await refreshPortfolio({ silent: automatic });
+    if (!automatic) {
       notify(
-        "warning",
-        `Too many sync attempts. Try again in ${formatCountdownLabel(retryAfter)}.`
+        "success",
+        `Inventory synced: ${Number(result?.itemsSynced || 0)} items, ${Number(
+          result?.pricedItems || 0
+        )} priced.`
       );
     }
-    setError(err.message);
-    if (Number(err?.status || 0) !== 429) {
-      notify("warning", "Inventory sync failed. Please try again.");
+    return true;
+  } catch (err) {
+    const status = Number(err?.status || 0);
+    if (status === 429) {
+      const retryAfter = Math.max(Math.ceil(Number(err?.retryAfterSeconds || 60)), 1);
+      state.syncRateLimitedUntil = Date.now() + retryAfter * 1000;
+      if (!automatic) {
+        notify(
+          "warning",
+          `Too many sync attempts. Try again in ${formatCountdownLabel(retryAfter)}.`
+        );
+      }
     }
-    state.alerts = [
-      {
-        severity: "warning",
-        code: "SYNC_FAILED",
-        message: `Inventory sync failed: ${err.message}`
-      },
-      ...(state.alerts || []).filter((a) => a.code !== "SYNC_FAILED")
-    ];
+
+    if (!automatic) {
+      setError(err.message);
+      if (status !== 429) {
+        notify("warning", "Inventory sync failed. Please try again.");
+      }
+      state.alerts = [
+        {
+          severity: "warning",
+          code: "SYNC_FAILED",
+          message: `Inventory sync failed: ${err.message}`
+        },
+        ...(state.alerts || []).filter((a) => a.code !== "SYNC_FAILED")
+      ];
+    } else if (status !== 429) {
+      notify("warning", `Auto inventory sync failed: ${err.message}`);
+    }
+    return false;
   } finally {
     state.syncingInventory = false;
     render();
   }
+}
+
+function shouldAutoSyncInventoryOnSessionBoot() {
+  if (!state.authenticated) return false;
+  if (state.publicPage.steamId64) return false;
+  if (state.syncingInventory) return false;
+  if (!state.authProfile?.steamLinked) return false;
+  if (getSyncCooldownSecondsRemaining() > 0) return false;
+  return true;
 }
 
 function renderSyncSummary() {
@@ -5070,22 +5129,47 @@ function renderPortfolioControlsDrawer() {
   });
 }
 
+function wrapCompareDrawerBodyWithLoadingState(markup) {
+  const isLoading = Boolean(state.compareDrawer.loading);
+  return `
+    <div class="compare-drawer-content-shell ${isLoading ? "is-loading" : ""}" aria-busy="${
+      isLoading ? "true" : "false"
+    }">
+      <div class="compare-drawer-content-main">
+        ${markup}
+      </div>
+      ${
+        isLoading
+          ? `
+        <div class="compare-drawer-loading-overlay" role="status" aria-live="polite">
+          <span class="spinner compare-drawer-loading-spinner" aria-hidden="true"></span>
+          <p>Loading comparison data...</p>
+        </div>
+      `
+          : ""
+      }
+    </div>
+  `;
+}
+
 function renderCompareDrawerBody() {
   const drawer = state.compareDrawer;
   const payload = drawer.payload;
   if (!payload && drawer.loading) {
-    return `
+    return wrapCompareDrawerBodyWithLoadingState(`
       <div class="compare-drawer-skeleton" aria-hidden="true">
         <div class="compare-drawer-skeleton-head"></div>
         <div class="compare-drawer-skeleton-row"></div>
         <div class="compare-drawer-skeleton-row"></div>
         <div class="compare-drawer-skeleton-row"></div>
       </div>
-    `;
+    `);
   }
 
   if (!payload) {
-    return `<p class="muted">Select a mover and open compare to inspect multi-market pricing.</p>`;
+    return wrapCompareDrawerBodyWithLoadingState(
+      '<p class="muted">Select a mover and open compare to inspect multi-market pricing.</p>'
+    );
   }
 
   const insights = getCompareDrawerInsights(payload);
@@ -5274,7 +5358,7 @@ function renderCompareDrawerBody() {
         .join("")
     : '<p class="muted compare-drawer-empty">Market comparison data is unavailable for this item.</p>';
 
-  return `
+  return wrapCompareDrawerBodyWithLoadingState(`
     <div class="compare-drawer-item-head">
       <img src="${escapeHtml(payload.imageUrl)}" alt="${escapeHtml(payload.marketHashName)}" loading="lazy" />
       <div class="compare-drawer-item-meta">
@@ -5377,7 +5461,7 @@ function renderCompareDrawerBody() {
         ? `<p class="muted compare-drawer-error" role="status" aria-live="polite">${escapeHtml(drawer.error)}</p>`
         : ""
     }
-  `;
+  `);
 }
 
 function renderCompareDrawerOverlay() {
@@ -5397,7 +5481,7 @@ function renderCompareDrawerOverlay() {
       id="compare-drawer-open-best-buy-btn"
       data-market-url="${escapeHtml(bestBuyUrl)}"
       data-skin-id="${Number(drawer.skinId || 0)}"
-      ${drawer.skinId ? "" : "disabled"}
+      ${drawer.skinId && !drawer.loading ? "" : "disabled"}
     >
       Open Best Buy
     </button>
@@ -5407,7 +5491,7 @@ function renderCompareDrawerOverlay() {
       id="compare-drawer-open-best-sell-btn"
       data-market-url="${escapeHtml(bestSellUrl)}"
       data-skin-id="${Number(drawer.skinId || 0)}"
-      ${drawer.skinId ? "" : "disabled"}
+      ${drawer.skinId && !drawer.loading ? "" : "disabled"}
     >
       Open Best Sell
     </button>
@@ -7122,8 +7206,16 @@ function renderDashboardArbitragePanel() {
             const score = Number(row?.opportunityScore || 0);
             const scoreTone = getOpportunityScoreTone(score);
             const scoreLabel = formatOpportunityLabel(row?.scoreCategory, score);
+            const skinId = Number(row?.itemId || row?.skinId || 0);
+            const isRowClickable = Number.isInteger(skinId) && skinId > 0;
+            const itemName = String(row?.itemName || "Tracked Item");
+            const rowInteractionAttributes = isRowClickable
+              ? `data-skin-id="${escapeHtml(String(skinId))}" tabindex="0" role="button" aria-label="Compare ${escapeHtml(
+                  itemName
+                )}"`
+              : `aria-disabled="true"`;
             return `
-              <article class="dashboard-arb-row">
+              <article class="dashboard-arb-row ${isRowClickable ? "dashboard-arb-row-clickable" : ""}" ${rowInteractionAttributes}>
                 <strong class="dashboard-arb-item">${escapeHtml(row?.itemName || "Tracked Item")}</strong>
                 <p class="dashboard-arb-leg">
                   <span>Buy ${escapeHtml(formatMarketSourceLabel(row?.buyMarket))}</span>
@@ -8547,6 +8639,19 @@ function renderSessionBoot() {
   `;
 }
 
+function renderGlobalSyncOverlay() {
+  if (!state.syncingInventory) return "";
+  return `
+    <div class="ui-sync-blocker-overlay" role="status" aria-live="polite" aria-busy="true">
+      <div class="ui-sync-blocker-card">
+        <span class="spinner ui-sync-blocker-spinner" aria-hidden="true"></span>
+        <p>Syncing inventory...</p>
+        <small>Please wait while we refresh your items and prices.</small>
+      </div>
+    </div>
+  `;
+}
+
 function renderSteamSyncPanel() {
   const profile = state.authProfile || {};
   const steamLinked = Boolean(profile.steamLinked);
@@ -8827,6 +8932,7 @@ function renderApp() {
         : ""
     }
     ${renderTransactionEditModal()}
+    ${renderGlobalSyncOverlay()}
   `;
 
   ensureAppEventDelegation();
@@ -8972,6 +9078,9 @@ async function bootstrapSession() {
   }
   state.sessionBooting = false;
   render();
+  if (shouldAutoSyncInventoryOnSessionBoot()) {
+    await syncInventory({ automatic: true });
+  }
 }
 
 bootstrapSession().catch(() => {
