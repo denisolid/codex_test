@@ -1015,6 +1015,19 @@ body.tx-edit-modal-open {
   grid-template-columns: repeat(4, minmax(140px, 1fr));
 }
 
+.market-opportunity-form .checkbox-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.market-opportunity-form .checkbox-field input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
 .list-toolbar {
   display: grid;
   grid-template-columns: repeat(4, minmax(130px, 1fr));
@@ -4836,6 +4849,44 @@ a:hover {
 
 .compare-drawer-arb-score.negative strong {
   color: var(--ui-status-negative);
+}
+
+.compare-drawer-arb-warning {
+  display: grid;
+  gap: 8px;
+}
+
+.compare-drawer-arb-reasons {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  color: #d6e6ff;
+  font-size: 0.76rem;
+}
+
+.compare-drawer-arb-debug {
+  border-top: 1px dashed rgba(127, 153, 204, 0.28);
+  padding-top: 6px;
+}
+
+.compare-drawer-arb-debug summary {
+  cursor: pointer;
+  color: #c5d9ff;
+  font-size: 0.72rem;
+}
+
+.compare-drawer-arb-debug pre {
+  margin: 8px 0 0;
+  max-height: 180px;
+  overflow: auto;
+  border-radius: 8px;
+  padding: 8px;
+  background: rgba(6, 10, 20, 0.9);
+  border: 1px solid rgba(127, 153, 204, 0.25);
+  color: #cfe2ff;
+  font-size: 0.69rem;
+  line-height: 1.4;
 }
 
 .compare-drawer-insights-grid {

@@ -2,6 +2,7 @@ const portfolioService = require("./portfolioService");
 const planService = require("./planService");
 const { resolveCurrency } = require("./currencyService");
 const arbitrageEngine = require("./arbitrageEngineService");
+const arbitrageRules = require("../config/arbitrageRules");
 
 const CACHE_TTL_MS = 60 * 1000;
 const MAX_LIMIT = 1000;
@@ -19,12 +20,12 @@ function clampNumber(value, fallback, min = -Infinity, max = Infinity) {
 }
 
 function normalizeSortBy(value) {
-  const safe = String(value || "profit")
+  const safe = String(value || "score")
     .trim()
     .toLowerCase();
   if (safe === "spread") return "spread";
-  if (safe === "score") return "score";
-  return "profit";
+  if (safe === "profit") return "profit";
+  return "score";
 }
 
 function normalizeMarkets(value) {
@@ -46,10 +47,19 @@ function buildCacheKey(userId, options) {
     String(options.minSpreadPercent),
     String(options.minScore),
     String(options.liquidityMin),
+    String(options.showRisky),
     String(options.sortBy),
     String(options.markets),
     String(options.limit)
   ].join("|");
+}
+
+function normalizeBoolean(value) {
+  if (typeof value === "boolean") return value;
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
 function getCachedValue(key) {
@@ -89,17 +99,31 @@ exports.CACHE_TTL_MS = CACHE_TTL_MS;
 
 exports.getArbitrageOpportunities = async (userId, options = {}) => {
   const currency = resolveCurrency(options.currency || "USD");
+  const showRisky = normalizeBoolean(options.showRisky);
   const normalized = {
     currency,
     pricingMode: options.pricingMode || null,
-    minProfit: clampNumber(options.minProfit, 0, 0),
+    minProfit: clampNumber(
+      options.minProfit,
+      arbitrageEngine.DEFAULT_MIN_PROFIT_ABSOLUTE ??
+        arbitrageRules.DEFAULT_MIN_PROFIT_ABSOLUTE,
+      0
+    ),
     minSpreadPercent: clampNumber(
       options.minSpreadPercent ?? options.minSpread,
       arbitrageEngine.MIN_SPREAD_PERCENT,
       0
     ),
-    minScore: clampNumber(options.minScore, 0, 0, 100),
+    minScore: clampNumber(
+      options.minScore,
+      showRisky
+        ? arbitrageEngine.RISKY_SCORE_CUTOFF ?? arbitrageRules.RISKY_SCORE_CUTOFF
+        : arbitrageEngine.DEFAULT_SCORE_CUTOFF ?? arbitrageRules.DEFAULT_SCORE_CUTOFF,
+      0,
+      100
+    ),
     liquidityMin: clampNumber(options.liquidityMin, 0, 0),
+    showRisky,
     sortBy: normalizeSortBy(options.sortBy || options.sort),
     markets: normalizeMarkets(options.markets || options.market),
     limit: Math.round(clampNumber(options.limit, 250, 1, MAX_LIMIT))
@@ -125,6 +149,7 @@ exports.getArbitrageOpportunities = async (userId, options = {}) => {
     minSpreadPercent: normalized.minSpreadPercent,
     minScore: normalized.minScore,
     liquidityMin: normalized.liquidityMin,
+    includeRisky: normalized.showRisky,
     sortBy: normalized.sortBy,
     markets: normalized.markets
   });
@@ -137,6 +162,7 @@ exports.getArbitrageOpportunities = async (userId, options = {}) => {
       minSpreadPercent: normalized.minSpreadPercent,
       minScore: normalized.minScore,
       liquidityMin: normalized.liquidityMin,
+      showRisky: normalized.showRisky,
       markets: normalized.markets || "all",
       sortBy: normalized.sortBy,
       limit: normalized.limit

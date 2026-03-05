@@ -102,6 +102,7 @@ exports.getArbitrageOpportunities = asyncHandler(async (req, res) => {
     minSpreadPercent: req.validated?.minSpread,
     minScore: req.validated?.minScore,
     liquidityMin: req.validated?.liquidityMin,
+    showRisky: req.query.showRisky,
     sortBy: req.query.sortBy || req.query.sort,
     markets: req.query.markets || req.query.market,
     limit: req.validated?.limit
