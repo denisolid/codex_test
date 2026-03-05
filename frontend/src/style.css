@@ -1813,6 +1813,37 @@ body.ui-sync-blocked .app-shell {
   line-height: 1.5;
 }
 
+.steam-sync-panel {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.steam-sync-panel .helper-text,
+.steam-sync-panel .sync-note {
+  margin: 0;
+}
+
+.steam-sync-panel .info {
+  margin: 0;
+}
+
+.steam-sync-panel .sub-kpi-grid {
+  gap: 8px;
+}
+
+.steam-sync-panel .sub-kpi-card {
+  padding: 10px;
+}
+
+.steam-sync-panel .row {
+  margin: 0;
+}
+
+.steam-sync-panel .sync-summary {
+  margin-top: 0;
+}
+
 .empty-state {
   margin: 0;
   padding: 12px;
@@ -4689,7 +4720,7 @@ a:hover {
 .dashboard-arbitrage-panel-empty {
   border-color: rgba(210, 96, 255, 0.42);
   background:
-    linear-gradient(166deg, rgba(156, 11, 144, 0.9), rgba(12, 18, 31, 0.94)),
+    linear-gradient(166deg, rgba(156, 11, 144, 0.616), rgba(12, 18, 31, 0.94)),
     radial-gradient(
       420px 160px at 0% -8%,
       rgba(151, 86, 255, 0.26),
@@ -4894,16 +4925,8 @@ a:hover {
   min-width: min(460px, 100%);
 }
 
-.topbar-note {
-  font-size: 0.78rem;
-}
-
 .tab-switch-indicator-slot {
   min-height: 34px;
-}
-
-.tab-switch-indicator-placeholder {
-  height: 30px;
 }
 
 .compare-refresh-btn {

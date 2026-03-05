@@ -8820,7 +8820,7 @@ function renderSteamSyncPanel() {
 
   if (!steamLinked) {
     return `
-      <article class="panel">
+      <article class="panel steam-sync-panel">
         <h2>Steam Sync</h2>
         <p class="helper-text">Link Steam once to auto-connect your SteamID and unlock one-click inventory sync.</p>
         <div class="row">
@@ -8836,7 +8836,7 @@ function renderSteamSyncPanel() {
     : "";
 
   return `
-    <article class="panel">
+    <article class="panel steam-sync-panel">
       <h2>Steam Sync</h2>
       <p class="helper-text">SteamID is connected from your login. Click <strong>Sync Inventory</strong> to import items and refresh market prices.</p>
       ${onboardingNotice}
@@ -9059,7 +9059,7 @@ function renderApp() {
           <div class="top-actions">
             ${
               state.activeTab === "dashboard"
-                ? '<span class="muted topbar-note">Currency and readiness controls are pinned in the KPI bar.</span>'
+                ? ""
                 : `
               <label class="currency-picker">
                 Currency
@@ -9069,15 +9069,15 @@ function renderApp() {
             }
           </div>
         </header>
-        <div class="tab-switch-indicator-slot" aria-live="polite">
-          ${
-            state.tabSwitch.loading
-              ? `<div class="tab-switch-indicator" role="status">Loading ${escapeHtml(
+        ${
+          state.tabSwitch.loading
+            ? `<div class="tab-switch-indicator-slot" aria-live="polite">
+                <div class="tab-switch-indicator" role="status">Loading ${escapeHtml(
                   toTitle(state.tabSwitch.target || state.activeTab || "tab")
-                )}...</div>`
-              : '<div class="tab-switch-indicator-placeholder" aria-hidden="true"></div>'
-          }
-        </div>
+                )}...</div>
+              </div>`
+            : ""
+        }
         ${renderAuthNotices()}
         ${tabContent}
       </section>
