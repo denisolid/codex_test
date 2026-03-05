@@ -4687,12 +4687,12 @@ a:hover {
 }
 
 .dashboard-arbitrage-panel-empty {
-  border-color: rgba(255, 179, 96, 0.42);
+  border-color: rgba(210, 96, 255, 0.42);
   background:
     linear-gradient(166deg, rgba(31, 17, 8, 0.9), rgba(12, 18, 31, 0.94)),
     radial-gradient(
       420px 160px at 0% -8%,
-      rgba(255, 174, 86, 0.26),
+      rgba(151, 86, 255, 0.26),
       transparent 74%
     );
 }
