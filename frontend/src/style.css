@@ -4658,7 +4658,7 @@ a:hover {
   background:
     radial-gradient(
       320px 140px at 0% 0%,
-      rgba(255, 169, 89, 0.2),
+      rgba(15, 221, 135, 0.2),
       transparent 72%
     ),
     radial-gradient(
@@ -4689,7 +4689,7 @@ a:hover {
 .dashboard-arbitrage-panel-empty {
   border-color: rgba(210, 96, 255, 0.42);
   background:
-    linear-gradient(166deg, rgba(31, 17, 8, 0.9), rgba(12, 18, 31, 0.94)),
+    linear-gradient(166deg, rgba(156, 11, 144, 0.9), rgba(12, 18, 31, 0.94)),
     radial-gradient(
       420px 160px at 0% -8%,
       rgba(151, 86, 255, 0.26),
