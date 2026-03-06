@@ -9,8 +9,10 @@ const fallbackEscape = (value) =>
 export function renderMobileNav({
   title = "CS2 Portfolio Analyzer",
   drawerOpen = false,
+  notificationCount = 0,
   escapeHtml = fallbackEscape
 } = {}) {
+  const safeCount = Math.max(Number(notificationCount || 0), 0);
   return `
     <header class="mobile-nav" role="banner">
       <button
@@ -26,14 +28,30 @@ export function renderMobileNav({
         <span class="line line-3" aria-hidden="true"></span>
       </button>
       <div class="mobile-nav-title">${escapeHtml(title)}</div>
-      <button
-        type="button"
-        class="ghost-btn mobile-nav-action"
-        id="mobile-nav-refresh-btn"
-        aria-label="Refresh portfolio"
-      >
-        Refresh
-      </button>
+      <div class="mobile-nav-actions">
+        <button
+          type="button"
+          class="ghost-btn mobile-nav-action mobile-nav-icon-btn"
+          id="mobile-nav-notifications-btn"
+          aria-label="Open alerts"
+          title="Alerts"
+        >
+          <span aria-hidden="true">🔔</span>
+          ${
+            safeCount > 0
+              ? `<span class="mobile-nav-badge">${safeCount > 99 ? "99+" : safeCount}</span>`
+              : ""
+          }
+        </button>
+        <button
+          type="button"
+          class="ghost-btn mobile-nav-action"
+          id="mobile-nav-refresh-btn"
+          aria-label="Refresh prices"
+        >
+          Refresh
+        </button>
+      </div>
     </header>
   `;
 }
@@ -44,6 +62,7 @@ export function renderMobileDrawer({
   activeTab = "",
   userLabel = "Signed in",
   userTitle = "",
+  globalSearch = "",
   loading = false,
   escapeHtml = fallbackEscape
 } = {}) {
@@ -55,7 +74,10 @@ export function renderMobileDrawer({
           class="ghost-btn tab-btn mobile-drawer-tab ${activeTab === tab.id ? "active" : ""}"
           data-tab="${escapeHtml(tab.id)}"
         >
-          <span class="mobile-drawer-tab-label">${escapeHtml(tab.label)}</span>
+          <span class="mobile-drawer-tab-label-wrap">
+            <span class="mobile-drawer-tab-icon" aria-hidden="true">${escapeHtml(tab.icon || "•")}</span>
+            <span class="mobile-drawer-tab-label">${escapeHtml(tab.label)}</span>
+          </span>
           <small class="mobile-drawer-tab-hint">${escapeHtml(tab.hint || "")}</small>
         </button>
       `
@@ -94,11 +116,22 @@ export function renderMobileDrawer({
         <div class="mobile-drawer-user">
           <span class="user-chip" title="${escapeHtml(userTitle)}">${escapeHtml(userLabel)}</span>
         </div>
+        <label class="mobile-drawer-search" for="global-search-mobile">
+          Search
+          <input
+            id="global-search-mobile"
+            type="search"
+            placeholder="Search skins..."
+            value="${escapeHtml(globalSearch)}"
+            aria-label="Search skins"
+          />
+        </label>
         ${loading ? '<p class="mobile-drawer-loading">Switching section...</p>' : ""}
         <nav class="mobile-drawer-nav">
           ${navItems}
         </nav>
         <div class="mobile-drawer-actions">
+          <button type="button" class="ghost-btn" id="mobile-drawer-notifications-btn">Alerts</button>
           <button type="button" class="ghost-btn" id="mobile-drawer-refresh-btn">Refresh</button>
           <button type="button" class="ghost-btn" id="mobile-drawer-logout-btn">Logout</button>
         </div>

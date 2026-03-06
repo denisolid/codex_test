@@ -159,6 +159,7 @@ const state = {
   tooltip: {
     openId: "",
   },
+  pendingInputFocus: null,
   globalSearch: "",
   activeTab: "dashboard",
   historyDays: 7,
@@ -303,22 +304,58 @@ let historyChartCache = {
   markup: "",
 };
 const APP_TABS = [
-  { id: "dashboard", label: "Dashboard", hint: "Performance" },
-  { id: "portfolio", label: "Portfolio", hint: "Holdings" },
-  { id: "alerts", label: "Alerts", hint: "Triggers" },
-  { id: "trades", label: "Transactions", hint: "Buys/Sells" },
-  { id: "social", label: "Watchlist", hint: "Community" },
-  { id: "market", label: "Market", hint: "Pricing" },
-  { id: "team", label: "Team", hint: "Creator Ops" },
-  { id: "settings", label: "Settings", hint: "Account" },
+  {
+    id: "portfolio",
+    label: "Portfolio",
+    hint: "Inventory & positions",
+    icon: "📦",
+  },
+  {
+    id: "dashboard",
+    label: "Opportunities",
+    hint: "Arbitrage & signals",
+    icon: "💰",
+  },
+  {
+    id: "market",
+    label: "Market",
+    hint: "Scanner & pricing",
+    icon: "🌍",
+  },
+  {
+    id: "alerts",
+    label: "Alerts",
+    hint: "Price triggers",
+    icon: "🔔",
+  },
+  {
+    id: "trades",
+    label: "History",
+    hint: "Transactions",
+    icon: "📊",
+  },
+  { id: "social", label: "Watchlist", hint: "Community", icon: "👥" },
+  { id: "team", label: "Team", hint: "Creator Ops", icon: "🧩" },
+  { id: "settings", label: "Settings", hint: "Account", icon: "⚙️" },
 ];
-const HEADER_PRIMARY_TAB_IDS = new Set(["dashboard", "portfolio"]);
-const HEADER_PRIMARY_TABS = APP_TABS.filter((tab) =>
-  HEADER_PRIMARY_TAB_IDS.has(tab.id),
+const HEADER_NAV_TAB_IDS = new Set([
+  "portfolio",
+  "dashboard",
+  "market",
+  "alerts",
+  "trades",
+]);
+const HEADER_NAV_TABS = APP_TABS.filter((tab) =>
+  HEADER_NAV_TAB_IDS.has(tab.id),
 );
-const HEADER_MORE_TABS = APP_TABS.filter(
-  (tab) => !HEADER_PRIMARY_TAB_IDS.has(tab.id),
-);
+
+function getTabLabelById(tabId) {
+  const id = String(tabId || "").trim();
+  if (!id) return "";
+  const match = APP_TABS.find((tab) => tab.id === id);
+  return match?.label || toTitle(id);
+}
+
 const PORTFOLIO_CARD_CACHE_MAX = 800;
 const portfolioCardMarkupCache = {
   desktop: new Map(),
@@ -1162,6 +1199,59 @@ function trapCompareDrawerFocus(event) {
   }
 }
 
+function rememberInputFocusState(target) {
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
+    state.pendingInputFocus = null;
+    return;
+  }
+  if (!target.id) {
+    state.pendingInputFocus = null;
+    return;
+  }
+  state.pendingInputFocus = {
+    id: target.id,
+    selectionStart:
+      typeof target.selectionStart === "number" ? target.selectionStart : null,
+    selectionEnd: typeof target.selectionEnd === "number" ? target.selectionEnd : null,
+    selectionDirection:
+      typeof target.selectionDirection === "string"
+        ? target.selectionDirection
+        : "none",
+  };
+}
+
+function restoreInputFocusIfNeeded() {
+  const pending = state.pendingInputFocus;
+  if (!pending || !pending.id) return;
+  state.pendingInputFocus = null;
+
+  const active = document.activeElement;
+  if (active && active !== document.body) {
+    return;
+  }
+
+  const target = document.getElementById(pending.id);
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
+    return;
+  }
+
+  target.focus();
+  if (
+    typeof pending.selectionStart === "number" &&
+    typeof pending.selectionEnd === "number"
+  ) {
+    try {
+      target.setSelectionRange(
+        pending.selectionStart,
+        pending.selectionEnd,
+        pending.selectionDirection || "none",
+      );
+    } catch (_err) {
+      // Ignore selection restore failures for unsupported input types.
+    }
+  }
+}
+
 function syncDashboardKpiPinnedClass() {
   if (!app || state.activeTab !== "dashboard") return;
   const kpiBar = app.querySelector("[data-dashboard-kpi]");
@@ -1271,10 +1361,6 @@ function closeAvatarMenu(options = {}) {
 
 function renderDesktopHeader(userEmailLabel, userEmailTitle) {
   const notificationCount = Number(state.alertEvents?.length || 0);
-  const hasMoreTabs = HEADER_MORE_TABS.length > 0;
-  const moreTabActive = HEADER_MORE_TABS.some(
-    (tab) => tab.id === state.activeTab,
-  );
   const syncCooldownSeconds = getSyncCooldownSecondsRemaining();
   const syncDisabled = state.syncingInventory || syncCooldownSeconds > 0;
   const syncTitle =
@@ -1285,12 +1371,17 @@ function renderDesktopHeader(userEmailLabel, userEmailTitle) {
         : "Sync inventory";
   return `
     <header class="desktop-header" role="banner">
-      <a href="#" class="desktop-brand" data-desktop-home aria-label="Go to dashboard">
-        <span class="desktop-brand-dot" aria-hidden="true"></span>
-        <span>CS2 Portfolio Analyzer</span>
+      <a href="#" class="desktop-brand" data-desktop-home aria-label="Go to opportunities">
+        <span class="desktop-brand-mark" aria-hidden="true">
+          <span class="desktop-brand-dot"></span>
+        </span>
+        <span class="desktop-brand-text">
+          <strong>CS2 Terminal</strong>
+          <small>Portfolio Analyzer</small>
+        </span>
       </a>
-      <nav class="desktop-tab-nav" aria-label="Primary">
-        ${HEADER_PRIMARY_TABS.map(
+      <nav class="desktop-tab-nav terminal-tab-nav" aria-label="Primary">
+        ${HEADER_NAV_TABS.map(
           (tab) => `
           <button
             type="button"
@@ -1298,87 +1389,39 @@ function renderDesktopHeader(userEmailLabel, userEmailTitle) {
             data-tab="${tab.id}"
             title="${escapeHtml(tab.hint)}"
           >
-            ${escapeHtml(tab.label)}
+            <span class="desktop-tab-icon" aria-hidden="true">${escapeHtml(tab.icon || "•")}</span>
+            <span class="desktop-tab-label">${escapeHtml(tab.label)}</span>
           </button>
         `,
         ).join("")}
-        ${
-          hasMoreTabs
-            ? `
-          <div class="desktop-tab-dropdown" data-header-tab-menu-root>
-            <button
-              type="button"
-              class="ghost-btn tab-btn desktop-tab-btn desktop-tab-menu-toggle ${moreTabActive ? "active" : ""}"
-              data-header-tab-menu-toggle
-              aria-haspopup="true"
-              aria-expanded="${state.headerTabMenu.open ? "true" : "false"}"
-              aria-controls="desktop-tab-menu"
-            >
-              More
-              <span class="desktop-tab-menu-caret" aria-hidden="true">&#x25BE;</span>
-            </button>
-            <div
-              class="desktop-tab-menu ${state.headerTabMenu.open ? "open" : ""}"
-              id="desktop-tab-menu"
-              role="menu"
-              aria-label="More sections"
-            >
-              ${HEADER_MORE_TABS.map(
-                (tab) => `
-                <button
-                  type="button"
-                  class="ghost-btn tab-btn desktop-tab-btn desktop-tab-menu-item ${state.activeTab === tab.id ? "active" : ""}"
-                  data-tab="${tab.id}"
-                  title="${escapeHtml(tab.hint)}"
-                  role="menuitem"
-                >
-                  ${escapeHtml(tab.label)}
-                </button>
-              `,
-              ).join("")}
-            </div>
-          </div>
-        `
-            : ""
-        }
       </nav>
       <div class="desktop-header-actions">
-        <label class="desktop-search">
-          <input
-            id="global-search"
-            type="search"
-            placeholder="Quick find skins..."
-            value="${escapeHtml(state.globalSearch)}"
-            aria-label="Quick find skins"
-          />
-        </label>
         <button
           type="button"
-          class="ghost-btn header-icon-btn"
-          id="header-sync-btn"
-          aria-label="Sync inventory"
+          class="ghost-btn header-action-btn header-refresh-btn"
+          id="header-refresh-prices-btn"
+          aria-label="Refresh prices"
           title="${escapeHtml(syncTitle)}"
           ${syncDisabled ? "disabled" : ""}
         >
-          &#x21bb;
+          <span class="header-action-icon" aria-hidden="true">&#x21bb;</span>
+          <span class="header-action-label">Refresh Prices</span>
         </button>
         <button
           type="button"
           class="ghost-btn header-icon-btn"
-          data-header-action="create-alert"
-          aria-label="Create alert"
-          title="Create alert"
+          id="header-notifications-btn"
+          aria-label="Open alerts"
+          title="Open alerts"
         >
-          &#x26A1;
-        </button>
-        <button
-          type="button"
-          class="ghost-btn header-icon-btn"
-          data-header-action="add-transaction"
-          aria-label="Add transaction"
-          title="Add transaction"
-        >
-          +
+          <span aria-hidden="true">&#x1F514;</span>
+          ${
+            notificationCount > 0
+              ? `<span class="header-notification-badge">${escapeHtml(
+                  notificationCount > 99 ? "99+" : String(notificationCount),
+                )}</span>`
+              : ""
+          }
         </button>
         ${renderAvatarMenu({
           open: state.avatarMenu.open,
@@ -1389,6 +1432,56 @@ function renderDesktopHeader(userEmailLabel, userEmailTitle) {
         })}
       </div>
     </header>
+  `;
+}
+
+function calculateTodayPnl(totalValue, oneDayChangePercent) {
+  const total = Number(totalValue || 0);
+  const percent = Number(oneDayChangePercent || 0);
+  if (!Number.isFinite(total) || !Number.isFinite(percent)) return 0;
+  const denominator = 1 + percent / 100;
+  if (!Number.isFinite(denominator) || Math.abs(denominator) < 0.00001) return 0;
+  const priorValue = total / denominator;
+  return total - priorValue;
+}
+
+function renderHeaderQuickStats() {
+  const portfolio = state.portfolio || {};
+  const currencyCode = portfolio.currency || state.currency;
+  const totalValue = Number(portfolio.totalValue || 0);
+  const oneDayPercent = Number(portfolio.oneDayChangePercent || 0);
+  const todayPnl = calculateTodayPnl(totalValue, oneDayPercent);
+  const todayPnlClass = todayPnl >= 0 ? "up" : "down";
+  const activeAlerts = (Array.isArray(state.alertsFeed) ? state.alertsFeed : [])
+    .filter((row) => row?.enabled !== false)
+    .length;
+  const topOpportunities = Array.isArray(state.portfolio?.arbitrage?.topOpportunities)
+    ? state.portfolio.arbitrage.topOpportunities
+    : [];
+  const topOpportunity = topOpportunities[0] || null;
+  const topOpportunityLabel = topOpportunity
+    ? `${formatSignedMoney(topOpportunity?.profit, currencyCode)} ${String(topOpportunity?.itemName || "").trim() ? `• ${String(topOpportunity.itemName)}` : ""}`
+    : "No edge detected";
+
+  return `
+    <section class="header-quick-stats" aria-label="Portfolio quick stats">
+      <article class="quick-stat-card">
+        <span>Portfolio Value</span>
+        <strong>${formatMoney(totalValue, currencyCode)}</strong>
+      </article>
+      <article class="quick-stat-card ${todayPnlClass}">
+        <span>Today's P/L</span>
+        <strong>${formatSignedMoney(todayPnl, currencyCode)}</strong>
+      </article>
+      <article class="quick-stat-card">
+        <span>Active Alerts</span>
+        <strong>${formatNumber(activeAlerts, 0)}</strong>
+      </article>
+      <article class="quick-stat-card">
+        <span>Top Opportunity</span>
+        <strong>${escapeHtml(topOpportunityLabel)}</strong>
+      </article>
+    </section>
   `;
 }
 
@@ -2779,16 +2872,13 @@ function onAppClick(event) {
       button.getAttribute("data-avatar-action") || "",
     ).trim();
     closeAvatarMenu({ restoreFocus: false });
-    if (action === "profile" || action === "settings" || action === "billing") {
+    if (action === "profile" || action === "settings" || action === "api-keys") {
       handleTabSwitch("settings").catch((err) =>
         setError(err.message || "Request failed"),
       );
-      return;
-    }
-    if (action === "notifications") {
-      handleTabSwitch("alerts").catch((err) =>
-        setError(err.message || "Request failed"),
-      );
+      if (action === "api-keys") {
+        notify("info", "Open Settings to manage API keys.");
+      }
       return;
     }
     if (action === "logout") {
@@ -2849,23 +2939,19 @@ function onAppClick(event) {
     return;
   }
 
-  if (button?.matches("#header-sync-btn")) {
+  if (button?.matches("#header-sync-btn, #header-refresh-prices-btn")) {
     event.preventDefault();
     runUiTask(() => syncInventory());
     return;
   }
 
-  if (button?.matches("[data-header-action='create-alert']")) {
+  if (
+    button?.matches(
+      "#header-notifications-btn, #mobile-nav-notifications-btn, #mobile-drawer-notifications-btn",
+    )
+  ) {
     event.preventDefault();
     handleTabSwitch("alerts").catch((err) =>
-      setError(err.message || "Request failed"),
-    );
-    return;
-  }
-
-  if (button?.matches("[data-header-action='add-transaction']")) {
-    event.preventDefault();
-    handleTabSwitch("trades").catch((err) =>
       setError(err.message || "Request failed"),
     );
     return;
@@ -3227,12 +3313,13 @@ function onAppInput(event) {
   const target = event.target instanceof Element ? event.target : null;
   if (!target) return;
 
-  if (target.matches("#global-search")) {
-    state.globalSearch = String(target.value || "");
-    state.holdingsView.q = state.globalSearch;
+  if (target.matches("#global-search, #global-search-mobile")) {
+    const nextGlobalSearch = String(target.value || "");
+    state.globalSearch = nextGlobalSearch;
+    state.holdingsView.q = nextGlobalSearch;
     state.holdingsView.page = 1;
+    rememberInputFocusState(target);
     if (state.activeTab !== "portfolio") {
-      debouncedRender();
       return;
     }
     debouncedRender();
@@ -3249,6 +3336,7 @@ function onAppInput(event) {
       "#holdings-search, #holdings-search-mobile, [data-holdings-search]",
     )
   ) {
+    rememberInputFocusState(target);
     state.holdingsView.q = target.value;
     state.globalSearch = target.value;
     state.holdingsView.page = 1;
@@ -3257,6 +3345,7 @@ function onAppInput(event) {
   }
 
   if (target.matches("#tx-search")) {
+    rememberInputFocusState(target);
     state.transactionsView.q = target.value;
     state.transactionsView.page = 1;
     debouncedRender();
@@ -6654,7 +6743,7 @@ function renderDashboardHero() {
         body: `
           <div class="dashboard-hero-compact" data-dashboard-hero="1">
             <div class="dashboard-hero-copy">
-              <p class="eyebrow">Dashboard</p>
+              <p class="eyebrow">Opportunities</p>
               <div class="dashboard-hero-title-row">
                 <h1>Portfolio Decision Center</h1>
                 <span class="tooltip-wrap" data-tooltip-wrap>
@@ -6662,7 +6751,7 @@ function renderDashboardHero() {
                     type="button"
                     class="tooltip-toggle"
                     data-tooltip-toggle="${escapeHtml(infoTooltipId)}"
-                    aria-label="Show dashboard context"
+                    aria-label="Show opportunities context"
                     aria-describedby="${escapeHtml(infoTooltipId)}"
                     aria-expanded="${infoOpen ? "true" : "false"}"
                   >
@@ -6673,7 +6762,7 @@ function renderDashboardHero() {
                     role="tooltip"
                     class="tooltip-bubble ${infoOpen ? "open" : ""}"
                   >
-                    <strong>Dashboard intent</strong>
+                    <strong>Opportunities intent</strong>
                     <small>Primary KPIs stay pinned while deep analytics stay collapsible.</small>
                     <small>Current valuation mode: ${escapeHtml(pricingModeLabel)}</small>
                   </span>
@@ -6683,7 +6772,7 @@ function renderDashboardHero() {
             <div class="dashboard-hero-actions">
               <button type="button" class="tab-jump-btn btn-primary" data-tab-target="portfolio">Open Portfolio</button>
               <button type="button" class="ghost-btn tab-jump-btn btn-secondary dashboard-chip-btn" data-tab-target="alerts">Alerts</button>
-              <button type="button" class="ghost-btn tab-jump-btn btn-tertiary dashboard-chip-btn" data-tab-target="trades">Transactions</button>
+              <button type="button" class="ghost-btn tab-jump-btn btn-tertiary dashboard-chip-btn" data-tab-target="trades">History</button>
             </div>
           </div>
         `,
@@ -6956,7 +7045,7 @@ function renderTransactionManager() {
   return `
     <section class="grid">
       <article class="panel wide">
-        <h2>Buy/Sell Transactions</h2>
+        <h2>Trade History</h2>
         <p class="helper-text">
           Trading journal controls cost basis, realized/unrealized P/L, and inventory attribution.
           Values are stored in <strong>USD</strong> for consistency.
@@ -8227,7 +8316,7 @@ function renderTabNav() {
             class="ghost-btn tab-btn sidebar-nav-item ${state.activeTab === tab.id ? "active" : ""}"
             data-tab="${tab.id}"
           >
-            <span>${escapeHtml(tab.label)}</span>
+            <span>${escapeHtml(`${tab.icon || "•"} ${tab.label}`)}</span>
             <small>${escapeHtml(tab.hint)}</small>
           </button>
         `,
@@ -9351,11 +9440,15 @@ function renderSteamSyncPanel() {
         </article>
         <article class="sub-kpi-card">
           <span>Persona</span>
-          <strong>${escapeHtml(profile.steamDisplayName || "Steam account")}</strong>
+          <strong class="steam-sync-value">${escapeHtml(
+            profile.steamDisplayName || "Steam account",
+          )}</strong>
         </article>
-        <article class="sub-kpi-card">
+        <article class="sub-kpi-card steam-sync-steamid-card">
           <span>SteamID64</span>
-          <strong>${escapeHtml(profile.steamId64 || "-")}</strong>
+          <strong class="mono-cell steam-sync-value steam-sync-steamid-value">${escapeHtml(
+            profile.steamId64 || "-",
+          )}</strong>
         </article>
       </div>
       <div class="row">
@@ -9407,7 +9500,6 @@ function renderApp() {
   ).join("");
 
   const dashboardContent = `
-    ${renderDashboardHero()}
     ${renderDashboardKpiBar()}
     ${renderAnalytics()}
     ${renderAlerts()}
@@ -9415,24 +9507,8 @@ function renderApp() {
   `;
 
   const portfolioContent = `
-    <section class="grid dashboard-grid portfolio-top-grid">
-      ${renderSteamSyncPanel()}
-
-      <article class="panel position-inspector-panel">
-        <h2>Position Inspector</h2>
-        <p class="helper-text">Paste a Steam Item ID to open the inspector modal without losing your portfolio position.</p>
-        <form id="skin-form" class="form position-inspector-form">
-          <label>Steam Item ID
-            <input id="steam-item-id" inputmode="numeric" pattern="[0-9]+" placeholder="e.g. 35719462921" value="${escapeHtml(state.inspectedSteamItemId)}" />
-          </label>
-          <button type="submit">Open Inspector</button>
-        </form>
-        <p class="muted">Item details, market sources, and exit what-if analytics open in the modal.</p>
-      </article>
-    </section>
-
-    <section class="grid">
-      <article class="panel wide">
+    <section class="portfolio-workspace">
+      <article class="panel portfolio-main-panel">
         <h2>Portfolio Holdings</h2>
         <p class="helper-text">
           Card-first execution surface for scanning, sorting, and acting without losing your place.
@@ -9469,13 +9545,27 @@ function renderApp() {
           </button>
         </div>
       </article>
+      <aside class="portfolio-tools-rail" aria-label="Portfolio tools">
+        ${renderSteamSyncPanel()}
+        <article class="panel position-inspector-panel">
+          <h2>Position Inspector</h2>
+          <p class="helper-text">Paste a Steam Item ID to open the inspector modal without losing your portfolio position.</p>
+          <form id="skin-form" class="form position-inspector-form">
+            <label>Steam Item ID
+              <input id="steam-item-id" inputmode="numeric" pattern="[0-9]+" placeholder="e.g. 35719462921" value="${escapeHtml(state.inspectedSteamItemId)}" />
+            </label>
+            <button type="submit">Open Inspector</button>
+          </form>
+          <p class="muted">Item details, market sources, and exit what-if analytics open in the modal.</p>
+        </article>
+      </aside>
     </section>
   `;
 
   const tradesContent = `
     <section class="grid">
       <article class="panel wide">
-        <h2>Transaction Exports</h2>
+        <h2>History & Exports</h2>
         <p class="helper-text">Export transaction history as CSV for bookkeeping, tax workflows, and back-office analytics.</p>
         <div class="row">
           <button id="export-transactions-btn" type="button">Export Transactions CSV</button>
@@ -9506,8 +9596,9 @@ function renderApp() {
   app.innerHTML = `
     <main class="layout app-shell">
       ${renderMobileNav({
-        title: "CS2 Portfolio Analyzer",
+        title: "CS2 Terminal",
         drawerOpen: state.mobileDrawer.open,
+        notificationCount: state.alertEvents?.length || 0,
         escapeHtml,
       })}
       ${renderMobileDrawer({
@@ -9516,6 +9607,7 @@ function renderApp() {
         activeTab: state.activeTab,
         userLabel: userEmailLabel,
         userTitle: userEmailTitle,
+        globalSearch: state.globalSearch,
         loading: state.tabSwitch.loading,
         escapeHtml,
       })}
@@ -9565,7 +9657,7 @@ function renderApp() {
           state.tabSwitch.loading
             ? `<div class="tab-switch-indicator-slot" aria-live="polite">
                 <div class="tab-switch-indicator" role="status">Loading ${escapeHtml(
-                  toTitle(state.tabSwitch.target || state.activeTab || "tab"),
+                  getTabLabelById(state.tabSwitch.target || state.activeTab || "tab"),
                 )}...</div>
               </div>`
             : ""
@@ -9592,6 +9684,7 @@ function renderApp() {
   focusPortfolioControlsIfNeeded();
   focusInspectModalIfNeeded();
   focusCompareDrawerIfNeeded();
+  restoreInputFocusIfNeeded();
   scheduleDashboardKpiPinnedSync();
 
   if (
