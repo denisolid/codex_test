@@ -3705,9 +3705,11 @@ function onAppClick(event) {
 
   if (button?.matches(".opportunity-compare-btn")) {
     event.preventDefault();
-    const opportunityIndex = Number(
-      button.getAttribute("data-opportunity-index"),
-    );
+    const opportunityIndexRaw = button.getAttribute("data-opportunity-index");
+    const opportunityIndex =
+      opportunityIndexRaw == null || !String(opportunityIndexRaw).trim()
+        ? Number.NaN
+        : Number(opportunityIndexRaw);
     const opportunityRows = Array.isArray(state.globalOpportunities?.items)
       ? state.globalOpportunities.items
       : [];
@@ -10040,42 +10042,209 @@ function renderMarketTab() {
     `
     : '<p class="muted">No valuation yet. Click "Refresh valuation".</p>';
   const opportunityRows = Array.isArray(scanner.items) ? scanner.items : [];
+  const opportunityCurrency = state.portfolio?.currency || state.currency;
+  const holdingById = new Map();
+  const holdingByName = new Map();
+  holdings.forEach((item) => {
+    const skinId = Number(item?.skinId || 0);
+    if (Number.isInteger(skinId) && skinId > 0) {
+      holdingById.set(skinId, item);
+    }
+    const normalizedName = String(item?.marketHashName || "")
+      .trim()
+      .toLowerCase();
+    if (normalizedName) {
+      holdingByName.set(normalizedName, item);
+    }
+  });
   const opportunityMarkup = opportunityRows.length
     ? `
       <table>
         <thead>
           <tr>
             <th>Item</th>
-            <th>Buy Market</th>
-            <th>Buy Price</th>
-            <th>Sell Market</th>
-            <th>Sell Net</th>
+            <th>Buy</th>
+            <th>Sell</th>
             <th>Profit</th>
-            <th>Spread %</th>
-            <th>Score</th>
+            <th>Spread</th>
+            <th>Quality Score</th>
+            <th>Confidence</th>
+            <th>Liquidity</th>
+            <th>Signals</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
           ${opportunityRows
             .map((row) => {
-              const score = Number(row?.opportunityScore || 0);
+              const score = Number(row?.opportunityScore ?? row?.score ?? 0);
               const scoreTone = getOpportunityScoreTone(score);
+              const scoreLabel = formatOpportunityLabel(
+                row?.scoreCategory,
+                score,
+              );
+              const executionConfidence = String(
+                row?.executionConfidence || "Low",
+              ).trim();
+              const confidenceTone = getExecutionConfidenceTone(
+                executionConfidence,
+              );
+              const liquidityLabel = formatLiquidityBandLabel(
+                row?.liquidityBand,
+                row?.volume7d ?? row?.liquiditySample ?? row?.liquidity,
+              );
+              const baseBadges = buildOpportunityBadges(row, { max: 5 });
+              const itemId = Number(row?.itemId || row?.skinId || 0);
+              const marketHashName = String(row?.itemName || "").trim();
+              const itemCategory = normalizeOpportunityCategory(
+                row?.itemCategory,
+                marketHashName,
+              );
+              const categoryLabel = formatOpportunityCategoryLabel(
+                itemCategory,
+                marketHashName,
+              );
+              const categoryTone = getOpportunityCategoryTone(
+                itemCategory,
+                marketHashName,
+              );
+              const fallbackImage = isCaseLikeItem({
+                marketHashName,
+                itemCategory,
+              })
+                ? defaultCaseImage
+                : defaultSkinImage;
+              const normalizedName = marketHashName.toLowerCase();
+              const visualItem =
+                (Number.isInteger(itemId) && itemId > 0
+                  ? holdingById.get(itemId)
+                  : null) ||
+                (normalizedName ? holdingByName.get(normalizedName) : null) || {
+                  marketHashName,
+                  itemCategory,
+                };
+              const itemImage = String(
+                row?.itemImageUrl || getItemImageUrl(visualItem),
+              ).trim();
+              const updatedLabel = scanner.generatedAt
+                ? `Updated ${formatRelativeTime(scanner.generatedAt)}`
+                : "Updated recently";
+              const inspectUrl =
+                String(row?.buyUrl || row?.sellUrl || "").trim() ||
+                buildSteamListingUrlByName(marketHashName);
+              const compareUrl =
+                String(row?.sellUrl || row?.buyUrl || "").trim() ||
+                buildSteamListingUrlByName(marketHashName);
+              const hasInspectTarget = Boolean(
+                itemId > 0 || inspectUrl || marketHashName,
+              );
+              const hasCompareTarget = Boolean(
+                itemId > 0 || compareUrl || marketHashName,
+              );
+              const spreadValue =
+                row?.spreadPercent ?? row?.spread ?? row?.spread_pct;
+
               return `
                 <tr>
-                  <td>${escapeHtml(row?.itemName || "Tracked Item")}</td>
-                  <td>${escapeHtml(formatMarketSourceLabel(row?.buyMarket))}</td>
-                  <td>${formatMoney(row?.buyPrice, state.portfolio?.currency || state.currency)}</td>
-                  <td>${escapeHtml(formatMarketSourceLabel(row?.sellMarket))}</td>
-                  <td>${formatMoney(row?.sellNet, state.portfolio?.currency || state.currency)}</td>
-                  <td><strong class="pnl-text up">${formatSignedMoney(
-                    row?.profit,
-                    state.portfolio?.currency || state.currency,
-                  )}</strong></td>
-                  <td>${formatPercent(row?.spreadPercent)}</td>
                   <td>
-                    <span class="score-pill ${escapeHtml(scoreTone)}">${escapeHtml(
+                    <div class="opportunity-item-cell">
+                      <img
+                        class="opportunity-item-thumb"
+                        src="${escapeHtml(itemImage || fallbackImage)}"
+                        alt="${escapeHtml(row?.itemName || "Tracked Item")}"
+                        loading="lazy"
+                        data-fallback-src="${escapeHtml(fallbackImage)}"
+                      />
+                      <div class="opportunity-item-meta">
+                        <strong>${escapeHtml(row?.itemName || "Tracked Item")}</strong>
+                        <span class="opportunity-category-badge ${escapeHtml(
+                          categoryTone,
+                        )}">${escapeHtml(categoryLabel)}</span>
+                        <small class="opportunity-item-subline">${escapeHtml(
+                          `Portfolio item \u2022 ${updatedLabel}`,
+                        )}</small>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="opportunity-metric-cell">
+                    <strong class="opportunity-metric-value">${escapeHtml(
+                      formatMarketSourceLabel(row?.buyMarket),
+                    )}</strong>
+                    <small>${formatMoney(row?.buyPrice, opportunityCurrency)}</small>
+                  </td>
+                  <td class="opportunity-metric-cell">
+                    <strong class="opportunity-metric-value">${escapeHtml(
+                      formatMarketSourceLabel(row?.sellMarket),
+                    )}</strong>
+                    <small>${formatMoney(row?.sellNet, opportunityCurrency)}</small>
+                  </td>
+                  <td class="opportunity-metric-cell">
+                    <strong class="opportunity-metric-value positive">${formatSignedMoney(
+                      row?.profit,
+                      opportunityCurrency,
+                    )}</strong>
+                    <small>Net profit</small>
+                  </td>
+                  <td class="opportunity-metric-cell">
+                    <strong class="opportunity-metric-value">${formatPercent(
+                      spreadValue,
+                    )}</strong>
+                    <small>Price spread</small>
+                  </td>
+                  <td class="opportunity-metric-cell">
+                    <strong class="opportunity-metric-value ${escapeHtml(scoreTone)}">${escapeHtml(
                       `${formatNumber(score, 0)}/100`,
-                    )}</span>
+                    )}</strong>
+                    <small>${escapeHtml(`${scoreLabel} quality`)}</small>
+                  </td>
+                  <td class="opportunity-metric-cell">
+                    <strong class="opportunity-metric-value ${escapeHtml(
+                      confidenceTone,
+                    )}">${escapeHtml(executionConfidence)}</strong>
+                    <small>Execution confidence</small>
+                  </td>
+                  <td class="opportunity-metric-cell opportunity-liquidity-cell">
+                    <strong class="opportunity-metric-value">${escapeHtml(
+                      liquidityLabel,
+                    )}</strong>
+                    <small>${escapeHtml(
+                      `Coverage ${formatNumber(row?.marketCoverage || 0, 0)} market(s)`,
+                    )}</small>
+                  </td>
+                  <td class="opportunity-badges-cell">
+                    ${
+                      baseBadges.length
+                        ? `<div class="opportunity-badges">${baseBadges
+                            .map(
+                              (badge) =>
+                                `<span class="opportunity-badge">${escapeHtml(
+                                  badge,
+                                )}</span>`,
+                            )
+                            .join("")}</div>`
+                        : '<span class="muted">-</span>'
+                    }
+                  </td>
+                  <td class="actions-cell">
+                    <button
+                      type="button"
+                      class="ghost-btn opportunity-inspect-btn"
+                      data-skin-id="${escapeHtml(String(itemId || ""))}"
+                      data-inspect-url="${escapeHtml(inspectUrl)}"
+                      ${hasInspectTarget ? "" : "disabled"}
+                    >
+                      Inspect
+                    </button>
+                    <button
+                      type="button"
+                      class="ghost-btn opportunity-compare-btn"
+                      data-opportunity-index="-1"
+                      data-skin-id="${escapeHtml(String(itemId || ""))}"
+                      data-compare-url="${escapeHtml(compareUrl)}"
+                      ${hasCompareTarget ? "" : "disabled"}
+                    >
+                      Compare
+                    </button>
                   </td>
                 </tr>
               `;
