@@ -5610,6 +5610,22 @@ a:hover {
   line-height: 1.2;
 }
 
+.opportunity-leg-cell {
+  display: grid;
+  gap: 4px;
+  min-width: 118px;
+}
+
+.opportunity-leg-cell strong {
+  font-size: 0.83rem;
+  line-height: 1.15;
+}
+
+.opportunity-leg-cell small {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+}
+
 @keyframes opportunity-feed-new-pulse {
   0% {
     background-color: rgba(46, 229, 143, 0.16);
@@ -5629,6 +5645,36 @@ tr.opportunity-row-new td {
 .opportunity-liquidity-cell {
   display: grid;
   gap: 4px;
+}
+
+.opportunity-score-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.opportunity-score-quality {
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  color: #d4e7ff;
+}
+
+.opportunity-score-quality.positive {
+  color: var(--ui-status-positive);
+}
+
+.opportunity-score-quality.neutral {
+  color: #9ec9ff;
+}
+
+.opportunity-score-quality.warning {
+  color: var(--ui-status-warning);
+}
+
+.opportunity-score-quality.negative {
+  color: var(--ui-status-negative);
 }
 
 .opportunity-score-cell small,
