@@ -1,15 +1,24 @@
 const { round2, roundPrice } = require("../markets/marketUtils")
 const {
   arbitrageScannerIntervalMinutes,
-  marketSnapshotTtlMinutes
+  marketSnapshotTtlMinutes,
+  arbitrageFeedRetentionHours,
+  arbitrageFeedActiveLimit,
+  arbitrageDuplicateWindowHours,
+  arbitrageMinProfitChangePct,
+  arbitrageMinScoreChange,
+  arbitrageInsertDuplicates
 } = require("../config/env")
 const marketUniverseTop100 = require("../config/marketUniverseTop100.json")
 const skinRepo = require("../repositories/skinRepository")
 const marketSnapshotRepo = require("../repositories/marketSnapshotRepository")
+const arbitrageFeedRepo = require("../repositories/arbitrageFeedRepository")
+const scannerRunRepo = require("../repositories/scannerRunRepository")
 const marketComparisonService = require("./marketComparisonService")
 const arbitrageEngine = require("./arbitrageEngineService")
 
-const SCANNER_INTERVAL_MINUTES = Math.max(Number(arbitrageScannerIntervalMinutes || 5), 1)
+const SCANNER_TYPE = "global_arbitrage"
+const SCANNER_INTERVAL_MINUTES = Math.max(Number(arbitrageScannerIntervalMinutes || 30), 1)
 const CACHE_TTL_MS = SCANNER_INTERVAL_MINUTES * 60 * 1000
 const MIN_SPREAD_PERCENT = Number(arbitrageEngine.MIN_SPREAD_PERCENT || 5)
 const MAX_SPREAD_PERCENT = Number(arbitrageEngine.SPREAD_SANITY_MAX_PERCENT || 300)
@@ -20,10 +29,17 @@ const DEFAULT_SCORE_CUTOFF = Number(arbitrageEngine.DEFAULT_SCORE_CUTOFF || 75)
 const RISKY_SCORE_CUTOFF = Number(arbitrageEngine.RISKY_SCORE_CUTOFF || 60)
 const MAX_API_LIMIT = 200
 const DEFAULT_API_LIMIT = 100
+const MAX_FEED_LIMIT = 500
 const RISKY_MIN_PRICE_USD = 2
 const RISKY_MIN_SPREAD_PERCENT = 3
 const RISKY_MIN_VOLUME_7D = 30
 const RECENT_SNAPSHOT_FETCH_LIMIT = 25000
+const FEED_RETENTION_HOURS = Math.max(Number(arbitrageFeedRetentionHours || 24), 1)
+const FEED_ACTIVE_LIMIT = Math.max(Number(arbitrageFeedActiveLimit || 500), 50)
+const DUPLICATE_WINDOW_HOURS = Math.max(Number(arbitrageDuplicateWindowHours || 4), 1)
+const MIN_PROFIT_CHANGE_PCT = Math.max(Number(arbitrageMinProfitChangePct || 10), 0)
+const MIN_SCORE_CHANGE = Math.max(Number(arbitrageMinScoreChange || 8), 0)
+const INSERT_DUPLICATES = Boolean(arbitrageInsertDuplicates)
 
 const STALE_PENALTY_RULES = Object.freeze([
   { minMinutes: 180, penalty: 25 },
@@ -892,6 +908,144 @@ function confidenceRank(value) {
   return 1
 }
 
+function toGradeFromScore(score) {
+  const safeScore = clampScore(score)
+  if (safeScore >= 90) return "A"
+  if (safeScore >= 75) return "B"
+  if (safeScore >= 60) return "C"
+  return "RISKY"
+}
+
+function toMetadataObject(row = {}) {
+  return {
+    item_id: Number(row?.itemId || 0) || null,
+    item_subcategory: String(row?.itemSubcategory || "").trim() || null,
+    item_image_url: String(row?.itemImageUrl || "").trim() || null,
+    score_category: String(row?.scoreCategory || "").trim() || null,
+    liquidity_value: toFiniteOrNull(row?.liquidity),
+    liquidity_score: toFiniteOrNull(row?.liquidityScore),
+    volume_7d: toFiniteOrNull(row?.volume7d),
+    market_coverage: Number(row?.marketCoverage || 0),
+    reference_price: toFiniteOrNull(row?.referencePrice),
+    stale_penalty: toFiniteOrNull(row?.stalePenalty),
+    soft_penalty: toFiniteOrNull(row?.softPenalty),
+    buy_url: String(row?.buyUrl || "").trim() || null,
+    sell_url: String(row?.sellUrl || "").trim() || null,
+    flags: Array.isArray(row?.flags) ? row.flags : [],
+    badges: Array.isArray(row?.badges) ? row.badges : [],
+    spread_score: toFiniteOrNull(row?.spreadScore),
+    liquidity_score_component: toFiniteOrNull(row?.liquidityScoreComponent),
+    stability_score: toFiniteOrNull(row?.stabilityScore),
+    market_reliability_score: toFiniteOrNull(row?.marketReliabilityScore),
+    depth_confidence_score: toFiniteOrNull(row?.depthConfidenceScore),
+    raw_opportunity_score: toFiniteOrNull(row?.rawOpportunityScore),
+    is_high_confidence_eligible: Boolean(row?.isHighConfidenceEligible),
+    is_risky_eligible: Boolean(row?.isRiskyEligible),
+    snapshot_stale: Boolean(row?.snapshotStale)
+  }
+}
+
+function buildFeedInsertRow(row = {}, scanRunId = "", options = {}) {
+  const detectedAt = options.detectedAt || new Date().toISOString()
+  const isDuplicate = Boolean(options.isDuplicate)
+  const score = clampScore(row?.score)
+  const executionConfidence = normalizeConfidence(row?.executionConfidence)
+  return {
+    item_name: String(row?.itemName || "Tracked Item").trim(),
+    market_hash_name: String(row?.itemName || "Tracked Item").trim(),
+    category: normalizeItemCategory(row?.itemCategory, row?.itemName),
+    buy_market: normalizeMarketLabel(row?.buyMarket),
+    buy_price: roundPrice(row?.buyPrice || 0),
+    sell_market: normalizeMarketLabel(row?.sellMarket),
+    sell_net: roundPrice(row?.sellNet || 0),
+    profit: roundPrice(row?.profit || 0),
+    spread_pct: round2(row?.spread || 0),
+    opportunity_score: Math.round(score),
+    execution_confidence: executionConfidence,
+    quality_grade: toGradeFromScore(score),
+    liquidity_label: String(row?.liquidityBand || "Low").trim() || "Low",
+    detected_at: detectedAt,
+    scan_run_id: String(scanRunId || "").trim() || null,
+    is_active: true,
+    is_duplicate: isDuplicate,
+    metadata: toMetadataObject(row)
+  }
+}
+
+function buildDedupeSignature(itemName = "", buyMarket = "", sellMarket = "") {
+  return `${String(itemName || "").trim().toLowerCase()}::${String(buyMarket || "")
+    .trim()
+    .toLowerCase()}::${String(sellMarket || "")
+    .trim()
+    .toLowerCase()}`
+}
+
+function toProfitDeltaPercent(currentProfit, previousProfit) {
+  const current = toFiniteOrNull(currentProfit)
+  const previous = toFiniteOrNull(previousProfit)
+  if (current == null || previous == null) return Infinity
+  const denominator = Math.max(Math.abs(previous), 0.01)
+  return Math.abs(current - previous) / denominator * 100
+}
+
+function isMateriallyNewOpportunity(current = {}, previous = {}) {
+  const profitDeltaPercent = toProfitDeltaPercent(current?.profit, previous?.profit)
+  const scoreDelta = Math.abs(
+    (toFiniteOrNull(current?.score) ?? 0) - (toFiniteOrNull(previous?.opportunity_score) ?? 0)
+  )
+  return profitDeltaPercent >= MIN_PROFIT_CHANGE_PCT || scoreDelta >= MIN_SCORE_CHANGE
+}
+
+function mapFeedRowToApiRow(row = {}) {
+  const metadata = row?.metadata && typeof row.metadata === "object" ? row.metadata : {}
+  const score = clampScore(row?.opportunity_score)
+  const executionConfidence = normalizeConfidence(row?.execution_confidence)
+  const itemName = String(row?.item_name || "Tracked Item").trim() || "Tracked Item"
+  return {
+    feedId: String(row?.id || "").trim() || null,
+    detectedAt: row?.detected_at || null,
+    scanRunId: String(row?.scan_run_id || "").trim() || null,
+    isActive: Boolean(row?.is_active),
+    isDuplicate: Boolean(row?.is_duplicate),
+    itemId: Number(metadata?.item_id || 0) || null,
+    itemName,
+    itemCategory: normalizeItemCategory(row?.category, itemName),
+    itemSubcategory: String(metadata?.item_subcategory || "").trim() || null,
+    itemImageUrl: String(metadata?.item_image_url || "").trim() || null,
+    buyMarket: normalizeMarketLabel(row?.buy_market),
+    buyPrice: roundPrice(row?.buy_price || 0),
+    sellMarket: normalizeMarketLabel(row?.sell_market),
+    sellNet: roundPrice(row?.sell_net || 0),
+    profit: roundPrice(row?.profit || 0),
+    spread: round2(row?.spread_pct || 0),
+    score,
+    scoreCategory:
+      String(metadata?.score_category || "").trim() || arbitrageEngine.categorizeOpportunityScore(score),
+    executionConfidence,
+    liquidityBand: String(row?.liquidity_label || "Low").trim() || "Low",
+    liquidity: toFiniteOrNull(metadata?.liquidity_value),
+    liquidityScore: toFiniteOrNull(metadata?.liquidity_score),
+    volume7d: toFiniteOrNull(metadata?.volume_7d),
+    marketCoverage: Number(metadata?.market_coverage || 0),
+    referencePrice: toFiniteOrNull(metadata?.reference_price),
+    stalePenalty: toFiniteOrNull(metadata?.stale_penalty),
+    softPenalty: toFiniteOrNull(metadata?.soft_penalty),
+    buyUrl: String(metadata?.buy_url || "").trim() || null,
+    sellUrl: String(metadata?.sell_url || "").trim() || null,
+    snapshotStale: Boolean(metadata?.snapshot_stale),
+    flags: Array.isArray(metadata?.flags) ? metadata.flags : [],
+    badges: Array.isArray(metadata?.badges) ? metadata.badges : [],
+    spreadScore: toFiniteOrNull(metadata?.spread_score),
+    liquidityScoreComponent: toFiniteOrNull(metadata?.liquidity_score_component),
+    stabilityScore: toFiniteOrNull(metadata?.stability_score),
+    marketReliabilityScore: toFiniteOrNull(metadata?.market_reliability_score),
+    depthConfidenceScore: toFiniteOrNull(metadata?.depth_confidence_score),
+    rawOpportunityScore: toFiniteOrNull(metadata?.raw_opportunity_score),
+    isHighConfidenceEligible: Boolean(metadata?.is_high_confidence_eligible),
+    isRiskyEligible: Boolean(metadata?.is_risky_eligible)
+  }
+}
+
 function sortOpportunities(rows = []) {
   return [...rows].sort(
     (a, b) =>
@@ -997,8 +1151,13 @@ function applyGuardFallbackReason(
 const scannerState = {
   latest: null,
   inFlight: null,
+  inFlightRunId: null,
   timer: null,
-  lastError: null
+  lastError: null,
+  nextScheduledAt: null,
+  lastStartedAt: null,
+  lastCompletedAt: null,
+  lastPersistSummary: null
 }
 
 async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
@@ -1237,102 +1396,332 @@ async function runScanInternal(options = {}) {
 }
 
 async function runScan(options = {}) {
-  if (scannerState.inFlight) {
+  const enqueue = await enqueueScan(options)
+  if (enqueue.alreadyRunning && scannerState.inFlight) {
     return scannerState.inFlight
   }
-
-  scannerState.inFlight = runScanInternal(options)
-    .catch((err) => {
-      scannerState.lastError = err
-      if (scannerState.latest) {
-        return scannerState.latest
-      }
-      throw err
-    })
-    .finally(() => {
-      scannerState.inFlight = null
-    })
-
-  return scannerState.inFlight
+  return scannerState.inFlight || scannerState.latest
 }
 
-function normalizeLimit(value, fallback = DEFAULT_API_LIMIT) {
+function normalizeLimit(value, fallback = DEFAULT_API_LIMIT, maxLimit = MAX_API_LIMIT) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
-  return Math.min(Math.max(Math.round(parsed), 1), MAX_API_LIMIT)
+  return Math.min(Math.max(Math.round(parsed), 1), maxLimit)
 }
 
-async function ensureFreshCache() {
-  if (!scannerState.latest) {
-    return runScan({ forceRefresh: true })
+function toScanDiagnosticsSummary(scanPayload = {}, persistSummary = {}, trigger = "manual") {
+  return {
+    trigger: String(trigger || "manual"),
+    generatedAt: scanPayload?.generatedAt || null,
+    scannedItems: Number(scanPayload?.summary?.scannedItems || 0),
+    opportunities: Number(scanPayload?.summary?.opportunities || 0),
+    totalDetected: Number(scanPayload?.summary?.totalDetected || 0),
+    universeSize: Number(scanPayload?.summary?.universeSize || 0),
+    candidateItems: Number(scanPayload?.summary?.candidateItems || 0),
+    discardedReasons: scanPayload?.summary?.discardedReasons || {},
+    topRejectedItems: scanPayload?.summary?.topRejectedItems || [],
+    persisted: persistSummary || {}
   }
+}
 
-  const expired = Date.now() >= Number(scannerState.latest?.expiresAt || 0)
-  if (expired && !scannerState.inFlight) {
-    runScan({ forceRefresh: true }).catch((err) => {
-      console.error("[arbitrage-scanner] Background refresh failed", err.message)
+async function applyFeedRetention() {
+  const cutoffIso = new Date(Date.now() - FEED_RETENTION_HOURS * 60 * 60 * 1000).toISOString()
+  const byAge = await arbitrageFeedRepo.markInactiveOlderThan(cutoffIso)
+  const byLimit = await arbitrageFeedRepo.markInactiveBeyondLimit(FEED_ACTIVE_LIMIT)
+  return {
+    retentionCutoffIso: cutoffIso,
+    deactivatedByAge: byAge,
+    deactivatedByLimit: byLimit
+  }
+}
+
+async function appendOpportunitiesToFeed(rows = [], scanRunId = "") {
+  const candidates = (Array.isArray(rows) ? rows : [])
+    .filter((row) => {
+      const marketHashName = String(row?.itemName || "").trim()
+      if (!marketHashName) return false
+      if (!Boolean(row?.isRiskyEligible)) return false
+      const score = Number(row?.score || 0)
+      return score >= RISKY_SCORE_CUTOFF
     })
+    .map((row) => ({
+      ...row,
+      itemName: String(row?.itemName || "").trim(),
+      buyMarket: normalizeMarketLabel(row?.buyMarket),
+      sellMarket: normalizeMarketLabel(row?.sellMarket)
+    }))
+
+  if (!candidates.length) {
+    const retention = await applyFeedRetention()
+    return {
+      candidates: 0,
+      insertedCount: 0,
+      duplicateSkipped: 0,
+      duplicateInserted: 0,
+      ...retention
+    }
   }
 
-  return scannerState.latest
+  const dedupeCutoffIso = new Date(Date.now() - DUPLICATE_WINDOW_HOURS * 60 * 60 * 1000).toISOString()
+  const recentRows = await arbitrageFeedRepo.getRecentRowsByItems({
+    itemNames: candidates.map((row) => row.itemName),
+    sinceIso: dedupeCutoffIso,
+    limit: 5000
+  })
+
+  const latestBySignature = {}
+  for (const row of recentRows) {
+    const signature = buildDedupeSignature(row?.item_name, row?.buy_market, row?.sell_market)
+    if (!signature || latestBySignature[signature]) continue
+    latestBySignature[signature] = row
+  }
+
+  const detectedAt = new Date().toISOString()
+  const toInsert = []
+  let duplicateSkipped = 0
+  let duplicateInserted = 0
+  for (const row of candidates) {
+    const signature = buildDedupeSignature(row?.itemName, row?.buyMarket, row?.sellMarket)
+    const previous = latestBySignature[signature] || null
+    const materiallyNew = !previous || isMateriallyNewOpportunity(row, previous)
+    if (!materiallyNew && !INSERT_DUPLICATES) {
+      duplicateSkipped += 1
+      continue
+    }
+
+    const isDuplicate = !materiallyNew
+    if (isDuplicate) {
+      duplicateInserted += 1
+    }
+    toInsert.push(
+      buildFeedInsertRow(row, scanRunId, {
+        detectedAt,
+        isDuplicate
+      })
+    )
+
+    latestBySignature[signature] = {
+      profit: row?.profit,
+      opportunity_score: row?.score
+    }
+  }
+
+  const insertedRows = toInsert.length ? await arbitrageFeedRepo.insertRows(toInsert) : []
+  const retention = await applyFeedRetention()
+
+  return {
+    candidates: candidates.length,
+    insertedCount: insertedRows.length,
+    duplicateSkipped,
+    duplicateInserted,
+    ...retention
+  }
 }
 
-exports.getTopOpportunities = async (options = {}) => {
-  const limit = normalizeLimit(options.limit, 50)
-  const showRisky = normalizeBoolean(options.showRisky)
-  const forceRefresh = normalizeBoolean(options.forceRefresh || options.force)
-  const categoryFilter = normalizeCategoryFilter(options.category)
-  const cache = forceRefresh
-    ? await runScan({ forceRefresh: true })
-    : await ensureFreshCache()
-  const safeCache = cache || {
-    generatedAt: null,
-    ttlSeconds: Math.round(CACHE_TTL_MS / 1000),
-    currency: "USD",
-    summary: {
-      scannedItems: 0,
-      opportunities: 0,
-      totalDetected: 0,
-      universeSize: 0,
-      candidateItems: 0,
-      discardedReasons: {},
-      topRejectedItems: []
-    },
-    opportunities: []
+async function runScanWithRunRecord(runRecord = {}, options = {}) {
+  const trigger = String(options.trigger || "manual")
+  const forceRefresh = Boolean(options.forceRefresh)
+  try {
+    const scanPayload = await runScanInternal({ forceRefresh })
+    const persistSummary = await appendOpportunitiesToFeed(scanPayload?.opportunities || [], runRecord?.id)
+    const diagnosticsSummary = toScanDiagnosticsSummary(scanPayload, persistSummary, trigger)
+    const completedRun = await scannerRunRepo.markCompleted(runRecord?.id, {
+      itemsScanned: Number(scanPayload?.summary?.scannedItems || 0),
+      opportunitiesFound: Number(scanPayload?.opportunities?.length || 0),
+      newOpportunitiesAdded: Number(persistSummary?.insertedCount || 0),
+      diagnosticsSummary
+    })
+
+    scannerState.lastPersistSummary = persistSummary
+    scannerState.lastCompletedAt = completedRun?.completed_at || scanPayload?.generatedAt || null
+    return {
+      run: completedRun || runRecord,
+      payload: scanPayload,
+      persistSummary
+    }
+  } catch (err) {
+    scannerState.lastError = err
+    await scannerRunRepo
+      .markFailed(runRecord?.id, {
+        diagnosticsSummary: {
+          trigger,
+          error: String(err?.message || "scan_failed")
+        },
+        error: err?.message
+      })
+      .catch((persistErr) => {
+        console.error("[arbitrage-scanner] Failed to mark run as failed", persistErr.message)
+      })
+    throw err
+  } finally {
+    scannerState.inFlight = null
+    scannerState.inFlightRunId = null
+  }
+}
+
+async function enqueueScan(options = {}) {
+  if (scannerState.inFlight) {
+    return {
+      scanRunId: scannerState.inFlightRunId,
+      alreadyRunning: true
+    }
   }
 
-  const allRows = Array.isArray(safeCache.opportunities) ? safeCache.opportunities : []
-  const filtered = allRows.filter((row) => {
-    const itemCategory = normalizeItemCategory(row?.itemCategory, row?.itemName)
-    if (categoryFilter !== "all" && itemCategory !== categoryFilter) {
-      return false
+  const trigger = String(options.trigger || "manual")
+  const runRecord = await scannerRunRepo.createRun({
+    scannerType: SCANNER_TYPE,
+    status: "running",
+    diagnosticsSummary: {
+      trigger
     }
-    if (showRisky) {
-      return (
-        Boolean(row?.isRiskyEligible) &&
-        Number(row?.score || 0) >= RISKY_SCORE_CUTOFF
-      )
+  })
+
+  scannerState.inFlightRunId = runRecord?.id || null
+  scannerState.lastStartedAt = runRecord?.started_at || new Date().toISOString()
+  scannerState.inFlight = runScanWithRunRecord(runRecord, options).catch((err) => {
+    if (scannerState.latest) {
+      return {
+        run: runRecord,
+        payload: scannerState.latest,
+        persistSummary: scannerState.lastPersistSummary || null,
+        error: err
+      }
     }
-    return (
-      Boolean(row?.isHighConfidenceEligible) &&
-      Number(row?.score || 0) >= DEFAULT_SCORE_CUTOFF &&
-      String(row?.executionConfidence || "")
-        .trim()
-        .toLowerCase() !== "low"
-    )
+    throw err
   })
 
   return {
-    generatedAt: safeCache.generatedAt,
-    ttlSeconds: safeCache.ttlSeconds,
-    currency: safeCache.currency,
+    scanRunId: runRecord?.id || null,
+    alreadyRunning: false
+  }
+}
+
+async function getScannerStatusInternal() {
+  const [latestRun, latestCompletedRun, activeCount] = await Promise.all([
+    scannerRunRepo.getLatestRun(SCANNER_TYPE),
+    scannerRunRepo.getLatestCompletedRun(SCANNER_TYPE),
+    arbitrageFeedRepo.countFeed({ includeInactive: false })
+  ])
+
+  return {
+    scannerType: SCANNER_TYPE,
+    intervalMinutes: SCANNER_INTERVAL_MINUTES,
+    schedulerRunning: Boolean(scannerState.timer),
+    currentStatus: scannerState.inFlight ? "running" : "idle",
+    currentRunId: scannerState.inFlightRunId,
+    nextScheduledAt: scannerState.nextScheduledAt,
+    activeOpportunities: Number(activeCount || 0),
+    latestRun,
+    latestCompletedRun
+  }
+}
+
+exports.getFeed = async (options = {}) => {
+  const limit = normalizeLimit(options.limit, DEFAULT_API_LIMIT, MAX_FEED_LIMIT)
+  const showRisky = normalizeBoolean(options.showRisky)
+  const includeOlder = normalizeBoolean(options.includeOlder || options.showOlder)
+  const forceRefresh = normalizeBoolean(options.forceRefresh || options.force)
+  const categoryFilter = normalizeCategoryFilter(options.category)
+
+  if (forceRefresh) {
+    await enqueueScan({ forceRefresh: true, trigger: "manual" }).catch((err) => {
+      console.error("[arbitrage-scanner] Failed to enqueue manual refresh", err.message)
+    })
+  }
+
+  const minScore = showRisky ? RISKY_SCORE_CUTOFF : DEFAULT_SCORE_CUTOFF
+  const excludeLowConfidence = !showRisky
+
+  const [feedRows, totalCount, activeCount, status] = await Promise.all([
+    arbitrageFeedRepo.listFeed({
+      limit,
+      includeInactive: includeOlder,
+      category: categoryFilter === "all" ? "" : categoryFilter,
+      minScore,
+      excludeLowConfidence
+    }),
+    arbitrageFeedRepo.countFeed({
+      includeInactive: includeOlder,
+      category: categoryFilter === "all" ? "" : categoryFilter,
+      minScore,
+      excludeLowConfidence
+    }),
+    arbitrageFeedRepo.countFeed({
+      includeInactive: false,
+      category: categoryFilter === "all" ? "" : categoryFilter,
+      minScore,
+      excludeLowConfidence
+    }),
+    getScannerStatusInternal()
+  ])
+
+  const mappedRows = (Array.isArray(feedRows) ? feedRows : []).map((row) => mapFeedRowToApiRow(row))
+  const latestCompleted = status?.latestCompletedRun || null
+  const diagnosticsSummary =
+    latestCompleted?.diagnostics_summary && typeof latestCompleted.diagnostics_summary === "object"
+      ? latestCompleted.diagnostics_summary
+      : {}
+
+  return {
+    generatedAt: latestCompleted?.completed_at || latestCompleted?.started_at || null,
+    ttlSeconds: Math.round(CACHE_TTL_MS / 1000),
+    currency: "USD",
     summary: {
-      ...(safeCache.summary || {}),
-      opportunities: filtered.length,
-      totalDetected:
-        Number(safeCache.summary?.totalDetected || 0) || allRows.length
+      scannedItems:
+        Number(diagnosticsSummary?.scannedItems || 0) || Number(latestCompleted?.items_scanned || 0),
+      opportunities: mappedRows.length,
+      totalDetected: Number(totalCount || mappedRows.length),
+      activeOpportunities: Number(activeCount || 0),
+      universeSize: Number(diagnosticsSummary?.universeSize || 0),
+      candidateItems: Number(diagnosticsSummary?.candidateItems || 0),
+      discardedReasons: diagnosticsSummary?.discardedReasons || {},
+      topRejectedItems: diagnosticsSummary?.topRejectedItems || [],
+      newOpportunitiesAdded:
+        Number(latestCompleted?.new_opportunities_added || diagnosticsSummary?.persisted?.insertedCount || 0),
+      feedRetentionHours: FEED_RETENTION_HOURS,
+      feedActiveLimit: FEED_ACTIVE_LIMIT
     },
-    opportunities: filtered.slice(0, limit)
+    opportunities: mappedRows,
+    status: {
+      scannerType: SCANNER_TYPE,
+      intervalMinutes: SCANNER_INTERVAL_MINUTES,
+      schedulerRunning: Boolean(status?.schedulerRunning),
+      currentStatus: status?.currentStatus || "idle",
+      currentRunId: status?.currentRunId || null,
+      nextScheduledAt: status?.nextScheduledAt || null,
+      activeOpportunities: Number(status?.activeOpportunities || 0),
+      latestRun: status?.latestRun || null,
+      latestCompletedRun: latestCompleted
+    }
+  }
+}
+
+exports.getTopOpportunities = async (options = {}) => exports.getFeed(options)
+
+exports.triggerRefresh = async (options = {}) => {
+  const enqueue = await enqueueScan({
+    forceRefresh: true,
+    trigger: String(options.trigger || "manual")
+  })
+  return {
+    scanRunId: enqueue.scanRunId || null,
+    alreadyRunning: Boolean(enqueue.alreadyRunning),
+    startedAt: new Date().toISOString()
+  }
+}
+
+exports.getStatus = async () => {
+  const status = await getScannerStatusInternal()
+  return {
+    scannerType: SCANNER_TYPE,
+    intervalMinutes: SCANNER_INTERVAL_MINUTES,
+    schedulerRunning: Boolean(status?.schedulerRunning),
+    currentStatus: status?.currentStatus || "idle",
+    currentRunId: status?.currentRunId || null,
+    nextScheduledAt: status?.nextScheduledAt || null,
+    activeOpportunities: Number(status?.activeOpportunities || 0),
+    latestRun: status?.latestRun || null,
+    latestCompletedRun: status?.latestCompletedRun || null
   }
 }
 
@@ -1341,15 +1730,21 @@ exports.startScheduler = () => {
     return
   }
 
-  runScan({ forceRefresh: true }).catch((err) => {
-    console.error("[arbitrage-scanner] Initial scan failed", err.message)
-  })
-
   const intervalMs = SCANNER_INTERVAL_MINUTES * 60 * 1000
+  const scheduleNext = () => {
+    scannerState.nextScheduledAt = new Date(Date.now() + intervalMs).toISOString()
+  }
+
+  enqueueScan({ forceRefresh: true, trigger: "startup" }).catch((err) => {
+    console.error("[arbitrage-scanner] Initial scan enqueue failed", err.message)
+  })
+  scheduleNext()
+
   scannerState.timer = setInterval(() => {
-    runScan({ forceRefresh: true }).catch((err) => {
-      console.error("[arbitrage-scanner] Scheduled scan failed", err.message)
+    enqueueScan({ forceRefresh: true, trigger: "scheduled" }).catch((err) => {
+      console.error("[arbitrage-scanner] Scheduled scan enqueue failed", err.message)
     })
+    scheduleNext()
   }, intervalMs)
   scannerState.timer.unref?.()
 
@@ -1360,9 +1755,10 @@ exports.stopScheduler = () => {
   if (!scannerState.timer) return
   clearInterval(scannerState.timer)
   scannerState.timer = null
+  scannerState.nextScheduledAt = null
 }
 
-exports.forceRefresh = async () => runScan({ forceRefresh: true })
+exports.forceRefresh = async () => runScan({ forceRefresh: true, trigger: "manual" })
 
 exports.__testables = {
   normalizeUniverseEntries,
@@ -1375,6 +1771,9 @@ exports.__testables = {
   passesUniverseSeedFilters,
   passesScannerGuards,
   buildApiOpportunityRow,
+  buildFeedInsertRow,
+  mapFeedRowToApiRow,
+  isMateriallyNewOpportunity,
   clampScore,
   computeLiquidityRank,
   countAvailableMarkets,

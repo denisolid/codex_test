@@ -1,0 +1,272 @@
+const { supabaseAdmin } = require("../config/supabase")
+const AppError = require("../utils/AppError")
+
+const TABLE = "arbitrage_feed"
+const MAX_LIMIT = 1000
+
+function normalizeText(value) {
+  return String(value || "").trim()
+}
+
+function normalizeCategory(value) {
+  const raw = normalizeText(value).toLowerCase()
+  if (!raw) return ""
+  if (raw === "weapon_skin" || raw === "case" || raw === "sticker_capsule") {
+    return raw
+  }
+  if (raw === "skin" || raw === "skins") return "weapon_skin"
+  if (raw === "cases") return "case"
+  if (raw === "capsule" || raw === "capsules") return "sticker_capsule"
+  return ""
+}
+
+function normalizeLimit(value, fallback = 100) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(Math.max(Math.round(parsed), 1), MAX_LIMIT)
+}
+
+function toJsonObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+  return value
+}
+
+function toFiniteOrNull(value) {
+  if (value == null || value === "") return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function normalizeMarket(value) {
+  const text = normalizeText(value).toLowerCase()
+  if (!text) return ""
+  if (text === "steam" || text === "skinport" || text === "csfloat" || text === "dmarket") {
+    return text
+  }
+  return text
+}
+
+function normalizeRows(rows = []) {
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => {
+      const itemName = normalizeText(row?.item_name || row?.itemName)
+      const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName || itemName)
+      const buyMarket = normalizeMarket(row?.buy_market || row?.buyMarket)
+      const sellMarket = normalizeMarket(row?.sell_market || row?.sellMarket)
+      const buyPrice = toFiniteOrNull(row?.buy_price ?? row?.buyPrice)
+      const sellNet = toFiniteOrNull(row?.sell_net ?? row?.sellNet)
+      const profit = toFiniteOrNull(row?.profit)
+      const spread = toFiniteOrNull(row?.spread_pct ?? row?.spread)
+      const score = toFiniteOrNull(row?.opportunity_score ?? row?.opportunityScore)
+      if (
+        !itemName ||
+        !marketHashName ||
+        !buyMarket ||
+        !sellMarket ||
+        buyPrice == null ||
+        sellNet == null ||
+        profit == null ||
+        spread == null ||
+        score == null
+      ) {
+        return null
+      }
+
+      return {
+        item_name: itemName,
+        market_hash_name: marketHashName,
+        category: normalizeCategory(row?.category) || "weapon_skin",
+        buy_market: buyMarket,
+        buy_price: Number(buyPrice.toFixed(4)),
+        sell_market: sellMarket,
+        sell_net: Number(sellNet.toFixed(4)),
+        profit: Number(profit.toFixed(4)),
+        spread_pct: Number(spread.toFixed(4)),
+        opportunity_score: Math.min(Math.max(Math.round(score), 0), 100),
+        execution_confidence: normalizeText(row?.execution_confidence || row?.executionConfidence || "Low") || "Low",
+        quality_grade: normalizeText(row?.quality_grade || row?.qualityGrade || "RISKY") || "RISKY",
+        liquidity_label: normalizeText(row?.liquidity_label || row?.liquidityLabel || "Low") || "Low",
+        detected_at: row?.detected_at || row?.detectedAt || new Date().toISOString(),
+        scan_run_id: normalizeText(row?.scan_run_id || row?.scanRunId) || null,
+        is_active: row?.is_active == null ? true : Boolean(row.is_active),
+        is_duplicate: row?.is_duplicate == null ? false : Boolean(row.is_duplicate),
+        metadata: toJsonObject(row?.metadata)
+      }
+    })
+    .filter(Boolean)
+}
+
+exports.insertRows = async (rows = []) => {
+  const payload = normalizeRows(rows)
+  if (!payload.length) return []
+
+  const { data, error } = await supabaseAdmin
+    .from(TABLE)
+    .insert(payload)
+    .select("*")
+
+  if (error) {
+    throw new AppError(error.message, 500)
+  }
+
+  return data || []
+}
+
+exports.listFeed = async (options = {}) => {
+  const limit = normalizeLimit(options.limit, 100)
+  const includeInactive = Boolean(options.includeInactive)
+  const category = normalizeCategory(options.category)
+  const minScore = toFiniteOrNull(options.minScore)
+  const excludeLowConfidence = Boolean(options.excludeLowConfidence)
+
+  let query = supabaseAdmin
+    .from(TABLE)
+    .select("*")
+    .order("detected_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(limit)
+
+  if (!includeInactive) {
+    query = query.eq("is_active", true)
+  }
+  if (category) {
+    query = query.eq("category", category)
+  }
+  if (minScore != null) {
+    query = query.gte("opportunity_score", minScore)
+  }
+  if (excludeLowConfidence) {
+    query = query.neq("execution_confidence", "Low")
+  }
+
+  const { data, error } = await query
+
+  if (error) {
+    throw new AppError(error.message, 500)
+  }
+
+  return data || []
+}
+
+exports.countFeed = async (options = {}) => {
+  const includeInactive = Boolean(options.includeInactive)
+  const category = normalizeCategory(options.category)
+  const minScore = toFiniteOrNull(options.minScore)
+  const excludeLowConfidence = Boolean(options.excludeLowConfidence)
+
+  let query = supabaseAdmin.from(TABLE).select("id", { count: "exact", head: true })
+  if (!includeInactive) {
+    query = query.eq("is_active", true)
+  }
+  if (category) {
+    query = query.eq("category", category)
+  }
+  if (minScore != null) {
+    query = query.gte("opportunity_score", minScore)
+  }
+  if (excludeLowConfidence) {
+    query = query.neq("execution_confidence", "Low")
+  }
+
+  const { count, error } = await query
+
+  if (error) {
+    throw new AppError(error.message, 500)
+  }
+
+  return Number(count || 0)
+}
+
+exports.getRecentRowsByItems = async (options = {}) => {
+  const itemNames = Array.from(
+    new Set(
+      (Array.isArray(options.itemNames) ? options.itemNames : [])
+        .map((value) => normalizeText(value))
+        .filter(Boolean)
+    )
+  )
+  if (!itemNames.length) return []
+
+  const sinceIso = normalizeText(options.sinceIso)
+  const limit = normalizeLimit(options.limit, 2500)
+
+  let query = supabaseAdmin
+    .from(TABLE)
+    .select(
+      "id, item_name, buy_market, sell_market, profit, opportunity_score, detected_at, is_duplicate"
+    )
+    .in("item_name", itemNames)
+    .order("detected_at", { ascending: false })
+    .limit(limit)
+
+  if (sinceIso) {
+    query = query.gte("detected_at", sinceIso)
+  }
+
+  const { data, error } = await query
+  if (error) {
+    throw new AppError(error.message, 500)
+  }
+  return data || []
+}
+
+exports.markInactiveOlderThan = async (cutoffIso) => {
+  const cutoff = normalizeText(cutoffIso)
+  if (!cutoff) return 0
+
+  const { data, error } = await supabaseAdmin
+    .from(TABLE)
+    .update({ is_active: false })
+    .eq("is_active", true)
+    .lt("detected_at", cutoff)
+    .select("id")
+
+  if (error) {
+    throw new AppError(error.message, 500)
+  }
+
+  return Array.isArray(data) ? data.length : 0
+}
+
+exports.markInactiveBeyondLimit = async (activeLimit = 500) => {
+  const limit = Math.max(Math.round(Number(activeLimit || 0)), 1)
+  const batchSize = 200
+  let totalMarked = 0
+
+  while (true) {
+    const { data, error } = await supabaseAdmin
+      .from(TABLE)
+      .select("id")
+      .eq("is_active", true)
+      .order("detected_at", { ascending: false })
+      .order("id", { ascending: false })
+      .range(limit, limit + batchSize - 1)
+
+    if (error) {
+      throw new AppError(error.message, 500)
+    }
+
+    const ids = (Array.isArray(data) ? data : [])
+      .map((row) => normalizeText(row?.id))
+      .filter(Boolean)
+    if (!ids.length) {
+      break
+    }
+
+    const { data: updatedRows, error: updateError } = await supabaseAdmin
+      .from(TABLE)
+      .update({ is_active: false })
+      .in("id", ids)
+      .select("id")
+
+    if (updateError) {
+      throw new AppError(updateError.message, 500)
+    }
+
+    totalMarked += Array.isArray(updatedRows) ? updatedRows.length : 0
+  }
+
+  return totalMarked
+}

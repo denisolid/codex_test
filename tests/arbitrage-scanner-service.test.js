@@ -18,7 +18,10 @@ const {
     resolveLiquidityMetrics,
     passesUniverseSeedFilters,
     passesScannerGuards,
-    buildApiOpportunityRow
+    buildApiOpportunityRow,
+    buildFeedInsertRow,
+    mapFeedRowToApiRow,
+    isMateriallyNewOpportunity
   }
 } = require("../src/services/arbitrageScannerService");
 
@@ -230,4 +233,70 @@ test("api row keeps required shape with clamped score", () => {
   assert.equal(typeof row.itemName, "string");
   assert.equal(typeof row.buyMarket, "string");
   assert.equal(typeof row.sellMarket, "string");
+});
+
+test("feed mapper keeps scanner row core fields", () => {
+  const insertRow = buildFeedInsertRow(
+    {
+      itemName: "AK-47 | Redline (Field-Tested)",
+      itemCategory: "weapon_skin",
+      buyMarket: "steam",
+      buyPrice: 100,
+      sellMarket: "skinport",
+      sellNet: 113,
+      profit: 13,
+      spread: 13,
+      score: 86,
+      executionConfidence: "High",
+      liquidityBand: "High",
+      itemId: 1001,
+      itemImageUrl: "https://cdn.example.com/item.png",
+      badges: ["High liquidity"],
+      flags: ["MISSING_DEPTH"],
+      isHighConfidenceEligible: true,
+      isRiskyEligible: true
+    },
+    "11111111-1111-1111-1111-111111111111",
+    {
+      detectedAt: "2026-03-07T00:00:00.000Z",
+      isDuplicate: false
+    }
+  );
+
+  const apiRow = mapFeedRowToApiRow({
+    id: "22222222-2222-2222-2222-222222222222",
+    ...insertRow
+  });
+
+  assert.equal(apiRow.feedId, "22222222-2222-2222-2222-222222222222");
+  assert.equal(apiRow.itemName, "AK-47 | Redline (Field-Tested)");
+  assert.equal(apiRow.buyMarket, "steam");
+  assert.equal(apiRow.sellMarket, "skinport");
+  assert.equal(apiRow.score, 86);
+  assert.equal(apiRow.executionConfidence, "High");
+  assert.equal(Array.isArray(apiRow.badges), true);
+});
+
+test("material dedupe detection uses profit and score thresholds", () => {
+  assert.equal(
+    isMateriallyNewOpportunity(
+      { profit: 120, score: 82 },
+      { profit: 100, opportunity_score: 81 }
+    ),
+    true
+  );
+  assert.equal(
+    isMateriallyNewOpportunity(
+      { profit: 104, score: 90 },
+      { profit: 100, opportunity_score: 80 }
+    ),
+    true
+  );
+  assert.equal(
+    isMateriallyNewOpportunity(
+      { profit: 103, score: 84 },
+      { profit: 100, opportunity_score: 80 }
+    ),
+    false
+  );
 });
