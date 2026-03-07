@@ -19,7 +19,9 @@ const arbitrageEngine = require("./arbitrageEngineService")
 
 const SCANNER_TYPE = "global_arbitrage"
 const SCANNER_INTERVAL_MINUTES = Math.max(Number(arbitrageScannerIntervalMinutes || 30), 1)
-const CACHE_TTL_MS = SCANNER_INTERVAL_MINUTES * 60 * 1000
+const SCANNER_INTERVAL_MS = SCANNER_INTERVAL_MINUTES * 60 * 1000
+const CACHE_TTL_MS = SCANNER_INTERVAL_MS
+const SCANNER_OVERDUE_GRACE_MS = Math.max(Math.round(SCANNER_INTERVAL_MS * 0.2), 15 * 1000)
 const MIN_SPREAD_PERCENT = Number(arbitrageEngine.MIN_SPREAD_PERCENT || 5)
 const MAX_SPREAD_PERCENT = Number(arbitrageEngine.SPREAD_SANITY_MAX_PERCENT || 300)
 const MIN_VOLUME_7D = 100
@@ -1160,6 +1162,38 @@ const scannerState = {
   lastPersistSummary: null
 }
 
+function parseTimestampMs(value) {
+  const text = String(value || "").trim()
+  if (!text) return null
+  const parsed = new Date(text).getTime()
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function updateNextScheduledAt() {
+  scannerState.nextScheduledAt = new Date(Date.now() + SCANNER_INTERVAL_MS).toISOString()
+}
+
+function isScannerRunOverdue(status = {}, nowMs = Date.now()) {
+  const latestStartedMs = parseTimestampMs(status?.latestRun?.started_at || scannerState.lastStartedAt)
+  const latestRunStatus = String(status?.latestRun?.status || "")
+    .trim()
+    .toLowerCase()
+  if (latestRunStatus === "running") {
+    if (scannerState.inFlight) return false
+    if (!latestStartedMs) return true
+    return nowMs - latestStartedMs >= SCANNER_INTERVAL_MS + SCANNER_OVERDUE_GRACE_MS
+  }
+
+  const latestCompletedMs = parseTimestampMs(
+    status?.latestCompletedRun?.completed_at ||
+      status?.latestCompletedRun?.started_at ||
+      scannerState.lastCompletedAt
+  )
+  const lastActivityMs = Math.max(latestCompletedMs || 0, latestStartedMs || 0)
+  if (!lastActivityMs) return true
+  return nowMs - lastActivityMs >= SCANNER_INTERVAL_MS + SCANNER_OVERDUE_GRACE_MS
+}
+
 async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
   const fallbackSeeds = await loadFallbackUniverseSeeds()
   const fallbackFiltered = fallbackSeeds.filter((row) =>
@@ -1616,6 +1650,24 @@ async function getScannerStatusInternal() {
   }
 }
 
+async function ensureScheduledScanHeartbeat(statusHint = null, trigger = "watchdog") {
+  if (scannerState.inFlight) return false
+
+  const status = statusHint || (await getScannerStatusInternal())
+  if (!isScannerRunOverdue(status)) {
+    return false
+  }
+
+  const enqueue = await enqueueScan({
+    forceRefresh: false,
+    trigger
+  })
+  if (!enqueue?.alreadyRunning) {
+    updateNextScheduledAt()
+  }
+  return Boolean(enqueue?.scanRunId)
+}
+
 exports.getFeed = async (options = {}) => {
   const limit = normalizeLimit(options.limit, DEFAULT_API_LIMIT, MAX_FEED_LIMIT)
   const showRisky = normalizeBoolean(options.showRisky)
@@ -1626,6 +1678,10 @@ exports.getFeed = async (options = {}) => {
   if (forceRefresh) {
     await enqueueScan({ forceRefresh: true, trigger: "manual" }).catch((err) => {
       console.error("[arbitrage-scanner] Failed to enqueue manual refresh", err.message)
+    })
+  } else {
+    await ensureScheduledScanHeartbeat(null, "feed_watchdog").catch((err) => {
+      console.error("[arbitrage-scanner] Failed to enqueue watchdog scan", err.message)
     })
   }
 
@@ -1699,8 +1755,9 @@ exports.getFeed = async (options = {}) => {
 exports.getTopOpportunities = async (options = {}) => exports.getFeed(options)
 
 exports.triggerRefresh = async (options = {}) => {
+  const forceRefresh = options.forceRefresh == null ? true : normalizeBoolean(options.forceRefresh)
   const enqueue = await enqueueScan({
-    forceRefresh: true,
+    forceRefresh,
     trigger: String(options.trigger || "manual")
   })
   return {
@@ -1711,7 +1768,11 @@ exports.triggerRefresh = async (options = {}) => {
 }
 
 exports.getStatus = async () => {
-  const status = await getScannerStatusInternal()
+  let status = await getScannerStatusInternal()
+  await ensureScheduledScanHeartbeat(status, "status_watchdog").catch((err) => {
+    console.error("[arbitrage-scanner] Failed to enqueue status watchdog scan", err.message)
+  })
+  status = await getScannerStatusInternal()
   return {
     scannerType: SCANNER_TYPE,
     intervalMinutes: SCANNER_INTERVAL_MINUTES,
@@ -1730,22 +1791,17 @@ exports.startScheduler = () => {
     return
   }
 
-  const intervalMs = SCANNER_INTERVAL_MINUTES * 60 * 1000
-  const scheduleNext = () => {
-    scannerState.nextScheduledAt = new Date(Date.now() + intervalMs).toISOString()
-  }
-
-  enqueueScan({ forceRefresh: true, trigger: "startup" }).catch((err) => {
+  enqueueScan({ forceRefresh: false, trigger: "startup" }).catch((err) => {
     console.error("[arbitrage-scanner] Initial scan enqueue failed", err.message)
   })
-  scheduleNext()
+  updateNextScheduledAt()
 
   scannerState.timer = setInterval(() => {
-    enqueueScan({ forceRefresh: true, trigger: "scheduled" }).catch((err) => {
+    enqueueScan({ forceRefresh: false, trigger: "scheduled" }).catch((err) => {
       console.error("[arbitrage-scanner] Scheduled scan enqueue failed", err.message)
     })
-    scheduleNext()
-  }, intervalMs)
+    updateNextScheduledAt()
+  }, SCANNER_INTERVAL_MS)
   scannerState.timer.unref?.()
 
   console.log(`[arbitrage-scanner] Scheduler started (every ${SCANNER_INTERVAL_MINUTES} minute(s))`)
@@ -1774,6 +1830,7 @@ exports.__testables = {
   buildFeedInsertRow,
   mapFeedRowToApiRow,
   isMateriallyNewOpportunity,
+  isScannerRunOverdue,
   clampScore,
   computeLiquidityRank,
   countAvailableMarkets,
