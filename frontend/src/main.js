@@ -154,8 +154,15 @@ function isAccountPath(pathname = safePathname()) {
   return /^\/account\/?$/i.test(safePathname(pathname));
 }
 
+function isOpportunitiesPath(pathname = safePathname()) {
+  return /^\/opportunities\/?$/i.test(safePathname(pathname));
+}
+
 function getPathForTab(tabId) {
-  return String(tabId || "").trim() === "settings" ? "/account" : "/";
+  const safeTab = String(tabId || "").trim();
+  if (safeTab === "settings") return "/account";
+  if (safeTab === "opportunities") return "/opportunities";
+  return "/";
 }
 
 function planTierToLabel(planTier) {
@@ -233,6 +240,20 @@ function createMarketOpportunitiesState() {
       sortBy: "score",
       limit: "250",
     },
+  };
+}
+
+function createGlobalOpportunitiesState() {
+  return {
+    loading: false,
+    loaded: false,
+    error: "",
+    generatedAt: null,
+    currency: "USD",
+    showRisky: false,
+    category: "all",
+    summary: null,
+    items: [],
   };
 }
 
@@ -384,6 +405,7 @@ const state = {
     insight: null,
     opportunities: createMarketOpportunitiesState(),
   },
+  globalOpportunities: createGlobalOpportunitiesState(),
   accountPage: {
     activeSection: "profile",
     notifications: readAccountNotificationPrefs(),
@@ -455,35 +477,41 @@ const APP_TABS = [
     id: "portfolio",
     label: "Portfolio",
     hint: "Inventory & positions",
-    icon: "📦",
+    icon: "\uD83D\uDCE6",
   },
   {
     id: "dashboard",
     label: "Opportunities",
     hint: "Arbitrage & signals",
-    icon: "💰",
+    icon: "\uD83D\uDCB0",
+  },
+  {
+    id: "opportunities",
+    label: "Scanner",
+    hint: "Top 100 market scan",
+    icon: "TOP",
   },
   {
     id: "market",
     label: "Market",
     hint: "Scanner & pricing",
-    icon: "🌍",
+    icon: "\uD83C\uDF0D",
   },
   {
     id: "alerts",
     label: "Alerts",
     hint: "Price triggers",
-    icon: "🔔",
+    icon: "\uD83D\uDD14",
   },
   {
     id: "trades",
     label: "History",
     hint: "Transactions",
-    icon: "📊",
+    icon: "\uD83D\uDCCA",
   },
-  { id: "social", label: "Watchlist", hint: "Community", icon: "👥" },
-  { id: "team", label: "Team", hint: "Creator Ops", icon: "🧩" },
-  { id: "settings", label: "Settings", hint: "Account", icon: "⚙️" },
+  { id: "social", label: "Watchlist", hint: "Community", icon: "\uD83D\uDC65" },
+  { id: "team", label: "Team", hint: "Creator Ops", icon: "\uD83E\uDDE9" },
+  { id: "settings", label: "Settings", hint: "Account", icon: "\u2699\uFE0F" },
 ];
 const ACCOUNT_NAV_SECTIONS = [
   { id: "profile", label: "Profile" },
@@ -985,7 +1013,7 @@ function renderToastHost() {
             aria-label="Dismiss notification"
             data-toast-dismiss="${Number(toast.id)}"
           >
-            ×
+            Ã—
           </button>
         </article>
       `;
@@ -1554,7 +1582,7 @@ function renderDesktopHeader(userEmailLabel, userEmailTitle) {
             data-tab="${tab.id}"
             title="${escapeHtml(tab.hint)}"
           >
-            <span class="desktop-tab-icon" aria-hidden="true">${escapeHtml(tab.icon || "•")}</span>
+            <span class="desktop-tab-icon" aria-hidden="true">${escapeHtml(tab.icon || "\u2022")}</span>
             <span class="desktop-tab-label">${escapeHtml(tab.label)}</span>
           </button>
         `,
@@ -1625,7 +1653,7 @@ function renderHeaderQuickStats() {
     : [];
   const topOpportunity = topOpportunities[0] || null;
   const topOpportunityLabel = topOpportunity
-    ? `${formatSignedMoney(topOpportunity?.profit, currencyCode)} ${String(topOpportunity?.itemName || "").trim() ? `• ${String(topOpportunity.itemName)}` : ""}`
+    ? `${formatSignedMoney(topOpportunity?.profit, currencyCode)} ${String(topOpportunity?.itemName || "").trim() ? `\u2022 ${String(topOpportunity.itemName)}` : ""}`
     : "No edge detected";
 
   return `
@@ -2574,14 +2602,21 @@ async function handlePricingModeChange(nextMode) {
 
 function buildComparisonItemsPayload(items = []) {
   return (Array.isArray(items) ? items : [])
-    .map((item) => ({
-      skinId: Number(item.skinId || 0) || null,
-      marketHashName: String(item.marketHashName || "").trim(),
-      quantity: Number(item.quantity || 0),
-      steamPrice: Number(item.steamPrice || item.currentPrice || 0),
-      steamCurrency: state.portfolio?.currency || state.currency,
-      steamRecordedAt: item.currentPriceRecordedAt || null,
-    }))
+    .map((item) => {
+      const marketHashName = String(item.marketHashName || "").trim();
+      return {
+        skinId: Number(item.skinId || 0) || null,
+        marketHashName,
+        itemCategory: normalizeOpportunityCategory(
+          item?.itemCategory || item?.category,
+          marketHashName,
+        ),
+        quantity: Number(item.quantity || 0),
+        steamPrice: Number(item.steamPrice || item.currentPrice || 0),
+        steamCurrency: state.portfolio?.currency || state.currency,
+        steamRecordedAt: item.currentPriceRecordedAt || null,
+      };
+    })
     .filter((row) => row.marketHashName);
 }
 
@@ -2606,6 +2641,10 @@ function buildCompareDrawerSnapshotFromHolding(holding, options = {}) {
       holding.marketHashName || options.marketHashName || "Tracked Item",
     ),
     condition: getHoldingConditionLabel(holding),
+    itemCategory: normalizeOpportunityCategory(
+      holding?.itemCategory || holding?.category,
+      holding?.marketHashName,
+    ),
     quantity: Number(holding.quantity || 0),
     imageUrl,
     currency: holding.currency || state.portfolio?.currency || state.currency,
@@ -2618,6 +2657,101 @@ function buildCompareDrawerSnapshotFromHolding(holding, options = {}) {
     fees: options.fees || state.portfolio?.pricing?.fees || null,
     generatedAt: options.generatedAt || null,
   };
+}
+
+function buildCompareDrawerSnapshotFromComparisonItem(
+  comparisonItem,
+  options = {},
+) {
+  if (!comparisonItem || typeof comparisonItem !== "object") return null;
+
+  const marketHashName = String(
+    options.marketHashName || comparisonItem.marketHashName || "Tracked Item",
+  ).trim() || "Tracked Item";
+  const visualItem = { marketHashName };
+  const fallbackImage = isCaseLikeItem(visualItem)
+    ? defaultCaseImage
+    : defaultSkinImage;
+  const imageUrl = String(options.imageUrl || "").trim() || fallbackImage;
+  const rawQuantity = Number(options.quantity ?? comparisonItem.quantity ?? 1);
+  const quantity =
+    Number.isFinite(rawQuantity) && rawQuantity > 0 ? rawQuantity : 1;
+  const selectedUnitPrice = Number(comparisonItem.selectedUnitPrice);
+  const fallbackCurrentPrice = Number(options.currentPrice);
+  const currentPrice = Number.isFinite(selectedUnitPrice)
+    ? selectedUnitPrice
+    : Number.isFinite(fallbackCurrentPrice)
+      ? fallbackCurrentPrice
+      : 0;
+  const selectedLineValue = Number(comparisonItem.selectedLineValue);
+  const lineValue = Number.isFinite(selectedLineValue)
+    ? selectedLineValue
+    : currentPrice * quantity;
+  const rawSkinId = Number(options.skinId ?? comparisonItem.skinId ?? 0);
+  const skinId = Number.isFinite(rawSkinId) ? rawSkinId : 0;
+  const currency = String(
+    options.currency || comparisonItem?.bestBuy?.currency || state.currency,
+  )
+    .trim()
+    .toUpperCase() || state.currency;
+
+  return {
+    skinId,
+    marketHashName,
+    condition: getHoldingConditionLabel(visualItem),
+    itemCategory: normalizeOpportunityCategory(
+      options.itemCategory || comparisonItem?.itemCategory || comparisonItem?.category,
+      marketHashName,
+    ),
+    quantity,
+    imageUrl,
+    currency,
+    currentPrice,
+    currentPriceSource: String(
+      options.currentPriceSource || comparisonItem.selectedPricingSource || "",
+    ).trim(),
+    lineValue,
+    marketComparison: {
+      perMarket: Array.isArray(comparisonItem.perMarket)
+        ? comparisonItem.perMarket
+        : [],
+      bestBuy: comparisonItem.bestBuy || null,
+      bestSellNet: comparisonItem.bestSellNet || null,
+      arbitrage: comparisonItem.arbitrage || null,
+    },
+    fees: options.fees || state.portfolio?.pricing?.fees || null,
+    generatedAt: options.generatedAt || null,
+  };
+}
+
+function findComparisonItemInPayload(comparisonPayload, itemSeed = {}) {
+  const rows = Array.isArray(comparisonPayload?.items)
+    ? comparisonPayload.items
+    : [];
+  if (!rows.length) return null;
+
+  const targetSkinId = Number(itemSeed.skinId || 0);
+  if (Number.isInteger(targetSkinId) && targetSkinId > 0) {
+    const bySkinId = rows.find(
+      (row) => Number(row?.skinId || 0) === targetSkinId,
+    );
+    if (bySkinId) return bySkinId;
+  }
+
+  const targetName = String(itemSeed.marketHashName || "")
+    .trim()
+    .toLowerCase();
+  if (targetName) {
+    const byName = rows.find(
+      (row) =>
+        String(row?.marketHashName || "")
+          .trim()
+          .toLowerCase() === targetName,
+    );
+    if (byName) return byName;
+  }
+
+  return rows[0] || null;
 }
 
 function closeCompareDrawer(options = {}) {
@@ -2665,6 +2799,94 @@ function openCompareDrawerMarketTarget(
   render();
   runUiTask(() => analyzeMarketItemBySkinId(skinId));
   return true;
+}
+
+async function refreshCompareDrawerDataForItemSeed(itemSeed = {}) {
+  const marketHashName = String(itemSeed.marketHashName || "").trim();
+  if (!marketHashName) return;
+
+  const seedSkinId = Number(itemSeed.skinId || 0);
+  const seedQuantity = Math.max(Number(itemSeed.quantity || 1), 1);
+  const seedSteamPrice = Math.max(Number(itemSeed.steamPrice || 0), 0);
+  const seedSteamCurrency = String(itemSeed.steamCurrency || state.currency)
+    .trim()
+    .toUpperCase() || state.currency;
+
+  const ticket = ++compareDrawerRequestTicket;
+  state.compareDrawer.loading = true;
+  state.compareDrawer.error = "";
+  render();
+
+  try {
+    const comparisonPayload = await api("/market/compare", {
+      method: "POST",
+      body: JSON.stringify({
+        items: [
+          {
+            skinId:
+              Number.isInteger(seedSkinId) && seedSkinId > 0
+                ? seedSkinId
+                : null,
+            marketHashName,
+            quantity: seedQuantity,
+            steamPrice: seedSteamPrice,
+            steamCurrency: seedSteamCurrency,
+            steamRecordedAt: itemSeed.steamRecordedAt || null,
+            itemCategory: itemSeed.itemCategory || null,
+          },
+        ],
+        pricingMode: state.pricingMode,
+        forceRefresh: true,
+        allowLiveFetch: true,
+        currency: state.currency,
+      }),
+    });
+    if (ticket !== compareDrawerRequestTicket) return;
+
+    const comparisonItem = findComparisonItemInPayload(comparisonPayload, {
+      skinId: seedSkinId,
+      marketHashName,
+    });
+    if (!comparisonItem) {
+      throw new Error("No market comparison data returned for this item.");
+    }
+
+    const snapshot = buildCompareDrawerSnapshotFromComparisonItem(
+      comparisonItem,
+      {
+        skinId: seedSkinId || comparisonItem.skinId || 0,
+        marketHashName,
+        quantity: seedQuantity,
+        currentPrice: seedSteamPrice,
+        currentPriceSource: itemSeed.currentPriceSource || "",
+        itemCategory: itemSeed.itemCategory || "",
+        imageUrl: itemSeed.imageUrl || "",
+        currency: comparisonPayload?.currency || seedSteamCurrency,
+        fees: comparisonPayload?.fees || state.portfolio?.pricing?.fees || null,
+        generatedAt: comparisonPayload?.generatedAt || null,
+      },
+    );
+    if (!snapshot) {
+      throw new Error("Failed to build market comparison snapshot.");
+    }
+
+    state.compareDrawer.skinId = Number(snapshot.skinId || 0);
+    state.compareDrawer.payload = snapshot;
+    state.compareDrawer.marketHashName =
+      snapshot?.marketHashName || state.compareDrawer.marketHashName;
+  } catch (err) {
+    if (ticket !== compareDrawerRequestTicket) return;
+    state.compareDrawer.error =
+      err.message || "Failed to load comparison data.";
+    notify("error", state.compareDrawer.error, {
+      details: String(err?.stack || "").trim(),
+    });
+  } finally {
+    if (ticket === compareDrawerRequestTicket) {
+      state.compareDrawer.loading = false;
+      render();
+    }
+  }
 }
 
 async function refreshCompareDrawerData(options = {}) {
@@ -2756,6 +2978,92 @@ async function refreshCompareDrawerData(options = {}) {
       render();
     }
   }
+}
+
+function openCompareDrawerByOpportunity(opportunity, triggerElement = null) {
+  const row = opportunity && typeof opportunity === "object" ? opportunity : null;
+  if (!row) return;
+
+  const rawSkinId = Number(row?.itemId || row?.skinId || 0);
+  if (
+    Number.isInteger(rawSkinId) &&
+    rawSkinId > 0 &&
+    getHoldingBySkinId(rawSkinId)
+  ) {
+    openCompareDrawerBySkinId(rawSkinId, triggerElement);
+    return;
+  }
+
+  const marketHashName = String(row?.itemName || "").trim();
+  if (!marketHashName) {
+    openCompareDrawerMarketTarget(row?.sellUrl || row?.buyUrl, rawSkinId);
+    return;
+  }
+
+  if (triggerElement instanceof HTMLElement) {
+    compareDrawerLastTriggerElement = triggerElement;
+  }
+
+  if (state.portfolioControls.open) {
+    closePortfolioControlsDrawer({ restoreFocus: false });
+  }
+
+  const visualItem = { marketHashName };
+  const fallbackImage = isCaseLikeItem(visualItem)
+    ? defaultCaseImage
+    : defaultSkinImage;
+  const seedCurrency = String(state.globalOpportunities?.currency || state.currency)
+    .trim()
+    .toUpperCase() || state.currency;
+  const seedBuyPrice = Number(row?.buyPrice || 0);
+  const seedCurrentPrice = Number.isFinite(seedBuyPrice) ? seedBuyPrice : 0;
+  const seedSourceLabel = formatMarketSourceLabel(
+    row?.buyMarket || "market",
+  );
+
+  state.compareDrawer.open = true;
+  state.compareDrawer.focusPending = true;
+  state.compareDrawer.loading = true;
+  state.compareDrawer.error = "";
+  state.compareDrawer.skinId =
+    Number.isInteger(rawSkinId) && rawSkinId > 0 ? rawSkinId : 0;
+  state.compareDrawer.marketHashName = marketHashName;
+  state.compareDrawer.payload = {
+    skinId: state.compareDrawer.skinId,
+    marketHashName,
+    condition: getHoldingConditionLabel(visualItem),
+    itemCategory: normalizeOpportunityCategory(row?.itemCategory, marketHashName),
+    quantity: 1,
+    imageUrl: fallbackImage,
+    currency: seedCurrency,
+    currentPrice: seedCurrentPrice,
+    currentPriceSource: seedSourceLabel,
+    lineValue: seedCurrentPrice,
+    marketComparison: {
+      perMarket: [],
+      bestBuy: null,
+      bestSellNet: null,
+      arbitrage: null,
+    },
+    fees: state.portfolio?.pricing?.fees || null,
+    generatedAt: state.globalOpportunities?.generatedAt || null,
+  };
+  render();
+
+  runUiTask(() =>
+    refreshCompareDrawerDataForItemSeed({
+      skinId:
+        Number.isInteger(rawSkinId) && rawSkinId > 0 ? rawSkinId : null,
+      marketHashName,
+      quantity: 1,
+      steamPrice: seedCurrentPrice,
+      steamCurrency: seedCurrency,
+      steamRecordedAt: state.globalOpportunities?.generatedAt || null,
+      currentPriceSource: seedSourceLabel,
+      itemCategory: row?.itemCategory || "",
+      imageUrl: fallbackImage,
+    }),
+  );
 }
 
 function openCompareDrawerBySkinId(rawSkinId, triggerElement = null) {
@@ -3330,6 +3638,57 @@ function onAppClick(event) {
     return;
   }
 
+  if (button?.matches("#global-opportunities-refresh-btn")) {
+    event.preventDefault();
+    runUiTask(() => refreshGlobalOpportunities({ force: true, limit: 100 }));
+    return;
+  }
+
+  if (button?.matches(".opportunity-inspect-btn")) {
+    event.preventDefault();
+    const skinId = Number(button.getAttribute("data-skin-id") || 0);
+    const inspectUrl = button.getAttribute("data-inspect-url");
+    if (Number.isInteger(skinId) && skinId > 0) {
+      state.activeTab = "market";
+      state.marketTab.skinId = String(skinId);
+      render();
+      runUiTask(() => analyzeMarketItemBySkinId(skinId));
+      return;
+    }
+    openCompareDrawerMarketTarget(inspectUrl, skinId);
+    return;
+  }
+
+  if (button?.matches(".opportunity-compare-btn")) {
+    event.preventDefault();
+    const opportunityIndex = Number(
+      button.getAttribute("data-opportunity-index"),
+    );
+    const opportunityRows = Array.isArray(state.globalOpportunities?.items)
+      ? state.globalOpportunities.items
+      : [];
+    const opportunity =
+      Number.isInteger(opportunityIndex) && opportunityIndex >= 0
+        ? opportunityRows[opportunityIndex] || null
+        : null;
+    if (opportunity) {
+      openCompareDrawerByOpportunity(opportunity, button);
+      return;
+    }
+    const skinId = Number(button.getAttribute("data-skin-id") || 0);
+    const compareUrl = button.getAttribute("data-compare-url");
+    if (
+      Number.isInteger(skinId) &&
+      skinId > 0 &&
+      getHoldingBySkinId(skinId)
+    ) {
+      openCompareDrawerBySkinId(skinId, button);
+      return;
+    }
+    openCompareDrawerMarketTarget(compareUrl, skinId);
+    return;
+  }
+
   if (button?.matches(".sell-suggestion-btn")) {
     event.preventDefault();
     const skinId = Number(button.getAttribute("data-skin-id") || 0);
@@ -3782,6 +4141,43 @@ function onAppChange(event) {
     return;
   }
 
+  if (target.matches("#global-opportunities-show-risky")) {
+    const checked =
+      target instanceof HTMLInputElement ? Boolean(target.checked) : false;
+    state.globalOpportunities.showRisky = checked;
+    runUiTask(() =>
+      refreshGlobalOpportunities({
+        force: true,
+        limit: 100,
+        showRisky: checked,
+      }),
+    );
+    return;
+  }
+
+  if (target.matches("#global-opportunities-category")) {
+    const nextCategory = String(target.value || "all")
+      .trim()
+      .toLowerCase();
+    if (nextCategory === "capsules" || nextCategory === "capsule") {
+      state.globalOpportunities.category = "capsules";
+    } else if (nextCategory === "cases" || nextCategory === "case") {
+      state.globalOpportunities.category = "cases";
+    } else if (nextCategory === "skins" || nextCategory === "skin") {
+      state.globalOpportunities.category = "skins";
+    } else {
+      state.globalOpportunities.category = "all";
+    }
+    runUiTask(() =>
+      refreshGlobalOpportunities({
+        force: true,
+        limit: 100,
+        category: state.globalOpportunities.category,
+      }),
+    );
+    return;
+  }
+
   if (target.matches("#social-scope")) {
     state.social.scope = String(target.value || "global");
     runUiTask(() => refreshSocialData());
@@ -3944,7 +4340,11 @@ async function logout() {
   };
   state.tabSwitch.loading = false;
   state.tabSwitch.target = "";
-  state.activeTab = isAccountPath() ? "settings" : "dashboard";
+  state.activeTab = isAccountPath()
+    ? "settings"
+    : isOpportunitiesPath()
+      ? "opportunities"
+      : "dashboard";
   state.mobileDrawer.open = false;
   state.mobileDrawer.focusPending = false;
   state.portfolioControls.open = false;
@@ -3969,6 +4369,7 @@ async function logout() {
   state.marketTab.autoLoaded = false;
   state.marketTab.insight = null;
   state.marketTab.opportunities = createMarketOpportunitiesState();
+  state.globalOpportunities = createGlobalOpportunitiesState();
   state.accountPage.activeSection = parseAccountSectionFromHash();
   state.accountPage.notifications = readAccountNotificationPrefs();
   state.accountPage.apiKeys.items = [];
@@ -5076,6 +5477,65 @@ async function refreshMarketOpportunities(options = {}) {
   }
 }
 
+async function refreshGlobalOpportunities(options = {}) {
+  const {
+    silent = false,
+    limit = 100,
+    force = false,
+    showRisky = null,
+    category = null,
+  } =
+    options;
+  const scanner = state.globalOpportunities || createGlobalOpportunitiesState();
+  state.globalOpportunities = scanner;
+  scanner.showRisky =
+    showRisky == null ? Boolean(scanner.showRisky) : Boolean(showRisky);
+  scanner.category =
+    category == null
+      ? String(scanner.category || "all")
+      : String(category || "all");
+  scanner.loading = true;
+  if (!force) {
+    scanner.error = "";
+  }
+  if (!silent) {
+    render();
+  }
+
+  try {
+    const query = buildQuery({
+      limit: Math.max(Number(limit || 100), 1),
+      showRisky: scanner.showRisky ? "1" : "",
+      category:
+        scanner.category === "skins"
+          ? "weapon_skin"
+          : scanner.category === "cases"
+            ? "case"
+            : scanner.category === "capsules"
+              ? "sticker_capsule"
+            : "",
+      force: force ? "1" : "",
+    });
+    const payload = await api(`/opportunities/top${query}`);
+    scanner.items = Array.isArray(payload?.opportunities) ? payload.opportunities : [];
+    scanner.summary = payload?.summary || null;
+    scanner.generatedAt = payload?.generatedAt || null;
+    scanner.currency = String(payload?.currency || "USD")
+      .trim()
+      .toUpperCase();
+    scanner.loaded = true;
+  } catch (err) {
+    scanner.error = err.message || "Failed to load top opportunities.";
+    scanner.loaded = true;
+    if (!silent) {
+      setError(scanner.error);
+    }
+  } finally {
+    scanner.loading = false;
+    render();
+  }
+}
+
 async function analyzeMarketItemBySkinId(rawSkinId) {
   clearError();
   const skinId = Number(rawSkinId);
@@ -5848,8 +6308,8 @@ function renderMarketSourceIcon(source) {
 function getOpportunityScoreTone(score) {
   const value = Number(score || 0);
   if (value >= 90) return "positive";
-  if (value >= 70) return "neutral";
-  if (value >= 50) return "warning";
+  if (value >= 75) return "neutral";
+  if (value >= 60) return "warning";
   return "negative";
 }
 
@@ -5858,23 +6318,134 @@ function formatOpportunityLabel(label, score) {
   if (direct) return direct;
   const value = Number(score || 0);
   if (value >= 90) return "Strong";
-  if (value >= 70) return "Good";
-  if (value >= 50) return "Risky";
+  if (value >= 75) return "Good";
+  if (value >= 60) return "Risky";
   return "Weak";
+}
+
+function getExecutionConfidenceTone(value) {
+  const safe = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (safe === "high") return "positive";
+  if (safe === "medium") return "warning";
+  return "negative";
+}
+
+function formatLiquidityBandLabel(value, volume7d = null) {
+  const safe = String(value || "")
+    .trim()
+    .toLowerCase();
+  const base =
+    safe === "high" ? "High" : safe === "medium" ? "Medium" : "Low";
+  const volume = Number(volume7d || 0);
+  if (!Number.isFinite(volume) || volume <= 0) {
+    return `${base} liquidity`;
+  }
+  return `${base} (${formatNumber(volume, 0)} / 7D)`;
+}
+
+function normalizeOpportunityCategory(value, marketHashName = "") {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (
+    raw === "sticker_capsule" ||
+    raw === "sticker capsule" ||
+    raw === "capsule" ||
+    raw === "capsules"
+  ) {
+    return "sticker_capsule";
+  }
+  if (raw === "case") return "case";
+  if (raw === "weapon_skin") return "weapon_skin";
+  const normalizedName = String(marketHashName || "").trim();
+  if (/sticker capsule$/i.test(normalizedName)) return "sticker_capsule";
+  const fallbackItem = { marketHashName: normalizedName };
+  return isCaseLikeItem(fallbackItem) ? "case" : "weapon_skin";
+}
+
+function formatOpportunityCategoryLabel(value, marketHashName = "") {
+  const category = normalizeOpportunityCategory(value, marketHashName);
+  if (category === "sticker_capsule") return "Capsule";
+  return category === "case" ? "Case" : "Skin";
+}
+
+function getOpportunityCategoryTone(value, marketHashName = "") {
+  const category = normalizeOpportunityCategory(value, marketHashName);
+  if (category === "sticker_capsule") return "capsule";
+  return category === "case" ? "case" : "skin";
 }
 
 function formatArbitrageReasonLabel(reasonCode) {
   const key = String(reasonCode || "")
     .trim()
     .toLowerCase();
+  const scopedSplit = key.split("__");
+  const baseKey = scopedSplit[0] || key;
+  const scopedCategory = scopedSplit[1] || "";
   const map = {
     low_liquidity: "Low liquidity",
     extreme_spread: "Extreme spread",
     insufficient_market_data: "Insufficient market data",
     spread_below_min: "Spread below baseline",
     non_positive_profit: "Non-positive profit",
+    ignored_low_price: "Buy price below execution floor",
+    ignored_low_liquidity: "Low liquidity",
+    ignored_extreme_spread: "Extreme spread",
+    ignored_reference_deviation: "Reference deviation",
+    ignored_missing_markets: "Missing market coverage",
+    ignored_stale_data: "Stale market data",
+    ignored_low_value_universe: "Low-value item",
+    adjusted_buy_outlier: "Buy outlier adjusted",
+    adjusted_sell_outlier: "Sell outlier adjusted",
+    buy_outlier_adjusted: "Buy outlier adjusted",
+    sell_outlier_adjusted: "Sell outlier adjusted",
+    missing_depth: "Missing depth",
+    good_depth: "Good depth",
+    high_liquidity: "High liquidity",
+    medium_liquidity: "Medium liquidity",
+    stale_market_data: "Stale market data",
   };
-  return map[key] || "Filtered by anti-fake checks";
+  const reasonLabel =
+    map[baseKey] || (baseKey ? toTitle(baseKey.replace(/_/g, " ")) : "");
+  if (!reasonLabel) return "Filtered by anti-fake checks";
+  if (!scopedCategory) return reasonLabel;
+  const categoryLabel = formatOpportunityCategoryLabel(scopedCategory);
+  return `${reasonLabel} (${categoryLabel.toLowerCase()}s)`;
+}
+
+function buildOpportunityBadges(row = {}, options = {}) {
+  const { max = 5 } = options;
+  const labels = [];
+  const seen = new Set();
+  const add = (rawValue) => {
+    const raw = String(rawValue || "").trim();
+    if (!raw) return;
+    const looksLikeCode = raw.includes("_") || raw === raw.toUpperCase();
+    const label = looksLikeCode ? formatArbitrageReasonLabel(raw) : raw;
+    const key = label.trim().toLowerCase();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    labels.push(label);
+  };
+
+  const explicitBadges = Array.isArray(row?.badges) ? row.badges : [];
+  const reasonBadges = Array.isArray(row?.reasonBadges) ? row.reasonBadges : [];
+  const flags = Array.isArray(row?.flags)
+    ? row.flags
+    : Array.isArray(row?.depthFlags)
+      ? row.depthFlags
+      : [];
+
+  explicitBadges.forEach(add);
+  reasonBadges.forEach(add);
+  flags.forEach(add);
+
+  if (!Number.isFinite(Number(max)) || max <= 0) {
+    return labels;
+  }
+  return labels.slice(0, Math.max(Number(max), 0));
 }
 
 function isArbitrageDebugEnabled() {
@@ -6429,6 +7000,12 @@ function renderCompareDrawerBody() {
       <div class="compare-drawer-item-meta">
         <p class="compare-drawer-item-name">${escapeHtml(payload.marketHashName)}</p>
         <div class="compare-drawer-item-badges">
+          <span class="compare-drawer-item-badge">Category ${escapeHtml(
+            formatOpportunityCategoryLabel(
+              payload.itemCategory,
+              payload.marketHashName,
+            ),
+          )}</span>
           <span class="compare-drawer-item-badge">Condition ${escapeHtml(
             payload.condition || "Unknown condition",
           )}</span>
@@ -6567,6 +7144,9 @@ function renderCompareDrawerOverlay() {
   const bestSellUrl = String(
     backendArbitrage?.sellUrl || insights?.highestSellMarket?.url || "",
   ).trim();
+  const hasBestBuyTarget = Boolean(bestBuyUrl) || Number(drawer.skinId || 0) > 0;
+  const hasBestSellTarget =
+    Boolean(bestSellUrl) || Number(drawer.skinId || 0) > 0;
   const footerMarkup = `
     <button
       type="button"
@@ -6574,7 +7154,7 @@ function renderCompareDrawerOverlay() {
       id="compare-drawer-open-best-buy-btn"
       data-market-url="${escapeHtml(bestBuyUrl)}"
       data-skin-id="${Number(drawer.skinId || 0)}"
-      ${drawer.skinId && !drawer.loading ? "" : "disabled"}
+      ${hasBestBuyTarget && !drawer.loading ? "" : "disabled"}
     >
       Open Best Buy
     </button>
@@ -6584,7 +7164,7 @@ function renderCompareDrawerOverlay() {
       id="compare-drawer-open-best-sell-btn"
       data-market-url="${escapeHtml(bestSellUrl)}"
       data-skin-id="${Number(drawer.skinId || 0)}"
-      ${drawer.skinId && !drawer.loading ? "" : "disabled"}
+      ${hasBestSellTarget && !drawer.loading ? "" : "disabled"}
     >
       Open Best Sell
     </button>
@@ -8418,11 +8998,28 @@ function renderDashboardArbitragePanel() {
         ${opportunities
           .slice(0, 5)
           .map((row) => {
-            const score = Number(row?.opportunityScore || 0);
+            const score = Number(row?.opportunityScore ?? row?.score ?? 0);
             const scoreTone = getOpportunityScoreTone(score);
             const scoreLabel = formatOpportunityLabel(
               row?.scoreCategory,
               score,
+            );
+            const executionConfidence = String(
+              row?.executionConfidence || "Low",
+            ).trim();
+            const executionTone = getExecutionConfidenceTone(executionConfidence);
+            const liquidityLabel = formatLiquidityBandLabel(
+              row?.liquidityBand,
+              row?.volume7d ?? row?.liquiditySample ?? row?.liquidity,
+            );
+            const badges = buildOpportunityBadges(row, { max: 3 });
+            const categoryLabel = formatOpportunityCategoryLabel(
+              row?.itemCategory,
+              row?.itemName,
+            );
+            const categoryTone = getOpportunityCategoryTone(
+              row?.itemCategory,
+              row?.itemName,
             );
             const skinId = Number(row?.itemId || row?.skinId || 0);
             const isRowClickable = Number.isInteger(skinId) && skinId > 0;
@@ -8436,7 +9033,14 @@ function renderDashboardArbitragePanel() {
               <article class="dashboard-arb-row dashboard-arb-row-opportunity ${
                 isRowClickable ? "dashboard-arb-row-clickable" : ""
               }" ${rowInteractionAttributes}>
-                <strong class="dashboard-arb-item">${escapeHtml(row?.itemName || "Tracked Item")}</strong>
+                <div class="dashboard-arb-item-head">
+                  <strong class="dashboard-arb-item">${escapeHtml(
+                    row?.itemName || "Tracked Item",
+                  )}</strong>
+                  <span class="opportunity-category-badge ${escapeHtml(
+                    categoryTone,
+                  )}">${escapeHtml(categoryLabel)}</span>
+                </div>
                 <p class="dashboard-arb-leg">
                   <span>Buy ${escapeHtml(formatMarketSourceLabel(row?.buyMarket))}</span>
                   <strong>${formatMoney(row?.buyPrice, currencyCode)}</strong>
@@ -8448,7 +9052,7 @@ function renderDashboardArbitragePanel() {
                 <p class="dashboard-arb-profit up">
                   <span>Profit</span>
                   <strong>${formatSignedMoney(row?.profit, currencyCode)} (${formatPercent(
-                    row?.spreadPercent,
+                    row?.spreadPercent ?? row?.spread,
                   )})</strong>
                 </p>
                 <p class="dashboard-arb-score">
@@ -8458,6 +9062,24 @@ function renderDashboardArbitragePanel() {
                   )}</strong>
                   <small>${escapeHtml(scoreLabel)}</small>
                 </p>
+                <p class="dashboard-arb-meta">
+                  <span class="signal-pill ${escapeHtml(executionTone)}">${escapeHtml(
+                    `${executionConfidence} confidence`,
+                  )}</span>
+                  <span class="dashboard-arb-liquidity">${escapeHtml(liquidityLabel)}</span>
+                </p>
+                ${
+                  badges.length
+                    ? `<div class="dashboard-arb-badges">${badges
+                        .map(
+                          (badge) =>
+                            `<span class="opportunity-badge">${escapeHtml(
+                              badge,
+                            )}</span>`,
+                        )
+                        .join("")}</div>`
+                    : ""
+                }
               </article>
             `;
           })
@@ -8473,14 +9095,21 @@ function renderDashboardArbitragePanel() {
         : "dashboard-arbitrage-panel-empty"
     }`,
     title: "Arbitrage Opportunities",
-    subtitle: "Top 5 opportunities sorted by profit.",
+    subtitle: "Top 5 execution-quality opportunities (portfolio-first).",
     actions: `
       <button
         type="button"
         class="ghost-btn tab-jump-btn btn-secondary"
         data-tab-target="market"
       >
-        View All Opportunities
+        Portfolio Scanner
+      </button>
+      <button
+        type="button"
+        class="ghost-btn tab-jump-btn btn-tertiary"
+        data-tab-target="opportunities"
+      >
+        Global Scanner
       </button>
     `,
     body,
@@ -8860,7 +9489,7 @@ function renderTabNav() {
             class="ghost-btn tab-btn sidebar-nav-item ${state.activeTab === tab.id ? "active" : ""}"
             data-tab="${tab.id}"
           >
-            <span>${escapeHtml(`${tab.icon || "•"} ${tab.label}`)}</span>
+            <span>${escapeHtml(`${tab.icon || "\u2022"} ${tab.label}`)}</span>
             <small>${escapeHtml(tab.hint)}</small>
           </button>
         `,
@@ -9340,99 +9969,6 @@ function renderMarketTab() {
   return `
     <section class="grid">
       <article class="panel wide">
-        <h2>Inventory Market Value</h2>
-        <form id="market-inventory-form" class="trade-calc-grid">
-          <label>Commission %
-            <input id="market-commission" type="number" min="0" max="99.99" step="0.01" value="${escapeHtml(
-              state.marketTab.commissionPercent,
-            )}" />
-          </label>
-          <button type="submit" ${state.marketTab.loading ? "disabled" : ""}>
-            ${state.marketTab.loading ? "Loading..." : "Refresh valuation"}
-          </button>
-        </form>
-        <div class="sub-kpi-grid">
-          <article class="sub-kpi-card">
-            <span>Total Gross</span>
-            <strong>${totalGrossLabel}</strong>
-          </article>
-          <article class="sub-kpi-card">
-            <span>Total Net (after commission)</span>
-            <strong>${totalNetLabel}</strong>
-          </article>
-          <article class="sub-kpi-card">
-            <span>Items Count</span>
-            <strong>${itemsCountLabel}</strong>
-          </article>
-        </div>
-        ${valuationMarkup}
-      </article>
-
-      <article class="panel wide">
-        <h2>Item Market Intelligence</h2>
-        <form id="market-item-form" class="trade-calc-grid">
-          <label>Item
-            <select id="market-skin-id" ${holdings.length ? "" : "disabled"}>${marketOptions}</select>
-          </label>
-          <label>Commission %
-            <input id="market-commission-inline" type="number" min="0" max="99.99" step="0.01" value="${escapeHtml(
-              state.marketTab.commissionPercent,
-            )}" />
-          </label>
-          <button type="submit" ${state.marketTab.loading || !holdings.length ? "disabled" : ""}>
-            ${state.marketTab.loading ? "Analyzing..." : "Analyze Item"}
-          </button>
-        </form>
-        ${
-          !hasSuggestionForSelected
-            ? '<p class="muted">Choose an item and run analysis to see quick-sell tiers and liquidity.</p>'
-            : `
-        <h3>${escapeHtml(selectedName)}</h3>
-        <div class="sub-kpi-grid">
-          <article class="sub-kpi-card">
-            <span>Lowest Listing</span>
-            <strong>${formatMoney(suggestion.lowestListingPrice, suggestion.currency || state.currency)}</strong>
-          </article>
-          <article class="sub-kpi-card">
-            <span>Avg 7D</span>
-            <strong>${formatMoney(suggestion.average7dPrice, suggestion.currency || state.currency)}</strong>
-          </article>
-          <article class="sub-kpi-card">
-            <span>Volume 24H</span>
-            <strong>${formatNumber(suggestion.volume24h, 0)}</strong>
-          </article>
-        </div>
-        <table>
-          <thead>
-            <tr><th>Tier</th><th>List Price</th><th>Est. Net</th><th>Expected Fill</th></tr>
-          </thead>
-          <tbody>
-            ${(suggestion.tiers || [])
-              .map(
-                (tier) => `
-                  <tr>
-                    <td>${escapeHtml(toTitle(tier.tier))}</td>
-                    <td>${formatMoney(tier.listPrice, tier.currency || state.currency)}</td>
-                    <td>${formatMoney(tier.estimatedNet, tier.currency || state.currency)}</td>
-                    <td>${escapeHtml(toTitle(tier.expectedFill))}</td>
-                  </tr>
-                `,
-              )
-              .join("")}
-          </tbody>
-        </table>
-        ${
-          liquidity
-            ? `<p class="helper-text">Liquidity: <strong>${formatNumber(
-                liquidity.score,
-              )}/100</strong> (${escapeHtml(toTitle(liquidity.band))})</p>`
-            : ""
-        }
-        `
-        }
-      </article>
-
-      <article class="panel wide">
         <h2>Market Arbitrage Scanner</h2>
         <form id="market-opportunities-form" class="trade-calc-grid market-opportunity-form">
           <label>Min Profit
@@ -9526,6 +10062,403 @@ function renderMarketTab() {
         </p>
         ${scanner.error ? `<p class="muted">${escapeHtml(scanner.error)}</p>` : ""}
         ${opportunityMarkup}
+      </article>
+
+      <article class="panel wide">
+        <h2>Inventory Market Value</h2>
+        <form id="market-inventory-form" class="trade-calc-grid">
+          <label>Commission %
+            <input id="market-commission" type="number" min="0" max="99.99" step="0.01" value="${escapeHtml(
+              state.marketTab.commissionPercent,
+            )}" />
+          </label>
+          <button type="submit" ${state.marketTab.loading ? "disabled" : ""}>
+            ${state.marketTab.loading ? "Loading..." : "Refresh valuation"}
+          </button>
+        </form>
+        <div class="sub-kpi-grid">
+          <article class="sub-kpi-card">
+            <span>Total Gross</span>
+            <strong>${totalGrossLabel}</strong>
+          </article>
+          <article class="sub-kpi-card">
+            <span>Total Net (after commission)</span>
+            <strong>${totalNetLabel}</strong>
+          </article>
+          <article class="sub-kpi-card">
+            <span>Items Count</span>
+            <strong>${itemsCountLabel}</strong>
+          </article>
+        </div>
+        ${valuationMarkup}
+      </article>
+
+      <article class="panel wide">
+        <h2>Item Market Intelligence</h2>
+        <form id="market-item-form" class="trade-calc-grid">
+          <label>Item
+            <select id="market-skin-id" ${holdings.length ? "" : "disabled"}>${marketOptions}</select>
+          </label>
+          <label>Commission %
+            <input id="market-commission-inline" type="number" min="0" max="99.99" step="0.01" value="${escapeHtml(
+              state.marketTab.commissionPercent,
+            )}" />
+          </label>
+          <button type="submit" ${state.marketTab.loading || !holdings.length ? "disabled" : ""}>
+            ${state.marketTab.loading ? "Analyzing..." : "Analyze Item"}
+          </button>
+        </form>
+        ${
+          !hasSuggestionForSelected
+            ? '<p class="muted">Choose an item and run analysis to see quick-sell tiers and liquidity.</p>'
+            : `
+        <h3>${escapeHtml(selectedName)}</h3>
+        <div class="sub-kpi-grid">
+          <article class="sub-kpi-card">
+            <span>Lowest Listing</span>
+            <strong>${formatMoney(suggestion.lowestListingPrice, suggestion.currency || state.currency)}</strong>
+          </article>
+          <article class="sub-kpi-card">
+            <span>Avg 7D</span>
+            <strong>${formatMoney(suggestion.average7dPrice, suggestion.currency || state.currency)}</strong>
+          </article>
+          <article class="sub-kpi-card">
+            <span>Volume 24H</span>
+            <strong>${formatNumber(suggestion.volume24h, 0)}</strong>
+          </article>
+        </div>
+        <table>
+          <thead>
+            <tr><th>Tier</th><th>List Price</th><th>Est. Net</th><th>Expected Fill</th></tr>
+          </thead>
+          <tbody>
+            ${(suggestion.tiers || [])
+              .map(
+                (tier) => `
+                  <tr>
+                    <td>${escapeHtml(toTitle(tier.tier))}</td>
+                    <td>${formatMoney(tier.listPrice, tier.currency || state.currency)}</td>
+                    <td>${formatMoney(tier.estimatedNet, tier.currency || state.currency)}</td>
+                    <td>${escapeHtml(toTitle(tier.expectedFill))}</td>
+                  </tr>
+                `,
+              )
+              .join("")}
+          </tbody>
+        </table>
+        ${
+          liquidity
+            ? `<p class="helper-text">Liquidity: <strong>${formatNumber(
+                liquidity.score,
+              )}/100</strong> (${escapeHtml(toTitle(liquidity.band))})</p>`
+            : ""
+        }
+        `
+        }
+      </article>
+
+    </section>
+  `;
+}
+
+function buildSteamListingUrlByName(marketHashName) {
+  const name = String(marketHashName || "").trim();
+  if (!name) return "";
+  return `https://steamcommunity.com/market/listings/730/${encodeURIComponent(name)}`;
+}
+
+function renderGlobalOpportunitiesTab() {
+  const scanner = state.globalOpportunities || createGlobalOpportunitiesState();
+  const rows = Array.isArray(scanner.items) ? scanner.items : [];
+  const currencyCode = scanner.currency || "USD";
+  const showRisky = Boolean(scanner.showRisky);
+  const categoryFilter = String(scanner.category || "all")
+    .trim()
+    .toLowerCase();
+  const generatedLabel = scanner.generatedAt
+    ? `Updated ${escapeHtml(formatRelativeTime(scanner.generatedAt))}.`
+    : "Waiting for first scanner cycle.";
+  const summary =
+    scanner.summary && typeof scanner.summary === "object" ? scanner.summary : null;
+  const topRejectedItems = Array.isArray(summary?.topRejectedItems)
+    ? summary.topRejectedItems
+    : [];
+  const discardReasonRows = Object.entries(summary?.discardedReasons || {})
+    .filter(([, count]) => Number(count || 0) > 0)
+    .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0));
+
+  const tableMarkup = rows.length
+    ? `
+      <table>
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Buy Market</th>
+            <th>Buy Price</th>
+            <th>Sell Market</th>
+            <th>Sell Net</th>
+            <th>Profit</th>
+            <th>Spread</th>
+            <th>Score</th>
+            <th>Confidence</th>
+            <th>Liquidity</th>
+            <th>Signals</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map((row, index) => {
+              const score = Number(row?.score || 0);
+              const scoreTone = getOpportunityScoreTone(score);
+              const scoreLabel = formatOpportunityLabel(
+                row?.scoreCategory,
+                score,
+              );
+              const executionConfidence = String(
+                row?.executionConfidence || "Low",
+              ).trim();
+              const confidenceTone = getExecutionConfidenceTone(
+                executionConfidence,
+              );
+              const liquidityLabel = formatLiquidityBandLabel(
+                row?.liquidityBand,
+                row?.volume7d ?? row?.liquidity,
+              );
+              const badges = buildOpportunityBadges(row, { max: 5 });
+              const itemId = Number(row?.itemId || 0);
+              const marketHashName = String(row?.itemName || "").trim();
+              const itemCategory = normalizeOpportunityCategory(
+                row?.itemCategory,
+                marketHashName,
+              );
+              const categoryLabel = formatOpportunityCategoryLabel(
+                itemCategory,
+                marketHashName,
+              );
+              const categoryTone = getOpportunityCategoryTone(
+                itemCategory,
+                marketHashName,
+              );
+              const itemImage = String(row?.itemImageUrl || "").trim();
+              const fallbackImage =
+                itemCategory === "case" ? defaultCaseImage : defaultSkinImage;
+              const inspectUrl =
+                String(row?.buyUrl || row?.sellUrl || "").trim() ||
+                buildSteamListingUrlByName(row?.itemName);
+              const compareUrl =
+                String(row?.sellUrl || row?.buyUrl || "").trim() ||
+                buildSteamListingUrlByName(row?.itemName);
+              const hasInspectTarget = Boolean(
+                itemId > 0 || inspectUrl || marketHashName,
+              );
+              const hasCompareTarget = Boolean(
+                itemId > 0 || compareUrl || marketHashName,
+              );
+
+              return `
+                <tr>
+                  <td>
+                    <div class="opportunity-item-cell">
+                      <img
+                        class="opportunity-item-thumb"
+                        src="${escapeHtml(itemImage || fallbackImage)}"
+                        alt="${escapeHtml(row?.itemName || "Tracked Item")}"
+                        loading="lazy"
+                        onerror="this.onerror=null;this.src='${escapeHtml(fallbackImage)}';"
+                      />
+                      <div class="opportunity-item-meta">
+                        <strong>${escapeHtml(row?.itemName || "Tracked Item")}</strong>
+                        <span class="opportunity-category-badge ${escapeHtml(
+                          categoryTone,
+                        )}">${escapeHtml(categoryLabel)}</span>
+                      </div>
+                    </div>
+                  </td>
+                  <td>${escapeHtml(formatMarketSourceLabel(row?.buyMarket))}</td>
+                  <td>${formatMoney(row?.buyPrice, currencyCode)}</td>
+                  <td>${escapeHtml(formatMarketSourceLabel(row?.sellMarket))}</td>
+                  <td>${formatMoney(row?.sellNet, currencyCode)}</td>
+                  <td><strong class="pnl-text up">${formatSignedMoney(row?.profit, currencyCode)}</strong></td>
+                  <td>${formatPercent(row?.spread)}</td>
+                  <td class="opportunity-score-cell">
+                    <span class="score-pill ${escapeHtml(scoreTone)}">${escapeHtml(
+                      `${formatNumber(score, 0)}/100`,
+                    )}</span>
+                    <small>${escapeHtml(scoreLabel)}</small>
+                  </td>
+                  <td class="opportunity-signal-cell">
+                    <span class="signal-pill ${escapeHtml(confidenceTone)}">${escapeHtml(
+                      executionConfidence,
+                    )}</span>
+                  </td>
+                  <td class="opportunity-liquidity-cell">
+                    <strong>${escapeHtml(liquidityLabel)}</strong>
+                    <small>${escapeHtml(
+                      `Coverage ${formatNumber(row?.marketCoverage || 0, 0)} market(s)`,
+                    )}</small>
+                  </td>
+                  <td class="opportunity-badges-cell">
+                    ${
+                      badges.length
+                        ? `<div class="opportunity-badges">${badges
+                            .map(
+                              (badge) =>
+                                `<span class="opportunity-badge">${escapeHtml(
+                                  badge,
+                                )}</span>`,
+                            )
+                            .join("")}</div>`
+                        : '<span class="muted">-</span>'
+                    }
+                  </td>
+                  <td class="actions-cell">
+                    <button
+                      type="button"
+                      class="ghost-btn opportunity-inspect-btn"
+                      data-skin-id="${escapeHtml(String(itemId || ""))}"
+                      data-inspect-url="${escapeHtml(inspectUrl)}"
+                      ${hasInspectTarget ? "" : "disabled"}
+                    >
+                      Inspect
+                    </button>
+                    <button
+                      type="button"
+                      class="ghost-btn opportunity-compare-btn"
+                      data-opportunity-index="${escapeHtml(String(index))}"
+                      data-skin-id="${escapeHtml(String(itemId || ""))}"
+                      data-compare-url="${escapeHtml(compareUrl)}"
+                      ${hasCompareTarget ? "" : "disabled"}
+                    >
+                      Compare
+                    </button>
+                  </td>
+                </tr>
+              `;
+            })
+            .join("")}
+        </tbody>
+      </table>
+    `
+    : `<p class="muted">${
+        scanner.loading
+          ? "Loading opportunities..."
+          : showRisky
+            ? "No opportunities were found for the current scanner snapshot."
+            : "No high-confidence opportunities matched the current filters."
+      }</p>`;
+
+  return `
+    <section class="grid">
+      <article class="panel wide">
+        <h2>Top Arbitrage Opportunities</h2>
+        <p class="helper-text">
+          Top 100 universe across skins, cases, and capsules. Default view shows only high-quality execution setups.
+        </p>
+        <div class="row opportunities-toolbar">
+          <button
+            id="global-opportunities-refresh-btn"
+            type="button"
+            ${scanner.loading ? "disabled" : ""}
+          >
+            ${scanner.loading ? "Refreshing..." : "Refresh"}
+          </button>
+          <label
+            class="opportunity-risk-toggle"
+            for="global-opportunities-show-risky"
+          >
+            <input
+              id="global-opportunities-show-risky"
+              type="checkbox"
+              ${showRisky ? "checked" : ""}
+              ${scanner.loading ? "disabled" : ""}
+            />
+            <span>Show risky opportunities</span>
+          </label>
+          <label class="opportunity-category-filter" for="global-opportunities-category">
+            <span>Category</span>
+            <select
+              id="global-opportunities-category"
+              ${scanner.loading ? "disabled" : ""}
+            >
+              <option value="all" ${categoryFilter === "all" ? "selected" : ""}>All</option>
+              <option value="skins" ${categoryFilter === "skins" ? "selected" : ""}>Skins</option>
+              <option value="cases" ${categoryFilter === "cases" ? "selected" : ""}>Cases</option>
+              <option value="capsules" ${categoryFilter === "capsules" ? "selected" : ""}>Capsules</option>
+            </select>
+          </label>
+        </div>
+        <p class="helper-text">
+          ${
+            summary
+              ? `Scanned ${formatNumber(summary.scannedItems || 0, 0)} items. Showing ${formatNumber(
+                  rows.length,
+                  0,
+                )} ${showRisky ? "opportunities" : "high-quality opportunities"}${
+                  Number(summary.totalDetected || 0) > 0
+                    ? ` (detected ${formatNumber(summary.totalDetected, 0)} total).`
+                    : "."
+                }`
+              : "Waiting for scanner summary."
+          }
+          ${generatedLabel}
+        </p>
+        ${
+          !showRisky
+            ? '<p class="helper-text">High-quality mode hides low-confidence opportunities by default.</p>'
+            : ""
+        }
+        ${scanner.error ? `<p class="muted">${escapeHtml(scanner.error)}</p>` : ""}
+        ${
+          discardReasonRows.length
+            ? `<details class="opportunity-debug">
+                <summary>Discard diagnostics</summary>
+                <ul class="opportunity-debug-list">
+                  ${discardReasonRows
+                    .map(
+                      ([reason, count]) =>
+                        `<li>${escapeHtml(formatArbitrageReasonLabel(reason))}: <strong>${escapeHtml(
+                          formatNumber(count, 0),
+                        )}</strong></li>`,
+                    )
+                    .join("")}
+                </ul>
+                ${
+                  topRejectedItems.length
+                    ? `<div class="opportunity-debug-rejected">
+                        <p class="opportunity-debug-rejected-title">Top rejected items</p>
+                        <ul class="opportunity-debug-rejected-list">
+                          ${topRejectedItems
+                            .map((entry) => {
+                              const itemName = String(entry?.itemName || "Unknown item");
+                              const rejectedCount = Number(entry?.rejectedCount || 0);
+                              const itemCategory = normalizeOpportunityCategory(
+                                entry?.category,
+                                itemName,
+                              );
+                              const mainReason = formatArbitrageReasonLabel(
+                                entry?.mainReason,
+                              );
+                              return `<li><strong>${escapeHtml(
+                                itemName,
+                              )}</strong> <span>${escapeHtml(
+                                `${formatOpportunityCategoryLabel(itemCategory)} \u2022 `,
+                              )}${escapeHtml(
+                                `${mainReason} (${formatNumber(
+                                  rejectedCount,
+                                  0,
+                                )})`,
+                              )}</span></li>`;
+                            })
+                            .join("")}
+                        </ul>
+                      </div>`
+                    : ""
+                }
+              </details>`
+            : ""
+        }
+        ${tableMarkup}
       </article>
     </section>
   `;
@@ -10343,6 +11276,8 @@ function renderApp() {
   const tabContent =
     state.activeTab === "dashboard"
       ? dashboardContent
+      : state.activeTab === "opportunities"
+        ? renderGlobalOpportunitiesTab()
       : state.activeTab === "portfolio"
         ? portfolioContent
         : state.activeTab === "trades"
@@ -10450,6 +11385,14 @@ function renderApp() {
   focusCompareDrawerIfNeeded();
   restoreInputFocusIfNeeded();
   scheduleDashboardKpiPinnedSync();
+
+  if (
+    state.activeTab === "opportunities" &&
+    !state.globalOpportunities.loading &&
+    !state.globalOpportunities.loaded
+  ) {
+    runUiTask(() => refreshGlobalOpportunities({ silent: true, limit: 100 }));
+  }
 
   if (
     state.activeTab === "market" &&
@@ -10585,6 +11528,11 @@ function hydrateAppNoticesFromUrl() {
     return;
   }
 
+  if (isOpportunitiesPath()) {
+    window.history.replaceState({}, "", "/opportunities");
+    return;
+  }
+
   window.history.replaceState({}, "", "/");
 }
 
@@ -10611,7 +11559,12 @@ function handleWindowNavigationChange() {
     if (state.authenticated && !state.accountPage.apiKeys.loaded) {
       runUiTask(() => loadAccountApiKeys({ silent: true }));
     }
-  } else if (state.activeTab === "settings") {
+  } else if (isOpportunitiesPath()) {
+    state.activeTab = "opportunities";
+  } else if (
+    state.activeTab === "settings" ||
+    state.activeTab === "opportunities"
+  ) {
     state.activeTab = "dashboard";
   }
 
@@ -10620,9 +11573,13 @@ function handleWindowNavigationChange() {
 
 async function bootstrapSession() {
   state.publicPage.steamId64 = getPublicSteamIdFromPath();
-  if (!state.publicPage.steamId64 && isAccountPath()) {
-    state.activeTab = "settings";
-    state.accountPage.activeSection = parseAccountSectionFromHash();
+  if (!state.publicPage.steamId64) {
+    if (isAccountPath()) {
+      state.activeTab = "settings";
+      state.accountPage.activeSection = parseAccountSectionFromHash();
+    } else if (isOpportunitiesPath()) {
+      state.activeTab = "opportunities";
+    }
   }
   hydrateAppNoticesFromUrl();
   render();

@@ -55,3 +55,23 @@ exports.getLatestBySkinIds = async (skinIds) => {
 
   return map;
 };
+
+exports.getRecentSnapshots = async (options = {}) => {
+  const limit = Math.min(
+    Math.max(Number(options.limit || 20000), 1),
+    50000
+  );
+  const { data, error } = await supabaseAdmin
+    .from("market_item_snapshots")
+    .select(
+      "skin_id, lowest_listing_price, average_7d_price, volume_24h, spread_percent, volatility_7d_percent, currency, captured_at"
+    )
+    .order("captured_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  return data || [];
+};

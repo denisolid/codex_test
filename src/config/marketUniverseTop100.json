@@ -1,0 +1,670 @@
+[
+  {
+    "marketHashName": "AK-47 | Redline (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AK-47 | Slate (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AK-47 | Bloodsport (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AK-47 | Case Hardened (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AK-47 | Vulcan (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AWP | Asiimov (Battle-Scarred)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AWP | Hyper Beast (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AWP | Neo-Noir (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AWP | Redline (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A4 | Neo-Noir (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A4 | The Emperor (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A4 | Temukau (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A1-S | Printstream (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A1-S | Hyper Beast (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A1-S | Mecha Industries (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Desert Eagle | Printstream (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Glock-18 | Neo-Noir (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "USP-S | Kill Confirmed (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "USP-S | Printstream (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "USP-S | Neo-Noir (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Revolution Case",
+    "category": "case",
+    "subcategory": "weapon_case",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Fracture Case",
+    "category": "case",
+    "subcategory": "weapon_case",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Recoil Case",
+    "category": "case",
+    "subcategory": "weapon_case",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Clutch Case",
+    "category": "case",
+    "subcategory": "weapon_case",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Dreams & Nightmares Case",
+    "category": "case",
+    "subcategory": "weapon_case",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Snakebite Case",
+    "category": "case",
+    "subcategory": "weapon_case",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Prisma 2 Case",
+    "category": "case",
+    "subcategory": "weapon_case",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Chroma 3 Case",
+    "category": "case",
+    "subcategory": "weapon_case",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Gamma 2 Case",
+    "category": "case",
+    "subcategory": "weapon_case",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Operation Breakout Weapon Case",
+    "category": "case",
+    "subcategory": "weapon_case",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Spectrum 2 Case",
+    "category": "case",
+    "subcategory": "weapon_case",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Danger Zone Case",
+    "category": "case",
+    "subcategory": "weapon_case",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Horizon Case",
+    "category": "case",
+    "subcategory": "weapon_case",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Copenhagen 2024 Legends Sticker Capsule",
+    "category": "sticker_capsule",
+    "subcategory": "major_sticker_capsule",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Copenhagen 2024 Challengers Sticker Capsule",
+    "category": "sticker_capsule",
+    "subcategory": "major_sticker_capsule",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Copenhagen 2024 Contenders Sticker Capsule",
+    "category": "sticker_capsule",
+    "subcategory": "major_sticker_capsule",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Paris 2023 Legends Sticker Capsule",
+    "category": "sticker_capsule",
+    "subcategory": "major_sticker_capsule",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Paris 2023 Challengers Sticker Capsule",
+    "category": "sticker_capsule",
+    "subcategory": "major_sticker_capsule",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Paris 2023 Contenders Sticker Capsule",
+    "category": "sticker_capsule",
+    "subcategory": "major_sticker_capsule",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Rio 2022 Legends Sticker Capsule",
+    "category": "sticker_capsule",
+    "subcategory": "major_sticker_capsule",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Rio 2022 Challengers Sticker Capsule",
+    "category": "sticker_capsule",
+    "subcategory": "major_sticker_capsule",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Rio 2022 Contenders Sticker Capsule",
+    "category": "sticker_capsule",
+    "subcategory": "major_sticker_capsule",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Antwerp 2022 Legends Sticker Capsule",
+    "category": "sticker_capsule",
+    "subcategory": "major_sticker_capsule",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Antwerp 2022 Challengers Sticker Capsule",
+    "category": "sticker_capsule",
+    "subcategory": "major_sticker_capsule",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Antwerp 2022 Contenders Sticker Capsule",
+    "category": "sticker_capsule",
+    "subcategory": "major_sticker_capsule",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Stockholm 2021 Legends Sticker Capsule",
+    "category": "sticker_capsule",
+    "subcategory": "major_sticker_capsule",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Stockholm 2021 Challengers Sticker Capsule",
+    "category": "sticker_capsule",
+    "subcategory": "major_sticker_capsule",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Stockholm 2021 Contenders Sticker Capsule",
+    "category": "sticker_capsule",
+    "subcategory": "major_sticker_capsule",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AWP | Lightning Strike",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Desert Eagle | Blaze",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AWP | Graphite",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AK-47 | Fuel Injector (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AK-47 | Neon Rider (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AK-47 | Asiimov (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AK-47 | The Empress (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AK-47 | Nightwish (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AK-47 | Ice Coaled (Factory New)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AWP | Wildfire (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AWP | Containment Breach (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AWP | Chromatic Aberration (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AWP | Mortis (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AWP | Fever Dream (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AWP | Electric Hive (Factory New)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AWP | BOOM (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AWP | Man-o'-war (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AWP | Sun in Leo (Factory New)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A4 | Desolate Space (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A4 | In Living Color (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A4 | Hellfire (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A4 | Buzz Kill (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A4 | Cyber Security (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A4 | Royal Paladin (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A4 | Evil Daimyo (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A1-S | Cyrex (Factory New)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A1-S | Decimator (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A1-S | Player Two (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A1-S | Chantico's Fire (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A1-S | Golden Coil (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A1-S | Nightmare (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A1-S | Leaded Glass (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A1-S | Night Terror (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "M4A1-S | Basilisk (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Desert Eagle | Code Red (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Desert Eagle | Ocean Drive (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Desert Eagle | Kumicho Dragon (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Desert Eagle | Conspiracy (Factory New)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Desert Eagle | Mecha Industries (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Desert Eagle | Trigger Discipline (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Desert Eagle | Corinthian (Factory New)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Desert Eagle | Crimson Web (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Glock-18 | Fade (Factory New)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Glock-18 | Vogue (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Glock-18 | Bullet Queen (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Glock-18 | Water Elemental (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Glock-18 | Gamma Doppler (Factory New)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Glock-18 | Snack Attack (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Glock-18 | Wasteland Rebel (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Glock-18 | Weasel (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "USP-S | The Traitor (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "USP-S | Monster Mashup (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "USP-S | Cortex (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "USP-S | Jawbreaker (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "USP-S | Cyrex (Factory New)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "USP-S | Orion (Factory New)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "USP-S | Ticket to Hell (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "P250 | See Ya Later (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "P250 | Asiimov (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "P250 | Muertos (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "P250 | Visions (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Five-SeveN | Hyper Beast (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Five-SeveN | Angry Mob (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Five-SeveN | Fairy Tale (Factory New)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Five-SeveN | Monkey Business (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Tec-9 | Decimator (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Tec-9 | Fuel Injector (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "MP9 | Starlight Protector (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "MP9 | Food Chain (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "MP7 | Bloodsport (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "P90 | Asiimov (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "P90 | Death by Kitty (Factory New)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "FAMAS | Commemoration (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "FAMAS | Roll Cage (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Galil AR | Chatterbox (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "Galil AR | Eco (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "SG 553 | Cyrex (Factory New)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "AUG | Akihabara Accept (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "UMP-45 | Primal Saber (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  },
+  {
+    "marketHashName": "MAC-10 | Neon Rider (Field-Tested)",
+    "category": "weapon_skin",
+    "scan_enabled": true
+  }
+]

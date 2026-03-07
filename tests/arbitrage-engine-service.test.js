@@ -35,6 +35,8 @@ test("evaluateItemOpportunity returns profitable opportunity with score and cate
   assert.equal(result.isOpportunity, true);
   assert.ok(Number(result.spreadPercent) >= 5);
   assert.ok(Number(result.opportunityScore) >= 0);
+  assert.equal(result.scoreCategory, "Good");
+  assert.equal(typeof result.executionConfidence, "string");
   assert.equal(result.scoreCategory, categorizeOpportunityScore(result.opportunityScore));
 });
 
@@ -57,14 +59,15 @@ test("evaluateItemOpportunity flags non-opportunity when spread is below thresho
 });
 
 test("score helper buckets follow expected thresholds", () => {
-  assert.equal(getSpreadScore(16), 100);
-  assert.equal(getSpreadScore(12), 80);
+  assert.equal(getSpreadScore(16), 80);
+  assert.equal(getSpreadScore(28), 90);
+  assert.equal(getSpreadScore(55), 70);
   assert.equal(getSpreadScore(7), 60);
-  assert.equal(getSpreadScore(2.9), 40);
+  assert.equal(getSpreadScore(2.9), 20);
 
-  assert.equal(getLiquidityScore(250), 100);
-  assert.equal(getLiquidityScore(180), 80);
-  assert.equal(getLiquidityScore(70), 60);
+  assert.equal(getLiquidityScore(250), 85);
+  assert.equal(getLiquidityScore(180), 70);
+  assert.equal(getLiquidityScore(70), 30);
   assert.equal(getLiquidityScore(20), 30);
 
   assert.equal(getStabilityScore(2), 100);
@@ -72,7 +75,7 @@ test("score helper buckets follow expected thresholds", () => {
   assert.equal(getStabilityScore(15), 50);
   assert.equal(getStabilityScore(31), 20);
 
-  assert.equal(getMarketScore("steam", "skinport"), 95);
+  assert.equal(getMarketScore("steam", "skinport"), 94);
 });
 
 test("rankOpportunities applies filters and sort order", () => {
@@ -135,7 +138,7 @@ test("evaluateItemOpportunity filters fake extreme spread opportunities", () => 
 
   assert.equal(result.isOpportunity, false);
   assert.ok(Array.isArray(result?.antiFake?.reasons));
-  assert.ok(result.antiFake.reasons.includes("extreme_spread"));
+  assert.ok(result.antiFake.reasons.includes("ignored_extreme_spread"));
 });
 
 test("evaluateItemOpportunity rejects low-liquidity setups", () => {
@@ -161,37 +164,40 @@ test("evaluateItemOpportunity rejects low-liquidity setups", () => {
   });
 
   assert.equal(result.isOpportunity, false);
-  assert.ok(result?.antiFake?.reasons?.includes("low_liquidity"));
+  assert.ok(result?.antiFake?.reasons?.includes("ignored_low_liquidity"));
 });
 
 test("evaluateItemOpportunity replaces outlier buy_top1 with buy_top2", () => {
   const result = evaluateItemOpportunity({
     skinId: 901,
     marketHashName: "Five-SeveN | Orange Peel",
+    liquiditySales: 260,
     perMarket: [
       {
         source: "steam",
         available: true,
-        grossPrice: 0.02,
-        netPriceAfterFees: 0.0174,
-        volume7d: 240,
+        grossPrice: 4.1,
+        netPriceAfterFees: 3.57,
+        volume7d: 260,
         orderbook: {
-          buy_top1: 0.02,
-          buy_top2: 0.35
+          buy_top1: 4.1,
+          buy_top2: 12.4
         }
       },
       {
         source: "dmarket",
         available: true,
-        grossPrice: 0.94,
-        netPriceAfterFees: 0.92,
-        volume7d: 240
+        grossPrice: 14.3,
+        netPriceAfterFees: 13.7,
+        volume7d: 260
       }
     ]
   });
 
   assert.equal(result.isOpportunity, true);
   assert.equal(result.buyMarket, "steam");
-  assert.equal(result.buyPrice, 0.35);
+  assert.equal(result.buyPrice, 12.4);
   assert.equal(result?.antiFake?.outlier?.buyAdjusted, true);
+  assert.ok(Array.isArray(result.depthFlags));
+  assert.ok(result.depthFlags.includes("BUY_OUTLIER_ADJUSTED"));
 });

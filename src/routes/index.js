@@ -9,6 +9,7 @@ router.use("/skins", require("./skinRoutes"));
 router.use("/transactions", require("./transactionRoutes"));
 router.use("/market", require("./marketRoutes"));
 router.use("/markets", require("./marketRoutes"));
+router.use("/opportunities", require("./opportunitiesRoutes"));
 router.use("/trade", require("./tradeRoutes"));
 router.use("/alerts", require("./alertRoutes"));
 router.use("/extension", require("./extensionRoutes"));

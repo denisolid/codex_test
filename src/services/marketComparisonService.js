@@ -43,6 +43,13 @@ function normalizeText(value) {
   return String(value || "").trim();
 }
 
+function toFiniteOrNull(value) {
+  if (value == null) return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function normalizePricingMode(value) {
   const mode = String(value || "")
     .trim()
@@ -113,13 +120,13 @@ function normalizeItems(items = []) {
     seen.add(marketHashName);
 
     const quantity = Math.max(Number(item?.quantity || 0), 0);
-    const sevenDayChangePercent = Number(
+    const sevenDayChangePercent = toFiniteOrNull(
       item?.sevenDayChangePercent ??
         item?.seven_day_change_percent ??
         item?.change7dPercent ??
         item?.priceChange7dPercent
     );
-    const liquiditySales = Number(
+    const liquiditySales = toFiniteOrNull(
       item?.liquiditySales ??
         item?.salesCount ??
         item?.sales ??
@@ -127,7 +134,7 @@ function normalizeItems(items = []) {
         item?.marketVolume24h ??
         item?.marketVolume7d
     );
-    const liquidityScore = Number(
+    const liquidityScore = toFiniteOrNull(
       item?.liquidityScore ??
         item?.managementClue?.metrics?.liquidityScore ??
         item?.marketComparison?.liquidityScore
@@ -135,15 +142,15 @@ function normalizeItems(items = []) {
     normalized.push({
       skinId: Number(item?.skinId || item?.skin_id || 0) || null,
       marketHashName,
+      itemCategory: String(item?.itemCategory || item?.category || "").trim() || null,
+      itemSubcategory: String(item?.itemSubcategory || item?.subcategory || "").trim() || null,
       quantity,
       steamPrice: Number(item?.steamPrice || item?.currentPrice || 0),
       steamCurrency: normalizeText(item?.steamCurrency || item?.currency || "USD") || "USD",
       steamRecordedAt: item?.steamRecordedAt || item?.currentPriceRecordedAt || null,
-      sevenDayChangePercent: Number.isFinite(sevenDayChangePercent)
-        ? sevenDayChangePercent
-        : null,
-      liquiditySales: Number.isFinite(liquiditySales) ? liquiditySales : null,
-      liquidityScore: Number.isFinite(liquidityScore) ? liquidityScore : null
+      sevenDayChangePercent,
+      liquiditySales,
+      liquidityScore
     });
   }
 
@@ -607,6 +614,8 @@ exports.compareItems = async (items = [], options = {}) => {
     const arbitrage = arbitrageEngine.evaluateItemOpportunity({
       skinId: item.skinId,
       marketHashName: item.marketHashName,
+      itemCategory: item.itemCategory,
+      itemSubcategory: item.itemSubcategory,
       perMarket,
       sevenDayChangePercent: item.sevenDayChangePercent,
       liquiditySales: item.liquiditySales,
@@ -627,6 +636,8 @@ exports.compareItems = async (items = [], options = {}) => {
     return {
       skinId: item.skinId,
       marketHashName: item.marketHashName,
+      itemCategory: item.itemCategory,
+      itemSubcategory: item.itemSubcategory,
       quantity: Number(item.quantity || 0),
       perMarket,
       bestBuy: bestBuy

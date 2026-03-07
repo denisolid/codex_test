@@ -11,6 +11,14 @@
     {
       "source": "/u/(.*)",
       "destination": "/index.html"
+    },
+    {
+      "source": "/opportunities",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/opportunities/(.*)",
+      "destination": "/index.html"
     }
   ]
 }
