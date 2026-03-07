@@ -147,8 +147,17 @@ module.exports = {
     process.env.PRICE_UPDATER_RATE_LIMIT_PER_SECOND || 5
   ),
   arbitrageScannerIntervalMinutes: Number(
-    process.env.ARBITRAGE_SCANNER_INTERVAL_MINUTES || 5
+    process.env.ARBITRAGE_SCANNER_INTERVAL_MINUTES || 30
   ),
+  arbitrageFeedRetentionHours: Number(process.env.ARBITRAGE_FEED_RETENTION_HOURS || 24),
+  arbitrageFeedActiveLimit: Number(process.env.ARBITRAGE_FEED_ACTIVE_LIMIT || 500),
+  arbitrageDuplicateWindowHours: Number(process.env.ARBITRAGE_DUPLICATE_WINDOW_HOURS || 4),
+  arbitrageMinProfitChangePct: Number(process.env.ARBITRAGE_MIN_PROFIT_CHANGE_PCT || 10),
+  arbitrageMinScoreChange: Number(process.env.ARBITRAGE_MIN_SCORE_CHANGE || 8),
+  arbitrageInsertDuplicates:
+    process.env.ARBITRAGE_INSERT_DUPLICATES == null
+      ? false
+      : process.env.ARBITRAGE_INSERT_DUPLICATES === "true",
   alertCheckIntervalMinutes: Number(process.env.ALERT_CHECK_INTERVAL_MINUTES || 5),
   alertCheckBatchSize: Number(process.env.ALERT_CHECK_BATCH_SIZE || 250),
   traderModePriceUsd: Number(process.env.TRADER_MODE_PRICE_USD || 29),

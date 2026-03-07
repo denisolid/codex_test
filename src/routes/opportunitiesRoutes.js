@@ -14,4 +14,17 @@ router.get(
   ctrl.getTopOpportunities
 );
 
+router.get(
+  "/feed",
+  parseOptionalNumericQuery("limit", {
+    storeAs: "limit",
+    message: "limit must be numeric"
+  }),
+  ctrl.getFeed
+);
+
+router.post("/refresh", ctrl.refreshFeed);
+
+router.get("/status", ctrl.getScannerStatus);
+
 module.exports = router;

@@ -5513,6 +5513,12 @@ a:hover {
   line-height: 1.2;
 }
 
+.opportunity-badge.new {
+  border-color: rgba(46, 229, 143, 0.56);
+  background: rgba(46, 229, 143, 0.14);
+  color: #9ef5c0;
+}
+
 .opportunity-category-badge {
   display: inline-flex;
   align-items: center;
@@ -5596,6 +5602,26 @@ a:hover {
   display: grid;
   gap: 4px;
   min-width: 0;
+}
+
+.opportunity-item-subline {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  line-height: 1.2;
+}
+
+@keyframes opportunity-feed-new-pulse {
+  0% {
+    background-color: rgba(46, 229, 143, 0.16);
+  }
+  100% {
+    background-color: rgba(46, 229, 143, 0.04);
+  }
+}
+
+tr.opportunity-row-new td {
+  background: rgba(46, 229, 143, 0.04);
+  animation: opportunity-feed-new-pulse 1.6s ease-out 1;
 }
 
 .opportunity-score-cell,

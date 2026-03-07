@@ -251,8 +251,12 @@ function createGlobalOpportunitiesState() {
     generatedAt: null,
     currency: "USD",
     showRisky: false,
+    showOlder: false,
     category: "all",
     summary: null,
+    status: null,
+    pendingScanRunId: "",
+    seenFeedIds: [],
     items: [],
   };
 }
@@ -1886,6 +1890,22 @@ function formatRelativeTime(isoValue) {
   return `${Math.floor(deltaSeconds / 86400)}d ago`;
 }
 
+function formatTimeUntil(isoValue) {
+  if (!isoValue) return "-";
+  const ts = new Date(isoValue).getTime();
+  if (Number.isNaN(ts)) return "-";
+  const deltaSeconds = Math.max(Math.round((ts - Date.now()) / 1000), 0);
+  if (deltaSeconds <= 0) return "due now";
+  if (deltaSeconds < 60) return `${deltaSeconds}s`;
+  if (deltaSeconds < 3600) return `${Math.floor(deltaSeconds / 60)}m`;
+  if (deltaSeconds < 86400) {
+    const hours = Math.floor(deltaSeconds / 3600);
+    const minutes = Math.floor((deltaSeconds % 3600) / 60);
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+  return `${Math.floor(deltaSeconds / 86400)}d`;
+}
+
 function formatDateTime(isoValue) {
   if (!isoValue) return "-";
   const ts = new Date(isoValue);
@@ -3046,7 +3066,7 @@ function openCompareDrawerByOpportunity(opportunity, triggerElement = null) {
       arbitrage: null,
     },
     fees: state.portfolio?.pricing?.fees || null,
-    generatedAt: state.globalOpportunities?.generatedAt || null,
+    generatedAt: row?.detectedAt || state.globalOpportunities?.generatedAt || null,
   };
   render();
 
@@ -3058,7 +3078,7 @@ function openCompareDrawerByOpportunity(opportunity, triggerElement = null) {
       quantity: 1,
       steamPrice: seedCurrentPrice,
       steamCurrency: seedCurrency,
-      steamRecordedAt: state.globalOpportunities?.generatedAt || null,
+      steamRecordedAt: row?.detectedAt || state.globalOpportunities?.generatedAt || null,
       currentPriceSource: seedSourceLabel,
       itemCategory: row?.itemCategory || "",
       imageUrl: fallbackImage,
@@ -4150,6 +4170,20 @@ function onAppChange(event) {
         force: true,
         limit: 100,
         showRisky: checked,
+      }),
+    );
+    return;
+  }
+
+  if (target.matches("#global-opportunities-show-older")) {
+    const checked =
+      target instanceof HTMLInputElement ? Boolean(target.checked) : false;
+    state.globalOpportunities.showOlder = checked;
+    runUiTask(() =>
+      refreshGlobalOpportunities({
+        force: false,
+        limit: 100,
+        showOlder: checked,
       }),
     );
     return;
@@ -5484,12 +5518,15 @@ async function refreshGlobalOpportunities(options = {}) {
     force = false,
     showRisky = null,
     category = null,
+    showOlder = null,
   } =
     options;
   const scanner = state.globalOpportunities || createGlobalOpportunitiesState();
   state.globalOpportunities = scanner;
   scanner.showRisky =
     showRisky == null ? Boolean(scanner.showRisky) : Boolean(showRisky);
+  scanner.showOlder =
+    showOlder == null ? Boolean(scanner.showOlder) : Boolean(showOlder);
   scanner.category =
     category == null
       ? String(scanner.category || "all")
@@ -5503,9 +5540,20 @@ async function refreshGlobalOpportunities(options = {}) {
   }
 
   try {
-    const query = buildQuery({
+    let pendingScanRunId = String(scanner.pendingScanRunId || "").trim();
+    if (force) {
+      const refreshPayload = await api("/opportunities/refresh", {
+        method: "POST",
+        body: JSON.stringify({ trigger: "manual" }),
+      });
+      pendingScanRunId = String(refreshPayload?.scanRunId || "").trim();
+      scanner.pendingScanRunId = pendingScanRunId;
+    }
+
+    const feedQuery = buildQuery({
       limit: Math.max(Number(limit || 100), 1),
       showRisky: scanner.showRisky ? "1" : "",
+      includeOlder: scanner.showOlder ? "1" : "",
       category:
         scanner.category === "skins"
           ? "weapon_skin"
@@ -5514,13 +5562,51 @@ async function refreshGlobalOpportunities(options = {}) {
             : scanner.category === "capsules"
               ? "sticker_capsule"
             : "",
-      force: force ? "1" : "",
     });
-    const payload = await api(`/opportunities/top${query}`);
-    scanner.items = Array.isArray(payload?.opportunities) ? payload.opportunities : [];
-    scanner.summary = payload?.summary || null;
-    scanner.generatedAt = payload?.generatedAt || null;
-    scanner.currency = String(payload?.currency || "USD")
+    const [feedPayload, statusPayload] = await Promise.all([
+      api(`/opportunities/feed${feedQuery}`),
+      api("/opportunities/status"),
+    ]);
+    const incomingRows = Array.isArray(feedPayload?.opportunities)
+      ? feedPayload.opportunities
+      : [];
+    const seenFeedIds = new Set(
+      Array.isArray(scanner.seenFeedIds) ? scanner.seenFeedIds : [],
+    );
+    const allowNewBadge = Boolean(scanner.loaded);
+    const nowTs = Date.now();
+    const newBadgeWindowMs = 45 * 60 * 1000;
+    scanner.items = incomingRows.map((row) => {
+      const feedId = normalizeFeedId(row);
+      const detectedTs = new Date(row?.detectedAt || "").getTime();
+      const isRecentDetection =
+        Number.isFinite(detectedTs) &&
+        detectedTs > 0 &&
+        nowTs - detectedTs >= 0 &&
+        nowTs - detectedTs <= newBadgeWindowMs;
+      const isNew = allowNewBadge && Boolean(feedId) && !seenFeedIds.has(feedId) && isRecentDetection;
+      if (feedId) {
+        seenFeedIds.add(feedId);
+      }
+      return {
+        ...row,
+        isNew,
+      };
+    });
+    scanner.seenFeedIds = Array.from(seenFeedIds).slice(-5000);
+    scanner.summary = feedPayload?.summary || null;
+    scanner.status = statusPayload || feedPayload?.status || null;
+    if (String(scanner.status?.currentStatus || "").toLowerCase() !== "running") {
+      scanner.pendingScanRunId = "";
+    } else if (pendingScanRunId) {
+      scanner.pendingScanRunId = pendingScanRunId;
+    }
+    scanner.generatedAt =
+      feedPayload?.generatedAt ||
+      scanner.status?.latestCompletedRun?.completed_at ||
+      scanner.status?.latestRun?.started_at ||
+      null;
+    scanner.currency = String(feedPayload?.currency || "USD")
       .trim()
       .toUpperCase();
     scanner.loaded = true;
@@ -6375,6 +6461,16 @@ function getOpportunityCategoryTone(value, marketHashName = "") {
   const category = normalizeOpportunityCategory(value, marketHashName);
   if (category === "sticker_capsule") return "capsule";
   return category === "case" ? "case" : "skin";
+}
+
+function formatScanRunLabel(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return raw.slice(0, 8);
+}
+
+function normalizeFeedId(row = {}) {
+  return String(row?.feedId || row?.id || "").trim();
 }
 
 function formatArbitrageReasonLabel(reasonCode) {
@@ -10172,14 +10268,42 @@ function renderGlobalOpportunitiesTab() {
   const rows = Array.isArray(scanner.items) ? scanner.items : [];
   const currencyCode = scanner.currency || "USD";
   const showRisky = Boolean(scanner.showRisky);
+  const showOlder = Boolean(scanner.showOlder);
   const categoryFilter = String(scanner.category || "all")
     .trim()
     .toLowerCase();
-  const generatedLabel = scanner.generatedAt
-    ? `Updated ${escapeHtml(formatRelativeTime(scanner.generatedAt))}.`
-    : "Waiting for first scanner cycle.";
+  const status =
+    scanner.status && typeof scanner.status === "object" ? scanner.status : null;
+  const latestCompletedRun =
+    status?.latestCompletedRun && typeof status.latestCompletedRun === "object"
+      ? status.latestCompletedRun
+      : null;
+  const latestCompletedAt =
+    latestCompletedRun?.completed_at || scanner.generatedAt || null;
+  const generatedLabel = latestCompletedAt
+    ? `Last completed scan ${escapeHtml(formatRelativeTime(latestCompletedAt))}.`
+    : "Waiting for first completed scan.";
+  const pendingScanLabel = scanner.pendingScanRunId
+    ? `Scan started (Scan #${escapeHtml(
+        formatScanRunLabel(scanner.pendingScanRunId),
+      )}).`
+    : "";
+  const statusLabel =
+    String(status?.currentStatus || "").toLowerCase() === "running"
+      ? pendingScanLabel || "Scan running."
+      : "Scanner idle.";
+  const nextScanLabel = status?.nextScheduledAt
+    ? `Next automatic scan in ${escapeHtml(
+        formatTimeUntil(status.nextScheduledAt),
+      )}.`
+    : "";
   const summary =
     scanner.summary && typeof scanner.summary === "object" ? scanner.summary : null;
+  const activeOpportunitiesCount = Number(
+    summary?.activeOpportunities ??
+      status?.activeOpportunities ??
+      rows.filter((row) => row?.isActive !== false).length,
+  );
   const topRejectedItems = Array.isArray(summary?.topRejectedItems)
     ? summary.topRejectedItems
     : [];
@@ -10225,7 +10349,7 @@ function renderGlobalOpportunitiesTab() {
                 row?.liquidityBand,
                 row?.volume7d ?? row?.liquidity,
               );
-              const badges = buildOpportunityBadges(row, { max: 5 });
+              const baseBadges = buildOpportunityBadges(row, { max: 5 });
               const itemId = Number(row?.itemId || 0);
               const marketHashName = String(row?.itemName || "").trim();
               const itemCategory = normalizeOpportunityCategory(
@@ -10241,6 +10365,18 @@ function renderGlobalOpportunitiesTab() {
                 marketHashName,
               );
               const itemImage = String(row?.itemImageUrl || "").trim();
+              const feedId = normalizeFeedId(row);
+              const detectedAt = String(row?.detectedAt || "").trim();
+              const detectedLabel = detectedAt
+                ? `Added ${formatRelativeTime(detectedAt)}`
+                : "Added -";
+              const scanLabel = row?.scanRunId
+                ? `Scan #${formatScanRunLabel(row.scanRunId)}`
+                : "";
+              const badges = [
+                ...(row?.isNew ? ["NEW"] : []),
+                ...baseBadges,
+              ];
               const fallbackImage =
                 itemCategory === "case" ? defaultCaseImage : defaultSkinImage;
               const inspectUrl =
@@ -10257,7 +10393,7 @@ function renderGlobalOpportunitiesTab() {
               );
 
               return `
-                <tr>
+                <tr class="${row?.isNew ? "opportunity-row-new" : ""}" data-feed-id="${escapeHtml(feedId)}">
                   <td>
                     <div class="opportunity-item-cell">
                       <img
@@ -10272,6 +10408,9 @@ function renderGlobalOpportunitiesTab() {
                         <span class="opportunity-category-badge ${escapeHtml(
                           categoryTone,
                         )}">${escapeHtml(categoryLabel)}</span>
+                        <small class="opportunity-item-subline">${escapeHtml(
+                          `${detectedLabel}${scanLabel ? ` \u2022 ${scanLabel}` : ""}`,
+                        )}</small>
                       </div>
                     </div>
                   </td>
@@ -10304,7 +10443,11 @@ function renderGlobalOpportunitiesTab() {
                         ? `<div class="opportunity-badges">${badges
                             .map(
                               (badge) =>
-                                `<span class="opportunity-badge">${escapeHtml(
+                                `<span class="opportunity-badge ${
+                                  String(badge).trim().toUpperCase() === "NEW"
+                                    ? "new"
+                                    : ""
+                                }">${escapeHtml(
                                   badge,
                                 )}</span>`,
                             )
@@ -10344,8 +10487,8 @@ function renderGlobalOpportunitiesTab() {
         scanner.loading
           ? "Loading opportunities..."
           : showRisky
-            ? "No opportunities were found for the current scanner snapshot."
-            : "No high-confidence opportunities matched the current filters."
+            ? "No opportunities are currently available in the saved feed."
+            : "No high-confidence opportunities matched the current feed filters."
       }</p>`;
 
   return `
@@ -10375,6 +10518,18 @@ function renderGlobalOpportunitiesTab() {
             />
             <span>Show risky opportunities</span>
           </label>
+          <label
+            class="opportunity-risk-toggle"
+            for="global-opportunities-show-older"
+          >
+            <input
+              id="global-opportunities-show-older"
+              type="checkbox"
+              ${showOlder ? "checked" : ""}
+              ${scanner.loading ? "disabled" : ""}
+            />
+            <span>Show older opportunities</span>
+          </label>
           <label class="opportunity-category-filter" for="global-opportunities-category">
             <span>Category</span>
             <select
@@ -10391,17 +10546,18 @@ function renderGlobalOpportunitiesTab() {
         <p class="helper-text">
           ${
             summary
-              ? `Scanned ${formatNumber(summary.scannedItems || 0, 0)} items. Showing ${formatNumber(
+              ? `Scanned ${formatNumber(summary.scannedItems || 0, 0)} items in the latest run. Showing ${formatNumber(
                   rows.length,
                   0,
-                )} ${showRisky ? "opportunities" : "high-quality opportunities"}${
-                  Number(summary.totalDetected || 0) > 0
-                    ? ` (detected ${formatNumber(summary.totalDetected, 0)} total).`
-                    : "."
-                }`
+                )} ${showRisky ? "opportunities" : "high-quality opportunities"} from feed history.`
               : "Waiting for scanner summary."
           }
-          ${generatedLabel}
+          ${generatedLabel} Active opportunities: ${escapeHtml(
+            formatNumber(activeOpportunitiesCount, 0),
+          )}.
+        </p>
+        <p class="helper-text">
+          ${escapeHtml(statusLabel)} ${escapeHtml(nextScanLabel)}
         </p>
         ${
           !showRisky
@@ -11606,6 +11762,13 @@ window.addEventListener("hashchange", () => {
   setActiveAccountSection(parseAccountSectionFromHash(), { updateHash: false });
   render();
 });
+
+setInterval(() => {
+  if (!state.authenticated) return;
+  if (state.activeTab !== "opportunities") return;
+  if (state.globalOpportunities?.loading) return;
+  runUiTask(() => refreshGlobalOpportunities({ silent: true, limit: 100 }));
+}, 60 * 1000);
 
 bootstrapSession().catch(() => {
   state.sessionBooting = false;
