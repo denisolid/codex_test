@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 180" role="img" aria-label="Skin placeholder">
+  <defs>
+    <linearGradient id="bg" x1="0%" x2="100%" y1="0%" y2="100%">
+      <stop offset="0%" stop-color="#0d1a33"/>
+      <stop offset="100%" stop-color="#10284a"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0%" x2="100%" y1="0%" y2="0%">
+      <stop offset="0%" stop-color="#2f8cff" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#79b2ff" stop-opacity="0.05"/>
+    </linearGradient>
+  </defs>
+  <rect width="280" height="180" rx="16" fill="url(#bg)"/>
+  <rect x="10" y="10" width="260" height="160" rx="12" fill="url(#shine)" stroke="#2c4772" stroke-width="2"/>
+  <rect x="54" y="58" width="172" height="64" rx="10" fill="#0b162b" stroke="#3d5f96" stroke-width="2"/>
+  <text x="140" y="98" text-anchor="middle" fill="#d4e6ff" font-family="Space Grotesk, Segoe UI, sans-serif" font-size="24" font-weight="700">SKIN</text>
+</svg>

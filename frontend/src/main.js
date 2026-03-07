@@ -1027,6 +1027,30 @@ function renderToastHost() {
   host.innerHTML = rows;
 }
 
+function applyImageFallbacks(root = app) {
+  const scope = root || document;
+  if (!scope?.querySelectorAll) return;
+  const images = scope.querySelectorAll("img[data-fallback-src]");
+  for (const img of images) {
+    if (!(img instanceof HTMLImageElement)) continue;
+    if (img.dataset.fallbackBound === "1") continue;
+    img.dataset.fallbackBound = "1";
+
+    const applyFallback = () => {
+      const fallbackSrc = String(img.getAttribute("data-fallback-src") || "").trim();
+      if (!fallbackSrc) return;
+      if (img.dataset.fallbackApplied === "1") return;
+      img.dataset.fallbackApplied = "1";
+      img.src = fallbackSrc;
+    };
+
+    img.addEventListener("error", applyFallback, { once: true });
+    if (img.complete && img.naturalWidth === 0) {
+      applyFallback();
+    }
+  }
+}
+
 function flushAuthNotices() {
   if (!state.authenticated) {
     state.authNotice.emailConfirmToastShown = false;
@@ -7346,7 +7370,7 @@ function renderPortfolioMobileList() {
                   src="${escapeHtml(itemImageUrl)}"
                   alt="${escapeHtml(item.marketHashName || "CS2 item")}"
                   loading="lazy"
-                  onerror="this.onerror=null;this.src='${escapeHtml(fallbackImage)}';"
+                  data-fallback-src="${escapeHtml(fallbackImage)}"
                 />
                 <div class="portfolio-mobile-meta">
                   <p class="portfolio-mobile-name">${escapeHtml(item.marketHashName || "-")}</p>
@@ -7484,7 +7508,7 @@ function renderPortfolioDesktopCards() {
                     src="${escapeHtml(itemImageUrl)}"
                     alt="${escapeHtml(item.marketHashName || "CS2 item")}"
                     loading="lazy"
-                    onerror="this.onerror=null;this.src='${escapeHtml(fallbackImage)}';"
+                    data-fallback-src="${escapeHtml(fallbackImage)}"
                   />
                 </div>
               </header>
@@ -7595,7 +7619,7 @@ function renderPortfolioRows() {
                 src="${escapeHtml(itemImageUrl)}"
                 alt="${escapeHtml(item.marketHashName || "CS2 item")}"
                 loading="lazy"
-                onerror="this.onerror=null;this.src='${escapeHtml(fallbackImage)}';"
+                data-fallback-src="${escapeHtml(fallbackImage)}"
               />
               <div class="table-item-info">
                 <div class="skin-name">${escapeHtml(item.marketHashName)}</div>
@@ -8795,7 +8819,7 @@ function renderSkinDetails(context = "inline") {
           alt="${escapeHtml(inspectName || "CS2 item")}"
           loading="lazy"
           decoding="async"
-          onerror="this.onerror=null;this.src='${escapeHtml(inspectFallbackImage)}';"
+          data-fallback-src="${escapeHtml(inspectFallbackImage)}"
         />
         <div class="inspect-item-head-copy">
           <h3>${escapeHtml(inspectName)}</h3>
@@ -9286,7 +9310,7 @@ function renderAnalytics() {
             src="${escapeHtml(mover.imageUrl)}"
             alt="${escapeHtml(mover.name)}"
             loading="lazy"
-            onerror="this.onerror=null;this.src='${escapeHtml(mover.fallbackImage)}';"
+            data-fallback-src="${escapeHtml(mover.fallbackImage)}"
           />
           <strong class="mover-name" title="${escapeHtml(mover.name)}">${escapeHtml(mover.name)}</strong>
         </div>
@@ -10399,7 +10423,7 @@ function renderGlobalOpportunitiesTab() {
                         src="${escapeHtml(itemImage || fallbackImage)}"
                         alt="${escapeHtml(row?.itemName || "Tracked Item")}"
                         loading="lazy"
-                        onerror="this.onerror=null;this.src='${escapeHtml(fallbackImage)}';"
+                        data-fallback-src="${escapeHtml(fallbackImage)}"
                       />
                       <div class="opportunity-item-meta">
                         <strong>${escapeHtml(row?.itemName || "Tracked Item")}</strong>
@@ -10412,34 +10436,47 @@ function renderGlobalOpportunitiesTab() {
                       </div>
                     </div>
                   </td>
-                  <td class="opportunity-leg-cell">
-                    <strong>${escapeHtml(formatMarketSourceLabel(row?.buyMarket))}</strong>
+                  <td class="opportunity-metric-cell">
+                    <strong class="opportunity-metric-value">${escapeHtml(
+                      formatMarketSourceLabel(row?.buyMarket),
+                    )}</strong>
                     <small>${formatMoney(row?.buyPrice, currencyCode)}</small>
                   </td>
-                  <td class="opportunity-leg-cell">
-                    <strong>${escapeHtml(formatMarketSourceLabel(row?.sellMarket))}</strong>
+                  <td class="opportunity-metric-cell">
+                    <strong class="opportunity-metric-value">${escapeHtml(
+                      formatMarketSourceLabel(row?.sellMarket),
+                    )}</strong>
                     <small>${formatMoney(row?.sellNet, currencyCode)}</small>
                   </td>
-                  <td><strong class="pnl-text up">${formatSignedMoney(row?.profit, currencyCode)}</strong></td>
-                  <td>${formatPercent(row?.spread)}</td>
-                  <td class="opportunity-score-cell">
-                    <div class="opportunity-score-main">
-                      <span class="score-pill ${escapeHtml(scoreTone)}">${escapeHtml(
-                        `${formatNumber(score, 0)}/100`,
-                      )}</span>
-                      <span class="opportunity-score-quality ${escapeHtml(scoreTone)}">${escapeHtml(
-                        `Quality: ${scoreLabel}`,
-                      )}</span>
-                    </div>
-                    <small>Higher is better</small>
+                  <td class="opportunity-metric-cell">
+                    <strong class="opportunity-metric-value positive">${formatSignedMoney(
+                      row?.profit,
+                      currencyCode,
+                    )}</strong>
+                    <small>Net profit</small>
                   </td>
-                  <td class="opportunity-signal-cell">
-                    <span class="signal-pill ${escapeHtml(confidenceTone)}">${escapeHtml(
-                      `${executionConfidence} confidence`,
-                    )}</span>
+                  <td class="opportunity-metric-cell">
+                    <strong class="opportunity-metric-value">${formatPercent(
+                      row?.spread,
+                    )}</strong>
+                    <small>Price spread</small>
                   </td>
-                  <td class="opportunity-liquidity-cell">
-                    <strong>${escapeHtml(liquidityLabel)}</strong>
+                  <td class="opportunity-metric-cell">
+                    <strong class="opportunity-metric-value ${escapeHtml(scoreTone)}">${escapeHtml(
+                      `${formatNumber(score, 0)}/100`,
+                    )}</strong>
+                    <small>${escapeHtml(`${scoreLabel} quality`)}</small>
+                  </td>
+                  <td class="opportunity-metric-cell">
+                    <strong class="opportunity-metric-value ${escapeHtml(
+                      confidenceTone,
+                    )}">${escapeHtml(executionConfidence)}</strong>
+                    <small>Execution confidence</small>
+                  </td>
+                  <td class="opportunity-metric-cell opportunity-liquidity-cell">
+                    <strong class="opportunity-metric-value">${escapeHtml(
+                      liquidityLabel,
+                    )}</strong>
                     <small>${escapeHtml(
                       `Coverage ${formatNumber(row?.marketCoverage || 0, 0)} market(s)`,
                     )}</small>
@@ -11048,7 +11085,7 @@ function renderPublicPortfolioPage() {
                         src="${escapeHtml(getItemImageUrl(item))}"
                         alt="${escapeHtml(item.marketHashName || "CS2 item")}"
                         loading="lazy"
-                        onerror="this.onerror=null;this.src='${escapeHtml(fallbackImage)}';"
+                        data-fallback-src="${escapeHtml(fallbackImage)}"
                       />
                       <div class="table-item-info">
                         <div class="skin-name">${escapeHtml(item.marketHashName)}</div>
@@ -11586,6 +11623,7 @@ function renderApp() {
 function render() {
   if (state.sessionBooting) {
     renderSessionBoot();
+    applyImageFallbacks(app);
     syncBodyUiLocks();
     renderToastHost();
     return;
@@ -11614,6 +11652,7 @@ function render() {
       submitting: false,
     };
     renderPublicPortfolioPage();
+    applyImageFallbacks(app);
     syncBodyUiLocks();
     renderToastHost();
     return;
@@ -11644,6 +11683,7 @@ function render() {
       submitting: false,
     };
     renderPublicHome();
+    applyImageFallbacks(app);
     syncBodyUiLocks();
     renderToastHost();
     return;
@@ -11651,6 +11691,7 @@ function render() {
 
   flushAuthNotices();
   renderApp();
+  applyImageFallbacks(app);
   syncBodyUiLocks();
   renderToastHost();
 }

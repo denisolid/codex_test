@@ -11,7 +11,7 @@ export const rarityColors = Object.freeze({
 });
 
 export const defaultSkinImage =
-  "https://community.akamai.steamstatic.com/public/images/apps/730/header.jpg";
+  "/skin-placeholder.svg";
 export const defaultCaseImage = "/case-placeholder.svg";
 
 const knownBrokenImageHosts = new Set(["example.com", "www.example.com"]);
