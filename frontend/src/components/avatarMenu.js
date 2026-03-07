@@ -44,11 +44,9 @@ export function renderAvatarMenu({
         open
           ? `
             <section class="avatar-menu-dropdown" id="avatar-menu-dropdown" role="menu" aria-label="Account menu">
-              <button type="button" class="avatar-menu-item" role="menuitem" data-avatar-action="profile"><span>PR</span>Profile</button>
-              <button type="button" class="avatar-menu-item" role="menuitem" data-avatar-action="settings"><span>ST</span>Settings</button>
-              <button type="button" class="avatar-menu-item" role="menuitem" data-avatar-action="billing"><span>UP</span>Billing / Upgrade</button>
-              <button type="button" class="avatar-menu-item" role="menuitem" data-avatar-action="notifications"><span>NT</span>Notifications</button>
-              <button type="button" class="avatar-menu-item danger" role="menuitem" data-avatar-action="logout"><span>LG</span>Logout</button>
+              <button type="button" class="avatar-menu-item" role="menuitem" data-avatar-action="account-profile"><span>&#128100;</span>Account / Profile</button>
+              <button type="button" class="avatar-menu-item" role="menuitem" data-avatar-action="account-api-keys"><span>&#128273;</span>API Keys</button>
+              <button type="button" class="avatar-menu-item danger" role="menuitem" data-avatar-action="logout"><span>&#10231;</span>Logout</button>
             </section>
           `
           : ""

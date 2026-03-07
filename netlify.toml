@@ -7,6 +7,16 @@
   NODE_VERSION = "20"
 
 [[redirects]]
+  from = "/account"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/account/*"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
   from = "/u/*"
   to = "/index.html"
   status = 200
