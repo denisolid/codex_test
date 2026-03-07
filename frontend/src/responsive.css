@@ -415,7 +415,7 @@ body.mobile-drawer-open {
 }
 
 .account-center-shell {
-  grid-template-columns: 1fr;
+  flex-direction: column;
   gap: 12px;
   margin-top: 12px;
 }
@@ -423,6 +423,9 @@ body.mobile-drawer-open {
 .account-sidebar-panel {
   position: static;
   top: auto;
+  width: 100%;
+  max-width: none;
+  flex: 1 1 auto;
 }
 
 .account-profile-grid {
@@ -1003,8 +1006,8 @@ button:active,
 
 @media (min-width: 900px) {
   .account-center-shell {
-    grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
-    align-items: start;
+    flex-direction: row;
+    align-items: flex-start;
     gap: var(--space-3);
     margin-top: var(--space-3);
   }
@@ -1012,6 +1015,8 @@ button:active,
   .account-sidebar-panel {
     position: sticky;
     top: 86px;
+    width: min(100%, 280px);
+    flex: 0 0 280px;
   }
 
   .account-profile-meta {

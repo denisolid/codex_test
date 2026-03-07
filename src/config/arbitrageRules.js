@@ -7,13 +7,33 @@ function toNumber(input, fallback, options = {}) {
 }
 
 module.exports = Object.freeze({
+  MIN_EXECUTION_PRICE_USD: toNumber(process.env.ARBITRAGE_MIN_EXECUTION_PRICE_USD, 3, {
+    min: 0.01
+  }),
   MIN_SPREAD_PERCENT_BASELINE: toNumber(process.env.ARBITRAGE_MIN_SPREAD_PERCENT, 5, {
     min: 0
   }),
+  SPREAD_SUSPICIOUS_PENALTY_THRESHOLD: toNumber(
+    process.env.ARBITRAGE_SPREAD_SUSPICIOUS_PENALTY_THRESHOLD,
+    120,
+    { min: 20 }
+  ),
   SPREAD_SANITY_MAX_PERCENT: toNumber(process.env.ARBITRAGE_SPREAD_SANITY_MAX_PERCENT, 300, {
     min: 10
   }),
+  REFERENCE_DEVIATION_RATIO_MAX: toNumber(
+    process.env.ARBITRAGE_REFERENCE_DEVIATION_RATIO_MAX,
+    3,
+    { min: 1.5 }
+  ),
+  MIN_MARKET_COVERAGE: toNumber(process.env.ARBITRAGE_MIN_MARKET_COVERAGE, 2, {
+    min: 1,
+    max: 4
+  }),
   LIQUIDITY_VOLUME_PASS: toNumber(process.env.ARBITRAGE_LIQUIDITY_VOLUME_PASS, 100, {
+    min: 1
+  }),
+  LIQUIDITY_VOLUME_HIGH: toNumber(process.env.ARBITRAGE_LIQUIDITY_VOLUME_HIGH, 200, {
     min: 1
   }),
   LIQUIDITY_VOLUME_MEDIUM: toNumber(process.env.ARBITRAGE_LIQUIDITY_VOLUME_MEDIUM, 50, {
@@ -33,11 +53,11 @@ module.exports = Object.freeze({
   ORDERBOOK_OUTLIER_PRICE_MAX: toNumber(process.env.ARBITRAGE_ORDERBOOK_OUTLIER_PRICE_MAX, 1, {
     min: 0.01
   }),
-  DEFAULT_SCORE_CUTOFF: toNumber(process.env.ARBITRAGE_DEFAULT_SCORE_CUTOFF, 70, {
+  DEFAULT_SCORE_CUTOFF: toNumber(process.env.ARBITRAGE_DEFAULT_SCORE_CUTOFF, 75, {
     min: 0,
     max: 100
   }),
-  RISKY_SCORE_CUTOFF: toNumber(process.env.ARBITRAGE_RISKY_SCORE_CUTOFF, 50, {
+  RISKY_SCORE_CUTOFF: toNumber(process.env.ARBITRAGE_RISKY_SCORE_CUTOFF, 60, {
     min: 0,
     max: 100
   }),

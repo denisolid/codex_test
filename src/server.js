@@ -1,5 +1,8 @@
 const app = require("./app");
 const { port } = require("./config/env");
+const arbitrageScannerService = require("./services/arbitrageScannerService");
+
+arbitrageScannerService.startScheduler();
 
 const server = app.listen(port, () => {
   console.log(`API running on port ${port}`);

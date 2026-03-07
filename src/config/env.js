@@ -146,6 +146,9 @@ module.exports = {
   priceUpdaterRateLimitPerSecond: Number(
     process.env.PRICE_UPDATER_RATE_LIMIT_PER_SECOND || 5
   ),
+  arbitrageScannerIntervalMinutes: Number(
+    process.env.ARBITRAGE_SCANNER_INTERVAL_MINUTES || 5
+  ),
   alertCheckIntervalMinutes: Number(process.env.ALERT_CHECK_INTERVAL_MINUTES || 5),
   alertCheckBatchSize: Number(process.env.ALERT_CHECK_BATCH_SIZE || 250),
   traderModePriceUsd: Number(process.env.TRADER_MODE_PRICE_USD || 29),

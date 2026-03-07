@@ -20,3 +20,13 @@
   from = "/u/*"
   to = "/index.html"
   status = 200
+
+[[redirects]]
+  from = "/opportunities"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/opportunities/*"
+  to = "/index.html"
+  status = 200
