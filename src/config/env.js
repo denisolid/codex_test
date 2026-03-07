@@ -147,7 +147,7 @@ module.exports = {
     process.env.PRICE_UPDATER_RATE_LIMIT_PER_SECOND || 5
   ),
   arbitrageScannerIntervalMinutes: Number(
-    process.env.ARBITRAGE_SCANNER_INTERVAL_MINUTES || 30
+    process.env.ARBITRAGE_SCANNER_INTERVAL_MINUTES || 5
   ),
   arbitrageFeedRetentionHours: Number(process.env.ARBITRAGE_FEED_RETENTION_HOURS || 24),
   arbitrageFeedActiveLimit: Number(process.env.ARBITRAGE_FEED_ACTIVE_LIMIT || 500),
