@@ -61,7 +61,7 @@ export function renderSkinCard(item = {}, helpers = {}) {
           src="${escapeHtml(imageUrl)}"
           alt="${escapeHtml(item.marketHashName || "CS2 item")}" 
           loading="lazy"
-          onerror="this.onerror=null;this.src='${escapeHtml(fallbackImage)}';"
+          data-fallback-src="${escapeHtml(fallbackImage)}"
         />
       </div>
       <div class="portfolio-skin-card-body">
