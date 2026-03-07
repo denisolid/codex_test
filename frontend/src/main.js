@@ -10317,13 +10317,11 @@ function renderGlobalOpportunitiesTab() {
         <thead>
           <tr>
             <th>Item</th>
-            <th>Buy Market</th>
-            <th>Buy Price</th>
-            <th>Sell Market</th>
-            <th>Sell Net</th>
+            <th>Buy</th>
+            <th>Sell</th>
             <th>Profit</th>
             <th>Spread</th>
-            <th>Score</th>
+            <th>Quality Score</th>
             <th>Confidence</th>
             <th>Liquidity</th>
             <th>Signals</th>
@@ -10414,21 +10412,30 @@ function renderGlobalOpportunitiesTab() {
                       </div>
                     </div>
                   </td>
-                  <td>${escapeHtml(formatMarketSourceLabel(row?.buyMarket))}</td>
-                  <td>${formatMoney(row?.buyPrice, currencyCode)}</td>
-                  <td>${escapeHtml(formatMarketSourceLabel(row?.sellMarket))}</td>
-                  <td>${formatMoney(row?.sellNet, currencyCode)}</td>
+                  <td class="opportunity-leg-cell">
+                    <strong>${escapeHtml(formatMarketSourceLabel(row?.buyMarket))}</strong>
+                    <small>${formatMoney(row?.buyPrice, currencyCode)}</small>
+                  </td>
+                  <td class="opportunity-leg-cell">
+                    <strong>${escapeHtml(formatMarketSourceLabel(row?.sellMarket))}</strong>
+                    <small>${formatMoney(row?.sellNet, currencyCode)}</small>
+                  </td>
                   <td><strong class="pnl-text up">${formatSignedMoney(row?.profit, currencyCode)}</strong></td>
                   <td>${formatPercent(row?.spread)}</td>
                   <td class="opportunity-score-cell">
-                    <span class="score-pill ${escapeHtml(scoreTone)}">${escapeHtml(
-                      `${formatNumber(score, 0)}/100`,
-                    )}</span>
-                    <small>${escapeHtml(scoreLabel)}</small>
+                    <div class="opportunity-score-main">
+                      <span class="score-pill ${escapeHtml(scoreTone)}">${escapeHtml(
+                        `${formatNumber(score, 0)}/100`,
+                      )}</span>
+                      <span class="opportunity-score-quality ${escapeHtml(scoreTone)}">${escapeHtml(
+                        `Quality: ${scoreLabel}`,
+                      )}</span>
+                    </div>
+                    <small>Higher is better</small>
                   </td>
                   <td class="opportunity-signal-cell">
                     <span class="signal-pill ${escapeHtml(confidenceTone)}">${escapeHtml(
-                      executionConfidence,
+                      `${executionConfidence} confidence`,
                     )}</span>
                   </td>
                   <td class="opportunity-liquidity-cell">
