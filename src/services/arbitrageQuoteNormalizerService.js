@@ -56,6 +56,65 @@ function pickFirstNonNegative(candidates = []) {
   return null;
 }
 
+function scaleToSevenDayVolume(value, days) {
+  const volume = toNonNegativeOrNull(value);
+  const periodDays = toPositiveOrNull(days);
+  if (volume == null || periodDays == null) return null;
+  return Math.max((volume / periodDays) * 7, 0);
+}
+
+function resolveRawVolume7d(raw = {}) {
+  if (!raw || typeof raw !== "object") return null;
+
+  const direct = pickFirstNonNegative([
+    raw?.volume7d,
+    raw?.volume_7d,
+    raw?.sales7d,
+    raw?.sales_7d,
+    raw?.liquiditySales,
+    readPath(raw, ["last_7_days", "volume"]),
+    readPath(raw, ["last_7_days", "sales"]),
+    readPath(raw, ["last7days", "volume"]),
+    readPath(raw, ["last7days", "sales"])
+  ]);
+  if (direct != null) return direct;
+
+  const from24h = scaleToSevenDayVolume(
+    pickFirstNonNegative([
+      readPath(raw, ["last_24_hours", "volume"]),
+      readPath(raw, ["last_24_hours", "sales"]),
+      readPath(raw, ["last24h", "volume"]),
+      readPath(raw, ["last24h", "sales"])
+    ]),
+    1
+  );
+  if (from24h != null) return from24h;
+
+  const from30d = scaleToSevenDayVolume(
+    pickFirstNonNegative([
+      readPath(raw, ["last_30_days", "volume"]),
+      readPath(raw, ["last_30_days", "sales"]),
+      readPath(raw, ["last30days", "volume"]),
+      readPath(raw, ["last30days", "sales"])
+    ]),
+    30
+  );
+  if (from30d != null) return from30d;
+
+  const from90d = scaleToSevenDayVolume(
+    pickFirstNonNegative([
+      readPath(raw, ["last_90_days", "volume"]),
+      readPath(raw, ["last_90_days", "sales"]),
+      readPath(raw, ["last90days", "volume"]),
+      readPath(raw, ["last90days", "sales"])
+    ]),
+    90
+  );
+  if (from90d != null) return from90d;
+
+  return null;
+}
+
 function resolveVolume7d(item = {}) {
   return pickFirstNonNegative([
     item?.volume7d,
@@ -204,6 +263,7 @@ function normalizeQuoteFromMarketRow(row = {}, item = {}) {
     readPath(row, ["raw", "volume_7d"]),
     readPath(row, ["raw", "sales7d"]),
     readPath(row, ["raw", "liquiditySales"]),
+    resolveRawVolume7d(row?.raw),
     resolveVolume7d(item)
   ]);
   const liquidityScore = pickFirstNonNegative([

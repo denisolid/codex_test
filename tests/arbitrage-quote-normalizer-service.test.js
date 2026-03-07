@@ -66,6 +66,27 @@ test("normalizeMarketQuotes extracts orderbook depth from raw payload when prese
   assert.equal(dmarket.orderbook.sell_top2, 1.25);
 });
 
+test("normalizeMarketQuotes derives 7d volume from raw market history payloads", () => {
+  const item = {
+    perMarket: [
+      {
+        source: "skinport",
+        grossPrice: 3.1,
+        netPriceAfterFees: 2.73,
+        raw: {
+          last_7_days: {
+            volume: 142
+          }
+        }
+      }
+    ]
+  };
+
+  const normalized = normalizeMarketQuotes(item);
+  const skinport = normalized.byMarket.skinport;
+  assert.equal(skinport.volume_7d, 142);
+});
+
 test("volume and liquidity resolvers degrade gracefully", () => {
   assert.equal(resolveVolume7d({ liquiditySales: 75 }), 75);
   assert.equal(resolveVolume7d({}), null);
