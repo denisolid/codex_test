@@ -24,3 +24,17 @@ services:
         value: auto
       - key: STEAM_INVENTORY_SOURCE
         value: auto
+  - type: cron
+    name: cs2-arbitrage-feed-cron
+    env: node
+    rootDir: .
+    schedule: "*/5 * * * *"
+    buildCommand: npm ci
+    startCommand: npm run scanner:cron
+    envVars:
+      - key: API_PUBLIC_URL
+        sync: false
+      - key: ADMIN_API_TOKEN
+        sync: false
+      - key: ARBITRAGE_CRON_FORCE_REFRESH
+        value: "false"

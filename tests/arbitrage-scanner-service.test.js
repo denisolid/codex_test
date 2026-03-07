@@ -21,7 +21,8 @@ const {
     buildApiOpportunityRow,
     buildFeedInsertRow,
     mapFeedRowToApiRow,
-    isMateriallyNewOpportunity
+    isMateriallyNewOpportunity,
+    isScannerRunOverdue
   }
 } = require("../src/services/arbitrageScannerService");
 
@@ -299,4 +300,34 @@ test("material dedupe detection uses profit and score thresholds", () => {
     ),
     false
   );
+});
+
+test("scanner overdue watchdog respects running state and stale timestamps", () => {
+  const now = Date.parse("2026-03-07T12:00:00.000Z");
+
+  assert.equal(
+    isScannerRunOverdue({
+      latestRun: { status: "running", started_at: "2026-03-07T11:58:00.000Z" },
+      latestCompletedRun: { completed_at: "2026-03-07T11:55:00.000Z" }
+    }, now),
+    false
+  );
+
+  assert.equal(
+    isScannerRunOverdue({
+      latestRun: { status: "completed", started_at: "2026-03-07T11:56:00.000Z" },
+      latestCompletedRun: { completed_at: "2026-03-07T11:56:00.000Z" }
+    }, now),
+    false
+  );
+
+  assert.equal(
+    isScannerRunOverdue({
+      latestRun: { status: "completed", started_at: "2026-03-07T11:40:00.000Z" },
+      latestCompletedRun: { completed_at: "2026-03-07T11:40:00.000Z" }
+    }, now),
+    true
+  );
+
+  assert.equal(isScannerRunOverdue({}, now), true);
 });

@@ -72,7 +72,17 @@ exports.getFeed = asyncHandler(async (req, res) => {
 
 exports.refreshFeed = asyncHandler(async (req, res) => {
   const result = await scannerService.triggerRefresh({
-    trigger: req.body?.trigger || "manual"
+    trigger: req.body?.trigger || "manual",
+    forceRefresh: req.body?.forceRefresh
+  })
+
+  res.status(202).json(result)
+})
+
+exports.refreshFeedAdmin = asyncHandler(async (req, res) => {
+  const result = await scannerService.triggerRefresh({
+    trigger: req.body?.trigger || "admin_cron",
+    forceRefresh: req.body?.forceRefresh == null ? false : req.body.forceRefresh
   })
 
   res.status(202).json(result)

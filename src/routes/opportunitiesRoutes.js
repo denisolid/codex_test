@@ -1,7 +1,10 @@
 const router = require("express").Router();
 const auth = require("../middleware/authMiddleware");
+const adminAuth = require("../middleware/adminAuth");
 const ctrl = require("../controllers/opportunitiesController");
 const { parseOptionalNumericQuery } = require("../middleware/requestValidation");
+
+router.post("/refresh/admin", adminAuth, ctrl.refreshFeedAdmin);
 
 router.use(auth);
 
