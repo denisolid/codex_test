@@ -20,8 +20,9 @@ const DEFAULT_SCORE_CUTOFF = Number(arbitrageEngine.DEFAULT_SCORE_CUTOFF || 75)
 const RISKY_SCORE_CUTOFF = Number(arbitrageEngine.RISKY_SCORE_CUTOFF || 60)
 const MAX_API_LIMIT = 200
 const DEFAULT_API_LIMIT = 100
-const UNIVERSE_TARGET_SIZE = 100
-const PRE_COMPARE_UNIVERSE_LIMIT = 350
+const RISKY_MIN_PRICE_USD = 2
+const RISKY_MIN_SPREAD_PERCENT = 3
+const RISKY_MIN_VOLUME_7D = 30
 const RECENT_SNAPSHOT_FETCH_LIMIT = 25000
 
 const STALE_PENALTY_RULES = Object.freeze([
@@ -31,21 +32,155 @@ const STALE_PENALTY_RULES = Object.freeze([
 ])
 
 const SOURCE_ORDER = Object.freeze(["steam", "skinport", "csfloat", "dmarket"])
-const FALLBACK_UNIVERSE = Object.freeze(normalizeUniverseNames(marketUniverseTop100))
+const ITEM_CATEGORIES = Object.freeze({
+  WEAPON_SKIN: "weapon_skin",
+  CASE: "case",
+  STICKER_CAPSULE: "sticker_capsule"
+})
+const FALLBACK_UNIVERSE = Object.freeze(normalizeUniverseEntries(marketUniverseTop100))
+const UNIVERSE_TARGET_SIZE = Math.max(Math.min(FALLBACK_UNIVERSE.length || 100, 100), 20)
+const PRE_COMPARE_UNIVERSE_LIMIT = Math.max(UNIVERSE_TARGET_SIZE * 2, 120)
 const LOW_VALUE_NAME_PATTERNS = Object.freeze([
   /^sticker\s*\|/i,
   /^graffiti\s*\|/i,
   /^sealed graffiti\s*\|/i
 ])
 
+const HARD_REJECTION_REASONS = Object.freeze(
+  new Set([
+    "insufficient_market_data",
+    "non_positive_profit",
+    "ignored_reference_deviation",
+    "ignored_extreme_spread",
+    "ignored_missing_markets"
+  ])
+)
+
+const STRICT_SCAN_PROFILE = Object.freeze({
+  name: "strict",
+  minPriceUsd: MIN_EXECUTION_PRICE_USD,
+  minSpreadPercent: MIN_SPREAD_PERCENT,
+  minVolume7d: MIN_VOLUME_7D,
+  allowMissingLiquidity: false,
+  requireFreshData: true,
+  maxQuoteAgeMinutes: 60
+})
+
+const RISKY_SCAN_PROFILE = Object.freeze({
+  name: "risky",
+  minPriceUsd: RISKY_MIN_PRICE_USD,
+  minSpreadPercent: RISKY_MIN_SPREAD_PERCENT,
+  minVolume7d: RISKY_MIN_VOLUME_7D,
+  allowMissingLiquidity: true,
+  requireFreshData: false,
+  maxQuoteAgeMinutes: Infinity
+})
+
+const CATEGORY_SCAN_RULES = Object.freeze({
+  [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({
+    strict: Object.freeze({
+      minPriceUsd: MIN_EXECUTION_PRICE_USD,
+      minSpreadPercent: MIN_SPREAD_PERCENT,
+      maxSpreadPercent: MAX_SPREAD_PERCENT,
+      minVolume7d: MIN_VOLUME_7D,
+      minMarketCoverage: MIN_MARKET_COVERAGE
+    }),
+    risky: Object.freeze({
+      minPriceUsd: RISKY_MIN_PRICE_USD,
+      minSpreadPercent: RISKY_MIN_SPREAD_PERCENT,
+      maxSpreadPercent: MAX_SPREAD_PERCENT,
+      minVolume7d: RISKY_MIN_VOLUME_7D,
+      minMarketCoverage: MIN_MARKET_COVERAGE
+    })
+  }),
+  [ITEM_CATEGORIES.CASE]: Object.freeze({
+    strict: Object.freeze({
+      minPriceUsd: 0.5,
+      minSpreadPercent: 3,
+      maxSpreadPercent: 150,
+      minVolume7d: 50,
+      minMarketCoverage: 2
+    }),
+    risky: Object.freeze({
+      minPriceUsd: 0.5,
+      minSpreadPercent: 3,
+      maxSpreadPercent: 150,
+      minVolume7d: 50,
+      minMarketCoverage: 2
+    })
+  }),
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
+    strict: Object.freeze({
+      minPriceUsd: 0.75,
+      minSpreadPercent: 3,
+      maxSpreadPercent: 150,
+      minVolume7d: 40,
+      minMarketCoverage: 2
+    }),
+    risky: Object.freeze({
+      minPriceUsd: 0.75,
+      minSpreadPercent: 3,
+      maxSpreadPercent: 150,
+      minVolume7d: 40,
+      minMarketCoverage: 2
+    })
+  })
+})
+
 function normalizeMarketHashName(value) {
   return String(value || "").trim()
 }
 
-function normalizeUniverseNames(items = []) {
-  return Array.from(
-    new Set((Array.isArray(items) ? items : []).map(normalizeMarketHashName).filter(Boolean))
-  )
+function normalizeItemCategory(value, marketHashName = "") {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase()
+  if (
+    raw === ITEM_CATEGORIES.STICKER_CAPSULE ||
+    raw === "sticker capsule" ||
+    raw === "capsule" ||
+    raw === "sticker_capsules"
+  ) {
+    return ITEM_CATEGORIES.STICKER_CAPSULE
+  }
+  if (raw === ITEM_CATEGORIES.CASE) return ITEM_CATEGORIES.CASE
+  if (raw === ITEM_CATEGORIES.WEAPON_SKIN) return ITEM_CATEGORIES.WEAPON_SKIN
+  if (/sticker capsule$/i.test(String(marketHashName || "").trim())) {
+    return ITEM_CATEGORIES.STICKER_CAPSULE
+  }
+  if (/case$/i.test(String(marketHashName || "").trim())) {
+    return ITEM_CATEGORIES.CASE
+  }
+  return ITEM_CATEGORIES.WEAPON_SKIN
+}
+
+function normalizeUniverseEntries(items = []) {
+  const seen = new Set()
+  const normalized = []
+  for (const rawEntry of Array.isArray(items) ? items : []) {
+    const entry =
+      rawEntry && typeof rawEntry === "object"
+        ? rawEntry
+        : { marketHashName: rawEntry, category: ITEM_CATEGORIES.WEAPON_SKIN, scan_enabled: true }
+    const marketHashName = normalizeMarketHashName(
+      entry?.marketHashName || entry?.market_hash_name || entry?.name
+    )
+    if (!marketHashName) continue
+    const key = marketHashName.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    const category = normalizeItemCategory(entry?.category, marketHashName)
+    const subcategory = String(entry?.subcategory || "").trim() || null
+    const scanEnabled = entry?.scan_enabled == null ? true : Boolean(entry.scan_enabled)
+    if (!scanEnabled) continue
+    normalized.push({
+      marketHashName,
+      category,
+      subcategory,
+      scan_enabled: true
+    })
+  }
+  return normalized
 }
 
 function toFiniteOrNull(value) {
@@ -81,6 +216,28 @@ function normalizeBoolean(value) {
     .trim()
     .toLowerCase()
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on"
+}
+
+function normalizeCategoryFilter(value) {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase()
+  if (!raw || raw === "all") return "all"
+  if (raw === "skin" || raw === "skins" || raw === "weapon_skin") {
+    return ITEM_CATEGORIES.WEAPON_SKIN
+  }
+  if (raw === "case" || raw === "cases") {
+    return ITEM_CATEGORIES.CASE
+  }
+  if (
+    raw === "capsule" ||
+    raw === "capsules" ||
+    raw === "sticker_capsule" ||
+    raw === "sticker_capsules"
+  ) {
+    return ITEM_CATEGORIES.STICKER_CAPSULE
+  }
+  return "all"
 }
 
 function computeLiquidityScoreFromSnapshot(snapshot = {}) {
@@ -239,8 +396,21 @@ function computePriceStabilityScore(sevenDayChangePercent) {
   return 20
 }
 
-function computeReferencePriceScore(referencePrice) {
+function computeReferencePriceScore(referencePrice, itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
+  const normalizedCategory = normalizeItemCategory(itemCategory)
   const price = toFiniteOrNull(referencePrice)
+  if (normalizedCategory === ITEM_CATEGORIES.STICKER_CAPSULE) {
+    if (price == null || price < 0.75) return 0
+    if (price >= 8) return 100
+    if (price >= 3) return 85
+    return 65
+  }
+  if (normalizedCategory === ITEM_CATEGORIES.CASE) {
+    if (price == null || price < 0.5) return 0
+    if (price >= 5) return 100
+    if (price >= 2) return 85
+    return 65
+  }
   if (price == null || price < MIN_EXECUTION_PRICE_USD) return 0
   if (price >= 30) return 100
   if (price >= 10) return 85
@@ -251,12 +421,13 @@ function computeLiquidityRank({
   volume7d = null,
   marketCoverage = 0,
   sevenDayChangePercent = null,
-  referencePrice = null
+  referencePrice = null,
+  itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
 } = {}) {
   const volumeScore = computeVolumeScore(volume7d)
   const marketCoverageScore = computeMarketCoverageScore(marketCoverage)
   const priceStabilityScore = computePriceStabilityScore(sevenDayChangePercent)
-  const referencePriceScore = computeReferencePriceScore(referencePrice)
+  const referencePriceScore = computeReferencePriceScore(referencePrice, itemCategory)
   const liquidityRank = round2(
     volumeScore * 0.5 +
       marketCoverageScore * 0.2 +
@@ -273,16 +444,63 @@ function computeLiquidityRank({
   }
 }
 
-function incrementReasonCounter(counter = {}, reason) {
+function incrementReasonCounter(counter = {}, reason, category = "") {
   const key = String(reason || "").trim()
   if (!key) return
   counter[key] = Number(counter[key] || 0) + 1
+  const normalizedCategory = normalizeItemCategory(category)
+  const scopedKey = `${key}__${normalizedCategory}`
+  counter[scopedKey] = Number(counter[scopedKey] || 0) + 1
+}
+
+function incrementItemReasonCounter(rejectionsByItem = {}, itemName, reason, category = "") {
+  const normalizedItem = String(itemName || "").trim() || "Unknown item"
+  const normalizedReason = String(reason || "").trim() || "unknown"
+  const normalizedCategory = normalizeItemCategory(category)
+  if (!rejectionsByItem[normalizedItem]) {
+    rejectionsByItem[normalizedItem] = {
+      total: 0,
+      category: normalizedCategory,
+      reasons: {}
+    }
+  }
+  const bucket = rejectionsByItem[normalizedItem]
+  if (!bucket.category) {
+    bucket.category = normalizedCategory
+  }
+  bucket.total += 1
+  bucket.reasons[normalizedReason] = Number(bucket.reasons[normalizedReason] || 0) + 1
+}
+
+function toTopRejectedItems(rejectionsByItem = {}, limit = 8) {
+  return Object.entries(rejectionsByItem)
+    .map(([itemName, payload]) => {
+      const reasonEntries = Object.entries(payload?.reasons || {}).sort(
+        (a, b) => Number(b[1] || 0) - Number(a[1] || 0)
+      )
+      const [mainReason, mainReasonCount] = reasonEntries[0] || ["unknown", 0]
+      return {
+        itemName,
+        category: normalizeItemCategory(payload?.category),
+        rejectedCount: Number(payload?.total || 0),
+        mainReason,
+        mainReasonCount: Number(mainReasonCount || 0)
+      }
+    })
+    .sort(
+      (a, b) =>
+        Number(b.rejectedCount || 0) - Number(a.rejectedCount || 0) ||
+        Number(b.mainReasonCount || 0) - Number(a.mainReasonCount || 0)
+    )
+    .slice(0, Math.max(Number(limit || 0), 0))
 }
 
 function buildInputItemFromSkinAndSnapshot({
   skin = null,
   snapshot = null,
-  marketHashName = ""
+  marketHashName = "",
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
+  subcategory = null
 } = {}) {
   const normalizedName = normalizeMarketHashName(
     marketHashName || skin?.market_hash_name || skin?.marketHashName
@@ -300,13 +518,19 @@ function buildInputItemFromSkinAndSnapshot({
   return {
     skinId: Number(skin?.id || 0) || null,
     marketHashName: normalizedName,
+    itemCategory: normalizeItemCategory(category, normalizedName),
+    itemSubcategory: String(subcategory || "").trim() || null,
+    itemImageUrl: String(skin?.image_url || skin?.imageUrl || "").trim() || null,
+    itemImageUrlLarge:
+      String(skin?.image_url_large || skin?.imageUrlLarge || "").trim() || null,
     quantity: 1,
     marketVolume7d: volume7d,
     liquidityScore,
     sevenDayChangePercent,
     referencePrice,
+    hasSnapshotData: Boolean(snapshot),
     snapshotCapturedAt: snapshot?.captured_at || null,
-    snapshotStale: snapshot ? isSnapshotStale(snapshot) : true
+    snapshotStale: snapshot ? isSnapshotStale(snapshot) : false
   }
 }
 
@@ -347,7 +571,8 @@ async function loadDynamicUniverseSeeds() {
 }
 
 async function loadFallbackUniverseSeeds() {
-  const skins = await skinRepo.getByMarketHashNames(FALLBACK_UNIVERSE)
+  const marketNames = FALLBACK_UNIVERSE.map((entry) => entry.marketHashName)
+  const skins = await skinRepo.getByMarketHashNames(marketNames)
   const skinsByName = toByNameMap(
     (Array.isArray(skins) ? skins : []).map((row) => ({
       ...row,
@@ -363,37 +588,43 @@ async function loadFallbackUniverseSeeds() {
     ? await marketSnapshotRepo.getLatestBySkinIds(skinIds)
     : {}
 
-  return FALLBACK_UNIVERSE.map((marketHashName) =>
+  return FALLBACK_UNIVERSE.map((entry) =>
     buildInputItemFromSkinAndSnapshot({
-      skin: skinsByName[marketHashName] || null,
+      skin: skinsByName[entry.marketHashName] || null,
       snapshot:
-        Number(skinsByName[marketHashName]?.id || 0) > 0
-          ? snapshotsBySkinId[Number(skinsByName[marketHashName].id)] || null
+        Number(skinsByName[entry.marketHashName]?.id || 0) > 0
+          ? snapshotsBySkinId[Number(skinsByName[entry.marketHashName].id)] || null
           : null,
-      marketHashName
+      marketHashName: entry.marketHashName,
+      category: entry.category,
+      subcategory: entry.subcategory
     })
   ).filter(Boolean)
 }
 
-function passesUniverseSeedFilters(inputItem = {}, discardStats = {}) {
+function passesUniverseSeedFilters(inputItem = {}, discardStats = {}, rejectedByItem = null) {
   const marketHashName = String(inputItem?.marketHashName || "").trim()
+  const itemCategory = normalizeItemCategory(inputItem?.itemCategory, marketHashName)
   if (!marketHashName) return false
   if (isLowValueJunkName(marketHashName)) {
-    incrementReasonCounter(discardStats, "ignored_low_value_universe")
-    return false
-  }
-  if (inputItem?.snapshotStale) {
-    incrementReasonCounter(discardStats, "ignored_stale_data")
+    incrementReasonCounter(discardStats, "ignored_low_value_universe", itemCategory)
+    if (rejectedByItem) {
+      incrementItemReasonCounter(
+        rejectedByItem,
+        marketHashName,
+        "ignored_low_value_universe",
+        itemCategory
+      )
+    }
     return false
   }
   const referencePrice = toFiniteOrNull(inputItem?.referencePrice)
-  if (referencePrice != null && referencePrice < MIN_EXECUTION_PRICE_USD) {
-    incrementReasonCounter(discardStats, "ignored_low_price")
-    return false
-  }
-  const volume7d = toFiniteOrNull(inputItem?.marketVolume7d)
-  if (volume7d != null && volume7d < MIN_VOLUME_7D) {
-    incrementReasonCounter(discardStats, "ignored_low_liquidity")
+  const seedRules = getCategoryScanRules(itemCategory, "risky")
+  if (referencePrice != null && referencePrice < Number(seedRules.minPriceUsd || RISKY_MIN_PRICE_USD)) {
+    incrementReasonCounter(discardStats, "ignored_low_price", itemCategory)
+    if (rejectedByItem) {
+      incrementItemReasonCounter(rejectedByItem, marketHashName, "ignored_low_price", itemCategory)
+    }
     return false
   }
   return true
@@ -434,6 +665,113 @@ function passesScannerGuards(opportunity = {}, liquidity = {}) {
   return true
 }
 
+function getPrimaryHardRejectionReason(opportunity = {}) {
+  const reasons = Array.isArray(opportunity?.antiFake?.reasons) ? opportunity.antiFake.reasons : []
+  for (const reason of reasons) {
+    if (HARD_REJECTION_REASONS.has(String(reason || "").trim())) {
+      return String(reason || "").trim()
+    }
+  }
+  return ""
+}
+
+function getCategoryScanRules(itemCategory, profileName = "strict") {
+  const category = normalizeItemCategory(itemCategory)
+  const categoryRules = CATEGORY_SCAN_RULES[category] || CATEGORY_SCAN_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
+  if (profileName === "risky") return categoryRules.risky
+  return categoryRules.strict
+}
+
+function computeRiskAdjustments({
+  opportunity = {},
+  liquidity = {},
+  stale = {},
+  inputItem = {},
+  profile = RISKY_SCAN_PROFILE
+} = {}) {
+  const itemCategory = normalizeItemCategory(
+    inputItem?.itemCategory || opportunity?.itemCategory,
+    opportunity?.itemName || inputItem?.marketHashName
+  )
+  const rules = getCategoryScanRules(itemCategory, profile?.name || "strict")
+  const buyPrice = toFiniteOrNull(opportunity?.buyPrice)
+  const profit = toFiniteOrNull(opportunity?.profit)
+  const spread = toFiniteOrNull(opportunity?.spreadPercent ?? opportunity?.spread_pct)
+  const volume7d = toFiniteOrNull(liquidity?.volume7d)
+  const marketCoverage = Number(opportunity?.marketCoverage || 0)
+  const staleMinutes = toFiniteOrNull(stale?.maxAgeMinutes)
+  const hasSnapshotStale = Boolean(inputItem?.snapshotStale)
+
+  if (profit == null || profit <= 0) {
+    return { passed: false, primaryReason: "non_positive_profit", penalty: 0 }
+  }
+  if (buyPrice == null || buyPrice < Number(rules.minPriceUsd || profile.minPriceUsd || 0)) {
+    return { passed: false, primaryReason: "ignored_low_price", penalty: 0 }
+  }
+  if (
+    spread == null ||
+    spread < Number(rules.minSpreadPercent || profile.minSpreadPercent || 0) ||
+    spread > Number(rules.maxSpreadPercent || MAX_SPREAD_PERCENT)
+  ) {
+    return {
+      passed: false,
+      primaryReason:
+        spread != null && spread > Number(rules.maxSpreadPercent || MAX_SPREAD_PERCENT)
+          ? "ignored_extreme_spread"
+          : "spread_below_min",
+      penalty: 0
+    }
+  }
+  if (marketCoverage < Number(rules.minMarketCoverage || MIN_MARKET_COVERAGE)) {
+    return { passed: false, primaryReason: "ignored_missing_markets", penalty: 0 }
+  }
+
+  if (volume7d == null) {
+    if (!profile.allowMissingLiquidity) {
+      return { passed: false, primaryReason: "ignored_low_liquidity", penalty: 0 }
+    }
+  } else if (volume7d < Number(rules.minVolume7d || profile.minVolume7d || 0)) {
+    return { passed: false, primaryReason: "ignored_low_liquidity", penalty: 0 }
+  }
+
+  if (profile.requireFreshData) {
+    if (hasSnapshotStale) {
+      return { passed: false, primaryReason: "ignored_stale_data", penalty: 0 }
+    }
+    if (staleMinutes != null && staleMinutes >= Number(profile.maxQuoteAgeMinutes || 0)) {
+      return { passed: false, primaryReason: "ignored_stale_data", penalty: 0 }
+    }
+  }
+
+  let penalty = 0
+  if (volume7d == null) {
+    penalty += profile.allowMissingLiquidity ? 16 : 0
+  } else if (volume7d < Number(rules.minVolume7d || MIN_VOLUME_7D)) {
+    penalty += volume7d < 60 ? 14 : 8
+  }
+
+  if (buyPrice < Number(rules.minPriceUsd || MIN_EXECUTION_PRICE_USD)) {
+    penalty += 7
+  }
+  if (spread < Number(rules.minSpreadPercent || MIN_SPREAD_PERCENT)) {
+    penalty += 10
+  }
+  if (hasSnapshotStale) {
+    penalty += 12
+  }
+  if (staleMinutes != null && staleMinutes >= 180) {
+    penalty += 18
+  } else if (staleMinutes != null && staleMinutes >= 60) {
+    penalty += 10
+  }
+
+  return {
+    passed: true,
+    primaryReason: "",
+    penalty: round2(Math.max(penalty, 0))
+  }
+}
+
 function normalizeConfidence(value) {
   const safe = String(value || "").trim().toLowerCase()
   if (safe === "high") return "High"
@@ -466,7 +804,10 @@ function buildApiOpportunityRow({
   inputItem = {},
   liquidity = {},
   stale = {},
-  perMarket = []
+  perMarket = [],
+  extraPenalty = 0,
+  isHighConfidenceEligible = false,
+  isRiskyEligible = false
 }) {
   const bySource = toBySourceMap(perMarket)
   const buySource = normalizeMarketLabel(opportunity?.buyMarket)
@@ -475,7 +816,8 @@ function buildApiOpportunityRow({
   const sellQuote = bySource[sellSource] || null
   const baseScore = toFiniteOrNull(opportunity?.opportunityScore) ?? 0
   const stalePenalty = toFiniteOrNull(stale?.penalty) ?? 0
-  const score = clampScore(baseScore - stalePenalty)
+  const softPenalty = toFiniteOrNull(extraPenalty) ?? 0
+  const score = clampScore(baseScore - stalePenalty - softPenalty)
   const depthFlags = Array.isArray(opportunity?.depthFlags) ? opportunity.depthFlags : []
   const hasOutlierAdjusted = depthFlags.some(
     (flag) => flag === "BUY_OUTLIER_ADJUSTED" || flag === "SELL_OUTLIER_ADJUSTED"
@@ -498,6 +840,13 @@ function buildApiOpportunityRow({
   return {
     itemId: Number(opportunity?.itemId || inputItem?.skinId || 0) || null,
     itemName: String(opportunity?.itemName || inputItem?.marketHashName || "Tracked Item"),
+    itemCategory: normalizeItemCategory(
+      opportunity?.itemCategory || inputItem?.itemCategory,
+      opportunity?.itemName || inputItem?.marketHashName
+    ),
+    itemSubcategory: String(inputItem?.itemSubcategory || "").trim() || null,
+    itemImageUrl:
+      String(inputItem?.itemImageUrlLarge || inputItem?.itemImageUrl || "").trim() || null,
     buyMarket: buySource || null,
     buyPrice: roundPrice(opportunity?.buyPrice || 0),
     sellMarket: sellSource || null,
@@ -518,6 +867,7 @@ function buildApiOpportunityRow({
     marketCoverage: Number(opportunity?.marketCoverage || 0),
     referencePrice: toFiniteOrNull(opportunity?.referencePrice ?? inputItem?.referencePrice),
     stalePenalty,
+    softPenalty,
     maxQuoteAgeMinutes: toFiniteOrNull(stale?.maxAgeMinutes),
     buyUrl: buyQuote?.url || opportunity?.buyUrl || null,
     sellUrl: sellQuote?.url || opportunity?.sellUrl || null,
@@ -529,7 +879,9 @@ function buildApiOpportunityRow({
     stabilityScore: toFiniteOrNull(opportunity?.scores?.stabilityScore),
     marketReliabilityScore: toFiniteOrNull(opportunity?.scores?.marketScore),
     depthConfidenceScore: toFiniteOrNull(opportunity?.scores?.depthConfidenceScore),
-    rawOpportunityScore: baseScore
+    rawOpportunityScore: baseScore,
+    isHighConfidenceEligible: Boolean(isHighConfidenceEligible),
+    isRiskyEligible: Boolean(isRiskyEligible)
   }
 }
 
@@ -554,6 +906,10 @@ function buildInputItemForComparison(item = {}) {
   return {
     skinId: Number(item?.skinId || 0) || null,
     marketHashName: String(item?.marketHashName || "").trim(),
+    itemCategory: normalizeItemCategory(item?.itemCategory, item?.marketHashName),
+    itemSubcategory: String(item?.itemSubcategory || "").trim() || null,
+    imageUrl: String(item?.itemImageUrl || "").trim() || null,
+    imageUrlLarge: String(item?.itemImageUrlLarge || "").trim() || null,
     quantity: 1,
     steamPrice:
       toFiniteOrNull(item?.referencePrice) ??
@@ -569,36 +925,72 @@ function buildInputItemForComparison(item = {}) {
   }
 }
 
-function collectDiscardReasonsFromOpportunity(opportunity = {}, discardStats = {}) {
+function collectDiscardReasonsFromOpportunity(
+  opportunity = {},
+  discardStats = {},
+  rejectedByItem = null,
+  itemName = "",
+  itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
+) {
   const reasons = Array.isArray(opportunity?.antiFake?.reasons) ? opportunity.antiFake.reasons : []
   for (const reason of reasons) {
-    incrementReasonCounter(discardStats, reason)
+    incrementReasonCounter(discardStats, reason, itemCategory)
+    if (rejectedByItem) {
+      incrementItemReasonCounter(
+        rejectedByItem,
+        itemName || opportunity?.itemName,
+        reason,
+        itemCategory
+      )
+    }
   }
 
   const debugReasons = Array.isArray(opportunity?.antiFake?.debugReasons)
     ? opportunity.antiFake.debugReasons
     : []
   for (const reason of debugReasons) {
-    incrementReasonCounter(discardStats, reason)
+    incrementReasonCounter(discardStats, reason, itemCategory)
+    if (rejectedByItem) {
+      incrementItemReasonCounter(
+        rejectedByItem,
+        itemName || opportunity?.itemName,
+        reason,
+        itemCategory
+      )
+    }
   }
 }
 
-function applyGuardFallbackReason(opportunity = {}, liquidity = {}, discardStats = {}) {
+function applyGuardFallbackReason(
+  opportunity = {},
+  liquidity = {},
+  discardStats = {},
+  rejectedByItem = null,
+  itemName = "",
+  itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
+) {
   const buyPrice = toFiniteOrNull(opportunity?.buyPrice)
   const spread = toFiniteOrNull(opportunity?.spreadPercent ?? opportunity?.spread_pct)
   const volume7d = toFiniteOrNull(liquidity?.volume7d)
   const marketCoverage = Number(opportunity?.marketCoverage || 0)
+  const targetItemName = itemName || opportunity?.itemName
+  const record = (reason) => {
+    incrementReasonCounter(discardStats, reason, itemCategory)
+    if (rejectedByItem) {
+      incrementItemReasonCounter(rejectedByItem, targetItemName, reason, itemCategory)
+    }
+  }
   if (buyPrice != null && buyPrice < MIN_EXECUTION_PRICE_USD) {
-    incrementReasonCounter(discardStats, "ignored_low_price")
+    record("ignored_low_price")
   }
   if (volume7d == null || volume7d < MIN_VOLUME_7D) {
-    incrementReasonCounter(discardStats, "ignored_low_liquidity")
+    record("ignored_low_liquidity")
   }
   if (spread != null && spread > MAX_SPREAD_PERCENT) {
-    incrementReasonCounter(discardStats, "ignored_extreme_spread")
+    record("ignored_extreme_spread")
   }
   if (marketCoverage < MIN_MARKET_COVERAGE) {
-    incrementReasonCounter(discardStats, "ignored_missing_markets")
+    record("ignored_missing_markets")
   }
 }
 
@@ -609,19 +1001,21 @@ const scannerState = {
   lastError: null
 }
 
-async function loadScannerInputs(discardStats = {}) {
-  const dynamicSeeds = await loadDynamicUniverseSeeds()
-  const baseSeeds = dynamicSeeds.length ? dynamicSeeds : await loadFallbackUniverseSeeds()
+async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
+  const fallbackSeeds = await loadFallbackUniverseSeeds()
+  const fallbackFiltered = fallbackSeeds.filter((row) =>
+    passesUniverseSeedFilters(row, discardStats, rejectedByItem)
+  )
 
-  const filtered = baseSeeds.filter((row) => passesUniverseSeedFilters(row, discardStats))
-  const ranked = filtered
+  const ranked = fallbackFiltered
     .map((row) => ({
       ...row,
       ...computeLiquidityRank({
         volume7d: row.marketVolume7d,
         marketCoverage: 2,
         sevenDayChangePercent: row.sevenDayChangePercent,
-        referencePrice: row.referencePrice
+        referencePrice: row.referencePrice,
+        itemCategory: row.itemCategory
       })
     }))
     .sort(
@@ -634,22 +1028,35 @@ async function loadScannerInputs(discardStats = {}) {
   return ranked
 }
 
-function selectTopUniverseItems(comparisonItems = [], inputByName = {}, discardStats = {}) {
+function selectTopUniverseItems(
+  comparisonItems = [],
+  inputByName = {},
+  discardStats = {},
+  rejectedByItem = {}
+) {
   const ranked = []
   for (const comparisonItem of Array.isArray(comparisonItems) ? comparisonItems : []) {
     const name = normalizeMarketHashName(comparisonItem?.marketHashName)
     const inputItem = inputByName[name] || null
     if (!inputItem) continue
+    const itemCategory = normalizeItemCategory(inputItem?.itemCategory, name)
     const marketCoverage = countAvailableMarkets(comparisonItem?.perMarket)
     if (marketCoverage < MIN_MARKET_COVERAGE) {
-      incrementReasonCounter(discardStats, "ignored_missing_markets")
+      incrementReasonCounter(discardStats, "ignored_missing_markets", itemCategory)
+      incrementItemReasonCounter(
+        rejectedByItem,
+        name || inputItem?.marketHashName,
+        "ignored_missing_markets",
+        itemCategory
+      )
       continue
     }
     const rank = computeLiquidityRank({
       volume7d: inputItem.marketVolume7d,
       marketCoverage,
       sevenDayChangePercent: inputItem.sevenDayChangePercent,
-      referencePrice: inputItem.referencePrice
+      referencePrice: inputItem.referencePrice,
+      itemCategory: inputItem.itemCategory
     })
     ranked.push({
       inputItem,
@@ -671,7 +1078,8 @@ function selectTopUniverseItems(comparisonItems = [], inputByName = {}, discardS
 async function runScanInternal(options = {}) {
   const forceRefresh = Boolean(options.forceRefresh)
   const discardStats = {}
-  const universeSeeds = await loadScannerInputs(discardStats)
+  const rejectedByItem = {}
+  const universeSeeds = await loadScannerInputs(discardStats, rejectedByItem)
   if (!universeSeeds.length) {
     const generatedTs = Date.now()
     const emptyPayload = {
@@ -685,7 +1093,8 @@ async function runScanInternal(options = {}) {
         totalDetected: 0,
         universeSize: 0,
         candidateItems: 0,
-        discardedReasons: discardStats
+        discardedReasons: discardStats,
+        topRejectedItems: toTopRejectedItems(rejectedByItem)
       },
       opportunities: []
     }
@@ -710,36 +1119,86 @@ async function runScanInternal(options = {}) {
     "marketHashName"
   )
 
-  const selectedUniverse = selectTopUniverseItems(comparison?.items, inputByName, discardStats)
+  const selectedUniverse = selectTopUniverseItems(
+    comparison?.items,
+    inputByName,
+    discardStats,
+    rejectedByItem
+  )
   const rows = []
   for (const selected of selectedUniverse) {
     const item = selected?.comparisonItem || null
     const inputItem = selected?.inputItem || null
+    const itemName = String(inputItem?.marketHashName || item?.marketHashName || "").trim()
+    const itemCategory = normalizeItemCategory(inputItem?.itemCategory, itemName)
     if (!item || !inputItem) continue
     const opportunity = item?.arbitrage || null
     if (!opportunity) {
-      incrementReasonCounter(discardStats, "insufficient_market_data")
+      incrementReasonCounter(discardStats, "insufficient_market_data", itemCategory)
+      incrementItemReasonCounter(rejectedByItem, itemName, "insufficient_market_data", itemCategory)
       continue
     }
 
     const enrichedOpportunity = {
       ...opportunity,
+      itemCategory,
       marketCoverage: selected.marketCoverage
     }
-    collectDiscardReasonsFromOpportunity(enrichedOpportunity, discardStats)
     const liquidity = resolveLiquidityMetrics(enrichedOpportunity, inputItem)
-    if (!passesScannerGuards(enrichedOpportunity, liquidity)) {
-      applyGuardFallbackReason(enrichedOpportunity, liquidity, discardStats)
+    const stale = resolveStaleDataPenalty(item?.perMarket, enrichedOpportunity)
+
+    const hardRejectionReason = getPrimaryHardRejectionReason(enrichedOpportunity)
+    if (hardRejectionReason) {
+      collectDiscardReasonsFromOpportunity(
+        enrichedOpportunity,
+        discardStats,
+        rejectedByItem,
+        itemName,
+        itemCategory
+      )
+      if (!Array.isArray(enrichedOpportunity?.antiFake?.reasons) || !enrichedOpportunity.antiFake.reasons.length) {
+        incrementReasonCounter(discardStats, hardRejectionReason, itemCategory)
+        incrementItemReasonCounter(rejectedByItem, itemName, hardRejectionReason, itemCategory)
+      }
       continue
     }
-    const stale = resolveStaleDataPenalty(item?.perMarket, enrichedOpportunity)
+
+    const riskyEvaluation = computeRiskAdjustments({
+      opportunity: enrichedOpportunity,
+      liquidity,
+      stale,
+      inputItem,
+      profile: RISKY_SCAN_PROFILE
+    })
+    if (!riskyEvaluation.passed) {
+      incrementReasonCounter(discardStats, riskyEvaluation.primaryReason, itemCategory)
+      incrementItemReasonCounter(
+        rejectedByItem,
+        itemName,
+        riskyEvaluation.primaryReason,
+        itemCategory
+      )
+      continue
+    }
+
+    const strictEvaluation = computeRiskAdjustments({
+      opportunity: enrichedOpportunity,
+      liquidity,
+      stale,
+      inputItem,
+      profile: STRICT_SCAN_PROFILE
+    })
+
     rows.push(
       buildApiOpportunityRow({
         opportunity: enrichedOpportunity,
         inputItem,
         liquidity,
         stale,
-        perMarket: item?.perMarket
+        perMarket: item?.perMarket,
+        extraPenalty: riskyEvaluation.penalty,
+        isRiskyEligible: true,
+        isHighConfidenceEligible: strictEvaluation.passed
       })
     )
   }
@@ -755,11 +1214,19 @@ async function runScanInternal(options = {}) {
       .toUpperCase(),
     summary: {
       scannedItems: selectedUniverse.length,
-      opportunities: sortedRows.filter((row) => Number(row?.score || 0) >= DEFAULT_SCORE_CUTOFF).length,
+      opportunities: sortedRows.filter(
+        (row) =>
+          Boolean(row?.isHighConfidenceEligible) &&
+          Number(row?.score || 0) >= DEFAULT_SCORE_CUTOFF &&
+          String(row?.executionConfidence || "")
+            .trim()
+            .toLowerCase() !== "low"
+      ).length,
       totalDetected: sortedRows.length,
       universeSize: selectedUniverse.length,
       candidateItems: universeSeeds.length,
-      discardedReasons: discardStats
+      discardedReasons: discardStats,
+      topRejectedItems: toTopRejectedItems(rejectedByItem)
     },
     opportunities: sortedRows
   }
@@ -813,8 +1280,11 @@ async function ensureFreshCache() {
 exports.getTopOpportunities = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 50)
   const showRisky = normalizeBoolean(options.showRisky)
-  const minScore = showRisky ? RISKY_SCORE_CUTOFF : DEFAULT_SCORE_CUTOFF
-  const cache = await ensureFreshCache()
+  const forceRefresh = normalizeBoolean(options.forceRefresh || options.force)
+  const categoryFilter = normalizeCategoryFilter(options.category)
+  const cache = forceRefresh
+    ? await runScan({ forceRefresh: true })
+    : await ensureFreshCache()
   const safeCache = cache || {
     generatedAt: null,
     ttlSeconds: Math.round(CACHE_TTL_MS / 1000),
@@ -825,16 +1295,27 @@ exports.getTopOpportunities = async (options = {}) => {
       totalDetected: 0,
       universeSize: 0,
       candidateItems: 0,
-      discardedReasons: {}
+      discardedReasons: {},
+      topRejectedItems: []
     },
     opportunities: []
   }
 
   const allRows = Array.isArray(safeCache.opportunities) ? safeCache.opportunities : []
   const filtered = allRows.filter((row) => {
-    if (showRisky) return true
+    const itemCategory = normalizeItemCategory(row?.itemCategory, row?.itemName)
+    if (categoryFilter !== "all" && itemCategory !== categoryFilter) {
+      return false
+    }
+    if (showRisky) {
+      return (
+        Boolean(row?.isRiskyEligible) &&
+        Number(row?.score || 0) >= RISKY_SCORE_CUTOFF
+      )
+    }
     return (
-      Number(row?.score || 0) >= minScore &&
+      Boolean(row?.isHighConfidenceEligible) &&
+      Number(row?.score || 0) >= DEFAULT_SCORE_CUTOFF &&
       String(row?.executionConfidence || "")
         .trim()
         .toLowerCase() !== "low"
@@ -884,11 +1365,14 @@ exports.stopScheduler = () => {
 exports.forceRefresh = async () => runScan({ forceRefresh: true })
 
 exports.__testables = {
-  normalizeUniverseNames,
+  normalizeUniverseEntries,
+  normalizeItemCategory,
+  normalizeCategoryFilter,
   computeLiquidityScoreFromSnapshot,
   resolveVolume7d,
   resolveStaleDataPenalty,
   resolveLiquidityMetrics,
+  passesUniverseSeedFilters,
   passesScannerGuards,
   buildApiOpportunityRow,
   clampScore,

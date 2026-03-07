@@ -5374,6 +5374,13 @@ a:hover {
   color: #e7f1ff;
 }
 
+.dashboard-arb-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .dashboard-arb-leg,
 .dashboard-arb-score,
 .dashboard-arb-profit {
@@ -5506,6 +5513,36 @@ a:hover {
   line-height: 1.2;
 }
 
+.opportunity-category-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(127, 153, 204, 0.32);
+  background: rgba(12, 17, 30, 0.72);
+  color: var(--text-muted);
+  font-size: 0.67rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.opportunity-category-badge.skin {
+  border-color: rgba(90, 174, 255, 0.5);
+  color: #9dc9ff;
+}
+
+.opportunity-category-badge.case {
+  border-color: rgba(255, 191, 87, 0.5);
+  color: #ffd38e;
+}
+
+.opportunity-category-badge.capsule {
+  border-color: rgba(126, 231, 203, 0.48);
+  color: #9ef5dd;
+}
+
 .opportunities-toolbar {
   align-items: center;
   gap: 14px;
@@ -5524,6 +5561,41 @@ a:hover {
   width: 16px;
   height: 16px;
   margin: 0;
+}
+
+.opportunity-category-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.opportunity-category-filter select {
+  min-width: 112px;
+}
+
+.opportunity-item-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 240px;
+}
+
+.opportunity-item-thumb {
+  width: 56px;
+  height: 42px;
+  border-radius: 8px;
+  border: 1px solid rgba(127, 153, 204, 0.22);
+  background: rgba(7, 12, 23, 0.86);
+  object-fit: contain;
+  flex: 0 0 auto;
+}
+
+.opportunity-item-meta {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
 }
 
 .opportunity-score-cell,
@@ -5572,6 +5644,34 @@ a:hover {
   gap: 4px;
   font-size: 0.77rem;
   color: var(--text-muted);
+}
+
+.opportunity-debug-rejected {
+  margin-top: 10px;
+  border-top: 1px solid rgba(127, 153, 204, 0.2);
+  padding-top: 8px;
+}
+
+.opportunity-debug-rejected-title {
+  margin: 0 0 6px;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+
+.opportunity-debug-rejected-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+
+.opportunity-debug-rejected-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .dashboard-deep-panel {

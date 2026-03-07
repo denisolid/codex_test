@@ -142,6 +142,8 @@ function normalizeItems(items = []) {
     normalized.push({
       skinId: Number(item?.skinId || item?.skin_id || 0) || null,
       marketHashName,
+      itemCategory: String(item?.itemCategory || item?.category || "").trim() || null,
+      itemSubcategory: String(item?.itemSubcategory || item?.subcategory || "").trim() || null,
       quantity,
       steamPrice: Number(item?.steamPrice || item?.currentPrice || 0),
       steamCurrency: normalizeText(item?.steamCurrency || item?.currency || "USD") || "USD",
@@ -612,6 +614,8 @@ exports.compareItems = async (items = [], options = {}) => {
     const arbitrage = arbitrageEngine.evaluateItemOpportunity({
       skinId: item.skinId,
       marketHashName: item.marketHashName,
+      itemCategory: item.itemCategory,
+      itemSubcategory: item.itemSubcategory,
       perMarket,
       sevenDayChangePercent: item.sevenDayChangePercent,
       liquiditySales: item.liquiditySales,
@@ -632,6 +636,8 @@ exports.compareItems = async (items = [], options = {}) => {
     return {
       skinId: item.skinId,
       marketHashName: item.marketHashName,
+      itemCategory: item.itemCategory,
+      itemSubcategory: item.itemSubcategory,
       quantity: Number(item.quantity || 0),
       perMarket,
       bestBuy: bestBuy

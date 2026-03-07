@@ -4,12 +4,17 @@ const scannerService = require("../services/arbitrageScannerService");
 exports.getTopOpportunities = asyncHandler(async (req, res) => {
   const data = await scannerService.getTopOpportunities({
     limit: req.validated?.limit,
-    showRisky: req.query?.showRisky
+    showRisky: req.query?.showRisky,
+    forceRefresh: req.query?.force,
+    category: req.query?.category
   });
 
   res.json({
     opportunities: (Array.isArray(data?.opportunities) ? data.opportunities : []).map((row) => ({
       itemName: row?.itemName || "Tracked Item",
+      itemCategory: row?.itemCategory || "weapon_skin",
+      itemSubcategory: row?.itemSubcategory || null,
+      itemImageUrl: row?.itemImageUrl || null,
       buyMarket: row?.buyMarket || null,
       buyPrice: row?.buyPrice ?? null,
       sellMarket: row?.sellMarket || null,

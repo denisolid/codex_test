@@ -740,6 +740,19 @@ td {
   padding: 10px 8px;
 }
 
+.opportunity-item-cell {
+  min-width: 210px;
+}
+
+.opportunity-item-thumb {
+  width: 48px;
+  height: 36px;
+}
+
+.opportunities-toolbar {
+  align-items: flex-start;
+}
+
 input,
 select,
 textarea {

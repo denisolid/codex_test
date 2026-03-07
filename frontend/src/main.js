@@ -251,6 +251,7 @@ function createGlobalOpportunitiesState() {
     generatedAt: null,
     currency: "USD",
     showRisky: false,
+    category: "all",
     summary: null,
     items: [],
   };
@@ -2601,14 +2602,21 @@ async function handlePricingModeChange(nextMode) {
 
 function buildComparisonItemsPayload(items = []) {
   return (Array.isArray(items) ? items : [])
-    .map((item) => ({
-      skinId: Number(item.skinId || 0) || null,
-      marketHashName: String(item.marketHashName || "").trim(),
-      quantity: Number(item.quantity || 0),
-      steamPrice: Number(item.steamPrice || item.currentPrice || 0),
-      steamCurrency: state.portfolio?.currency || state.currency,
-      steamRecordedAt: item.currentPriceRecordedAt || null,
-    }))
+    .map((item) => {
+      const marketHashName = String(item.marketHashName || "").trim();
+      return {
+        skinId: Number(item.skinId || 0) || null,
+        marketHashName,
+        itemCategory: normalizeOpportunityCategory(
+          item?.itemCategory || item?.category,
+          marketHashName,
+        ),
+        quantity: Number(item.quantity || 0),
+        steamPrice: Number(item.steamPrice || item.currentPrice || 0),
+        steamCurrency: state.portfolio?.currency || state.currency,
+        steamRecordedAt: item.currentPriceRecordedAt || null,
+      };
+    })
     .filter((row) => row.marketHashName);
 }
 
@@ -2633,6 +2641,10 @@ function buildCompareDrawerSnapshotFromHolding(holding, options = {}) {
       holding.marketHashName || options.marketHashName || "Tracked Item",
     ),
     condition: getHoldingConditionLabel(holding),
+    itemCategory: normalizeOpportunityCategory(
+      holding?.itemCategory || holding?.category,
+      holding?.marketHashName,
+    ),
     quantity: Number(holding.quantity || 0),
     imageUrl,
     currency: holding.currency || state.portfolio?.currency || state.currency,
@@ -2687,6 +2699,10 @@ function buildCompareDrawerSnapshotFromComparisonItem(
     skinId,
     marketHashName,
     condition: getHoldingConditionLabel(visualItem),
+    itemCategory: normalizeOpportunityCategory(
+      options.itemCategory || comparisonItem?.itemCategory || comparisonItem?.category,
+      marketHashName,
+    ),
     quantity,
     imageUrl,
     currency,
@@ -2816,6 +2832,7 @@ async function refreshCompareDrawerDataForItemSeed(itemSeed = {}) {
             steamPrice: seedSteamPrice,
             steamCurrency: seedSteamCurrency,
             steamRecordedAt: itemSeed.steamRecordedAt || null,
+            itemCategory: itemSeed.itemCategory || null,
           },
         ],
         pricingMode: state.pricingMode,
@@ -2842,6 +2859,7 @@ async function refreshCompareDrawerDataForItemSeed(itemSeed = {}) {
         quantity: seedQuantity,
         currentPrice: seedSteamPrice,
         currentPriceSource: itemSeed.currentPriceSource || "",
+        itemCategory: itemSeed.itemCategory || "",
         imageUrl: itemSeed.imageUrl || "",
         currency: comparisonPayload?.currency || seedSteamCurrency,
         fees: comparisonPayload?.fees || state.portfolio?.pricing?.fees || null,
@@ -3014,6 +3032,7 @@ function openCompareDrawerByOpportunity(opportunity, triggerElement = null) {
     skinId: state.compareDrawer.skinId,
     marketHashName,
     condition: getHoldingConditionLabel(visualItem),
+    itemCategory: normalizeOpportunityCategory(row?.itemCategory, marketHashName),
     quantity: 1,
     imageUrl: fallbackImage,
     currency: seedCurrency,
@@ -3041,6 +3060,7 @@ function openCompareDrawerByOpportunity(opportunity, triggerElement = null) {
       steamCurrency: seedCurrency,
       steamRecordedAt: state.globalOpportunities?.generatedAt || null,
       currentPriceSource: seedSourceLabel,
+      itemCategory: row?.itemCategory || "",
       imageUrl: fallbackImage,
     }),
   );
@@ -4130,6 +4150,29 @@ function onAppChange(event) {
         force: true,
         limit: 100,
         showRisky: checked,
+      }),
+    );
+    return;
+  }
+
+  if (target.matches("#global-opportunities-category")) {
+    const nextCategory = String(target.value || "all")
+      .trim()
+      .toLowerCase();
+    if (nextCategory === "capsules" || nextCategory === "capsule") {
+      state.globalOpportunities.category = "capsules";
+    } else if (nextCategory === "cases" || nextCategory === "case") {
+      state.globalOpportunities.category = "cases";
+    } else if (nextCategory === "skins" || nextCategory === "skin") {
+      state.globalOpportunities.category = "skins";
+    } else {
+      state.globalOpportunities.category = "all";
+    }
+    runUiTask(() =>
+      refreshGlobalOpportunities({
+        force: true,
+        limit: 100,
+        category: state.globalOpportunities.category,
       }),
     );
     return;
@@ -5435,12 +5478,22 @@ async function refreshMarketOpportunities(options = {}) {
 }
 
 async function refreshGlobalOpportunities(options = {}) {
-  const { silent = false, limit = 100, force = false, showRisky = null } =
+  const {
+    silent = false,
+    limit = 100,
+    force = false,
+    showRisky = null,
+    category = null,
+  } =
     options;
   const scanner = state.globalOpportunities || createGlobalOpportunitiesState();
   state.globalOpportunities = scanner;
   scanner.showRisky =
     showRisky == null ? Boolean(scanner.showRisky) : Boolean(showRisky);
+  scanner.category =
+    category == null
+      ? String(scanner.category || "all")
+      : String(category || "all");
   scanner.loading = true;
   if (!force) {
     scanner.error = "";
@@ -5453,6 +5506,15 @@ async function refreshGlobalOpportunities(options = {}) {
     const query = buildQuery({
       limit: Math.max(Number(limit || 100), 1),
       showRisky: scanner.showRisky ? "1" : "",
+      category:
+        scanner.category === "skins"
+          ? "weapon_skin"
+          : scanner.category === "cases"
+            ? "case"
+            : scanner.category === "capsules"
+              ? "sticker_capsule"
+            : "",
+      force: force ? "1" : "",
     });
     const payload = await api(`/opportunities/top${query}`);
     scanner.items = Array.isArray(payload?.opportunities) ? payload.opportunities : [];
@@ -6283,10 +6345,45 @@ function formatLiquidityBandLabel(value, volume7d = null) {
   return `${base} (${formatNumber(volume, 0)} / 7D)`;
 }
 
+function normalizeOpportunityCategory(value, marketHashName = "") {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (
+    raw === "sticker_capsule" ||
+    raw === "sticker capsule" ||
+    raw === "capsule" ||
+    raw === "capsules"
+  ) {
+    return "sticker_capsule";
+  }
+  if (raw === "case") return "case";
+  if (raw === "weapon_skin") return "weapon_skin";
+  const normalizedName = String(marketHashName || "").trim();
+  if (/sticker capsule$/i.test(normalizedName)) return "sticker_capsule";
+  const fallbackItem = { marketHashName: normalizedName };
+  return isCaseLikeItem(fallbackItem) ? "case" : "weapon_skin";
+}
+
+function formatOpportunityCategoryLabel(value, marketHashName = "") {
+  const category = normalizeOpportunityCategory(value, marketHashName);
+  if (category === "sticker_capsule") return "Capsule";
+  return category === "case" ? "Case" : "Skin";
+}
+
+function getOpportunityCategoryTone(value, marketHashName = "") {
+  const category = normalizeOpportunityCategory(value, marketHashName);
+  if (category === "sticker_capsule") return "capsule";
+  return category === "case" ? "case" : "skin";
+}
+
 function formatArbitrageReasonLabel(reasonCode) {
   const key = String(reasonCode || "")
     .trim()
     .toLowerCase();
+  const scopedSplit = key.split("__");
+  const baseKey = scopedSplit[0] || key;
+  const scopedCategory = scopedSplit[1] || "";
   const map = {
     low_liquidity: "Low liquidity",
     extreme_spread: "Extreme spread",
@@ -6310,9 +6407,12 @@ function formatArbitrageReasonLabel(reasonCode) {
     medium_liquidity: "Medium liquidity",
     stale_market_data: "Stale market data",
   };
-  if (map[key]) return map[key];
-  if (!key) return "Filtered by anti-fake checks";
-  return toTitle(key.replace(/_/g, " "));
+  const reasonLabel =
+    map[baseKey] || (baseKey ? toTitle(baseKey.replace(/_/g, " ")) : "");
+  if (!reasonLabel) return "Filtered by anti-fake checks";
+  if (!scopedCategory) return reasonLabel;
+  const categoryLabel = formatOpportunityCategoryLabel(scopedCategory);
+  return `${reasonLabel} (${categoryLabel.toLowerCase()}s)`;
 }
 
 function buildOpportunityBadges(row = {}, options = {}) {
@@ -6900,6 +7000,12 @@ function renderCompareDrawerBody() {
       <div class="compare-drawer-item-meta">
         <p class="compare-drawer-item-name">${escapeHtml(payload.marketHashName)}</p>
         <div class="compare-drawer-item-badges">
+          <span class="compare-drawer-item-badge">Category ${escapeHtml(
+            formatOpportunityCategoryLabel(
+              payload.itemCategory,
+              payload.marketHashName,
+            ),
+          )}</span>
           <span class="compare-drawer-item-badge">Condition ${escapeHtml(
             payload.condition || "Unknown condition",
           )}</span>
@@ -8907,6 +9013,14 @@ function renderDashboardArbitragePanel() {
               row?.volume7d ?? row?.liquiditySample ?? row?.liquidity,
             );
             const badges = buildOpportunityBadges(row, { max: 3 });
+            const categoryLabel = formatOpportunityCategoryLabel(
+              row?.itemCategory,
+              row?.itemName,
+            );
+            const categoryTone = getOpportunityCategoryTone(
+              row?.itemCategory,
+              row?.itemName,
+            );
             const skinId = Number(row?.itemId || row?.skinId || 0);
             const isRowClickable = Number.isInteger(skinId) && skinId > 0;
             const itemName = String(row?.itemName || "Tracked Item");
@@ -8919,7 +9033,14 @@ function renderDashboardArbitragePanel() {
               <article class="dashboard-arb-row dashboard-arb-row-opportunity ${
                 isRowClickable ? "dashboard-arb-row-clickable" : ""
               }" ${rowInteractionAttributes}>
-                <strong class="dashboard-arb-item">${escapeHtml(row?.itemName || "Tracked Item")}</strong>
+                <div class="dashboard-arb-item-head">
+                  <strong class="dashboard-arb-item">${escapeHtml(
+                    row?.itemName || "Tracked Item",
+                  )}</strong>
+                  <span class="opportunity-category-badge ${escapeHtml(
+                    categoryTone,
+                  )}">${escapeHtml(categoryLabel)}</span>
+                </div>
                 <p class="dashboard-arb-leg">
                   <span>Buy ${escapeHtml(formatMarketSourceLabel(row?.buyMarket))}</span>
                   <strong>${formatMoney(row?.buyPrice, currencyCode)}</strong>
@@ -10051,16 +10172,20 @@ function renderGlobalOpportunitiesTab() {
   const rows = Array.isArray(scanner.items) ? scanner.items : [];
   const currencyCode = scanner.currency || "USD";
   const showRisky = Boolean(scanner.showRisky);
+  const categoryFilter = String(scanner.category || "all")
+    .trim()
+    .toLowerCase();
   const generatedLabel = scanner.generatedAt
     ? `Updated ${escapeHtml(formatRelativeTime(scanner.generatedAt))}.`
     : "Waiting for first scanner cycle.";
   const summary =
     scanner.summary && typeof scanner.summary === "object" ? scanner.summary : null;
-  const discardReasonRows = isArbitrageDebugEnabled()
-    ? Object.entries(summary?.discardedReasons || {})
-        .filter(([, count]) => Number(count || 0) > 0)
-        .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+  const topRejectedItems = Array.isArray(summary?.topRejectedItems)
+    ? summary.topRejectedItems
     : [];
+  const discardReasonRows = Object.entries(summary?.discardedReasons || {})
+    .filter(([, count]) => Number(count || 0) > 0)
+    .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0));
 
   const tableMarkup = rows.length
     ? `
@@ -10103,6 +10228,21 @@ function renderGlobalOpportunitiesTab() {
               const badges = buildOpportunityBadges(row, { max: 5 });
               const itemId = Number(row?.itemId || 0);
               const marketHashName = String(row?.itemName || "").trim();
+              const itemCategory = normalizeOpportunityCategory(
+                row?.itemCategory,
+                marketHashName,
+              );
+              const categoryLabel = formatOpportunityCategoryLabel(
+                itemCategory,
+                marketHashName,
+              );
+              const categoryTone = getOpportunityCategoryTone(
+                itemCategory,
+                marketHashName,
+              );
+              const itemImage = String(row?.itemImageUrl || "").trim();
+              const fallbackImage =
+                itemCategory === "case" ? defaultCaseImage : defaultSkinImage;
               const inspectUrl =
                 String(row?.buyUrl || row?.sellUrl || "").trim() ||
                 buildSteamListingUrlByName(row?.itemName);
@@ -10118,7 +10258,23 @@ function renderGlobalOpportunitiesTab() {
 
               return `
                 <tr>
-                  <td>${escapeHtml(row?.itemName || "Tracked Item")}</td>
+                  <td>
+                    <div class="opportunity-item-cell">
+                      <img
+                        class="opportunity-item-thumb"
+                        src="${escapeHtml(itemImage || fallbackImage)}"
+                        alt="${escapeHtml(row?.itemName || "Tracked Item")}"
+                        loading="lazy"
+                        onerror="this.onerror=null;this.src='${escapeHtml(fallbackImage)}';"
+                      />
+                      <div class="opportunity-item-meta">
+                        <strong>${escapeHtml(row?.itemName || "Tracked Item")}</strong>
+                        <span class="opportunity-category-badge ${escapeHtml(
+                          categoryTone,
+                        )}">${escapeHtml(categoryLabel)}</span>
+                      </div>
+                    </div>
+                  </td>
                   <td>${escapeHtml(formatMarketSourceLabel(row?.buyMarket))}</td>
                   <td>${formatMoney(row?.buyPrice, currencyCode)}</td>
                   <td>${escapeHtml(formatMarketSourceLabel(row?.sellMarket))}</td>
@@ -10197,7 +10353,7 @@ function renderGlobalOpportunitiesTab() {
       <article class="panel wide">
         <h2>Top Arbitrage Opportunities</h2>
         <p class="helper-text">
-          Top 100 liquid skins only. Default view shows only high-quality execution setups.
+          Top 100 universe across skins, cases, and capsules. Default view shows only high-quality execution setups.
         </p>
         <div class="row opportunities-toolbar">
           <button
@@ -10218,6 +10374,18 @@ function renderGlobalOpportunitiesTab() {
               ${scanner.loading ? "disabled" : ""}
             />
             <span>Show risky opportunities</span>
+          </label>
+          <label class="opportunity-category-filter" for="global-opportunities-category">
+            <span>Category</span>
+            <select
+              id="global-opportunities-category"
+              ${scanner.loading ? "disabled" : ""}
+            >
+              <option value="all" ${categoryFilter === "all" ? "selected" : ""}>All</option>
+              <option value="skins" ${categoryFilter === "skins" ? "selected" : ""}>Skins</option>
+              <option value="cases" ${categoryFilter === "cases" ? "selected" : ""}>Cases</option>
+              <option value="capsules" ${categoryFilter === "capsules" ? "selected" : ""}>Capsules</option>
+            </select>
           </label>
         </div>
         <p class="helper-text">
@@ -10255,6 +10423,38 @@ function renderGlobalOpportunitiesTab() {
                     )
                     .join("")}
                 </ul>
+                ${
+                  topRejectedItems.length
+                    ? `<div class="opportunity-debug-rejected">
+                        <p class="opportunity-debug-rejected-title">Top rejected items</p>
+                        <ul class="opportunity-debug-rejected-list">
+                          ${topRejectedItems
+                            .map((entry) => {
+                              const itemName = String(entry?.itemName || "Unknown item");
+                              const rejectedCount = Number(entry?.rejectedCount || 0);
+                              const itemCategory = normalizeOpportunityCategory(
+                                entry?.category,
+                                itemName,
+                              );
+                              const mainReason = formatArbitrageReasonLabel(
+                                entry?.mainReason,
+                              );
+                              return `<li><strong>${escapeHtml(
+                                itemName,
+                              )}</strong> <span>${escapeHtml(
+                                `${formatOpportunityCategoryLabel(itemCategory)} \u2022 `,
+                              )}${escapeHtml(
+                                `${mainReason} (${formatNumber(
+                                  rejectedCount,
+                                  0,
+                                )})`,
+                              )}</span></li>`;
+                            })
+                            .join("")}
+                        </ul>
+                      </div>`
+                    : ""
+                }
               </details>`
             : ""
         }

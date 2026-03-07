@@ -9,20 +9,55 @@ process.env.SUPABASE_SERVICE_ROLE_KEY =
 const marketUniverseTop100 = require("../src/config/marketUniverseTop100.json");
 const {
   __testables: {
-    normalizeUniverseNames,
+    normalizeUniverseEntries,
+    normalizeItemCategory,
+    normalizeCategoryFilter,
     computeLiquidityScoreFromSnapshot,
     resolveVolume7d,
     resolveStaleDataPenalty,
     resolveLiquidityMetrics,
+    passesUniverseSeedFilters,
     passesScannerGuards,
     buildApiOpportunityRow
   }
 } = require("../src/services/arbitrageScannerService");
 
-test("market universe is fixed and unique (Top 100)", () => {
+test("market universe is fixed and unique with category metadata", () => {
   assert.equal(Array.isArray(marketUniverseTop100), true);
-  assert.equal(marketUniverseTop100.length, 100);
-  assert.equal(normalizeUniverseNames(marketUniverseTop100).length, 100);
+  assert.equal(marketUniverseTop100.length >= 100, true);
+  assert.equal(marketUniverseTop100.length <= 160, true);
+  const normalized = normalizeUniverseEntries(marketUniverseTop100);
+  assert.equal(
+    normalized.length,
+    marketUniverseTop100.length,
+  );
+  assert.equal(
+    normalized.some((row) => row.category === "weapon_skin"),
+    true,
+  );
+  assert.equal(normalized.some((row) => row.category === "case"), true);
+  assert.equal(
+    normalized.some((row) => row.category === "sticker_capsule"),
+    true,
+  );
+});
+
+test("category normalization supports skins/cases/capsules aliases", () => {
+  assert.equal(normalizeItemCategory("case", "Revolution Case"), "case");
+  assert.equal(normalizeItemCategory("weapon_skin", "AK-47 | Redline"), "weapon_skin");
+  assert.equal(normalizeItemCategory("", "Fracture Case"), "case");
+  assert.equal(
+    normalizeItemCategory("sticker_capsule", "Paris 2023 Legends Sticker Capsule"),
+    "sticker_capsule",
+  );
+  assert.equal(
+    normalizeItemCategory("", "Copenhagen 2024 Legends Sticker Capsule"),
+    "sticker_capsule",
+  );
+  assert.equal(normalizeCategoryFilter("all"), "all");
+  assert.equal(normalizeCategoryFilter("skins"), "weapon_skin");
+  assert.equal(normalizeCategoryFilter("cases"), "case");
+  assert.equal(normalizeCategoryFilter("capsules"), "sticker_capsule");
 });
 
 test("snapshot-driven liquidity helpers produce bounded values", () => {
@@ -140,6 +175,23 @@ test("scanner guards enforce spread/profit/liquidity thresholds", () => {
     ),
     false
   );
+});
+
+test("universe seed filter allows fallback items without snapshot data", () => {
+  const discardStats = {};
+  const allowed = passesUniverseSeedFilters(
+    {
+      marketHashName: "AK-47 | Redline (Field-Tested)",
+      hasSnapshotData: false,
+      snapshotStale: false,
+      referencePrice: null,
+      marketVolume7d: null
+    },
+    discardStats
+  );
+
+  assert.equal(allowed, true);
+  assert.equal(Object.keys(discardStats).length, 0);
 });
 
 test("api row keeps required shape with clamped score", () => {

@@ -46,6 +46,24 @@ const FILTER_REASON_LABELS = Object.freeze({
   ignored_missing_markets: "Missing market coverage"
 })
 
+function normalizeItemCategory(value, itemName = "") {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase()
+  if (
+    raw === "sticker_capsule" ||
+    raw === "sticker capsule" ||
+    raw === "capsule"
+  ) {
+    return "sticker_capsule"
+  }
+  if (raw === "case") return "case"
+  if (raw === "weapon_skin") return "weapon_skin"
+  if (/sticker capsule$/i.test(String(itemName || "").trim())) return "sticker_capsule"
+  if (/case$/i.test(String(itemName || "").trim())) return "case"
+  return "weapon_skin"
+}
+
 function toFiniteOrNull(value) {
   if (value == null) return null
   if (typeof value === "string" && !value.trim()) return null
@@ -496,6 +514,7 @@ function evaluateItemOpportunity(item = {}, options = {}) {
       : MIN_SPREAD_PERCENT
   const itemId = Number(item?.skinId || item?.itemId || 0) || null
   const itemName = String(item?.marketHashName || item?.itemName || "Tracked Item").trim()
+  const itemCategory = normalizeItemCategory(item?.itemCategory || item?.category, itemName)
   const normalizedQuotes = normalizeMarketQuotes(item)
   const quotes = Array.isArray(normalizedQuotes?.quotes) ? normalizedQuotes.quotes : []
   const sevenDayChangePercent = resolveSevenDayChange(item)
@@ -620,6 +639,7 @@ function evaluateItemOpportunity(item = {}, options = {}) {
   return {
     itemId,
     itemName,
+    itemCategory,
     buy: {
       market: buyQuote?.market || null,
       price: buyPrice
