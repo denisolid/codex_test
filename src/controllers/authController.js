@@ -275,6 +275,33 @@ exports.logout = asyncHandler(async (_req, res) => {
   res.status(204).send();
 });
 
+exports.logoutAll = [
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const result = await authService.logoutAllSessions({
+      authProvider: req.authProvider,
+      authToken: req.authToken
+    });
+
+    clearAuthCookie(res);
+
+    res.json({
+      message: result.unsupported
+        ? "Signed out current session. Global session revocation is unavailable for this login type."
+        : "Signed out from all sessions."
+    });
+  })
+];
+
+exports.deleteAccount = [
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    await authService.deleteUserAccount(req.userId);
+    clearAuthCookie(res);
+    res.status(204).send();
+  })
+];
+
 exports.me = [
   authMiddleware,
   asyncHandler(async (req, res) => {

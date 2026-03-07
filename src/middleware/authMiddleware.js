@@ -17,6 +17,7 @@ module.exports = async (req, _res, next) => {
     if (!token) {
       throw new AppError("Unauthorized", 401);
     }
+    req.authToken = token;
 
     if (isAppSessionToken(token)) {
       const payload = verifyAppSessionToken(token);

@@ -76,6 +76,19 @@ function toAuthUserFromProfileRow(profileRow, steamId64) {
   };
 }
 
+function toAuthUserFromProfileRowWithoutSteam(profileRow) {
+  return {
+    id: profileRow.id,
+    email: profileRow.email || null,
+    user_metadata: {
+      provider: "email",
+      steam_id64: null,
+      display_name: profileRow.display_name || null,
+      avatar_url: profileRow.avatar_url || null
+    }
+  };
+}
+
 function isDuplicateUserError(message) {
   return /already\s+registered|duplicate|unique/i.test(String(message || ""));
 }
@@ -327,6 +340,67 @@ exports.linkSteamToUser = async (userId, steamId64, profile = {}) => {
     mergedFromUserId,
     user: toAuthUserFromProfileRow(updated, safeSteamId64)
   };
+};
+
+exports.unlinkSteamFromUser = async (userId) => {
+  const safeUserId = String(userId || "").trim();
+  const currentUser = await userRepo.getById(safeUserId);
+  if (!currentUser) {
+    throw new AppError("User not found", 404, "USER_NOT_FOUND");
+  }
+
+  if (!String(currentUser.steam_id64 || "").trim()) {
+    return {
+      user: toAuthUserFromProfileRowWithoutSteam(currentUser),
+      disconnected: false
+    };
+  }
+
+  if (isSteamManagedEmail(currentUser.email)) {
+    throw new AppError(
+      "Cannot disconnect Steam from a Steam-only account. Sign in with email/password first.",
+      409,
+      "STEAM_DISCONNECT_FORBIDDEN"
+    );
+  }
+
+  const updated = await userRepo.updateSteamProfileById(safeUserId, {
+    steamId64: null
+  });
+
+  return {
+    user: toAuthUserFromProfileRowWithoutSteam(updated),
+    disconnected: true
+  };
+};
+
+exports.logoutAllSessions = async ({ authProvider, authToken } = {}) => {
+  const provider = String(authProvider || "").trim().toLowerCase();
+  const token = String(authToken || "").trim();
+
+  if (provider !== "supabase" || !token) {
+    return { revoked: false, unsupported: true };
+  }
+
+  const { error } = await supabaseAdmin.auth.admin.signOut(token, "global");
+  if (error) {
+    throw new AppError("Failed to sign out from all sessions", 500, "LOGOUT_ALL_FAILED");
+  }
+
+  return { revoked: true, unsupported: false };
+};
+
+exports.deleteUserAccount = async (userId) => {
+  const safeUserId = String(userId || "").trim();
+  const user = await userRepo.getById(safeUserId);
+  if (!user) {
+    throw new AppError("User not found", 404, "USER_NOT_FOUND");
+  }
+
+  const { error } = await supabaseAdmin.auth.admin.deleteUser(safeUserId);
+  if (error) {
+    throw new AppError("Failed to delete account", 500, "DELETE_ACCOUNT_FAILED");
+  }
 };
 
 exports.isSteamManagedEmail = isSteamManagedEmail;

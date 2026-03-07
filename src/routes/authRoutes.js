@@ -18,6 +18,8 @@ router.get("/steam/link/start", authRateLimiter, ctrl.steamLinkStart);
 router.get("/steam/link/callback", authRateLimiter, ctrl.steamLinkCallback);
 router.post("/resend-confirmation", authRateLimiter, ctrl.resendConfirmation);
 router.post("/logout", authRateLimiter, ctrl.logout);
+router.post("/logout-all", authRateLimiter, ctrl.logoutAll);
+router.delete("/me", authRateLimiter, ctrl.deleteAccount);
 router.get("/me", authRateLimiter, ctrl.me);
 
 module.exports = router;

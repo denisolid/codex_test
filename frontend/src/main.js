@@ -27,6 +27,7 @@ const SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "UAH", "PLN", "CZK"];
 const CURRENCY_STORAGE_KEY = "cs2sa:selected_currency";
 const PRICING_MODE_STORAGE_KEY = "cs2sa:pricing_mode";
 const DASHBOARD_DETAILS_STORAGE_KEY = "cs2sa:dashboard_details_open";
+const ACCOUNT_NOTIFICATIONS_STORAGE_KEY = "cs2sa:account_notifications";
 const PRICING_MODE_LABELS = {
   steam: "Steam Price",
   best_sell_net: "Best Sell Net",
@@ -36,6 +37,137 @@ const SEARCH_RENDER_DEBOUNCE_MS = 120;
 const TOAST_MAX_VISIBLE = 4;
 const TOAST_DEFAULT_TIMEOUT_MS = 5000;
 const HISTORY_RANGE_OPTIONS = [7, 30, 90, 180];
+const ACCOUNT_SECTION_IDS = [
+  "profile",
+  "connected-accounts",
+  "notifications",
+  "api-keys",
+  "subscription",
+  "security",
+];
+const ACCOUNT_SECTION_ID_SET = new Set(ACCOUNT_SECTION_IDS);
+const ACCOUNT_DEFAULT_NOTIFICATION_PREFS = Object.freeze({
+  priceAlerts: true,
+  arbitrageOpportunities: true,
+  marketSignals: true,
+  emailNotifications: true,
+});
+const ACCOUNT_PLAN_LIMITS = Object.freeze({
+  free: {
+    portfolioSize: "Up to 50 tracked items",
+    scannerRefresh: "15 minute refresh",
+    signalsAccess: "Basic price alerts",
+  },
+  pro: {
+    portfolioSize: "Up to 500 tracked items",
+    scannerRefresh: "5 minute refresh",
+    signalsAccess: "Advanced arbitrage signals",
+  },
+  team: {
+    portfolioSize: "Unlimited tracking",
+    scannerRefresh: "Near real-time refresh",
+    signalsAccess: "Full market signals suite",
+  },
+});
+
+function cloneDefaultNotificationPrefs() {
+  return {
+    priceAlerts: ACCOUNT_DEFAULT_NOTIFICATION_PREFS.priceAlerts,
+    arbitrageOpportunities: ACCOUNT_DEFAULT_NOTIFICATION_PREFS.arbitrageOpportunities,
+    marketSignals: ACCOUNT_DEFAULT_NOTIFICATION_PREFS.marketSignals,
+    emailNotifications: ACCOUNT_DEFAULT_NOTIFICATION_PREFS.emailNotifications,
+  };
+}
+
+function normalizeAccountSection(rawValue) {
+  const value = String(rawValue || "")
+    .trim()
+    .toLowerCase();
+  if (ACCOUNT_SECTION_ID_SET.has(value)) {
+    return value;
+  }
+  return "profile";
+}
+
+function normalizeAccountNotificationPrefs(rawValue) {
+  const payload =
+    rawValue && typeof rawValue === "object" ? rawValue : {};
+  return {
+    priceAlerts: Boolean(
+      Object.prototype.hasOwnProperty.call(payload, "priceAlerts")
+        ? payload.priceAlerts
+        : ACCOUNT_DEFAULT_NOTIFICATION_PREFS.priceAlerts,
+    ),
+    arbitrageOpportunities: Boolean(
+      Object.prototype.hasOwnProperty.call(payload, "arbitrageOpportunities")
+        ? payload.arbitrageOpportunities
+        : ACCOUNT_DEFAULT_NOTIFICATION_PREFS.arbitrageOpportunities,
+    ),
+    marketSignals: Boolean(
+      Object.prototype.hasOwnProperty.call(payload, "marketSignals")
+        ? payload.marketSignals
+        : ACCOUNT_DEFAULT_NOTIFICATION_PREFS.marketSignals,
+    ),
+    emailNotifications: Boolean(
+      Object.prototype.hasOwnProperty.call(payload, "emailNotifications")
+        ? payload.emailNotifications
+        : ACCOUNT_DEFAULT_NOTIFICATION_PREFS.emailNotifications,
+    ),
+  };
+}
+
+function readAccountNotificationPrefs() {
+  try {
+    const raw = localStorage.getItem(ACCOUNT_NOTIFICATIONS_STORAGE_KEY);
+    if (!raw) {
+      return cloneDefaultNotificationPrefs();
+    }
+    return normalizeAccountNotificationPrefs(JSON.parse(raw));
+  } catch (_err) {
+    return cloneDefaultNotificationPrefs();
+  }
+}
+
+function persistAccountNotificationPrefs(prefs = {}) {
+  try {
+    localStorage.setItem(
+      ACCOUNT_NOTIFICATIONS_STORAGE_KEY,
+      JSON.stringify(normalizeAccountNotificationPrefs(prefs)),
+    );
+  } catch (_err) {
+    // Ignore storage write errors.
+  }
+}
+
+function parseAccountSectionFromHash(hashValue = window.location.hash) {
+  const hash = String(hashValue || "").trim().replace(/^#/, "");
+  if (!hash) return "profile";
+  return normalizeAccountSection(hash);
+}
+
+function safePathname(pathname = window.location.pathname) {
+  const raw = String(pathname || "").trim();
+  return raw || "/";
+}
+
+function isAccountPath(pathname = safePathname()) {
+  return /^\/account\/?$/i.test(safePathname(pathname));
+}
+
+function getPathForTab(tabId) {
+  return String(tabId || "").trim() === "settings" ? "/account" : "/";
+}
+
+function planTierToLabel(planTier) {
+  const tier = String(planTier || "free").trim().toLowerCase();
+  if (tier === "team") return "Premium";
+  return toTitle(tier || "free");
+}
+
+function getAccountPlanLimits(planTier) {
+  const tier = String(planTier || "").trim().toLowerCase();
+  return ACCOUNT_PLAN_LIMITS[tier] || ACCOUNT_PLAN_LIMITS.free;
+}
 
 function normalizeCurrencyCode(value) {
   const code = String(value || "")
@@ -252,6 +384,21 @@ const state = {
     insight: null,
     opportunities: createMarketOpportunitiesState(),
   },
+  accountPage: {
+    activeSection: "profile",
+    notifications: readAccountNotificationPrefs(),
+    apiKeys: {
+      items: [],
+      loading: false,
+      loaded: false,
+      error: "",
+      createLabel: "",
+      creating: false,
+      revokingId: 0,
+      revealValue: "",
+      revealLabel: "",
+    },
+  },
   accountNotice: "",
   steamOnboardingPending: false,
   social: {
@@ -337,6 +484,14 @@ const APP_TABS = [
   { id: "social", label: "Watchlist", hint: "Community", icon: "👥" },
   { id: "team", label: "Team", hint: "Creator Ops", icon: "🧩" },
   { id: "settings", label: "Settings", hint: "Account", icon: "⚙️" },
+];
+const ACCOUNT_NAV_SECTIONS = [
+  { id: "profile", label: "Profile" },
+  { id: "connected-accounts", label: "Connected Accounts" },
+  { id: "notifications", label: "Notifications" },
+  { id: "api-keys", label: "API Keys" },
+  { id: "subscription", label: "Subscription" },
+  { id: "security", label: "Security" },
 ];
 const HEADER_NAV_TAB_IDS = new Set([
   "portfolio",
@@ -673,6 +828,16 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function initialsFromLabel(label) {
+  const chunks = String(label || "")
+    .trim()
+    .split(/\s+|@/g)
+    .filter(Boolean);
+  if (!chunks.length) return "U";
+  if (chunks.length === 1) return chunks[0][0]?.toUpperCase() || "U";
+  return `${chunks[0][0] || ""}${chunks[1][0] || ""}`.toUpperCase();
 }
 
 function setError(msg) {
@@ -1595,6 +1760,31 @@ function getPublicSteamIdFromPath() {
   return match ? match[1] : null;
 }
 
+function syncPathWithTab(tabId, options = {}) {
+  if (state.publicPage.steamId64) return;
+  const { replace = false } = options;
+  const targetPath = getPathForTab(tabId);
+  const currentPath = safePathname();
+  if (currentPath === targetPath) return;
+  if (replace) {
+    window.history.replaceState({}, "", targetPath);
+    return;
+  }
+  window.history.pushState({}, "", targetPath);
+}
+
+function setActiveAccountSection(sectionId, options = {}) {
+  const nextSection = normalizeAccountSection(sectionId);
+  const { updateHash = false } = options;
+  if (state.accountPage.activeSection !== nextSection) {
+    state.accountPage.activeSection = nextSection;
+  }
+  if (updateHash) {
+    const targetPath = isAccountPath() ? "/account" : getPathForTab("settings");
+    window.history.replaceState({}, "", `${targetPath}#${nextSection}`);
+  }
+}
+
 function buildAuthProfile(payload) {
   const user = payload?.user || null;
   if (!user) return null;
@@ -1622,6 +1812,7 @@ function buildAuthProfile(payload) {
     billingStatus: String(profile.billingStatus || "inactive").toLowerCase(),
     planSeats: Number(profile.planSeats || 1),
     planStartedAt: profile.planStartedAt || null,
+    createdAt: user.created_at || null,
     entitlements: profile.entitlements || null,
     provider:
       String(profile.provider || metadata.provider || "").trim() || "email",
@@ -2659,10 +2850,13 @@ async function handleTabSwitch(tab) {
   const ticket = ++tabSwitchTicket;
   const target = String(tab || "");
   const requiresLoad =
-    target === "team" &&
-    String(state.authProfile?.planTier || "free").toLowerCase() === "team" &&
-    !state.teamDashboard.loading &&
-    !state.teamDashboard.payload;
+    (target === "team" &&
+      String(state.authProfile?.planTier || "free").toLowerCase() === "team" &&
+      !state.teamDashboard.loading &&
+      !state.teamDashboard.payload) ||
+    (target === "settings" &&
+      !state.accountPage.apiKeys.loading &&
+      !state.accountPage.apiKeys.loaded);
 
   if (state.headerTabMenu.open) {
     state.headerTabMenu.open = false;
@@ -2685,11 +2879,19 @@ async function handleTabSwitch(tab) {
   state.activeTab = tab;
   state.tabSwitch.target = target;
   state.tabSwitch.loading = requiresLoad;
+  syncPathWithTab(target, { replace: false });
   render();
 
   try {
     if (target === "portfolio") {
       runUiTask(() => refreshVisibleMarketComparisons());
+    }
+
+    if (target === "settings" && !state.accountPage.apiKeys.loaded) {
+      setActiveAccountSection(parseAccountSectionFromHash(), {
+        updateHash: false,
+      });
+      await loadAccountApiKeys({ silent: true });
     }
 
     if (
@@ -2872,13 +3074,16 @@ function onAppClick(event) {
       button.getAttribute("data-avatar-action") || "",
     ).trim();
     closeAvatarMenu({ restoreFocus: false });
-    if (action === "profile" || action === "settings" || action === "api-keys") {
-      handleTabSwitch("settings").catch((err) =>
-        setError(err.message || "Request failed"),
-      );
-      if (action === "api-keys") {
-        notify("info", "Open Settings to manage API keys.");
-      }
+    if (action === "account-profile" || action === "profile") {
+      runUiTask(() => openAccountCenter("profile"));
+      return;
+    }
+    if (action === "account-api-keys" || action === "api-keys") {
+      runUiTask(() => openAccountCenter("api-keys"));
+      return;
+    }
+    if (action === "settings") {
+      runUiTask(() => openAccountCenter("profile"));
       return;
     }
     if (action === "logout") {
@@ -2890,6 +3095,15 @@ function onAppClick(event) {
   if (button?.matches("[data-mobile-drawer-close]")) {
     event.preventDefault();
     closeMobileDrawer();
+    return;
+  }
+
+  if (button?.matches("[data-account-section]")) {
+    event.preventDefault();
+    setActiveAccountSection(button.getAttribute("data-account-section"), {
+      updateHash: true,
+    });
+    render();
     return;
   }
 
@@ -2987,6 +3201,60 @@ function onAppClick(event) {
   if (button?.matches("#sync-btn")) {
     event.preventDefault();
     runUiTask(() => syncInventory());
+    return;
+  }
+
+  if (button?.matches("#account-sync-inventory-btn")) {
+    event.preventDefault();
+    runUiTask(() => syncInventory());
+    return;
+  }
+
+  if (button?.matches("#account-edit-profile-btn")) {
+    event.preventDefault();
+    runUiTask(() => editAccountProfile());
+    return;
+  }
+
+  if (button?.matches("#account-disconnect-steam-btn")) {
+    event.preventDefault();
+    runUiTask(() => disconnectSteamAccount());
+    return;
+  }
+
+  if (button?.matches(".account-api-key-revoke-btn")) {
+    event.preventDefault();
+    runUiTask(() => revokeAccountApiKey(button.getAttribute("data-key-id")));
+    return;
+  }
+
+  if (button?.matches("#account-api-key-refresh-btn")) {
+    event.preventDefault();
+    runUiTask(() => loadAccountApiKeys());
+    return;
+  }
+
+  if (button?.matches("#account-copy-api-key-btn")) {
+    event.preventDefault();
+    runUiTask(() => copyAccountApiKeyToClipboard());
+    return;
+  }
+
+  if (button?.matches("#account-upgrade-plan-btn")) {
+    event.preventDefault();
+    runUiTask(() => upgradePlanFromAccount());
+    return;
+  }
+
+  if (button?.matches("#account-signout-all-btn")) {
+    event.preventDefault();
+    runUiTask(() => signOutAllSessions());
+    return;
+  }
+
+  if (button?.matches("#account-delete-account-btn")) {
+    event.preventDefault();
+    runUiTask(() => deleteMyAccount());
     return;
   }
 
@@ -3398,6 +3666,11 @@ function onAppInput(event) {
     return;
   }
 
+  if (target.matches("#account-api-key-label")) {
+    state.accountPage.apiKeys.createLabel = String(target.value || "");
+    return;
+  }
+
   if (target.matches("#market-commission, #market-commission-inline")) {
     syncMarketCommissionFromElement(target);
   }
@@ -3416,6 +3689,17 @@ function onAppChange(event) {
   if (target.matches("#settings-currency-select")) {
     const nextCurrency = normalizeCurrencyCode(target.value);
     runUiTask(() => handleCurrencySelectChange(nextCurrency));
+    return;
+  }
+
+  if (target.matches("[data-account-notify-toggle]")) {
+    const key = String(
+      target.getAttribute("data-account-notify-toggle") || "",
+    ).trim();
+    updateAccountNotificationPreference(
+      key,
+      Boolean(target instanceof HTMLInputElement ? target.checked : false),
+    );
     return;
   }
 
@@ -3601,6 +3885,12 @@ function onAppSubmit(event) {
   if (form.id === "ownership-settings-form") {
     event.preventDefault();
     runUiTask(() => updateOwnershipAlertSettings(event));
+    return;
+  }
+
+  if (form.id === "account-api-key-form") {
+    event.preventDefault();
+    runUiTask(() => createAccountApiKey(event));
   }
 }
 
@@ -3654,6 +3944,7 @@ async function logout() {
   };
   state.tabSwitch.loading = false;
   state.tabSwitch.target = "";
+  state.activeTab = isAccountPath() ? "settings" : "dashboard";
   state.mobileDrawer.open = false;
   state.mobileDrawer.focusPending = false;
   state.portfolioControls.open = false;
@@ -3678,6 +3969,17 @@ async function logout() {
   state.marketTab.autoLoaded = false;
   state.marketTab.insight = null;
   state.marketTab.opportunities = createMarketOpportunitiesState();
+  state.accountPage.activeSection = parseAccountSectionFromHash();
+  state.accountPage.notifications = readAccountNotificationPrefs();
+  state.accountPage.apiKeys.items = [];
+  state.accountPage.apiKeys.loading = false;
+  state.accountPage.apiKeys.loaded = false;
+  state.accountPage.apiKeys.error = "";
+  state.accountPage.apiKeys.createLabel = "";
+  state.accountPage.apiKeys.creating = false;
+  state.accountPage.apiKeys.revokingId = 0;
+  state.accountPage.apiKeys.revealValue = "";
+  state.accountPage.apiKeys.revealLabel = "";
   state.inspectedSteamItemId = "";
   state.tradeCalc.result = null;
   state.accountNotice = "";
@@ -4024,6 +4326,248 @@ async function refreshAuthProfile() {
   } catch (_err) {
     return false;
   }
+}
+
+async function openAccountCenter(section = "profile") {
+  setActiveAccountSection(section, { updateHash: false });
+  if (state.mobileDrawer.open) {
+    closeMobileDrawer({ restoreFocus: false });
+  }
+  if (state.avatarMenu.open) {
+    closeAvatarMenu({ restoreFocus: false });
+  }
+  await handleTabSwitch("settings");
+  setActiveAccountSection(section, { updateHash: true });
+  render();
+}
+
+async function loadAccountApiKeys(options = {}) {
+  const { silent = false } = options;
+  if (state.accountPage.apiKeys.loading) return;
+
+  if (!silent) {
+    clearError();
+  }
+
+  state.accountPage.apiKeys.loading = true;
+  state.accountPage.apiKeys.error = "";
+  render();
+
+  try {
+    const payload = await api("/extension/keys");
+    state.accountPage.apiKeys.items = Array.isArray(payload?.items)
+      ? payload.items
+      : [];
+    state.accountPage.apiKeys.loaded = true;
+    state.accountPage.apiKeys.error = "";
+  } catch (err) {
+    state.accountPage.apiKeys.error = err.message || "Failed to load API keys.";
+    if (!silent) {
+      setError(err.message);
+    }
+  } finally {
+    state.accountPage.apiKeys.loading = false;
+    render();
+  }
+}
+
+async function createAccountApiKey(event) {
+  event.preventDefault();
+  if (state.accountPage.apiKeys.creating) return;
+  clearError();
+
+  const labelRaw =
+    document.querySelector("#account-api-key-label")?.value ||
+    state.accountPage.apiKeys.createLabel ||
+    "";
+  const label = String(labelRaw).trim().slice(0, 60) || "default";
+
+  state.accountPage.apiKeys.creating = true;
+  render();
+
+  try {
+    const payload = await api("/extension/keys", {
+      method: "POST",
+      body: JSON.stringify({ label }),
+    });
+
+    const createdKey = payload?.key || null;
+    if (createdKey) {
+      state.accountPage.apiKeys.items = [
+        createdKey,
+        ...state.accountPage.apiKeys.items.filter(
+          (item) => Number(item?.id) !== Number(createdKey?.id),
+        ),
+      ];
+    }
+
+    state.accountPage.apiKeys.loaded = true;
+    state.accountPage.apiKeys.createLabel = "";
+    state.accountPage.apiKeys.revealValue = String(payload?.apiKey || "").trim();
+    state.accountPage.apiKeys.revealLabel = createdKey?.label || label;
+    notify("success", "API key created. Copy it now, it is shown only once.");
+    render();
+  } catch (err) {
+    setError(err.message);
+  } finally {
+    state.accountPage.apiKeys.creating = false;
+    render();
+  }
+}
+
+async function revokeAccountApiKey(rawId) {
+  const keyId = Number(rawId);
+  if (!Number.isInteger(keyId) || keyId <= 0) return;
+  if (state.accountPage.apiKeys.revokingId) return;
+
+  if (!window.confirm("Revoke this API key? This action cannot be undone.")) {
+    return;
+  }
+
+  clearError();
+  state.accountPage.apiKeys.revokingId = keyId;
+  render();
+
+  try {
+    await api(`/extension/keys/${keyId}`, { method: "DELETE" });
+    state.accountPage.apiKeys.items = state.accountPage.apiKeys.items.filter(
+      (item) => Number(item?.id) !== keyId,
+    );
+    notify("info", "API key revoked.");
+    render();
+  } catch (err) {
+    setError(err.message);
+  } finally {
+    state.accountPage.apiKeys.revokingId = 0;
+    render();
+  }
+}
+
+async function copyAccountApiKeyToClipboard() {
+  const value = String(state.accountPage.apiKeys.revealValue || "").trim();
+  if (!value) return;
+
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      notify("success", "API key copied to clipboard.");
+      return;
+    }
+  } catch (_err) {
+    // Fallback to legacy copy below.
+  }
+
+  const area = document.createElement("textarea");
+  area.value = value;
+  area.setAttribute("readonly", "readonly");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  try {
+    document.execCommand("copy");
+    notify("success", "API key copied to clipboard.");
+  } catch (_err) {
+    notify("warning", "Copy failed. Please copy the key manually.");
+  } finally {
+    area.remove();
+  }
+}
+
+function updateAccountNotificationPreference(key, enabled) {
+  if (
+    !Object.prototype.hasOwnProperty.call(
+      ACCOUNT_DEFAULT_NOTIFICATION_PREFS,
+      key,
+    )
+  ) {
+    return;
+  }
+  state.accountPage.notifications = {
+    ...state.accountPage.notifications,
+    [key]: Boolean(enabled),
+  };
+  persistAccountNotificationPrefs(state.accountPage.notifications);
+  notify("info", "Notification preference updated.");
+  render();
+}
+
+async function disconnectSteamAccount() {
+  if (!window.confirm("Disconnect Steam from this account?")) {
+    return;
+  }
+  clearError();
+
+  try {
+    const payload = await api("/users/me/steam", { method: "DELETE" });
+    await refreshPortfolio({ silent: true });
+    notify("success", payload?.message || "Steam disconnected.");
+  } catch (err) {
+    setError(err.message);
+  }
+}
+
+async function editAccountProfile() {
+  const currentLabel = String(
+    state.authProfile?.steamDisplayName ||
+      state.authProfile?.email?.split("@")?.[0] ||
+      "",
+  ).trim();
+  const nextLabel = window.prompt("Update display name", currentLabel);
+  if (nextLabel == null) return;
+
+  const displayName = String(nextLabel).trim();
+  if (displayName.length > 80) {
+    notify("warning", "Display name must be 80 characters or less.");
+    return;
+  }
+
+  clearError();
+  try {
+    await api("/users/me/profile", {
+      method: "PATCH",
+      body: JSON.stringify({ displayName }),
+    });
+    await refreshPortfolio({ silent: true });
+    notify("success", "Profile updated.");
+  } catch (err) {
+    setError(err.message);
+  }
+}
+
+async function signOutAllSessions() {
+  clearError();
+  try {
+    const payload = await api("/auth/logout-all", { method: "POST" });
+    notify("info", payload?.message || "Signed out from all sessions.");
+    await logout();
+  } catch (err) {
+    setError(err.message);
+  }
+}
+
+async function deleteMyAccount() {
+  const confirmed = window.confirm(
+    "Delete your account permanently? This cannot be undone.",
+  );
+  if (!confirmed) return;
+
+  clearError();
+  try {
+    await api("/auth/me", { method: "DELETE" });
+    notify("success", "Account deleted.");
+    await logout();
+  } catch (err) {
+    setError(err.message);
+  }
+}
+
+async function upgradePlanFromAccount() {
+  const planTier = String(state.authProfile?.planTier || "free")
+    .trim()
+    .toLowerCase();
+  const nextTier = planTier === "free" ? "pro" : planTier === "pro" ? "team" : "team";
+  await updatePlanTier(nextTier);
 }
 
 async function refreshSocialData(options = {}) {
@@ -8989,150 +9533,370 @@ function renderMarketTab() {
 
 function renderSettingsTab() {
   const profile = state.authProfile || {};
+  const sectionId = normalizeAccountSection(state.accountPage.activeSection);
   const steamLinked = Boolean(profile.steamLinked);
   const steamLinkUrl = buildSteamAuthStartUrl("link");
   const providerLabel = toTitle(profile.provider || "email");
-  const publicPortfolioEnabled = profile.publicPortfolioEnabled !== false;
-  const ownershipAlertsEnabled = profile.ownershipAlertsEnabled !== false;
-  const planTier = String(profile.planTier || "free").toLowerCase();
-  const entitlements = profile.entitlements || {};
-  const publicUrl = steamLinked
-    ? `${window.location.origin}/u/${encodeURIComponent(profile.steamId64 || "")}`
-    : "";
-  const pricingMode = normalizePricingMode(
-    state.portfolio?.pricing?.mode || state.pricingMode,
-  );
+  const planTier = String(profile.planTier || "free").trim().toLowerCase();
+  const planLabel = planTierToLabel(planTier);
+  const limits = getAccountPlanLimits(planTier);
   const syncCooldownSeconds = getSyncCooldownSecondsRemaining();
   const syncDisabled = state.syncingInventory || syncCooldownSeconds > 0;
-  const currencyOptions = SUPPORTED_CURRENCIES.map(
-    (code) =>
-      `<option value="${code}" ${code === state.currency ? "selected" : ""}>${code}</option>`,
-  ).join("");
+  const memberSince = formatDateTime(profile.createdAt || profile.planStartedAt);
+  const username = String(
+    profile.steamDisplayName ||
+      profile.email?.split("@")?.[0] ||
+      "user",
+  ).trim();
+  const steamManagedAccount = /^steam_\d{17}@steam\.local$/i.test(
+    String(profile.email || "").trim(),
+  );
+  const accountApiState = state.accountPage.apiKeys;
+  const canDisconnectSteam =
+    steamLinked && !steamManagedAccount && !accountApiState.loading;
 
-  return `
-    <section class="grid">
-      <article class="panel wide">
-        <h2>Account Settings</h2>
-        <p class="helper-text">Use Steam linking to connect your existing email account with Steam login and avoid duplicate profiles.</p>
-        <div class="sub-kpi-grid">
-          <article class="sub-kpi-card">
-            <span>Login Provider</span>
-            <strong>${escapeHtml(providerLabel)}</strong>
-          </article>
-          <article class="sub-kpi-card">
-            <span>Steam Status</span>
-            <strong>${steamLinked ? "Linked" : "Not linked"}</strong>
-          </article>
-          <article class="sub-kpi-card">
-            <span>SteamID64</span>
-            <strong>${escapeHtml(profile.steamId64 || "-")}</strong>
-          </article>
-        </div>
-        <p class="muted">
+  if (
+    sectionId === "api-keys" &&
+    !accountApiState.loaded &&
+    !accountApiState.loading
+  ) {
+    runUiTask(() => loadAccountApiKeys({ silent: true }));
+  }
+
+  const notifications = state.accountPage.notifications;
+  const apiKeyRows = Array.isArray(accountApiState.items)
+    ? accountApiState.items
+    : [];
+
+  const profileSectionMarkup = `
+    <article class="panel wide account-card">
+      <h2>Profile</h2>
+      <p class="helper-text">Manage your personal account identity and session controls.</p>
+      <div class="account-profile-grid">
+        <div class="account-avatar-wrap">
           ${
-            steamLinked
-              ? "Steam login is connected to this account. You can relink to switch or refresh profile data."
-              : "No Steam account linked yet. Link now to enable Steam sign-in and one-account access."
+            profile.steamAvatarUrl
+              ? `<img class="account-avatar-img" src="${escapeHtml(profile.steamAvatarUrl)}" alt="${escapeHtml(username)} avatar" loading="lazy" />`
+              : `<span class="account-avatar-fallback">${escapeHtml(
+                  initialsFromLabel(username || profile.email || "User"),
+                )}</span>`
           }
-        </p>
-        <div class="row">
-          <a class="link-btn" href="${escapeHtml(steamLinkUrl)}">
-            ${steamLinked ? "Relink Steam Account" : "Link Steam Account"}
-          </a>
         </div>
+        <dl class="account-profile-meta">
+          <div><dt>Username</dt><dd>${escapeHtml(username || "-")}</dd></div>
+          <div><dt>Steam Name</dt><dd>${escapeHtml(
+            steamLinked ? profile.steamDisplayName || "-" : "-",
+          )}</dd></div>
+          <div><dt>SteamID</dt><dd class="mono-cell">${escapeHtml(
+            profile.steamId64 || "-",
+          )}</dd></div>
+          <div><dt>Email</dt><dd>${escapeHtml(profile.email || "-")}</dd></div>
+          <div><dt>Member since</dt><dd>${escapeHtml(memberSince)}</dd></div>
+        </dl>
+      </div>
+      <div class="row">
+        <button type="button" id="account-edit-profile-btn">Edit profile</button>
+        <button type="button" class="ghost-btn" id="logout-btn">Logout</button>
+      </div>
+    </article>
+  `;
+
+  const connectedAccountsMarkup = `
+    <article class="panel wide account-card">
+      <h2>Connected Accounts</h2>
+      <p class="helper-text">Manage Steam integration for sync, automation, and market links.</p>
+      <div class="sub-kpi-grid">
+        <article class="sub-kpi-card">
+          <span>Steam Account Status</span>
+          <strong>${steamLinked ? "Connected" : "Not connected"}</strong>
+        </article>
+        <article class="sub-kpi-card">
+          <span>SteamID64</span>
+          <strong class="mono-cell">${escapeHtml(profile.steamId64 || "-")}</strong>
+        </article>
+        <article class="sub-kpi-card">
+          <span>Auth Provider</span>
+          <strong>${escapeHtml(providerLabel)}</strong>
+        </article>
+      </div>
+      <div class="row">
+        <button type="button" id="account-sync-inventory-btn" ${syncDisabled ? "disabled" : ""}>
+          ${
+            state.syncingInventory
+              ? "Syncing inventory..."
+              : syncCooldownSeconds > 0
+                ? `Retry in ${escapeHtml(formatCountdownLabel(syncCooldownSeconds))}`
+                : "Sync Inventory"
+          }
+        </button>
+        <a class="link-btn ghost" href="${escapeHtml(steamLinkUrl)}">
+          ${steamLinked ? "Relink Steam" : "Link Steam"}
+        </a>
+        <button
+          type="button"
+          class="ghost-btn account-danger-btn"
+          id="account-disconnect-steam-btn"
+          ${canDisconnectSteam ? "" : "disabled"}
+        >
+          Disconnect Steam
+        </button>
+      </div>
+      <p class="muted">
         ${
           steamLinked
-            ? `<p class="helper-text">Public URL: <a href="${escapeHtml(publicUrl)}" target="_blank" rel="noreferrer">${escapeHtml(
-                publicUrl,
-              )}</a></p>`
-            : ""
+            ? steamManagedAccount
+              ? "Steam-only accounts cannot disconnect Steam until an email/password login exists."
+              : "Disconnecting Steam keeps your account but removes linked Steam identity."
+            : "Connect Steam to unlock inventory sync and one-click market actions."
         }
-      </article>
-      <article class="panel wide">
-        <h2>Growth & Visibility</h2>
-        <form id="public-settings-form" class="form">
-          <label>
-            Public portfolio page enabled
-            <input id="public-portfolio-enabled" type="checkbox" ${
-              publicPortfolioEnabled ? "checked" : ""
-            } ${steamLinked ? "" : "disabled"} />
-          </label>
-          <button type="submit" ${steamLinked ? "" : "disabled"}>Save Public Profile Setting</button>
-        </form>
-        <form id="ownership-settings-form" class="form">
-          <label>
-            Ownership-change alerts enabled
-            <input id="ownership-alerts-enabled" type="checkbox" ${
-              ownershipAlertsEnabled ? "checked" : ""
-            } />
-          </label>
-          <button type="submit">Save Ownership Alert Setting</button>
-        </form>
-      </article>
-      <article class="panel wide">
-        <h2>Plan & Monetization</h2>
-        <div class="form settings-pricing-form">
-          <h3 style="margin:0;">Portfolio Pricing Preferences</h3>
-          <label>Pricing mode
-            <select id="settings-pricing-mode">
-              <option value="lowest_buy" ${pricingMode === "lowest_buy" ? "selected" : ""}>Lowest Buy</option>
-              <option value="steam" ${pricingMode === "steam" ? "selected" : ""}>Steam Price</option>
-              <option value="best_sell_net" ${pricingMode === "best_sell_net" ? "selected" : ""}>Best Sell Net</option>
-            </select>
-          </label>
-          <label>Display currency
-            <select id="settings-currency-select">${currencyOptions}</select>
-          </label>
-          <p class="helper-text">Pricing mode changes how item price and total value are calculated across Steam, Skinport, CSFloat, and DMarket.</p>
-        </div>
-        <div class="sub-kpi-grid">
-          <article class="sub-kpi-card">
-            <span>Current Plan</span>
-            <strong>${escapeHtml(toTitle(planTier))}</strong>
-          </article>
-          <article class="sub-kpi-card">
-            <span>Billing Status</span>
-            <strong>${escapeHtml(toTitle(profile.billingStatus || "inactive"))}</strong>
-          </article>
-          <article class="sub-kpi-card">
-            <span>Seats</span>
-            <strong>${escapeHtml(formatNumber(profile.planSeats || 1, 0))}</strong>
-          </article>
-        </div>
-        <p class="helper-text">
-          Entitlements: Alerts ${Number(entitlements.maxAlerts || 0)}, History up to ${Number(
-            entitlements.maxHistoryDays || 30,
-          )} days, CSV export ${entitlements.csvExport ? "enabled" : "disabled"}, Backtesting ${
-            entitlements.backtesting ? "enabled" : "disabled"
-          }.
-        </p>
+      </p>
+    </article>
+  `;
+
+  const notificationsMarkup = `
+    <article class="panel wide account-card">
+      <h2>Notifications</h2>
+      <p class="helper-text">Control which account events trigger in-app and email alerts.</p>
+      <div class="account-toggle-list">
+        <label class="account-toggle-row">
+          <span>
+            <strong>Price Alerts</strong>
+            <small>Alert when tracked item prices cross your thresholds.</small>
+          </span>
+          <input type="checkbox" data-account-notify-toggle="priceAlerts" ${
+            notifications.priceAlerts ? "checked" : ""
+          } />
+        </label>
+        <label class="account-toggle-row">
+          <span>
+            <strong>Arbitrage Opportunities</strong>
+            <small>Notify when market spread opportunities appear.</small>
+          </span>
+          <input type="checkbox" data-account-notify-toggle="arbitrageOpportunities" ${
+            notifications.arbitrageOpportunities ? "checked" : ""
+          } />
+        </label>
+        <label class="account-toggle-row">
+          <span>
+            <strong>Market Signals</strong>
+            <small>Receive scanner momentum and execution signal updates.</small>
+          </span>
+          <input type="checkbox" data-account-notify-toggle="marketSignals" ${
+            notifications.marketSignals ? "checked" : ""
+          } />
+        </label>
+        <label class="account-toggle-row">
+          <span>
+            <strong>Email notifications</strong>
+            <small>Send critical account and signal alerts by email.</small>
+          </span>
+          <input type="checkbox" data-account-notify-toggle="emailNotifications" ${
+            notifications.emailNotifications ? "checked" : ""
+          } />
+        </label>
+      </div>
+      <p class="muted">These notification toggles are currently saved per browser.</p>
+    </article>
+  `;
+
+  const apiRowsMarkup = apiKeyRows.length
+    ? apiKeyRows
+        .map((row) => {
+          const revoked = Boolean(row?.revokedAt);
+          const rowId = Number(row?.id || 0);
+          return `
+            <tr>
+              <td>
+                <div class="account-api-name-cell">
+                  <strong>${escapeHtml(row?.label || "default")}</strong>
+                  <small class="mono-cell">${escapeHtml(row?.keyPrefix || "")}...</small>
+                </div>
+              </td>
+              <td>${escapeHtml(formatDateTime(row?.createdAt))}</td>
+              <td>${escapeHtml(row?.lastUsedAt ? formatRelativeTime(row.lastUsedAt) : "Never")}</td>
+              <td>
+                <button
+                  type="button"
+                  class="ghost-btn account-api-key-revoke-btn ${revoked ? "is-revoked" : ""}"
+                  data-key-id="${rowId}"
+                  ${revoked || state.accountPage.apiKeys.revokingId === rowId ? "disabled" : ""}
+                >
+                  ${
+                    revoked
+                      ? "Revoked"
+                      : state.accountPage.apiKeys.revokingId === rowId
+                        ? "Revoking..."
+                        : "Revoke Key"
+                  }
+                </button>
+              </td>
+            </tr>
+          `;
+        })
+        .join("")
+    : '<tr><td colspan="4" class="muted">No API keys created yet.</td></tr>';
+
+  const apiKeysMarkup = `
+    <article class="panel wide account-card">
+      <h2>API Keys</h2>
+      <p class="helper-text">Create scoped extension keys for integrations and automation.</p>
+      <form id="account-api-key-form" class="form account-api-key-form">
+        <label>Key Name
+          <input
+            id="account-api-key-label"
+            maxlength="60"
+            placeholder="e.g. Trading Bot"
+            value="${escapeHtml(state.accountPage.apiKeys.createLabel)}"
+          />
+        </label>
         <div class="row">
-          <button
-            type="button"
-            class="ghost-btn plan-switch-btn"
-            data-plan-tier="free"
-            ${planTier === "free" ? "disabled" : ""}
-          >
-            Switch to Free
+          <button type="submit" ${state.accountPage.apiKeys.creating ? "disabled" : ""}>
+            ${state.accountPage.apiKeys.creating ? "Creating..." : "Create API Key"}
           </button>
           <button
             type="button"
-            class="ghost-btn plan-switch-btn"
-            data-plan-tier="pro"
-            ${planTier === "pro" ? "disabled" : ""}
+            class="ghost-btn"
+            id="account-api-key-refresh-btn"
+            ${state.accountPage.apiKeys.loading ? "disabled" : ""}
           >
-            Switch to Pro
-          </button>
-          <button
-            type="button"
-            class="ghost-btn plan-switch-btn"
-            data-plan-tier="team"
-            ${planTier === "team" ? "disabled" : ""}
-          >
-            Switch to Team
+            ${state.accountPage.apiKeys.loading ? "Refreshing..." : "Refresh Keys"}
           </button>
         </div>
-      </article>
+      </form>
+      ${
+        state.accountPage.apiKeys.revealValue
+          ? `
+            <div class="account-api-reveal">
+              <p><strong>New key for ${escapeHtml(state.accountPage.apiKeys.revealLabel || "API client")}:</strong></p>
+              <code>${escapeHtml(state.accountPage.apiKeys.revealValue)}</code>
+              <div class="row">
+                <button type="button" class="ghost-btn" id="account-copy-api-key-btn">Copy Key</button>
+              </div>
+            </div>
+          `
+          : ""
+      }
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Created</th>
+              <th>Last Used</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>${apiRowsMarkup}</tbody>
+        </table>
+      </div>
+      ${
+        state.accountPage.apiKeys.error
+          ? `<p class="muted">${escapeHtml(state.accountPage.apiKeys.error)}</p>`
+          : ""
+      }
+    </article>
+  `;
+
+  const subscriptionMarkup = `
+    <article class="panel wide account-card">
+      <h2>Subscription</h2>
+      <p class="helper-text">Track your plan tier and feature limits before scaling usage.</p>
+      <div class="sub-kpi-grid">
+        <article class="sub-kpi-card">
+          <span>Current Plan</span>
+          <strong>${escapeHtml(planLabel)}</strong>
+        </article>
+        <article class="sub-kpi-card">
+          <span>Billing Status</span>
+          <strong>${escapeHtml(toTitle(profile.billingStatus || "inactive"))}</strong>
+        </article>
+        <article class="sub-kpi-card">
+          <span>Seats</span>
+          <strong>${escapeHtml(formatNumber(profile.planSeats || 1, 0))}</strong>
+        </article>
+      </div>
+      <div class="account-feature-grid">
+        <article class="account-feature-card">
+          <span>Portfolio size</span>
+          <strong>${escapeHtml(limits.portfolioSize)}</strong>
+        </article>
+        <article class="account-feature-card">
+          <span>Scanner refresh speed</span>
+          <strong>${escapeHtml(limits.scannerRefresh)}</strong>
+        </article>
+        <article class="account-feature-card">
+          <span>Signals access</span>
+          <strong>${escapeHtml(limits.signalsAccess)}</strong>
+        </article>
+      </div>
+      <div class="row">
+        <button
+          type="button"
+          id="account-upgrade-plan-btn"
+          ${planTier === "team" ? "disabled" : ""}
+        >
+          ${planTier === "team" ? "Premium Active" : "Upgrade Plan"}
+        </button>
+      </div>
+    </article>
+  `;
+
+  const securityMarkup = `
+    <article class="panel wide account-card">
+      <h2>Security</h2>
+      <p class="helper-text">Session and account controls for sensitive actions.</p>
+      <div class="row">
+        <button type="button" class="ghost-btn" id="account-signout-all-btn">Sign out from all sessions</button>
+      </div>
+      <section class="account-danger-zone">
+        <h3>Danger Zone</h3>
+        <p class="muted">Destructive actions are permanent and cannot be undone.</p>
+        <div class="row">
+          <button type="button" id="account-delete-account-btn" class="ghost-btn account-danger-btn">Delete account</button>
+        </div>
+      </section>
+    </article>
+  `;
+
+  const sectionMap = {
+    profile: profileSectionMarkup,
+    "connected-accounts": connectedAccountsMarkup,
+    notifications: notificationsMarkup,
+    "api-keys": apiKeysMarkup,
+    subscription: subscriptionMarkup,
+    security: securityMarkup,
+  };
+
+  const sectionTitle =
+    ACCOUNT_NAV_SECTIONS.find((row) => row.id === sectionId)?.label || "Profile";
+
+  return `
+    <section class="account-center-shell">
+      <aside class="panel account-sidebar-panel">
+        <p class="eyebrow">Account Center</p>
+        <h2>Account / Profile</h2>
+        <p class="helper-text">Manage identity, integrations, API access, billing, and security from one place.</p>
+        <nav class="account-sidebar-nav" aria-label="Account sections">
+          ${ACCOUNT_NAV_SECTIONS.map(
+            (section) => `
+              <button
+                type="button"
+                class="ghost-btn account-sidebar-link ${section.id === sectionId ? "active" : ""}"
+                data-account-section="${section.id}"
+              >
+                ${escapeHtml(section.label)}
+              </button>
+            `,
+          ).join("")}
+        </nav>
+      </aside>
+      <div class="account-content-column">
+        <header class="account-content-header">
+          <p class="eyebrow">Section</p>
+          <h2>${escapeHtml(sectionTitle)}</h2>
+        </header>
+        ${sectionMap[sectionId] || profileSectionMarkup}
+      </div>
     </section>
   `;
 }
@@ -9806,11 +10570,60 @@ function hydrateAppNoticesFromUrl() {
       "Steam connected successfully. You're connected, click sync now.";
   }
 
+  if (steamOnboarding) {
+    window.history.replaceState({}, "", "/");
+    return;
+  }
+
+  if (isAccountPath()) {
+    setActiveAccountSection(parseAccountSectionFromHash(), { updateHash: false });
+    window.history.replaceState(
+      {},
+      "",
+      `/account#${state.accountPage.activeSection}`,
+    );
+    return;
+  }
+
   window.history.replaceState({}, "", "/");
+}
+
+function handleWindowNavigationChange() {
+  const publicSteamId = getPublicSteamIdFromPath();
+  if (publicSteamId) {
+    if (state.publicPage.steamId64 !== publicSteamId) {
+      state.publicPage.steamId64 = publicSteamId;
+      runUiTask(() => loadPublicPortfolio({ silent: true }));
+    }
+    render();
+    return;
+  }
+
+  if (state.publicPage.steamId64) {
+    state.publicPage.steamId64 = null;
+  }
+
+  if (isAccountPath()) {
+    state.activeTab = "settings";
+    setActiveAccountSection(parseAccountSectionFromHash(), {
+      updateHash: false,
+    });
+    if (state.authenticated && !state.accountPage.apiKeys.loaded) {
+      runUiTask(() => loadAccountApiKeys({ silent: true }));
+    }
+  } else if (state.activeTab === "settings") {
+    state.activeTab = "dashboard";
+  }
+
+  render();
 }
 
 async function bootstrapSession() {
   state.publicPage.steamId64 = getPublicSteamIdFromPath();
+  if (!state.publicPage.steamId64 && isAccountPath()) {
+    state.activeTab = "settings";
+    state.accountPage.activeSection = parseAccountSectionFromHash();
+  }
   hydrateAppNoticesFromUrl();
   render();
   if (state.publicPage.steamId64) {
@@ -9828,7 +10641,17 @@ async function bootstrapSession() {
   }
 }
 
+window.addEventListener("popstate", handleWindowNavigationChange);
+window.addEventListener("hashchange", () => {
+  if (!state.authenticated) return;
+  if (!isAccountPath()) return;
+  if (state.activeTab !== "settings") return;
+  setActiveAccountSection(parseAccountSectionFromHash(), { updateHash: false });
+  render();
+});
+
 bootstrapSession().catch(() => {
   state.sessionBooting = false;
   render();
 });
+

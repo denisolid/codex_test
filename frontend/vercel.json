@@ -1,6 +1,14 @@
 {
   "rewrites": [
     {
+      "source": "/account",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/account/(.*)",
+      "destination": "/index.html"
+    },
+    {
       "source": "/u/(.*)",
       "destination": "/index.html"
     }
