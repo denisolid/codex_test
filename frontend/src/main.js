@@ -1115,9 +1115,13 @@ function syncEmailOnboardingStateFromProfile() {
   const profile = state.authProfile || {};
   const pendingEmail = String(profile.pendingEmail || "").trim().toLowerCase();
   const verifiedEmail = String(profile.email || "").trim().toLowerCase();
+  const isSteamPlaceholderEmail = /^steam_\d{17}@steam\.local$/i.test(
+    verifiedEmail,
+  );
 
   if (!state.emailOnboarding.email) {
-    state.emailOnboarding.email = pendingEmail || verifiedEmail || "";
+    state.emailOnboarding.email =
+      pendingEmail || (isSteamPlaceholderEmail ? "" : verifiedEmail) || "";
   }
   if (pendingEmail && !state.emailOnboarding.editMode) {
     state.emailOnboarding.email = pendingEmail;
@@ -11833,8 +11837,12 @@ function renderEmailOnboardingPage() {
 
   const pendingEmail = String(profile.pendingEmail || "").trim().toLowerCase();
   const verifiedEmail = String(profile.email || "").trim().toLowerCase();
+  const safeVerifiedEmail = /^steam_\d{17}@steam\.local$/i.test(verifiedEmail)
+    ? ""
+    : verifiedEmail;
   const showEmailForm = state.emailOnboarding.editMode || !pendingEmail;
-  const primaryEmail = pendingEmail || state.emailOnboarding.email || verifiedEmail;
+  const primaryEmail =
+    pendingEmail || state.emailOnboarding.email || safeVerifiedEmail;
   const providerLabel = toTitle(profile.provider || "steam");
   const statusText = profile.emailVerified ? "Verified" : "Pending verification";
   const statusTone = profile.emailVerified ? "real" : "unpriced";
@@ -12338,6 +12346,7 @@ function render() {
       submitting: false,
     };
     renderPublicHome();
+    ensureAppEventDelegation();
     applyImageFallbacks(app);
     syncBodyUiLocks();
     renderToastHost();
@@ -12346,6 +12355,7 @@ function render() {
 
   if (isEmailOnboardingRequired()) {
     renderEmailOnboardingPage();
+    ensureAppEventDelegation();
     applyImageFallbacks(app);
     syncBodyUiLocks();
     renderToastHost();
