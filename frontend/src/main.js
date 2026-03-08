@@ -9598,21 +9598,158 @@ function renderDashboardArbitragePanel() {
     title: "Arbitrage Opportunities",
     subtitle: "Top 5 execution-quality opportunities (portfolio-first).",
     actions: `
-      <button
-        type="button"
-        class="ghost-btn tab-jump-btn btn-secondary"
-        data-tab-target="market"
-      >
-        Portfolio Scanner
-      </button>
-      <button
-        type="button"
-        class="ghost-btn tab-jump-btn btn-tertiary"
-        data-tab-target="opportunities"
-      >
-        Global Scanner
-      </button>
+      <div class="arb-panel-actions">
+        <button
+          type="button"
+          class="ghost-btn tab-jump-btn arb-action-btn arb-action-btn-portfolio"
+          data-tab-target="portfolio"
+        >
+          <span class="arb-action-icon arb-action-icon-portfolio" aria-hidden="true">
+            <svg class="arb-action-icon-svg arb-action-icon-svg-portfolio" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d="M4 19.5h16" />
+              <path d="M6.5 17.5v-4.2" />
+              <path d="M10.5 17.5V9.3" />
+              <path d="M14.5 17.5v-6.1" />
+              <path d="M18.5 17.5V6.4" />
+              <path d="M6.5 11.2l4-2.8 3.8 1.9 4.2-3.9" />
+            </svg>
+          </span>
+          <span class="arb-action-label">Portfolio Scanner</span>
+        </button>
+        <button
+          type="button"
+          class="ghost-btn tab-jump-btn arb-action-btn arb-action-btn-global"
+          data-tab-target="opportunities"
+        >
+          <span class="arb-action-icon arb-action-icon-global" aria-hidden="true">
+            <svg class="arb-action-icon-svg arb-action-icon-svg-global" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <circle cx="12" cy="12" r="7.2" />
+              <circle cx="12" cy="12" r="3.2" />
+              <path d="M12 4.8v14.4" />
+              <path d="M4.8 12h14.4" />
+              <path d="M12 12l5.2-3.1" />
+            </svg>
+          </span>
+          <span class="arb-action-label">Global Scanner</span>
+        </button>
+      </div>
     `,
+    body,
+  });
+}
+
+function renderPortfolioArbitrageWidget() {
+  const arbitrage = state.portfolio?.arbitrage || {};
+  const opportunities = Array.isArray(arbitrage?.topOpportunities)
+    ? arbitrage.topOpportunities
+    : [];
+  const hasOpportunities = opportunities.length > 0;
+  const currencyCode = state.portfolio?.currency || state.currency;
+
+  const body = hasOpportunities
+    ? `
+      <div class="dashboard-arb-list">
+        ${opportunities
+          .slice(0, 3)
+          .map((row) => {
+            const score = Number(row?.opportunityScore ?? row?.score ?? 0);
+            const scoreTone = getOpportunityScoreTone(score);
+            const scoreLabel = formatOpportunityLabel(
+              row?.scoreCategory,
+              score,
+            );
+            const executionConfidence = String(
+              row?.executionConfidence || "Low",
+            ).trim();
+            const executionTone = getExecutionConfidenceTone(executionConfidence);
+            const liquidityLabel = formatLiquidityBandLabel(
+              row?.liquidityBand,
+              row?.volume7d ?? row?.liquiditySample ?? row?.liquidity,
+            );
+            const badges = buildOpportunityBadges(row, { max: 3 });
+            const categoryLabel = formatOpportunityCategoryLabel(
+              row?.itemCategory,
+              row?.itemName,
+            );
+            const categoryTone = getOpportunityCategoryTone(
+              row?.itemCategory,
+              row?.itemName,
+            );
+            const skinId = Number(row?.itemId || row?.skinId || 0);
+            const isRowClickable = Number.isInteger(skinId) && skinId > 0;
+            const itemName = String(row?.itemName || "Tracked Item");
+            const rowInteractionAttributes = isRowClickable
+              ? `data-skin-id="${escapeHtml(String(skinId))}" tabindex="0" role="button" aria-label="Compare ${escapeHtml(
+                  itemName,
+                )}"`
+              : `aria-disabled="true"`;
+            return `
+              <article class="dashboard-arb-row dashboard-arb-row-opportunity ${
+                isRowClickable ? "dashboard-arb-row-clickable" : ""
+              }" ${rowInteractionAttributes}>
+                <div class="dashboard-arb-item-head">
+                  <strong class="dashboard-arb-item">${escapeHtml(
+                    row?.itemName || "Tracked Item",
+                  )}</strong>
+                  <span class="opportunity-category-badge ${escapeHtml(
+                    categoryTone,
+                  )}">${escapeHtml(categoryLabel)}</span>
+                </div>
+                <p class="dashboard-arb-leg">
+                  <span>Buy ${escapeHtml(formatMarketSourceLabel(row?.buyMarket))}</span>
+                  <strong>${formatMoney(row?.buyPrice, currencyCode)}</strong>
+                </p>
+                <p class="dashboard-arb-leg">
+                  <span>Sell ${escapeHtml(formatMarketSourceLabel(row?.sellMarket))}</span>
+                  <strong>${formatMoney(row?.sellNet, currencyCode)}</strong>
+                </p>
+                <p class="dashboard-arb-profit up">
+                  <span>Profit</span>
+                  <strong>${formatSignedMoney(row?.profit, currencyCode)} (${formatPercent(
+                    row?.spreadPercent ?? row?.spread,
+                  )})</strong>
+                </p>
+                <p class="dashboard-arb-score">
+                  <span>Score</span>
+                  <strong class="score-pill ${escapeHtml(scoreTone)}">${escapeHtml(
+                    `${formatNumber(score, 0)}/100`,
+                  )}</strong>
+                  <small>${escapeHtml(scoreLabel)}</small>
+                </p>
+                <p class="dashboard-arb-meta">
+                  <span class="signal-pill ${escapeHtml(executionTone)}">${escapeHtml(
+                    `${executionConfidence} confidence`,
+                  )}</span>
+                  <span class="dashboard-arb-liquidity">${escapeHtml(liquidityLabel)}</span>
+                </p>
+                ${
+                  badges.length
+                    ? `<div class="dashboard-arb-badges">${badges
+                        .map(
+                          (badge) =>
+                            `<span class="opportunity-badge">${escapeHtml(
+                              badge,
+                            )}</span>`,
+                        )
+                        .join("")}</div>`
+                    : ""
+                }
+              </article>
+            `;
+          })
+          .join("")}
+      </div>
+    `
+    : '<p class="muted">No profitable arbitrage opportunities detected right now.</p>';
+
+  return renderPanel({
+    className: `dashboard-arbitrage-panel ${
+      hasOpportunities
+        ? "dashboard-arbitrage-panel-live"
+        : "dashboard-arbitrage-panel-empty"
+    }`,
+    title: "Portfolio Arbitrage",
+    subtitle: "Top 3 execution-quality opportunities from your holdings.",
     body,
   });
 }
@@ -11087,131 +11224,140 @@ function renderGlobalOpportunitiesTab() {
             : "No high-confidence opportunities matched the current feed filters."
       }</p>`;
 
+  const hasOpportunities = rows.length > 0;
+  const body = `
+    <div class="row opportunities-toolbar">
+      <button
+        id="global-opportunities-refresh-btn"
+        type="button"
+        ${scanner.loading ? "disabled" : ""}
+      >
+        ${scanner.loading ? "Refreshing..." : "Refresh"}
+      </button>
+      <label
+        class="opportunity-risk-toggle"
+        for="global-opportunities-show-risky"
+      >
+        <input
+          id="global-opportunities-show-risky"
+          type="checkbox"
+          ${showRisky ? "checked" : ""}
+          ${scanner.loading ? "disabled" : ""}
+        />
+        <span>Show risky opportunities</span>
+      </label>
+      <label
+        class="opportunity-risk-toggle"
+        for="global-opportunities-show-older"
+      >
+        <input
+          id="global-opportunities-show-older"
+          type="checkbox"
+          ${showOlder ? "checked" : ""}
+          ${scanner.loading ? "disabled" : ""}
+        />
+        <span>Show older opportunities</span>
+      </label>
+      <label class="opportunity-category-filter" for="global-opportunities-category">
+        <span>Category</span>
+        <select
+          id="global-opportunities-category"
+          ${scanner.loading ? "disabled" : ""}
+        >
+          <option value="all" ${categoryFilter === "all" ? "selected" : ""}>All</option>
+          <option value="skins" ${categoryFilter === "skins" ? "selected" : ""}>Skins</option>
+          <option value="cases" ${categoryFilter === "cases" ? "selected" : ""}>Cases</option>
+          <option value="capsules" ${categoryFilter === "capsules" ? "selected" : ""}>Capsules</option>
+        </select>
+      </label>
+    </div>
+    <p class="helper-text">
+      ${
+        summary
+          ? `Scanned ${formatNumber(summary.scannedItems || 0, 0)} items in the latest run. Showing ${formatNumber(
+              rows.length,
+              0,
+            )} ${showRisky ? "opportunities" : "high-quality opportunities"} from feed history.`
+          : "Waiting for scanner summary."
+      }
+      ${generatedLabel} Active opportunities: ${escapeHtml(
+        formatNumber(activeOpportunitiesCount, 0),
+      )}.
+    </p>
+    <p class="helper-text">
+      ${escapeHtml(statusLabel)} ${escapeHtml(nextScanLabel)}
+    </p>
+    ${
+      !showRisky
+        ? '<p class="helper-text">High-quality mode hides low-confidence opportunities by default.</p>'
+        : ""
+    }
+    ${scanner.error ? `<p class="muted">${escapeHtml(scanner.error)}</p>` : ""}
+    ${
+      discardReasonRows.length
+        ? `<details class="opportunity-debug">
+            <summary>Discard diagnostics</summary>
+            <ul class="opportunity-debug-list">
+              ${discardReasonRows
+                .map(
+                  ([reason, count]) =>
+                    `<li>${escapeHtml(formatArbitrageReasonLabel(reason))}: <strong>${escapeHtml(
+                      formatNumber(count, 0),
+                    )}</strong></li>`,
+                )
+                .join("")}
+            </ul>
+            ${
+              topRejectedItems.length
+                ? `<div class="opportunity-debug-rejected">
+                    <p class="opportunity-debug-rejected-title">Top rejected items</p>
+                    <ul class="opportunity-debug-rejected-list">
+                      ${topRejectedItems
+                        .map((entry) => {
+                          const itemName = String(entry?.itemName || "Unknown item");
+                          const rejectedCount = Number(entry?.rejectedCount || 0);
+                          const itemCategory = normalizeOpportunityCategory(
+                            entry?.category,
+                            itemName,
+                          );
+                          const mainReason = formatArbitrageReasonLabel(
+                            entry?.mainReason,
+                          );
+                          return `<li><strong>${escapeHtml(
+                            itemName,
+                          )}</strong> <span>${escapeHtml(
+                            `${formatOpportunityCategoryLabel(itemCategory)} \u2022 `,
+                          )}${escapeHtml(
+                            `${mainReason} (${formatNumber(
+                              rejectedCount,
+                              0,
+                            )})`,
+                          )}</span></li>`;
+                        })
+                        .join("")}
+                    </ul>
+                  </div>`
+                : ""
+            }
+          </details>`
+        : ""
+    }
+    ${tableMarkup}
+  `;
+
   return `
     <section class="grid">
-      <article class="panel wide">
-        <h2>Top Arbitrage Opportunities</h2>
-        <p class="helper-text">
-          Top 100 universe across skins, cases, and capsules. Default view shows only high-quality execution setups.
-        </p>
-        <div class="row opportunities-toolbar">
-          <button
-            id="global-opportunities-refresh-btn"
-            type="button"
-            ${scanner.loading ? "disabled" : ""}
-          >
-            ${scanner.loading ? "Refreshing..." : "Refresh"}
-          </button>
-          <label
-            class="opportunity-risk-toggle"
-            for="global-opportunities-show-risky"
-          >
-            <input
-              id="global-opportunities-show-risky"
-              type="checkbox"
-              ${showRisky ? "checked" : ""}
-              ${scanner.loading ? "disabled" : ""}
-            />
-            <span>Show risky opportunities</span>
-          </label>
-          <label
-            class="opportunity-risk-toggle"
-            for="global-opportunities-show-older"
-          >
-            <input
-              id="global-opportunities-show-older"
-              type="checkbox"
-              ${showOlder ? "checked" : ""}
-              ${scanner.loading ? "disabled" : ""}
-            />
-            <span>Show older opportunities</span>
-          </label>
-          <label class="opportunity-category-filter" for="global-opportunities-category">
-            <span>Category</span>
-            <select
-              id="global-opportunities-category"
-              ${scanner.loading ? "disabled" : ""}
-            >
-              <option value="all" ${categoryFilter === "all" ? "selected" : ""}>All</option>
-              <option value="skins" ${categoryFilter === "skins" ? "selected" : ""}>Skins</option>
-              <option value="cases" ${categoryFilter === "cases" ? "selected" : ""}>Cases</option>
-              <option value="capsules" ${categoryFilter === "capsules" ? "selected" : ""}>Capsules</option>
-            </select>
-          </label>
-        </div>
-        <p class="helper-text">
-          ${
-            summary
-              ? `Scanned ${formatNumber(summary.scannedItems || 0, 0)} items in the latest run. Showing ${formatNumber(
-                  rows.length,
-                  0,
-                )} ${showRisky ? "opportunities" : "high-quality opportunities"} from feed history.`
-              : "Waiting for scanner summary."
-          }
-          ${generatedLabel} Active opportunities: ${escapeHtml(
-            formatNumber(activeOpportunitiesCount, 0),
-          )}.
-        </p>
-        <p class="helper-text">
-          ${escapeHtml(statusLabel)} ${escapeHtml(nextScanLabel)}
-        </p>
-        ${
-          !showRisky
-            ? '<p class="helper-text">High-quality mode hides low-confidence opportunities by default.</p>'
-            : ""
-        }
-        ${scanner.error ? `<p class="muted">${escapeHtml(scanner.error)}</p>` : ""}
-        ${
-          discardReasonRows.length
-            ? `<details class="opportunity-debug">
-                <summary>Discard diagnostics</summary>
-                <ul class="opportunity-debug-list">
-                  ${discardReasonRows
-                    .map(
-                      ([reason, count]) =>
-                        `<li>${escapeHtml(formatArbitrageReasonLabel(reason))}: <strong>${escapeHtml(
-                          formatNumber(count, 0),
-                        )}</strong></li>`,
-                    )
-                    .join("")}
-                </ul>
-                ${
-                  topRejectedItems.length
-                    ? `<div class="opportunity-debug-rejected">
-                        <p class="opportunity-debug-rejected-title">Top rejected items</p>
-                        <ul class="opportunity-debug-rejected-list">
-                          ${topRejectedItems
-                            .map((entry) => {
-                              const itemName = String(entry?.itemName || "Unknown item");
-                              const rejectedCount = Number(entry?.rejectedCount || 0);
-                              const itemCategory = normalizeOpportunityCategory(
-                                entry?.category,
-                                itemName,
-                              );
-                              const mainReason = formatArbitrageReasonLabel(
-                                entry?.mainReason,
-                              );
-                              return `<li><strong>${escapeHtml(
-                                itemName,
-                              )}</strong> <span>${escapeHtml(
-                                `${formatOpportunityCategoryLabel(itemCategory)} \u2022 `,
-                              )}${escapeHtml(
-                                `${mainReason} (${formatNumber(
-                                  rejectedCount,
-                                  0,
-                                )})`,
-                              )}</span></li>`;
-                            })
-                            .join("")}
-                        </ul>
-                      </div>`
-                    : ""
-                }
-              </details>`
-            : ""
-        }
-        ${tableMarkup}
-      </article>
+      ${renderPanel({
+        className: `wide dashboard-arbitrage-panel ${
+          hasOpportunities
+            ? "dashboard-arbitrage-panel-live"
+            : "dashboard-arbitrage-panel-empty"
+        }`,
+        title: "Top Arbitrage Opportunities",
+        subtitle:
+          "Top 100 universe across skins, cases, and capsules. Default view shows only high-quality execution setups.",
+        body,
+      })}
     </section>
   `;
 }
@@ -12113,6 +12259,7 @@ function renderApp() {
       </article>
       <aside class="portfolio-tools-rail" aria-label="Portfolio tools">
         ${renderSteamSyncPanel()}
+        ${renderPortfolioArbitrageWidget()}
         <article class="panel position-inspector-panel">
           <h2>Position Inspector</h2>
           <p class="helper-text">Paste a Steam Item ID to open the inspector modal without losing your portfolio position.</p>
