@@ -11,7 +11,6 @@ const {
   steamInventoryRetryBaseMs,
   marketPriceSource,
   marketPriceFallbackToMock,
-  marketPriceRateLimitPerSecond,
   marketPriceCacheTtlMinutes
 } = require("../config/env");
 const priceProviderService = require("./priceProviderService");
@@ -24,21 +23,6 @@ function sleep(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
-}
-
-async function withRetries(fn, retries = 3, baseDelayMs = 250) {
-  let lastErr;
-  for (let i = 0; i < retries; i += 1) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (i < retries - 1) {
-        await sleep(baseDelayMs * (i + 1));
-      }
-    }
-  }
-  throw lastErr;
 }
 
 async function fetchInventoryByConfiguredSource(steamId64) {
@@ -134,10 +118,6 @@ exports.syncUserInventory = async (userId) => {
   );
 
   const pricedItems = [];
-  const pauseMs = Math.max(
-    Math.floor(1000 / Math.max(marketPriceRateLimitPerSecond, 1)),
-    1
-  );
   let cacheHitCount = 0;
 
   for (const item of enrichedItems) {
@@ -166,11 +146,8 @@ exports.syncUserInventory = async (userId) => {
     }
 
     try {
-      const priced = await withRetries(
-        () => priceProviderService.getPrice(item.marketHashName),
-        3,
-        300
-      );
+      // priceProviderService already applies provider-level retry logic.
+      const priced = await priceProviderService.getPrice(item.marketHashName);
       pricedItems.push({
         ...item,
         skinId,
@@ -186,7 +163,6 @@ exports.syncUserInventory = async (userId) => {
           priceSource: "unpriced",
           priceError: err.message
         });
-        await sleep(pauseMs);
         continue;
       }
       const fallbackPrice = await mockPriceProviderService.getLatestPrice(
@@ -199,8 +175,6 @@ exports.syncUserInventory = async (userId) => {
         priceSource: "mock-price-fallback"
       });
     }
-
-    await sleep(pauseMs);
   }
 
   await inventoryRepo.syncInventorySnapshot(
