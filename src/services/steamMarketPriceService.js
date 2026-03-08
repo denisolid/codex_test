@@ -6,7 +6,7 @@ const {
   steamMarketPriceStrategy
 } = require("../config/env");
 
-let queue = Promise.resolve();
+let scheduler = Promise.resolve();
 let nextRequestNotBefore = 0;
 
 function sleep(ms) {
@@ -30,19 +30,22 @@ function enqueueSteamRequest(task) {
     1
   );
 
-  const run = async () => {
+  // Reserve a start slot in a serialized scheduler, but run the request itself
+  // outside scheduler chaining so multiple requests can be in-flight concurrently.
+  const reserveStartSlot = async () => {
     const now = Date.now();
-    const waitMs = Math.max(nextRequestNotBefore - now, 0);
+    const scheduledStart = Math.max(now, nextRequestNotBefore);
+    nextRequestNotBefore = scheduledStart + minGapMs;
+    const waitMs = Math.max(scheduledStart - now, 0);
     if (waitMs > 0) {
       await sleep(waitMs);
     }
-    nextRequestNotBefore = Date.now() + minGapMs;
-    return task();
   };
 
-  const queued = queue.then(run, run);
-  queue = queued.catch(() => {});
-  return queued;
+  const slot = scheduler.then(reserveStartSlot, reserveStartSlot);
+  scheduler = slot.catch(() => {});
+
+  return slot.then(() => task());
 }
 
 function parsePriceString(value) {

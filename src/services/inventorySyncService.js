@@ -25,21 +25,6 @@ function sleep(ms) {
   });
 }
 
-async function withRetries(fn, retries = 3, baseDelayMs = 250) {
-  let lastErr;
-  for (let i = 0; i < retries; i += 1) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (i < retries - 1) {
-        await sleep(baseDelayMs * (i + 1));
-      }
-    }
-  }
-  throw lastErr;
-}
-
 async function fetchInventoryByConfiguredSource(steamId64) {
   const fetchOptions = {
     timeoutMs: steamInventoryTimeoutMs,
@@ -161,11 +146,8 @@ exports.syncUserInventory = async (userId) => {
     }
 
     try {
-      const priced = await withRetries(
-        () => priceProviderService.getPrice(item.marketHashName),
-        3,
-        300
-      );
+      // priceProviderService already applies provider-level retry logic.
+      const priced = await priceProviderService.getPrice(item.marketHashName);
       pricedItems.push({
         ...item,
         skinId,
