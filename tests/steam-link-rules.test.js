@@ -349,6 +349,104 @@ test("loginWithSteam falls back to password sign-in when createUser reports exis
   assert.equal(result.user.id, "steam-existing-user");
 });
 
+test("loginWithSteam still falls back to sign-in when createUser fails with ambiguous error", async () => {
+  clearModule(authServicePath);
+  clearModule(userRepoPath);
+  clearModule(supabasePath);
+
+  const users = {};
+  let signInCalled = false;
+
+  primeModule(
+    supabasePath,
+    buildSupabaseStub({
+      createUser: async () => ({
+        data: null,
+        error: { message: "Database error saving new user", code: "unexpected_failure" }
+      }),
+      signInWithPassword: async () => {
+        signInCalled = true;
+        return {
+          data: {
+            user: {
+              id: "steam-ambiguous-user"
+            }
+          },
+          error: null
+        };
+      }
+    })
+  );
+
+  primeModule(userRepoPath, {
+    getById: async (id) => users[id] || null,
+    getBySteamId64: async (steamId64) =>
+      Object.values(users).find((row) => row.steam_id64 === steamId64) || null,
+    ensureExists: async (id, email) => {
+      if (!users[id]) {
+        users[id] = {
+          id,
+          email,
+          steam_id64: null,
+          display_name: null,
+          avatar_url: null
+        };
+      }
+    },
+    mergeUserData: async () => {},
+    updateOnboardingById: async (id, updates = {}) => {
+      const row = users[id];
+      if (!row) return null;
+      if (Object.prototype.hasOwnProperty.call(updates, "emailVerified")) {
+        row.email_verified = Boolean(updates.emailVerified);
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "onboardingCompleted")) {
+        row.onboarding_completed = Boolean(updates.onboardingCompleted);
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "plan")) {
+        row.plan = updates.plan || "free";
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "planStatus")) {
+        row.plan_status = updates.planStatus || "pending_verification";
+      }
+      return { ...row };
+    },
+    updateSteamProfileById: async (id, updates = {}) => {
+      if (!users[id]) {
+        users[id] = {
+          id,
+          email: `steam_${updates.steamId64}@steam.local`,
+          steam_id64: null,
+          display_name: null,
+          avatar_url: null
+        };
+      }
+      const row = users[id];
+
+      if (Object.prototype.hasOwnProperty.call(updates, "steamId64")) {
+        row.steam_id64 = updates.steamId64 == null ? null : String(updates.steamId64);
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "displayName")) {
+        row.display_name = updates.displayName || null;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "avatarUrl")) {
+        row.avatar_url = updates.avatarUrl || null;
+      }
+
+      return { ...row };
+    }
+  });
+
+  const authService = require(authServicePath);
+  const result = await authService.loginWithSteam("76561198000000000", {
+    displayName: "Ambiguous Steam User",
+    avatarUrl: "https://new.example/avatar.jpg"
+  });
+
+  assert.equal(signInCalled, true);
+  assert.equal(result.user.id, "steam-ambiguous-user");
+});
+
 test("loginWithSteam does not mark onboarding for existing Steam account", async () => {
   clearModule(authServicePath);
   clearModule(userRepoPath);
