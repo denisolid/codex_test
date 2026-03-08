@@ -3827,6 +3827,15 @@ function onAppClick(event) {
     return;
   }
 
+  if (button?.matches("#onboarding-switch-account-btn")) {
+    event.preventDefault();
+    runUiTask(async () => {
+      await logout();
+      window.location.href = "/login.html";
+    });
+    return;
+  }
+
   if (button?.matches(".holdings-sort-btn")) {
     event.preventDefault();
     const nextSort = String(
@@ -11911,7 +11920,9 @@ function renderEmailOnboardingPage() {
             `
         }
         <div class="auth-links muted">
-          <a href="/login.html">Switch account</a>
+          <button type="button" id="onboarding-switch-account-btn" class="ghost-btn">
+            Switch account
+          </button>
           <span>|</span>
           <button type="button" id="logout-btn" class="ghost-btn">Logout</button>
         </div>
