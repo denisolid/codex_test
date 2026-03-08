@@ -66,6 +66,31 @@ async function finalize() {
     }
 
     if (steamError) {
+      if (onboardingFlow) {
+        try {
+          const meRes = await fetch(`${API_URL}/auth/me`, {
+            credentials: "include",
+            headers: withAuthHeaders()
+          });
+          const mePayload = await meRes.json().catch(() => ({}));
+          const onboardingRequired =
+            typeof mePayload?.profile?.onboardingRequired === "boolean"
+              ? mePayload.profile.onboardingRequired
+              : typeof mePayload?.onboarding?.onboardingRequired === "boolean"
+                ? mePayload.onboarding.onboardingRequired
+                : true;
+
+          if (meRes.ok && !onboardingRequired) {
+            const target = new URL("/", window.location.origin);
+            target.searchParams.set("onboardingVerified", "1");
+            window.location.href = target.toString();
+            return;
+          }
+        } catch (_err) {
+          // Fall through to normal error rendering if profile check fails.
+        }
+      }
+
       const messageByCode = {
         steam_login_cancelled: "Steam login cancelled. Please try again.",
         steam_verify_failed: "Steam login verification failed. Please retry.",
