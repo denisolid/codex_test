@@ -4,6 +4,7 @@ const cors = require("cors");
 const morgan = require("morgan");
 
 const env = require("./config/env");
+const AppError = require("./utils/AppError");
 const routes = require("./routes");
 const notFound = require("./middleware/notFound");
 const errorHandler = require("./middleware/errorHandler");
@@ -28,7 +29,7 @@ app.use(
         return;
       }
 
-      callback(new Error(`CORS origin not allowed: ${origin}`));
+      callback(new AppError("CORS origin not allowed", 403, "CORS_ORIGIN_NOT_ALLOWED"));
     },
     credentials: true
   })

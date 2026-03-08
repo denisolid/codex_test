@@ -1,12 +1,13 @@
 const router = require("express").Router();
 const auth = require("../middleware/authMiddleware");
+const onboardingGate = require("../middleware/onboardingGate");
 const adminAuth = require("../middleware/adminAuth");
 const ctrl = require("../controllers/opportunitiesController");
 const { parseOptionalNumericQuery } = require("../middleware/requestValidation");
 
 router.post("/refresh/admin", adminAuth, ctrl.refreshFeedAdmin);
 
-router.use(auth);
+router.use(auth, onboardingGate);
 
 router.get(
   "/top",

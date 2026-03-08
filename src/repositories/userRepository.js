@@ -72,7 +72,7 @@ exports.getByIds = async (ids = []) => {
   const { data, error } = await supabaseAdmin
     .from("users")
     .select(
-      "id, email, display_name, avatar_url, steam_id64, public_portfolio_enabled, ownership_alerts_enabled, plan_tier, billing_status, plan_seats, plan_started_at, trader_mode_unlocked, trader_mode_unlocked_at, trader_mode_unlock_source, created_at, updated_at"
+      "id, email, pending_email, email_verified, onboarding_completed, plan, plan_status, display_name, avatar_url, steam_id64, public_portfolio_enabled, ownership_alerts_enabled, plan_tier, billing_status, plan_seats, plan_started_at, trader_mode_unlocked, trader_mode_unlocked_at, trader_mode_unlock_source, created_at, updated_at"
     )
     .in("id", safeIds);
 
@@ -132,6 +132,55 @@ exports.updateSteamProfileById = async (id, updates = {}) => {
 
   if (hasOwn(updates, "avatarUrl")) {
     patch.avatar_url = String(updates.avatarUrl || "").trim() || null;
+  }
+
+  if (!Object.keys(patch).length) {
+    return exports.getById(id);
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("users")
+    .update(patch)
+    .eq("id", id)
+    .select("*")
+    .single();
+
+  if (error) {
+    throw new AppError(error.message, 500);
+  }
+
+  return data;
+};
+
+exports.updateOnboardingById = async (id, updates = {}) => {
+  const patch = {};
+
+  if (hasOwn(updates, "email")) {
+    const safeEmail = String(updates.email || "").trim().toLowerCase();
+    if (!safeEmail) {
+      throw new AppError("email is required", 400, "VALIDATION_ERROR");
+    }
+    patch.email = safeEmail;
+  }
+
+  if (hasOwn(updates, "pendingEmail")) {
+    patch.pending_email = String(updates.pendingEmail || "").trim().toLowerCase() || null;
+  }
+
+  if (hasOwn(updates, "emailVerified")) {
+    patch.email_verified = Boolean(updates.emailVerified);
+  }
+
+  if (hasOwn(updates, "onboardingCompleted")) {
+    patch.onboarding_completed = Boolean(updates.onboardingCompleted);
+  }
+
+  if (hasOwn(updates, "plan")) {
+    patch.plan = String(updates.plan || "").trim().toLowerCase() || "free";
+  }
+
+  if (hasOwn(updates, "planStatus")) {
+    patch.plan_status = String(updates.planStatus || "").trim().toLowerCase() || "active";
   }
 
   if (!Object.keys(patch).length) {

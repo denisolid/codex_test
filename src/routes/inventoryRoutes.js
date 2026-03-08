@@ -1,5 +1,6 @@
 const router = require("express").Router();
 const auth = require("../middleware/authMiddleware");
+const onboardingGate = require("../middleware/onboardingGate");
 const ctrl = require("../controllers/inventoryController");
 const { syncRateLimitWindowMs, syncRateLimitMax } = require("../config/env");
 const { createRateLimiter } = require("../middleware/rateLimit");
@@ -10,6 +11,6 @@ const syncRateLimiter = createRateLimiter({
   message: "Too many sync attempts, wait before trying again."
 });
 
-router.post("/sync", auth, syncRateLimiter, ctrl.syncInventory);
+router.post("/sync", auth, onboardingGate, syncRateLimiter, ctrl.syncInventory);
 
 module.exports = router;

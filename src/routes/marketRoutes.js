@@ -1,5 +1,6 @@
 const router = require("express").Router();
 const auth = require("../middleware/authMiddleware");
+const onboardingGate = require("../middleware/onboardingGate");
 const adminAuth = require("../middleware/adminAuth");
 const ctrl = require("../controllers/marketController");
 const {
@@ -7,7 +8,7 @@ const {
   parseOptionalNumericQuery
 } = require("../middleware/requestValidation");
 
-router.use(auth);
+router.use(auth, onboardingGate);
 router.get(
   "/inventory/value",
   parseOptionalNumericQuery("commissionPercent", {

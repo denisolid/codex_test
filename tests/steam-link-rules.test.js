@@ -197,6 +197,23 @@ test("loginWithSteam marks new Steam signup for onboarding", async () => {
       }
     },
     mergeUserData: async () => {},
+    updateOnboardingById: async (id, updates = {}) => {
+      const row = users[id];
+      if (!row) return null;
+      if (Object.prototype.hasOwnProperty.call(updates, "emailVerified")) {
+        row.email_verified = Boolean(updates.emailVerified);
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "onboardingCompleted")) {
+        row.onboarding_completed = Boolean(updates.onboardingCompleted);
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "plan")) {
+        row.plan = updates.plan || "free";
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "planStatus")) {
+        row.plan_status = updates.planStatus || "pending_verification";
+      }
+      return { ...row };
+    },
     updateSteamProfileById: async (id, updates = {}) => {
       if (!users[id]) {
         users[id] = {
@@ -265,6 +282,23 @@ test("loginWithSteam does not mark onboarding for existing Steam account", async
       Object.values(users).find((row) => row.steam_id64 === steamId64) || null,
     ensureExists: async () => {},
     mergeUserData: async () => {},
+    updateOnboardingById: async (id, updates = {}) => {
+      const row = users[id];
+      if (!row) return null;
+      if (Object.prototype.hasOwnProperty.call(updates, "emailVerified")) {
+        row.email_verified = Boolean(updates.emailVerified);
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "onboardingCompleted")) {
+        row.onboarding_completed = Boolean(updates.onboardingCompleted);
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "plan")) {
+        row.plan = updates.plan || "free";
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "planStatus")) {
+        row.plan_status = updates.planStatus || "pending_verification";
+      }
+      return { ...row };
+    },
     updateSteamProfileById: async (id, updates = {}) => {
       const row = users[id];
       if (!row) return null;

@@ -4093,6 +4093,28 @@ thead th {
   width: min(460px, 100%);
 }
 
+.onboarding-panel {
+  width: min(640px, 100%);
+}
+
+.onboarding-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 10px 0 14px;
+}
+
+.onboarding-form {
+  margin-top: 8px;
+}
+
+.onboarding-waiting-state {
+  display: grid;
+  gap: 12px;
+  margin-top: 10px;
+}
+
 .auth-links {
   display: flex;
   justify-content: center;

@@ -267,6 +267,18 @@ function createGlobalOpportunitiesState() {
   };
 }
 
+function createEmailOnboardingState() {
+  return {
+    email: "",
+    submitting: false,
+    resending: false,
+    refreshing: false,
+    editMode: false,
+    error: "",
+    info: "",
+  };
+}
+
 function formatCountdownLabel(totalSeconds) {
   const seconds = Math.max(Math.ceil(Number(totalSeconds || 0)), 0);
   if (seconds <= 0) return "0s";
@@ -416,6 +428,7 @@ const state = {
     opportunities: createMarketOpportunitiesState(),
   },
   globalOpportunities: createGlobalOpportunitiesState(),
+  emailOnboarding: createEmailOnboardingState(),
   accountPage: {
     activeSection: "profile",
     notifications: readAccountNotificationPrefs(),
@@ -1090,6 +1103,35 @@ function getHeaderEmailLabel() {
   return `${email.slice(0, 29)}...`;
 }
 
+function isEmailOnboardingRequired() {
+  return Boolean(state.authenticated && state.authProfile?.onboardingRequired);
+}
+
+function getOnboardingRedirectTarget() {
+  return `${window.location.origin}/auth-callback.html`;
+}
+
+function syncEmailOnboardingStateFromProfile() {
+  const profile = state.authProfile || {};
+  const pendingEmail = String(profile.pendingEmail || "").trim().toLowerCase();
+  const verifiedEmail = String(profile.email || "").trim().toLowerCase();
+
+  if (!state.emailOnboarding.email) {
+    state.emailOnboarding.email = pendingEmail || verifiedEmail || "";
+  }
+  if (pendingEmail && !state.emailOnboarding.editMode) {
+    state.emailOnboarding.email = pendingEmail;
+  }
+  if (!isEmailOnboardingRequired()) {
+    state.emailOnboarding.editMode = false;
+    state.emailOnboarding.error = "";
+    state.emailOnboarding.info = "";
+    state.emailOnboarding.submitting = false;
+    state.emailOnboarding.resending = false;
+    state.emailOnboarding.refreshing = false;
+  }
+}
+
 function isGlobalUiBlocked() {
   return Boolean(state.syncingInventory);
 }
@@ -1604,7 +1646,7 @@ function renderDesktopHeader(userEmailLabel, userEmailTitle) {
           <span class="desktop-brand-dot"></span>
         </span>
         <span class="desktop-brand-text">
-          <strong>CS2 Terminal</strong>
+          <strong>Skin Alpha</strong>
           <small>Portfolio Analyzer</small>
         </span>
       </a>
@@ -1716,7 +1758,7 @@ function renderHeaderQuickStats() {
 function renderAppFooter() {
   return `
     <footer class="app-footer">
-      <div class="app-footer-left">&copy; ${new Date().getFullYear()} CS2 Portfolio Analyzer</div>
+      <div class="app-footer-left">&copy; ${new Date().getFullYear()} Skin Alpha</div>
       <nav class="app-footer-links" aria-label="Footer links">
         <a href="https://github.com/denisolid/codex_test" target="_blank" rel="noreferrer" class="ghost-link">About</a>
         <a href="https://github.com/denisolid/codex_test/tree/market-analysis/docs" target="_blank" rel="noreferrer" class="ghost-link">Docs</a>
@@ -1853,16 +1895,46 @@ function buildAuthProfile(payload) {
   if (!user) return null;
 
   const profile = payload?.profile || {};
+  const onboarding = payload?.onboarding || {};
   const metadata = user?.user_metadata || {};
   const explicit = payload?.emailConfirmed;
   const fallback = Boolean(user.email_confirmed_at || user.confirmed_at);
   const steamId64 = String(
     profile.steamId64 || metadata.steam_id64 || "",
   ).trim();
+  const emailVerified =
+    typeof explicit === "boolean"
+      ? explicit
+      : typeof profile?.emailVerified === "boolean"
+        ? profile.emailVerified
+        : typeof onboarding?.emailVerified === "boolean"
+          ? onboarding.emailVerified
+          : fallback;
+  const onboardingCompleted =
+    typeof profile?.onboardingCompleted === "boolean"
+      ? profile.onboardingCompleted
+      : typeof onboarding?.onboardingCompleted === "boolean"
+        ? onboarding.onboardingCompleted
+        : emailVerified;
+  const onboardingRequired =
+    typeof profile?.onboardingRequired === "boolean"
+      ? profile.onboardingRequired
+      : typeof onboarding?.onboardingRequired === "boolean"
+        ? onboarding.onboardingRequired
+        : false;
+  const pendingEmail = String(
+    profile?.pendingEmail || onboarding?.pendingEmail || "",
+  )
+    .trim()
+    .toLowerCase();
 
   return {
-    email: String(user.email || ""),
-    emailConfirmed: typeof explicit === "boolean" ? explicit : fallback,
+    email: String(profile.email || onboarding.email || user.email || ""),
+    pendingEmail: pendingEmail || null,
+    emailConfirmed: Boolean(emailVerified),
+    emailVerified: Boolean(emailVerified),
+    onboardingCompleted: Boolean(onboardingCompleted),
+    onboardingRequired: Boolean(onboardingRequired),
     steamId64: steamId64 || null,
     steamLinked: Boolean(steamId64) || Boolean(profile.linkedSteam),
     steamDisplayName:
@@ -1872,6 +1944,10 @@ function buildAuthProfile(payload) {
     publicPortfolioEnabled: profile.publicPortfolioEnabled !== false,
     ownershipAlertsEnabled: profile.ownershipAlertsEnabled !== false,
     planTier: String(profile.planTier || "free").toLowerCase(),
+    plan: String(profile.plan || onboarding.plan || profile.planTier || "free").toLowerCase(),
+    planStatus: String(
+      profile.planStatus || onboarding.planStatus || "active",
+    ).toLowerCase(),
     billingStatus: String(profile.billingStatus || "inactive").toLowerCase(),
     planSeats: Number(profile.planSeats || 1),
     planStartedAt: profile.planStartedAt || null,
@@ -3678,6 +3754,12 @@ function onAppClick(event) {
     return;
   }
 
+  if (button?.matches("#account-resend-email-verification-btn")) {
+    event.preventDefault();
+    runUiTask(() => resendEmailOnboarding());
+    return;
+  }
+
   if (button?.matches(".account-api-key-revoke-btn")) {
     event.preventDefault();
     runUiTask(() => revokeAccountApiKey(button.getAttribute("data-key-id")));
@@ -3711,6 +3793,37 @@ function onAppClick(event) {
   if (button?.matches("#account-delete-account-btn")) {
     event.preventDefault();
     runUiTask(() => deleteMyAccount());
+    return;
+  }
+
+  if (button?.matches("#onboarding-resend-btn")) {
+    event.preventDefault();
+    runUiTask(() => resendEmailOnboarding());
+    return;
+  }
+
+  if (button?.matches("#onboarding-refresh-status-btn")) {
+    event.preventDefault();
+    runUiTask(() => refreshEmailOnboardingStatus());
+    return;
+  }
+
+  if (button?.matches("#onboarding-edit-email-btn")) {
+    event.preventDefault();
+    state.emailOnboarding.editMode = true;
+    state.emailOnboarding.error = "";
+    state.emailOnboarding.info = "";
+    render();
+    return;
+  }
+
+  if (button?.matches("#onboarding-cancel-edit-btn")) {
+    event.preventDefault();
+    state.emailOnboarding.editMode = false;
+    state.emailOnboarding.error = "";
+    state.emailOnboarding.info = "";
+    syncEmailOnboardingStateFromProfile();
+    render();
     return;
   }
 
@@ -4180,6 +4293,16 @@ function onAppInput(event) {
     return;
   }
 
+  if (target.matches("#onboarding-email")) {
+    state.emailOnboarding.email = String(target.value || "")
+      .trim()
+      .toLowerCase();
+    if (state.emailOnboarding.error) {
+      state.emailOnboarding.error = "";
+    }
+    return;
+  }
+
   if (target.matches("#market-commission, #market-commission-inline")) {
     syncMarketCommissionFromElement(target);
   }
@@ -4351,6 +4474,12 @@ function onAppChange(event) {
 function onAppSubmit(event) {
   const form = event.target instanceof HTMLFormElement ? event.target : null;
   if (!form) return;
+
+  if (form.id === "onboarding-email-form") {
+    event.preventDefault();
+    runUiTask(() => submitEmailOnboarding(event));
+    return;
+  }
 
   if (form.id === "skin-form") {
     event.preventDefault();
@@ -4534,6 +4663,7 @@ async function logout() {
   state.marketTab.insight = null;
   state.marketTab.opportunities = createMarketOpportunitiesState();
   state.globalOpportunities = createGlobalOpportunitiesState();
+  state.emailOnboarding = createEmailOnboardingState();
   state.accountPage.activeSection = parseAccountSectionFromHash();
   state.accountPage.notifications = readAccountNotificationPrefs();
   state.accountPage.apiKeys.items = [];
@@ -4655,6 +4785,7 @@ async function syncInventory(options = {}) {
 function shouldAutoSyncInventoryOnSessionBoot() {
   if (!state.authenticated) return false;
   if (state.publicPage.steamId64) return false;
+  if (isEmailOnboardingRequired()) return false;
   if (state.syncingInventory) return false;
   if (!state.authProfile?.steamLinked) return false;
   if (getSyncCooldownSecondsRemaining() > 0) return false;
@@ -4724,11 +4855,30 @@ async function refreshPortfolio(options = {}) {
   }
 
   try {
+    const mePayload = await api("/auth/me");
+    state.authProfile = buildAuthProfile(mePayload);
+    syncEmailOnboardingStateFromProfile();
+    if (isEmailOnboardingRequired()) {
+      state.portfolio = null;
+      state.history = [];
+      state.transactions = [];
+      state.alertsFeed = [];
+      state.alertEvents = [];
+      state.ownershipAlertEvents = [];
+      state.social.watchlist = [];
+      state.social.leaderboard = [];
+      state.alerts = [];
+      state.marketTab.autoLoaded = false;
+      state.marketTab.inventoryValue = null;
+      state.marketTab.opportunities = createMarketOpportunitiesState();
+      state.globalOpportunities = createGlobalOpportunitiesState();
+      return true;
+    }
+
     const portfolioPath = withCurrency(
       `/portfolio?pricingMode=${encodeURIComponent(state.pricingMode)}`,
     );
     const [
-      mePayload,
       portfolio,
       history,
       txPayload,
@@ -4738,7 +4888,6 @@ async function refreshPortfolio(options = {}) {
       watchlistPayload,
       leaderboardPayload,
     ] = await Promise.all([
-      api("/auth/me"),
       api(portfolioPath),
       api(withCurrency(`/portfolio/history?days=${state.historyDays}`)),
       api("/transactions"),
@@ -4755,7 +4904,6 @@ async function refreshPortfolio(options = {}) {
       ).catch(() => ({ items: [] })),
     ]);
 
-    state.authProfile = buildAuthProfile(mePayload);
     state.portfolio = portfolio;
     if (portfolio?.pricing?.mode) {
       state.pricingMode = normalizePricingMode(portfolio.pricing.mode);
@@ -4887,9 +5035,108 @@ async function refreshAuthProfile() {
   try {
     const mePayload = await api("/auth/me");
     state.authProfile = buildAuthProfile(mePayload);
+    syncEmailOnboardingStateFromProfile();
     return true;
   } catch (_err) {
     return false;
+  }
+}
+
+async function submitEmailOnboarding(event) {
+  event?.preventDefault?.();
+  if (state.emailOnboarding.submitting) return;
+
+  clearError();
+  const inputEl = document.querySelector("#onboarding-email");
+  const email = String(
+    inputEl?.value || state.emailOnboarding.email || "",
+  ).trim().toLowerCase();
+
+  state.emailOnboarding.submitting = true;
+  state.emailOnboarding.error = "";
+  state.emailOnboarding.info = "";
+  state.emailOnboarding.email = email;
+  render();
+
+  try {
+    const payload = await api("/auth/onboarding/email/start", {
+      method: "POST",
+      body: JSON.stringify({
+        email,
+        next: getOnboardingRedirectTarget(),
+      }),
+    });
+    state.emailOnboarding.info =
+      payload?.message || "Verification email sent. Check your inbox.";
+    state.emailOnboarding.error = "";
+    state.emailOnboarding.email = String(
+      payload?.pendingEmail || email,
+    ).toLowerCase();
+    state.emailOnboarding.editMode = false;
+    await refreshAuthProfile();
+  } catch (err) {
+    state.emailOnboarding.error =
+      err.message || "Failed to send verification email.";
+    state.emailOnboarding.info = "";
+  } finally {
+    state.emailOnboarding.submitting = false;
+    render();
+  }
+}
+
+async function resendEmailOnboarding() {
+  if (state.emailOnboarding.resending) return;
+  state.emailOnboarding.resending = true;
+  state.emailOnboarding.error = "";
+  state.emailOnboarding.info = "";
+  render();
+
+  try {
+    const payload = await api("/auth/onboarding/email/resend", {
+      method: "POST",
+      body: JSON.stringify({
+        email: state.emailOnboarding.email,
+        next: getOnboardingRedirectTarget(),
+      }),
+    });
+    state.emailOnboarding.info =
+      payload?.message || "Verification email resent. Check your inbox.";
+    state.emailOnboarding.error = "";
+    state.emailOnboarding.email = String(
+      payload?.pendingEmail || state.emailOnboarding.email,
+    ).toLowerCase();
+    await refreshAuthProfile();
+  } catch (err) {
+    state.emailOnboarding.error =
+      err.message || "Failed to resend verification email.";
+    state.emailOnboarding.info = "";
+  } finally {
+    state.emailOnboarding.resending = false;
+    render();
+  }
+}
+
+async function refreshEmailOnboardingStatus() {
+  if (state.emailOnboarding.refreshing) return;
+  state.emailOnboarding.refreshing = true;
+  state.emailOnboarding.error = "";
+  state.emailOnboarding.info = "";
+  render();
+
+  try {
+    await refreshPortfolio({ silent: true });
+    if (isEmailOnboardingRequired()) {
+      state.emailOnboarding.info =
+        "Verification still pending. Confirm from your email, then refresh.";
+    } else {
+      state.emailOnboarding.info = "Email verified. Free plan activated.";
+    }
+  } catch (err) {
+    state.emailOnboarding.error =
+      err.message || "Failed to refresh verification status.";
+  } finally {
+    state.emailOnboarding.refreshing = false;
+    render();
   }
 }
 
@@ -10954,6 +11201,7 @@ function renderSettingsTab() {
   const profile = state.authProfile || {};
   const sectionId = normalizeAccountSection(state.accountPage.activeSection);
   const steamLinked = Boolean(profile.steamLinked);
+  const emailVerified = profile.emailVerified !== false;
   const steamLinkUrl = buildSteamAuthStartUrl("link");
   const providerLabel = toTitle(profile.provider || "email");
   const planTier = String(profile.planTier || "free").trim().toLowerCase();
@@ -11010,11 +11258,19 @@ function renderSettingsTab() {
             profile.steamId64 || "-",
           )}</dd></div>
           <div><dt>Email</dt><dd>${escapeHtml(profile.email || "-")}</dd></div>
+          <div><dt>Email verification</dt><dd>${escapeHtml(
+            emailVerified ? "Verified" : "Pending",
+          )}</dd></div>
           <div><dt>Member since</dt><dd>${escapeHtml(memberSince)}</dd></div>
         </dl>
       </div>
       <div class="row">
         <button type="button" id="account-edit-profile-btn">Edit profile</button>
+        ${
+          emailVerified
+            ? ""
+            : '<button type="button" class="ghost-btn" id="account-resend-email-verification-btn">Resend Verification</button>'
+        }
         <button type="button" class="ghost-btn" id="logout-btn">Logout</button>
       </div>
     </article>
@@ -11399,7 +11655,7 @@ function renderPublicPortfolioPage() {
   app.innerHTML = `
     <main class="layout">
       <nav class="topbar">
-        <div class="brand">CS2 Portfolio Analyzer</div>
+        <div class="brand">Skin Alpha</div>
         <div class="top-actions">
           ${
             isSignedIn
@@ -11488,7 +11744,7 @@ function renderPublicHome() {
   app.innerHTML = `
     <main class="layout landing-shell">
       <nav class="topbar landing-topbar">
-        <div class="brand">CS2 Portfolio Analyzer</div>
+        <div class="brand">Skin Alpha</div>
         <div class="top-actions">
           ${
             isSignedIn
@@ -11562,11 +11818,113 @@ function renderPublicHome() {
   `;
 }
 
+function renderEmailOnboardingPage() {
+  const profile = state.authProfile || {};
+  syncEmailOnboardingStateFromProfile();
+
+  const pendingEmail = String(profile.pendingEmail || "").trim().toLowerCase();
+  const verifiedEmail = String(profile.email || "").trim().toLowerCase();
+  const showEmailForm = state.emailOnboarding.editMode || !pendingEmail;
+  const primaryEmail = pendingEmail || state.emailOnboarding.email || verifiedEmail;
+  const providerLabel = toTitle(profile.provider || "steam");
+  const statusText = profile.emailVerified ? "Verified" : "Pending verification";
+  const statusTone = profile.emailVerified ? "real" : "unpriced";
+
+  app.innerHTML = `
+    <main class="layout auth-layout onboarding-layout">
+      <article class="panel auth-panel onboarding-panel">
+        <p class="eyebrow">Steam Onboarding</p>
+        <h1>Verify your email to activate your free plan</h1>
+        <p class="muted">
+          Steam authentication succeeded. Add and verify a real inbox email before using dashboard, portfolio, alerts, and scanner features.
+        </p>
+        <div class="onboarding-status-row">
+          <span class="status-badge ${escapeHtml(statusTone)}">${escapeHtml(statusText)}</span>
+          <small>Provider: ${escapeHtml(providerLabel)}</small>
+        </div>
+        ${
+          state.emailOnboarding.error
+            ? `<div class="error" role="alert" aria-live="assertive">${escapeHtml(
+                state.emailOnboarding.error,
+              )}</div>`
+            : ""
+        }
+        ${
+          state.emailOnboarding.info
+            ? `<div class="info" role="status" aria-live="polite">${escapeHtml(
+                state.emailOnboarding.info,
+              )}</div>`
+            : ""
+        }
+        ${
+          showEmailForm
+            ? `
+              <form id="onboarding-email-form" class="form onboarding-form">
+                <label>Email
+                  <input
+                    id="onboarding-email"
+                    type="email"
+                    placeholder="you@example.com"
+                    value="${escapeHtml(primaryEmail)}"
+                    required
+                  />
+                </label>
+                <div class="row">
+                  <button type="submit" ${state.emailOnboarding.submitting ? "disabled" : ""}>
+                    ${state.emailOnboarding.submitting ? "Sending..." : "Send Verification Email"}
+                  </button>
+                  ${
+                    pendingEmail
+                      ? `<button type="button" class="ghost-btn" id="onboarding-cancel-edit-btn">Cancel</button>`
+                      : ""
+                  }
+                </div>
+              </form>
+            `
+            : `
+              <div class="onboarding-waiting-state">
+                <p class="helper-text">
+                  Verification email was sent to <strong>${escapeHtml(primaryEmail)}</strong>.
+                  Open your inbox and click the verification link.
+                </p>
+                <div class="row">
+                  <button
+                    type="button"
+                    id="onboarding-resend-btn"
+                    class="ghost-btn"
+                    ${state.emailOnboarding.resending ? "disabled" : ""}
+                  >
+                    ${state.emailOnboarding.resending ? "Resending..." : "Resend Email"}
+                  </button>
+                  <button type="button" id="onboarding-edit-email-btn" class="ghost-btn">
+                    Use Different Email
+                  </button>
+                  <button
+                    type="button"
+                    id="onboarding-refresh-status-btn"
+                    ${state.emailOnboarding.refreshing ? "disabled" : ""}
+                  >
+                    ${state.emailOnboarding.refreshing ? "Checking..." : "I Verified, Continue"}
+                  </button>
+                </div>
+              </div>
+            `
+        }
+        <div class="auth-links muted">
+          <a href="/login.html">Switch account</a>
+          <span>|</span>
+          <button type="button" id="logout-btn" class="ghost-btn">Logout</button>
+        </div>
+      </article>
+    </main>
+  `;
+}
+
 function renderSessionBoot() {
   app.innerHTML = `
     <main class="layout auth-layout">
       <article class="panel auth-panel">
-        <p class="eyebrow">CS2 Portfolio Analyzer</p>
+        <p class="eyebrow">Skin Alpha</p>
         <h1>Loading your session</h1>
         <p class="muted">Please wait while we securely restore your account state.</p>
       </article>
@@ -11781,7 +12139,7 @@ function renderApp() {
   app.innerHTML = `
     <main class="layout app-shell">
       ${renderMobileNav({
-        title: "CS2 Terminal",
+        title: "Skin Alpha",
         drawerOpen: state.mobileDrawer.open,
         notificationCount: state.alertEvents?.length || 0,
         escapeHtml,
@@ -11975,6 +12333,14 @@ function render() {
     return;
   }
 
+  if (isEmailOnboardingRequired()) {
+    renderEmailOnboardingPage();
+    applyImageFallbacks(app);
+    syncBodyUiLocks();
+    renderToastHost();
+    return;
+  }
+
   flushAuthNotices();
   renderApp();
   applyImageFallbacks(app);
@@ -11987,8 +12353,10 @@ function hydrateAppNoticesFromUrl() {
   const linkedSteam = params.get("linkedSteam") === "1";
   const merged = params.get("merged") === "1";
   const steamOnboarding = params.get("steamOnboarding") === "1";
+  const onboardingVerified = params.get("onboardingVerified") === "1";
+  const onboardingError = String(params.get("onboarding") === "1" ? params.get("error") || "" : "").trim();
 
-  if (!linkedSteam && !steamOnboarding) return;
+  if (!linkedSteam && !steamOnboarding && !onboardingVerified && !onboardingError) return;
 
   if (linkedSteam) {
     state.accountNotice = merged
@@ -11999,11 +12367,28 @@ function hydrateAppNoticesFromUrl() {
   if (steamOnboarding) {
     state.activeTab = "dashboard";
     state.steamOnboardingPending = true;
-    state.accountNotice =
-      "Steam connected successfully. You're connected, click sync now.";
+    state.accountNotice = "Steam connected successfully. Verify your email to activate your free plan.";
   }
 
-  if (steamOnboarding) {
+  if (onboardingVerified) {
+    state.activeTab = "dashboard";
+    state.steamOnboardingPending = false;
+    state.accountNotice = "Email verified. Your free plan is now active.";
+  }
+
+  if (onboardingError) {
+    const onboardingMessages = {
+      email_verification_expired: "Verification link expired. Request a new email link.",
+      email_verification_invalid: "Verification link is invalid. Request a new email link.",
+      email_verification_used: "Verification link already used. Refresh your account status.",
+      email_in_use: "This email is already in use. Enter another email.",
+    };
+    state.accountNotice =
+      onboardingMessages[String(onboardingError).toLowerCase()] ||
+      "Email verification failed. Request a new verification email.";
+  }
+
+  if (steamOnboarding || onboardingVerified || onboardingError) {
     window.history.replaceState({}, "", "/");
     return;
   }
@@ -12103,6 +12488,7 @@ document.addEventListener("visibilitychange", () => {
     return;
   }
   if (!state.authenticated) return;
+  if (isEmailOnboardingRequired()) return;
   if (state.activeTab !== "opportunities") return;
   if (state.globalOpportunities?.loading) return;
   runUiTask(() =>
@@ -12116,6 +12502,7 @@ document.addEventListener("visibilitychange", () => {
 
 setInterval(() => {
   if (!state.authenticated) return;
+  if (isEmailOnboardingRequired()) return;
   if (state.activeTab !== "opportunities") return;
   if (state.globalOpportunities?.loading) return;
   runUiTask(() =>

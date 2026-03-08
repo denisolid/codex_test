@@ -28,9 +28,11 @@ module.exports = async (req, _res, next) => {
 
       req.userId = userProfile.id;
       req.authProvider = "app";
+      req.userProfile = userProfile;
       req.authUser = {
         id: userProfile.id,
         email: userProfile.email,
+        email_confirmed_at: userProfile.email_verified ? new Date().toISOString() : null,
         user_metadata: {
           provider: payload.provider || "app",
           steam_id64: userProfile.steam_id64 || null,
@@ -55,6 +57,7 @@ module.exports = async (req, _res, next) => {
     if (!userProfile) {
       throw new AppError("Unauthorized", 401, "USER_NOT_FOUND");
     }
+    req.userProfile = userProfile;
 
     next();
   } catch (err) {
