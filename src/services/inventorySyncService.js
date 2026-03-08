@@ -11,7 +11,6 @@ const {
   steamInventoryRetryBaseMs,
   marketPriceSource,
   marketPriceFallbackToMock,
-  marketPriceRateLimitPerSecond,
   marketPriceCacheTtlMinutes
 } = require("../config/env");
 const priceProviderService = require("./priceProviderService");
@@ -134,10 +133,6 @@ exports.syncUserInventory = async (userId) => {
   );
 
   const pricedItems = [];
-  const pauseMs = Math.max(
-    Math.floor(1000 / Math.max(marketPriceRateLimitPerSecond, 1)),
-    1
-  );
   let cacheHitCount = 0;
 
   for (const item of enrichedItems) {
@@ -186,7 +181,6 @@ exports.syncUserInventory = async (userId) => {
           priceSource: "unpriced",
           priceError: err.message
         });
-        await sleep(pauseMs);
         continue;
       }
       const fallbackPrice = await mockPriceProviderService.getLatestPrice(
@@ -199,8 +193,6 @@ exports.syncUserInventory = async (userId) => {
         priceSource: "mock-price-fallback"
       });
     }
-
-    await sleep(pauseMs);
   }
 
   await inventoryRepo.syncInventorySnapshot(
