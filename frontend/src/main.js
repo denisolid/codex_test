@@ -36,6 +36,11 @@ const PRICING_MODE_LABELS = {
 const SEARCH_RENDER_DEBOUNCE_MS = 120;
 const TOAST_MAX_VISIBLE = 4;
 const TOAST_DEFAULT_TIMEOUT_MS = 5000;
+const GLOBAL_OPPORTUNITY_POLL_MS = 60 * 1000;
+const GLOBAL_OPPORTUNITY_RUNNING_POLL_MS = 10 * 1000;
+const GLOBAL_OPPORTUNITY_STALE_MULTIPLIER = 2;
+const GLOBAL_OPPORTUNITY_STALE_MIN_MS = 8 * 60 * 1000;
+const GLOBAL_OPPORTUNITY_FORCE_COOLDOWN_MS = 90 * 1000;
 const HISTORY_RANGE_OPTIONS = [7, 30, 90, 180];
 const ACCOUNT_SECTION_IDS = [
   "profile",
@@ -256,6 +261,7 @@ function createGlobalOpportunitiesState() {
     summary: null,
     status: null,
     pendingScanRunId: "",
+    lastAutoForceAt: null,
     seenFeedIds: [],
     items: [],
   };
@@ -469,6 +475,7 @@ let txEditModalLastTriggerElement = null;
 let bodyScrollLockY = 0;
 let bodyScrollLocked = false;
 let toastSequence = 0;
+let globalOpportunitiesFollowUpTimer = 0;
 const toastTimers = new Map();
 let dashboardStickySyncBound = false;
 let dashboardStickyRafId = 0;
@@ -1930,6 +1937,86 @@ function formatTimeUntil(isoValue) {
   return `${Math.floor(deltaSeconds / 86400)}d`;
 }
 
+function parseIsoTimestampMs(value) {
+  if (!value) return null;
+  const ts = new Date(value).getTime();
+  return Number.isFinite(ts) ? ts : null;
+}
+
+function getGlobalScannerIntervalMs(scanner = {}) {
+  const status =
+    scanner?.status && typeof scanner.status === "object"
+      ? scanner.status
+      : null;
+  const intervalMinutes = Number(status?.intervalMinutes || 5);
+  if (!Number.isFinite(intervalMinutes) || intervalMinutes <= 0) {
+    return 5 * 60 * 1000;
+  }
+  return Math.round(intervalMinutes * 60 * 1000);
+}
+
+function getGlobalScannerLatestCompletedMs(scanner = {}) {
+  const status =
+    scanner?.status && typeof scanner.status === "object"
+      ? scanner.status
+      : null;
+  return parseIsoTimestampMs(
+    status?.latestCompletedRun?.completed_at ||
+      scanner?.generatedAt ||
+      status?.latestRun?.started_at,
+  );
+}
+
+function shouldAutoForceGlobalRefresh(scanner = {}, nowMs = Date.now()) {
+  const status =
+    scanner?.status && typeof scanner.status === "object"
+      ? scanner.status
+      : null;
+  if (String(status?.currentStatus || "").toLowerCase() === "running") {
+    return false;
+  }
+
+  const lastAutoForceMs = parseIsoTimestampMs(scanner?.lastAutoForceAt);
+  if (
+    lastAutoForceMs != null &&
+    nowMs - lastAutoForceMs < GLOBAL_OPPORTUNITY_FORCE_COOLDOWN_MS
+  ) {
+    return false;
+  }
+
+  const latestCompletedMs = getGlobalScannerLatestCompletedMs(scanner);
+  const staleAfterMs = Math.max(
+    getGlobalScannerIntervalMs(scanner) * GLOBAL_OPPORTUNITY_STALE_MULTIPLIER,
+    GLOBAL_OPPORTUNITY_STALE_MIN_MS,
+  );
+  if (latestCompletedMs == null) {
+    return true;
+  }
+  if (nowMs - latestCompletedMs < staleAfterMs) {
+    return false;
+  }
+  return true;
+}
+
+function clearGlobalOpportunitiesFollowUpPoll() {
+  if (!globalOpportunitiesFollowUpTimer) return;
+  clearTimeout(globalOpportunitiesFollowUpTimer);
+  globalOpportunitiesFollowUpTimer = 0;
+}
+
+function scheduleGlobalOpportunitiesFollowUpPoll(
+  delayMs = GLOBAL_OPPORTUNITY_RUNNING_POLL_MS,
+) {
+  clearGlobalOpportunitiesFollowUpPoll();
+  globalOpportunitiesFollowUpTimer = window.setTimeout(() => {
+    globalOpportunitiesFollowUpTimer = 0;
+    if (!state.authenticated) return;
+    if (state.activeTab !== "opportunities") return;
+    if (state.globalOpportunities?.loading) return;
+    runUiTask(() => refreshGlobalOpportunities({ silent: true, limit: 100 }));
+  }, Math.max(Number(delayMs || 0), 1000));
+}
+
 function formatDateTime(isoValue) {
   if (!isoValue) return "-";
   const ts = new Date(isoValue);
@@ -3231,12 +3318,29 @@ async function handleTabSwitch(tab) {
   state.activeTab = tab;
   state.tabSwitch.target = target;
   state.tabSwitch.loading = requiresLoad;
+  if (target !== "opportunities") {
+    clearGlobalOpportunitiesFollowUpPoll();
+  }
   syncPathWithTab(target, { replace: false });
   render();
 
   try {
     if (target === "portfolio") {
       runUiTask(() => refreshVisibleMarketComparisons());
+    }
+
+    if (
+      target === "opportunities" &&
+      state.globalOpportunities.loaded &&
+      !state.globalOpportunities.loading
+    ) {
+      runUiTask(() =>
+        refreshGlobalOpportunities({
+          silent: true,
+          limit: 100,
+          force: shouldAutoForceGlobalRefresh(state.globalOpportunities),
+        }),
+      );
     }
 
     if (target === "settings" && !state.accountPage.apiKeys.loaded) {
@@ -5566,14 +5670,20 @@ async function refreshGlobalOpportunities(options = {}) {
   }
 
   try {
+    const autoForce = !force && shouldAutoForceGlobalRefresh(scanner);
+    const shouldForceRefresh = Boolean(force || autoForce);
     let pendingScanRunId = String(scanner.pendingScanRunId || "").trim();
-    if (force) {
+    if (shouldForceRefresh) {
+      const trigger = force ? "manual" : "auto_stale_watchdog";
       const refreshPayload = await api("/opportunities/refresh", {
         method: "POST",
-        body: JSON.stringify({ trigger: "manual" }),
+        body: JSON.stringify({ trigger }),
       });
       pendingScanRunId = String(refreshPayload?.scanRunId || "").trim();
       scanner.pendingScanRunId = pendingScanRunId;
+      if (autoForce) {
+        scanner.lastAutoForceAt = new Date().toISOString();
+      }
     }
 
     const feedQuery = buildQuery({
@@ -5643,6 +5753,13 @@ async function refreshGlobalOpportunities(options = {}) {
       setError(scanner.error);
     }
   } finally {
+    if (
+      String(scanner.status?.currentStatus || "").toLowerCase() === "running"
+    ) {
+      scheduleGlobalOpportunitiesFollowUpPoll();
+    } else {
+      clearGlobalOpportunitiesFollowUpPoll();
+    }
     scanner.loading = false;
     render();
   }
@@ -11980,12 +12097,35 @@ window.addEventListener("hashchange", () => {
   render();
 });
 
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") {
+    clearGlobalOpportunitiesFollowUpPoll();
+    return;
+  }
+  if (!state.authenticated) return;
+  if (state.activeTab !== "opportunities") return;
+  if (state.globalOpportunities?.loading) return;
+  runUiTask(() =>
+    refreshGlobalOpportunities({
+      silent: true,
+      limit: 100,
+      force: shouldAutoForceGlobalRefresh(state.globalOpportunities),
+    }),
+  );
+});
+
 setInterval(() => {
   if (!state.authenticated) return;
   if (state.activeTab !== "opportunities") return;
   if (state.globalOpportunities?.loading) return;
-  runUiTask(() => refreshGlobalOpportunities({ silent: true, limit: 100 }));
-}, 60 * 1000);
+  runUiTask(() =>
+    refreshGlobalOpportunities({
+      silent: true,
+      limit: 100,
+      force: shouldAutoForceGlobalRefresh(state.globalOpportunities),
+    }),
+  );
+}, GLOBAL_OPPORTUNITY_POLL_MS);
 
 bootstrapSession().catch(() => {
   state.sessionBooting = false;
