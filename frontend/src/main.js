@@ -492,6 +492,7 @@ let globalOpportunitiesFollowUpTimer = 0;
 const toastTimers = new Map();
 let dashboardStickySyncBound = false;
 let dashboardStickyRafId = 0;
+let sessionAutoSyncOnLoginRequested = false;
 let historyChartCache = {
   key: "",
   markup: "",
@@ -4796,6 +4797,7 @@ async function syncInventory(options = {}) {
 }
 
 function shouldAutoSyncInventoryOnSessionBoot() {
+  if (!sessionAutoSyncOnLoginRequested) return false;
   if (!state.authenticated) return false;
   if (state.publicPage.steamId64) return false;
   if (isEmailOnboardingRequired()) return false;
@@ -12371,6 +12373,7 @@ function render() {
 
 function hydrateAppNoticesFromUrl() {
   const params = new URLSearchParams(window.location.search);
+  sessionAutoSyncOnLoginRequested = params.get("syncOnLogin") === "1";
   const linkedSteam = params.get("linkedSteam") === "1";
   const merged = params.get("merged") === "1";
   const steamOnboarding = params.get("steamOnboarding") === "1";
@@ -12489,7 +12492,9 @@ async function bootstrapSession() {
   }
   state.sessionBooting = false;
   render();
-  if (shouldAutoSyncInventoryOnSessionBoot()) {
+  const shouldAutoSync = shouldAutoSyncInventoryOnSessionBoot();
+  sessionAutoSyncOnLoginRequested = false;
+  if (shouldAutoSync) {
     await syncInventory({ automatic: true });
   }
 }
