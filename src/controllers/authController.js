@@ -82,6 +82,14 @@ function buildOnboardingErrorRedirect(targetUrl, messageCode) {
   return url.toString();
 }
 
+function resolveOAuthProvider(user = {}) {
+  return (
+    String(user?.app_metadata?.provider || user?.user_metadata?.provider || "")
+      .trim()
+      .toLowerCase() || "google"
+  );
+}
+
 function encodeLinkStateNext(nextUrl) {
   return Buffer.from(String(nextUrl || ""), "utf8").toString("base64url");
 }
@@ -150,9 +158,41 @@ exports.login = asyncHandler(async (req, res) => {
 exports.createSession = asyncHandler(async (req, res) => {
   const { accessToken } = req.body;
   const user = await authService.getUserByAccessToken(accessToken);
-  await userRepo.ensureExists(user.id, user.email);
-  setAuthCookie(res, accessToken);
-  res.json({ user, accessToken });
+
+  try {
+    await userRepo.ensureExists(user.id, user.email);
+    setAuthCookie(res, accessToken);
+    res.json({ user, accessToken });
+    return;
+  } catch (err) {
+    if (String(err?.code || "").trim().toUpperCase() !== "EMAIL_IN_USE") {
+      throw err;
+    }
+
+    const existingUser =
+      (err?.existingUserId && (await userRepo.getById(err.existingUserId))) ||
+      (user?.email ? await userRepo.getByEmail(user.email) : null);
+
+    if (!existingUser?.id) {
+      throw err;
+    }
+
+    const bridgedAccessToken = createAppSessionToken({
+      sub: existingUser.id,
+      email: existingUser.email || user.email,
+      provider: resolveOAuthProvider(user)
+    });
+
+    setAuthCookie(res, bridgedAccessToken);
+    res.json({
+      user: {
+        ...user,
+        id: existingUser.id,
+        email: existingUser.email || user.email
+      },
+      accessToken: bridgedAccessToken
+    });
+  }
 });
 
 exports.steamStart = asyncHandler(async (req, res) => {

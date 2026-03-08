@@ -12,6 +12,12 @@ function toIsoOrNull(value) {
   return date.toISOString();
 }
 
+function isUniqueViolation(errorLike) {
+  const code = String(errorLike?.code || "").trim().toLowerCase();
+  const message = String(errorLike?.message || "").trim().toLowerCase();
+  return code === "23505" || /duplicate|unique/.test(message);
+}
+
 exports.getById = async (id) => {
   const { data, error } = await supabaseAdmin
     .from("users")
@@ -103,9 +109,28 @@ exports.listPublicSteamUsers = async (limit = 200) => {
 };
 
 exports.ensureExists = async (id, email) => {
+  const safeId = String(id || "").trim();
+  const safeEmail = String(email || "").trim().toLowerCase();
+
   const { error } = await supabaseAdmin
     .from("users")
-    .upsert([{ id, email }], { onConflict: "id" });
+    .upsert([{ id: safeId, email: safeEmail }], { onConflict: "id" });
+
+  if (!error) {
+    return exports.getById(safeId);
+  }
+
+  if (isUniqueViolation(error) && safeEmail) {
+    const existingByEmail = await exports.getByEmail(safeEmail);
+    if (existingByEmail && String(existingByEmail.id || "") !== safeId) {
+      const conflict = new AppError("This email is already in use.", 409, "EMAIL_IN_USE");
+      conflict.existingUserId = existingByEmail.id;
+      conflict.requestedUserId = safeId;
+      conflict.email = safeEmail;
+      throw conflict;
+    }
+  }
+
   if (error) {
     throw new AppError(error.message, 500);
   }
