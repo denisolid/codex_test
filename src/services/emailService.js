@@ -1,5 +1,6 @@
 const AppError = require("../utils/AppError");
 const {
+  nodeEnv,
   emailProvider,
   resendApiKey,
   emailFrom,
@@ -12,10 +13,18 @@ function normalizeEmail(value) {
 
 async function sendWithResend({ to, subject, html, text }) {
   if (!resendApiKey) {
-    throw new AppError("Missing RESEND_API_KEY for outbound email", 500, "EMAIL_PROVIDER_NOT_CONFIGURED");
+    throw new AppError(
+      "Missing RESEND_API_KEY for outbound email",
+      503,
+      "EMAIL_PROVIDER_NOT_CONFIGURED"
+    );
   }
   if (!emailFrom) {
-    throw new AppError("Missing EMAIL_FROM for outbound email", 500, "EMAIL_PROVIDER_NOT_CONFIGURED");
+    throw new AppError(
+      "Missing EMAIL_FROM for outbound email",
+      503,
+      "EMAIL_PROVIDER_NOT_CONFIGURED"
+    );
   }
 
   const response = await fetch("https://api.resend.com/emails", {
@@ -67,7 +76,23 @@ exports.sendEmail = async ({ to, subject, html, text }) => {
   if (provider === "resend") {
     return sendWithResend({ to: safeTo, subject, html, text });
   }
-  return sendWithConsole({ to: safeTo, subject, text: text || "" });
+
+  if (provider === "console") {
+    if (String(nodeEnv || "").trim().toLowerCase() === "production") {
+      throw new AppError(
+        "Email delivery is not configured on the server.",
+        503,
+        "EMAIL_PROVIDER_NOT_CONFIGURED"
+      );
+    }
+    return sendWithConsole({ to: safeTo, subject, text: text || "" });
+  }
+
+  throw new AppError(
+    "Unsupported email provider configuration",
+    500,
+    "EMAIL_PROVIDER_NOT_CONFIGURED"
+  );
 };
 
 exports.sendSteamOnboardingVerificationEmail = async ({
