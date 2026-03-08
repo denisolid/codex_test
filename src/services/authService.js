@@ -79,9 +79,27 @@ function toAuthUserFromProfileRowWithoutSteam(profileRow) {
   };
 }
 
-function isDuplicateUserError(message) {
-  return /already\s+registered|already\s+exists|user\s+already|already\s+in\s+use|duplicate|unique/i.test(
-    String(message || "")
+function isDuplicateUserError(errorLike) {
+  const message = String(
+    errorLike?.message || errorLike?.error_description || errorLike || ""
+  );
+  const code = String(
+    errorLike?.code || errorLike?.error_code || ""
+  )
+    .trim()
+    .toLowerCase();
+  const status = Number(errorLike?.status || errorLike?.statusCode || 0);
+
+  if (code === "email_exists" || code === "user_already_exists" || code === "23505") {
+    return true;
+  }
+
+  if (status === 409) {
+    return true;
+  }
+
+  return /already\s+(been\s+)?registered|already\s+exists|user\s+already|already\s+in\s+use|duplicate|unique/i.test(
+    message
   );
 }
 
@@ -228,6 +246,7 @@ exports.loginWithSteam = async (steamId64, profile = {}) => {
   const steamEmail = buildSteamEmail(safeSteamId64);
   const steamPassword = buildSteamPassword(safeSteamId64);
   let createdSteamUser = false;
+  let createUserError = null;
 
   let profileRow = await userRepo.getBySteamId64(safeSteamId64);
 
@@ -243,8 +262,8 @@ exports.loginWithSteam = async (steamId64, profile = {}) => {
     };
 
     const { data, error } = await supabaseAdmin.auth.admin.createUser(createPayload);
-    if (error && !isDuplicateUserError(error.message)) {
-      throw new AppError("Unable to create Steam account", 500, "STEAM_ACCOUNT_CREATE_FAILED");
+    if (error && !isDuplicateUserError(error)) {
+      createUserError = error;
     }
 
     const authUser = data?.user;
@@ -266,6 +285,13 @@ exports.loginWithSteam = async (steamId64, profile = {}) => {
     });
 
     if (error || !data?.user?.id) {
+      if (createUserError) {
+        throw new AppError(
+          "Unable to create Steam account",
+          500,
+          "STEAM_ACCOUNT_CREATE_FAILED"
+        );
+      }
       throw new AppError("Steam login failed", 401, "STEAM_LOGIN_FAILED");
     }
 
