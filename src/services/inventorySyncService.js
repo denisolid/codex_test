@@ -11,7 +11,8 @@ const {
   steamInventoryRetryBaseMs,
   marketPriceSource,
   marketPriceFallbackToMock,
-  marketPriceCacheTtlMinutes
+  marketPriceCacheTtlMinutes,
+  inventorySyncPriceConcurrency
 } = require("../config/env");
 const priceProviderService = require("./priceProviderService");
 const mockPriceProviderService = require("./mockPriceProviderService");
@@ -23,6 +24,34 @@ function sleep(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const safeItems = Array.isArray(items) ? items : [];
+  if (!safeItems.length) return [];
+
+  const limit = Math.max(Number(concurrency || 1), 1);
+  const results = new Array(safeItems.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= safeItems.length) {
+        return;
+      }
+
+      results[index] = await mapper(safeItems[index], index);
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(limit, safeItems.length) },
+    () => worker()
+  );
+  await Promise.all(workers);
+  return results;
 }
 
 async function fetchInventoryByConfiguredSource(steamId64) {
@@ -117,69 +146,87 @@ exports.syncUserInventory = async (userId) => {
     priceLookupSkinIds
   );
 
-  const pricedItems = [];
-  let cacheHitCount = 0;
+  const pricedItems = await mapWithConcurrency(
+    enrichedItems,
+    inventorySyncPriceConcurrency,
+    async (item) => {
+      const skinId = Number(skinMap[item.marketHashName] || 0);
+      if (!skinId) {
+        throw new AppError(
+          `Missing skin id for ${item.marketHashName}`,
+          500,
+          "SKIN_UPSERT_INCONSISTENT"
+        );
+      }
 
-  for (const item of enrichedItems) {
-    const skinId = Number(skinMap[item.marketHashName] || 0);
-    if (!skinId) {
-      throw new AppError(
-        `Missing skin id for ${item.marketHashName}`,
-        500,
-        "SKIN_UPSERT_INCONSISTENT"
-      );
-    }
-    const cached = latestPriceBySkinId[skinId];
-    if (
-      cached &&
-      isFresh(cached.recorded_at, marketPriceCacheTtlMinutes) &&
-      canUseCachedSource(cached.source)
-    ) {
-      pricedItems.push({
-        ...item,
-        skinId,
-        price: Number(cached.price),
-        priceSource: `cache:${cached.source}`
-      });
-      cacheHitCount += 1;
-      continue;
-    }
-
-    try {
-      // priceProviderService already applies provider-level retry logic.
-      const priced = await priceProviderService.getPrice(item.marketHashName);
-      pricedItems.push({
-        ...item,
-        skinId,
-        price: priced.price,
-        priceSource: priced.source
-      });
-    } catch (err) {
-      if (!marketPriceFallbackToMock) {
-        pricedItems.push({
+      const cached = latestPriceBySkinId[skinId];
+      if (
+        cached &&
+        isFresh(cached.recorded_at, marketPriceCacheTtlMinutes) &&
+        canUseCachedSource(cached.source)
+      ) {
+        return {
           ...item,
           skinId,
-          price: null,
-          priceSource: "unpriced",
-          priceError: err.message
-        });
-        continue;
+          price: Number(cached.price),
+          priceSource: `cache:${cached.source}`,
+          __cacheHit: true
+        };
       }
-      const fallbackPrice = await mockPriceProviderService.getLatestPrice(
-        item.marketHashName
-      );
-      pricedItems.push({
-        ...item,
-        skinId,
-        price: fallbackPrice,
-        priceSource: "mock-price-fallback"
-      });
+
+      try {
+        // priceProviderService already applies provider-level retry logic.
+        const priced = await priceProviderService.getPrice(item.marketHashName);
+        return {
+          ...item,
+          skinId,
+          price: priced.price,
+          priceSource: priced.source,
+          __cacheHit: false
+        };
+      } catch (err) {
+        if (!marketPriceFallbackToMock) {
+          return {
+            ...item,
+            skinId,
+            price: null,
+            priceSource: "unpriced",
+            priceError: err.message,
+            __cacheHit: false
+          };
+        }
+
+        const fallbackPrice = await mockPriceProviderService.getLatestPrice(
+          item.marketHashName
+        );
+        return {
+          ...item,
+          skinId,
+          price: fallbackPrice,
+          priceSource: "mock-price-fallback",
+          __cacheHit: false
+        };
+      }
     }
-  }
+  );
+
+  const cacheHitCount = pricedItems.reduce(
+    (acc, item) => (item.__cacheHit ? acc + 1 : acc),
+    0
+  );
+
+  const normalizedPricedItems = pricedItems.map((item) => {
+    if (!Object.prototype.hasOwnProperty.call(item, "__cacheHit")) {
+      return item;
+    }
+    const copy = { ...item };
+    delete copy.__cacheHit;
+    return copy;
+  });
 
   await inventoryRepo.syncInventorySnapshot(
     userId,
-    pricedItems.map((i) => ({
+    normalizedPricedItems.map((i) => ({
       skin_id: i.skinId,
       quantity: i.quantity,
       steam_item_ids: i.steamItemIds || []
@@ -187,7 +234,7 @@ exports.syncUserInventory = async (userId) => {
   );
 
   await priceRepo.insertPriceRows(
-    pricedItems
+    normalizedPricedItems
       .filter((i) => i.price != null)
       .map((i) => ({
         skin_id: i.skinId,
@@ -205,7 +252,7 @@ exports.syncUserInventory = async (userId) => {
     };
     return acc;
   }, {});
-  const currentBySkinId = pricedItems.reduce((acc, row) => {
+  const currentBySkinId = normalizedPricedItems.reduce((acc, row) => {
     const skinId = Number(row.skinId);
     if (!acc[skinId]) {
       acc[skinId] = {
@@ -285,7 +332,7 @@ exports.syncUserInventory = async (userId) => {
     await ownershipAlertRepo.insertEvents(userId, ownershipChanges);
   }
 
-  const unpricedItems = pricedItems
+  const unpricedItems = normalizedPricedItems
     .filter((i) => i.price == null)
     .map((i) => ({
       marketHashName: i.marketHashName,
@@ -294,14 +341,14 @@ exports.syncUserInventory = async (userId) => {
 
   return {
     synced: true,
-    itemsSynced: pricedItems.length,
-    pricedItems: pricedItems.length - unpricedItems.length,
+    itemsSynced: normalizedPricedItems.length,
+    pricedItems: normalizedPricedItems.length - unpricedItems.length,
     unpricedItemsCount: unpricedItems.length,
     unpricedItems,
     excludedItemsCount: inventoryExcludedItems.length,
     excludedItems: inventoryExcludedItems,
     priceCacheHitCount: cacheHitCount,
-    priceFetchedCount: pricedItems.length - cacheHitCount,
+    priceFetchedCount: normalizedPricedItems.length - cacheHitCount,
     inventorySource: source,
     configuredInventorySource: steamInventorySource,
     configuredMarketPriceSource: marketPriceSource,
