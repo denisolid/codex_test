@@ -10438,7 +10438,8 @@ function renderMarketTab() {
   });
   const opportunityMarkup = opportunityRows.length
     ? `
-      <table>
+      <div class="table-wrap table-wrap-opportunities">
+      <table class="opportunities-table opportunities-table-portfolio">
         <thead>
           <tr>
             <th>Item</th>
@@ -10631,6 +10632,7 @@ function renderMarketTab() {
             .join("")}
         </tbody>
       </table>
+      </div>
     `
     : '<p class="muted">No profitable opportunities for current filters.</p>';
 
@@ -10885,7 +10887,8 @@ function renderGlobalOpportunitiesTab() {
 
   const tableMarkup = rows.length
     ? `
-      <table>
+      <div class="table-wrap table-wrap-opportunities">
+      <table class="opportunities-table opportunities-table-global">
         <thead>
           <tr>
             <th>Item</th>
@@ -11074,6 +11077,7 @@ function renderGlobalOpportunitiesTab() {
             .join("")}
         </tbody>
       </table>
+      </div>
     `
     : `<p class="muted">${
         scanner.loading
