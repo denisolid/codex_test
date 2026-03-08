@@ -80,7 +80,9 @@ function toAuthUserFromProfileRowWithoutSteam(profileRow) {
 }
 
 function isDuplicateUserError(message) {
-  return /already\s+registered|duplicate|unique/i.test(String(message || ""));
+  return /already\s+registered|already\s+exists|user\s+already|already\s+in\s+use|duplicate|unique/i.test(
+    String(message || "")
+  );
 }
 
 function isEmailNotConfirmedMessage(message) {
