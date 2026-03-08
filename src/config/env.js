@@ -119,6 +119,9 @@ module.exports = {
     "https://community.akamai.steamstatic.com/public/images/apps/730/header.jpg",
   marketPriceStaleHours: Number(process.env.MARKET_PRICE_STALE_HOURS || 24),
   marketPriceCacheTtlMinutes: Number(process.env.MARKET_PRICE_CACHE_TTL_MINUTES || 60),
+  inventorySyncPriceConcurrency: Number(
+    process.env.INVENTORY_SYNC_PRICE_CONCURRENCY || 8
+  ),
   steamMarketCurrency: Number(process.env.STEAM_MARKET_CURRENCY || 1),
   steamMarketTimeoutMs: Number(process.env.STEAM_MARKET_TIMEOUT_MS || 10000),
   steamMarketMaxRetries: Number(process.env.STEAM_MARKET_MAX_RETRIES || 3),
