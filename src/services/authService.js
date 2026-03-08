@@ -3,24 +3,14 @@ const { supabaseAdmin, supabaseAuthClient } = require("../config/supabase");
 const { authEmailRedirectTo, appAuthSecret } = require("../config/env");
 const AppError = require("../utils/AppError");
 const userRepo = require("../repositories/userRepository");
-
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const STEAM_MANAGED_EMAIL_REGEX = /^steam_\d{17}@steam\.local$/i;
-
-function normalizeEmail(email) {
-  return String(email || "").trim().toLowerCase();
-}
+const emailOnboardingService = require("./emailOnboardingService");
 
 function isSteamManagedEmail(email) {
-  return STEAM_MANAGED_EMAIL_REGEX.test(normalizeEmail(email));
+  return emailOnboardingService.isSteamManagedEmail(email);
 }
 
 function validateEmail(email) {
-  const normalized = normalizeEmail(email);
-  if (!EMAIL_REGEX.test(normalized)) {
-    throw new AppError("A valid email is required", 400, "INVALID_EMAIL");
-  }
-  return normalized;
+  return emailOnboardingService.validateEmail(email);
 }
 
 function validatePassword(password) {
@@ -287,6 +277,15 @@ exports.loginWithSteam = async (steamId64, profile = {}) => {
 
   if (!profileRow?.id) {
     throw new AppError("Steam login failed", 401, "STEAM_LOGIN_FAILED");
+  }
+
+  if (isSteamManagedEmail(profileRow.email)) {
+    profileRow = await userRepo.updateOnboardingById(profileRow.id, {
+      emailVerified: false,
+      onboardingCompleted: false,
+      plan: "free",
+      planStatus: "pending_verification"
+    });
   }
 
   const linkResult = await exports.linkSteamToUser(

@@ -11,7 +11,7 @@ Backend MVP implemented with:
 
 1. Copy `.env.example` to `.env` and fill Supabase values.
    - for local frontend, keep `FRONTEND_ORIGIN=http://localhost:5173`
-   - set `FRONTEND_ORIGINS` for production allowlist (comma-separated)
+   - set `FRONTEND_ORIGINS` for production allowlist (comma-separated, origin only, no trailing slash/path)
    - set `AUTH_EMAIL_REDIRECT_TO` so confirmation emails return to your login page
    - set `API_PUBLIC_URL` to your backend public URL (for Steam callback URL generation)
    - set `APP_AUTH_SECRET` to a long random secret
@@ -221,6 +221,7 @@ Notes:
 - Configure in root `.env`:
   - `FRONTEND_ORIGIN=http://localhost:5173`
   - `FRONTEND_ORIGINS=http://localhost:5173`
+  - production example: `FRONTEND_ORIGINS=https://skinalpha.app,https://www.skinalpha.app`
   - `AUTH_EMAIL_REDIRECT_TO=http://localhost:5173/login.html?confirmed=1`
   - `AUTH_RATE_LIMIT_WINDOW_MS=60000`
   - `AUTH_RATE_LIMIT_MAX=20`
@@ -389,7 +390,7 @@ Render environment variables:
   - `SUPABASE_URL`
   - `SUPABASE_ANON_KEY`
   - `SUPABASE_SERVICE_ROLE_KEY`
-  - `FRONTEND_URL` (comma-separated allowed origins; include your frontend production URL)
+  - `FRONTEND_URL` (comma-separated allowed origins; origin only, no trailing slash/path)
   - `AUTH_EMAIL_REDIRECT_TO` (for example `https://your-app.vercel.app/login.html?confirmed=1`)
 - Optional:
   - `ADMIN_API_TOKEN`
@@ -435,6 +436,7 @@ Where to set on Netlify:
    - `https://your-app.vercel.app`
    - `https://your-app.netlify.app`
    - multiple origins: `https://app.vercel.app,https://staging.vercel.app`
+   - apex + www example: `https://skinalpha.app,https://www.skinalpha.app`
 4. Redeploy both services after env changes.
 
 ## Verify deployment

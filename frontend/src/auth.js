@@ -102,7 +102,7 @@ function render(
   app.innerHTML = `
     <main class="layout auth-layout">
       <article class="panel auth-panel">
-        <p class="eyebrow">CS2 Portfolio Analyzer</p>
+        <p class="eyebrow">Skin Alpha</p>
         <h1>${isLogin ? "Welcome back" : "Create your account"}</h1>
         <p class="muted">${
           isLogin

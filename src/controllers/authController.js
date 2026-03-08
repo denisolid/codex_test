@@ -14,6 +14,7 @@ const {
 } = require("../utils/appSessionToken");
 const steamAuthService = require("../services/steamAuthService");
 const planService = require("../services/planService");
+const emailOnboardingService = require("../services/emailOnboardingService");
 const { getCookieValue } = require("../utils/cookies");
 const AppError = require("../utils/AppError");
 const { frontendOrigin, frontendOrigins, apiPublicUrl } = require("../config/env");
@@ -71,6 +72,13 @@ function buildSteamErrorRedirect(targetUrl, messageCode) {
   const url = new URL(targetUrl);
   url.searchParams.set("steam", "1");
   url.searchParams.set("error", String(messageCode || "steam_auth_failed"));
+  return url.toString();
+}
+
+function buildOnboardingErrorRedirect(targetUrl, messageCode) {
+  const url = new URL(targetUrl);
+  url.searchParams.set("onboarding", "1");
+  url.searchParams.set("error", String(messageCode || "email_verification_failed"));
   return url.toString();
 }
 
@@ -270,6 +278,47 @@ exports.resendConfirmation = asyncHandler(async (req, res) => {
   res.json(result);
 });
 
+exports.startSteamEmailOnboarding = [
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const next = resolveFrontendTarget(req.body?.next);
+    const result = await emailOnboardingService.requestEmailVerification({
+      userId: req.userId,
+      email: req.body?.email,
+      next,
+      apiOrigin: resolveApiOrigin(req)
+    });
+    res.json(result);
+  })
+];
+
+exports.resendSteamEmailOnboarding = [
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const next = resolveFrontendTarget(req.body?.next);
+    const result = await emailOnboardingService.resendEmailVerification({
+      userId: req.userId,
+      email: req.body?.email,
+      next,
+      apiOrigin: resolveApiOrigin(req)
+    });
+    res.json(result);
+  })
+];
+
+exports.verifySteamEmailOnboarding = asyncHandler(async (req, res) => {
+  const target = resolveFrontendTarget(req.query.next);
+  try {
+    await emailOnboardingService.verifyEmailToken(req.query.token);
+    const redirectUrl = new URL(target);
+    redirectUrl.searchParams.set("onboardingVerified", "1");
+    res.redirect(302, redirectUrl.toString());
+  } catch (err) {
+    const code = String(err?.code || "email_verification_failed").toLowerCase();
+    res.redirect(302, buildOnboardingErrorRedirect(target, code));
+  }
+});
+
 exports.logout = asyncHandler(async (_req, res) => {
   clearAuthCookie(res);
   res.status(204).send();
@@ -305,7 +354,15 @@ exports.deleteAccount = [
 exports.me = [
   authMiddleware,
   asyncHandler(async (req, res) => {
-    const profileRow = await userRepo.getById(req.userId);
+    let profileRow = req.userProfile || (await userRepo.getById(req.userId));
+    if (!profileRow) {
+      throw new AppError("Unauthorized", 401, "USER_NOT_FOUND");
+    }
+
+    profileRow = await emailOnboardingService.syncProfileVerificationState({
+      userProfile: profileRow,
+      authUser: req.authUser
+    });
     const metadata = req.authUser?.user_metadata || {};
     const steamId64 = profileRow?.steam_id64 || metadata.steam_id64 || null;
     const planTier = planService.normalizePlanTier(profileRow?.plan_tier);
@@ -313,23 +370,38 @@ exports.me = [
     const entitlements = planService.getEntitlements(planTier, {
       traderModeUnlocked
     });
-
-    const emailConfirmed =
-      req.authProvider === "app"
-        ? true
-        : Boolean(req.authUser?.email_confirmed_at || req.authUser?.confirmed_at);
+    const onboarding = emailOnboardingService.resolveOnboardingState({
+      userProfile: profileRow,
+      authUser: req.authUser
+    });
 
     res.json({
       user: req.authUser,
-      emailConfirmed,
+      emailConfirmed: onboarding.emailVerified,
+      onboarding: {
+        email: onboarding.email,
+        pendingEmail: onboarding.pendingEmail,
+        emailVerified: onboarding.emailVerified,
+        onboardingCompleted: onboarding.onboardingCompleted,
+        onboardingRequired: onboarding.onboardingRequired,
+        plan: onboarding.plan,
+        planStatus: onboarding.planStatus
+      },
       profile: {
         steamId64,
+        email: onboarding.email,
+        pendingEmail: onboarding.pendingEmail,
+        emailVerified: onboarding.emailVerified,
+        onboardingCompleted: onboarding.onboardingCompleted,
+        onboardingRequired: onboarding.onboardingRequired,
         displayName: profileRow?.display_name || metadata.display_name || null,
         avatarUrl: profileRow?.avatar_url || metadata.avatar_url || null,
         linkedSteam: Boolean(steamId64),
         publicPortfolioEnabled: profileRow?.public_portfolio_enabled !== false,
         ownershipAlertsEnabled: profileRow?.ownership_alerts_enabled !== false,
         planTier,
+        plan: onboarding.plan,
+        planStatus: onboarding.planStatus,
         billingStatus: profileRow?.billing_status || "inactive",
         planSeats: Number(profileRow?.plan_seats || 1),
         planStartedAt: profileRow?.plan_started_at || null,

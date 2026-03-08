@@ -19,6 +19,19 @@ function parseCsv(value) {
     .filter(Boolean);
 }
 
+function normalizeOrigin(value) {
+  const trimmed = String(value || "").trim().replace(/\/+$/, "");
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    return new URL(trimmed).origin;
+  } catch (_err) {
+    return trimmed;
+  }
+}
+
 function normalizeEnum(value, allowed, fallback) {
   const normalized = String(value || "")
     .trim()
@@ -34,8 +47,8 @@ const frontendOrigins = Array.from(
     ...parseCsv(process.env.FRONTEND_URL),
     ...parseCsv(process.env.FRONTEND_ORIGINS),
     ...parseCsv(process.env.FRONTEND_ORIGIN)
-  ])
-);
+  ].map(normalizeOrigin))
+).filter(Boolean);
 if (!frontendOrigins.length) {
   frontendOrigins.push("http://localhost:5173");
 }
@@ -68,6 +81,11 @@ module.exports = {
   apiPublicUrl,
   authEmailRedirectTo,
   appAuthSecret,
+  emailProvider: normalizeEnum(process.env.EMAIL_PROVIDER, ["console", "resend"], "console"),
+  resendApiKey: String(process.env.RESEND_API_KEY || "").trim(),
+  emailFrom: String(process.env.EMAIL_FROM || "").trim(),
+  emailReplyTo: String(process.env.EMAIL_REPLY_TO || "").trim(),
+  emailVerificationTtlMinutes: Number(process.env.EMAIL_VERIFICATION_TTL_MINUTES || 30),
   steamWebApiKey: String(process.env.STEAM_WEB_API_KEY || "").trim(),
   adminApiToken: process.env.ADMIN_API_TOKEN || "",
   supabaseUrl: process.env.SUPABASE_URL,

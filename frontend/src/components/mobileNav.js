@@ -7,7 +7,7 @@ const fallbackEscape = (value) =>
     .replaceAll("'", "&#39;");
 
 export function renderMobileNav({
-  title = "CS2 Portfolio Analyzer",
+  title = "Skin Alpha",
   drawerOpen = false,
   notificationCount = 0,
   escapeHtml = fallbackEscape

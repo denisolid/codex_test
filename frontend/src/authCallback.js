@@ -28,6 +28,8 @@ async function finalize() {
     const steamOnboarding =
       hashParams.get("steamOnboarding") === "1" ||
       urlParams.get("steamOnboarding") === "1";
+    const onboardingVerified = urlParams.get("onboardingVerified") === "1";
+    const onboardingFlow = urlParams.get("onboarding") === "1";
     const steamError = String(urlParams.get("error") || "").trim();
     const linkedSteam = urlParams.get("linkedSteam") === "1";
     const merged = urlParams.get("merged") === "1";
@@ -39,6 +41,16 @@ async function finalize() {
       if (steamOnboarding) {
         target.searchParams.set("steamOnboarding", "1");
       }
+      if (onboardingVerified) {
+        target.searchParams.set("onboardingVerified", "1");
+      }
+      window.location.href = target.toString();
+      return;
+    }
+
+    if (onboardingVerified) {
+      const target = new URL("/", window.location.origin);
+      target.searchParams.set("onboardingVerified", "1");
       window.location.href = target.toString();
       return;
     }
@@ -64,9 +76,17 @@ async function finalize() {
         steam_link_state_missing: "Steam link session expired. Start linking again from settings.",
         steam_link_state_invalid: "Invalid Steam link session. Start linking again.",
         steam_link_failed: "Steam account linking failed. Please retry.",
-        steam_already_linked: "This Steam account is already linked to another user."
+        steam_already_linked: "This Steam account is already linked to another user.",
+        email_verification_invalid: "Email verification link is invalid.",
+        email_verification_used: "Email verification link was already used.",
+        email_verification_expired: "Email verification link expired. Request a new one.",
+        email_verification_failed: "Email verification failed. Request a new link.",
+        email_in_use: "This email is already in use. Try a different one."
       };
-      throw new Error(messageByCode[steamError] || "Steam login failed.");
+      throw new Error(
+        messageByCode[steamError] ||
+          (onboardingFlow ? "Email verification failed." : "Steam login failed."),
+      );
     }
 
     if (!hasSupabaseConfig || !supabase) {
