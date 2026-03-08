@@ -2080,6 +2080,41 @@ button:disabled,
   box-shadow: none;
 }
 
+.auth-action-stack {
+  display: grid;
+  gap: 6px;
+}
+
+.auth-action-btn {
+  width: 100%;
+}
+
+.auth-social-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.auth-social-icon {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 18px;
+}
+
+.auth-social-icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.auth-social-label {
+  line-height: 1;
+}
+
 .loading-inline {
   display: inline-flex;
   align-items: center;

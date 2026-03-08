@@ -38,6 +38,7 @@ async function finalize() {
       setAuthToken(hashToken);
       window.history.replaceState({}, "", "/auth-callback.html");
       const target = new URL("/", window.location.origin);
+      target.searchParams.set("syncOnLogin", "1");
       if (steamOnboarding) {
         target.searchParams.set("steamOnboarding", "1");
       }
@@ -145,7 +146,7 @@ async function finalize() {
     }
 
     setAuthToken(payload?.accessToken || token);
-    window.location.href = "/";
+    window.location.href = "/?syncOnLogin=1";
   } catch (err) {
     render(err.message || "Google authentication failed", true);
   }

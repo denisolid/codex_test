@@ -138,23 +138,48 @@ function render(
         </form>
         ${
           isLogin && showResendConfirmation
-            ? `
-              <p class="helper-text">Need a new verification link for <strong>${escapeHtml(
+            ? `<p class="helper-text">Need a new verification link for <strong>${escapeHtml(
                 pendingConfirmationEmail
-              )}</strong>? Supabase sends a confirmation link, not a 6-digit code.</p>
-              <button id="resend-confirm-btn" class="google-btn" type="button" ${
-                resendInFlight || resendCooldownActive ? "disabled" : ""
-              }>${escapeHtml(getResendButtonLabel())}</button>
-            `
+              )}</strong>? Supabase sends a confirmation link, not a 6-digit code.</p>`
             : ""
         }
 
-        <button id="google-auth-btn" class="google-btn" type="button" ${
-          authSubmitInFlight ? "disabled" : ""
-        }>Continue with Google</button>
-        <button id="steam-auth-btn" class="google-btn" type="button" ${
-          authSubmitInFlight ? "disabled" : ""
-        }>Continue with Steam</button>
+        <div class="auth-action-stack">
+          ${
+            isLogin && showResendConfirmation
+              ? `<button id="resend-confirm-btn" class="google-btn auth-action-btn" type="button" ${
+                  resendInFlight || resendCooldownActive ? "disabled" : ""
+                }>${escapeHtml(getResendButtonLabel())}</button>`
+              : ""
+          }
+          <button id="google-auth-btn" class="google-btn auth-action-btn auth-social-btn" type="button" ${
+            authSubmitInFlight ? "disabled" : ""
+          }>
+            <span class="auth-social-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path fill="#EA4335" d="M12 10.2v3.9h5.5c-.2 1.2-.9 2.2-1.9 2.9l3.1 2.4c1.8-1.7 2.8-4.2 2.8-7.2 0-.7-.1-1.4-.2-2H12z" />
+                <path fill="#34A853" d="M12 22c2.7 0 5-0.9 6.6-2.6l-3.1-2.4c-.9.6-2 .9-3.5.9-2.7 0-4.9-1.8-5.7-4.2l-3.2 2.5C4.7 19.7 8 22 12 22z" />
+                <path fill="#4A90E2" d="M6.3 13.7c-.2-.6-.3-1.2-.3-1.7s.1-1.2.3-1.7l-3.2-2.5C2.4 9 2 10.4 2 12s.4 3 1.1 4.2l3.2-2.5z" />
+                <path fill="#FBBC05" d="M12 6.1c1.5 0 2.9.5 4 1.6l3-3C17 2.8 14.7 2 12 2 8 2 4.7 4.3 3.1 7.8l3.2 2.5C7.1 7.9 9.3 6.1 12 6.1z" />
+              </svg>
+            </span>
+            <span class="auth-social-label">Continue with Google</span>
+          </button>
+          <button id="steam-auth-btn" class="google-btn auth-action-btn auth-social-btn" type="button" ${
+            authSubmitInFlight ? "disabled" : ""
+          }>
+            <span class="auth-social-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <circle cx="17.5" cy="6.5" r="3.4" fill="currentColor" />
+                <circle cx="17.5" cy="6.5" r="1.5" fill="rgba(12,18,30,0.9)" />
+                <circle cx="9" cy="14.5" r="4.5" fill="none" stroke="currentColor" stroke-width="2" />
+                <circle cx="9" cy="14.5" r="1.7" fill="currentColor" />
+                <path d="M12.3 12.7l2.9-1.8" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+              </svg>
+            </span>
+            <span class="auth-social-label">Continue with Steam</span>
+          </button>
+        </div>
 
         <div class="auth-links muted">
           <a href="/">Back to home</a>
@@ -245,7 +270,7 @@ async function onSubmit(e) {
       setAuthToken(payload.accessToken);
     }
 
-    window.location.href = "/";
+    window.location.href = "/?syncOnLogin=1";
   } catch (_err) {
     render("Network error. Check backend and frontend URLs.", "", email);
   } finally {
