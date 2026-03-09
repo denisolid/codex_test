@@ -4,6 +4,7 @@ const AppError = require("../utils/AppError")
 const TABLE = "market_quotes"
 const SOURCES = new Set(["steam", "skinport", "csfloat", "dmarket"])
 const INSERT_BATCH_SIZE = 400
+const QUERY_BATCH_SIZE = 300
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -66,6 +67,16 @@ function normalizeRows(rows = []) {
     .filter(Boolean)
 }
 
+function normalizeItemNames(names = []) {
+  return Array.from(
+    new Set(
+      (Array.isArray(names) ? names : [])
+        .map((name) => normalizeText(name))
+        .filter(Boolean)
+    )
+  )
+}
+
 exports.insertRows = async (rows = []) => {
   const payload = normalizeRows(rows)
   if (!payload.length) return 0
@@ -81,4 +92,60 @@ exports.insertRows = async (rows = []) => {
   }
 
   return insertedCount
+}
+
+exports.getLatestCoverageByItemNames = async (itemNames = []) => {
+  const safeNames = normalizeItemNames(itemNames)
+  if (!safeNames.length) return {}
+
+  const latestByItemMarket = {}
+  for (let index = 0; index < safeNames.length; index += QUERY_BATCH_SIZE) {
+    const chunk = safeNames.slice(index, index + QUERY_BATCH_SIZE)
+    const { data, error } = await supabaseAdmin
+      .from(TABLE)
+      .select("item_name, market, volume_7d, fetched_at")
+      .in("item_name", chunk)
+      .order("fetched_at", { ascending: false })
+      .limit(50000)
+
+    if (error) {
+      throw new AppError(error.message, 500)
+    }
+
+    for (const row of data || []) {
+      const itemName = normalizeText(row?.item_name)
+      const market = normalizeSource(row?.market)
+      if (!itemName || !market) continue
+      const signature = `${itemName}::${market}`
+      if (!latestByItemMarket[signature]) {
+        latestByItemMarket[signature] = row
+      }
+    }
+  }
+
+  const coverageByItem = {}
+  for (const row of Object.values(latestByItemMarket)) {
+    const itemName = normalizeText(row?.item_name)
+    if (!coverageByItem[itemName]) {
+      coverageByItem[itemName] = {
+        marketCoverageCount: 0,
+        markets: {},
+        volume7dMax: null
+      }
+    }
+    const bucket = coverageByItem[itemName]
+    const market = normalizeSource(row?.market)
+    if (!bucket.markets[market]) {
+      bucket.markets[market] = true
+      bucket.marketCoverageCount += 1
+    }
+
+    const volume7d = toIntegerOrNull(row?.volume_7d, { min: 0 })
+    if (volume7d != null) {
+      bucket.volume7dMax =
+        bucket.volume7dMax == null ? volume7d : Math.max(Number(bucket.volume7dMax), volume7d)
+    }
+  }
+
+  return coverageByItem
 }
