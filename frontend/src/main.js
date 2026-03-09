@@ -1,5 +1,6 @@
 import "./style.css";
 import "./responsive.css";
+import { injectSpeedInsights } from "@vercel/speed-insights";
 import { API_URL } from "./config";
 import { clearAuthToken, getAuthToken, withAuthHeaders } from "./authToken";
 import {
@@ -23,6 +24,8 @@ import {
   renderStatTile,
 } from "./components/dashboardPrimitives";
 const app = document.querySelector("#app");
+injectSpeedInsights();
+
 const SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "UAH", "PLN", "CZK"];
 const CURRENCY_STORAGE_KEY = "cs2sa:selected_currency";
 const PRICING_MODE_STORAGE_KEY = "cs2sa:pricing_mode";
@@ -4910,18 +4913,30 @@ async function syncInventory(options = {}) {
     }
     await refreshPortfolio({ silent: automatic });
     if (!automatic) {
-      notify(
-        "success",
-        `Inventory synced: ${Number(result?.itemsSynced || 0)} items, ${Number(
-          result?.pricedItems || 0,
-        )} priced.`,
-      );
+      if (result?.inventoryFallbackUsed) {
+        notify(
+          "warning",
+          result?.inventoryWarning ||
+            "Steam inventory is rate limited. Using your last stored holdings for now.",
+        );
+      } else {
+        notify(
+          "success",
+          `Inventory synced: ${Number(result?.itemsSynced || 0)} items, ${Number(
+            result?.pricedItems || 0,
+          )} priced.`,
+        );
+      }
     }
     return true;
   } catch (err) {
     const status = Number(err?.status || 0);
     const isSyncRouteRateLimit =
       status === 429 && String(err?.code || "").toUpperCase() === "RATE_LIMITED";
+    const providerRetryAfter = Math.max(
+      Math.ceil(Number(err?.retryAfterSeconds || 0)),
+      0,
+    );
 
     if (isSyncRouteRateLimit) {
       const retryAfter = Math.max(
@@ -4936,13 +4951,18 @@ async function syncInventory(options = {}) {
         );
       }
     }
+    if (!isSyncRouteRateLimit && status === 429 && providerRetryAfter > 0) {
+      state.syncRateLimitedUntil = Date.now() + providerRetryAfter * 1000;
+    }
 
     if (!automatic) {
       setError(err.message);
       if (!isSyncRouteRateLimit) {
         const fallbackMessage =
           status === 429
-            ? "Inventory provider is rate limited right now. Please try again shortly."
+            ? providerRetryAfter > 0
+              ? `Inventory provider is rate limited. Try again in ${formatCountdownLabel(providerRetryAfter)}.`
+              : "Inventory provider is rate limited right now. Please try again shortly."
             : "Inventory sync failed. Please try again.";
         notify("warning", err.message || fallbackMessage);
       }

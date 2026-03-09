@@ -104,7 +104,16 @@ async function fetchPage(url, timeoutMs) {
       throw new AppError("Steam inventory is private or inaccessible", 400);
     }
     if (res.status === 429) {
-      throw new AppError("Steam inventory rate limited", 429);
+      const retryAfter = Number(res.headers.get("retry-after") || 0);
+      const err = new AppError(
+        "Steam inventory rate limited",
+        429,
+        "STEAM_INVENTORY_RATE_LIMITED"
+      );
+      if (retryAfter > 0) {
+        err.retryAfterSeconds = retryAfter;
+      }
+      throw err;
     }
     if (!res.ok) {
       throw new AppError(`Steam inventory fetch failed with status ${res.status}`, 502);

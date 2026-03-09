@@ -1,4 +1,5 @@
 import "./style.css";
+import { injectSpeedInsights } from "@vercel/speed-insights";
 import { hasSupabaseConfig, supabase } from "./supabaseClient";
 import { API_URL } from "./config";
 import {
@@ -8,6 +9,8 @@ import {
 } from "./authToken";
 
 const app = document.querySelector("#app");
+injectSpeedInsights();
+
 const page = window.location.pathname.endsWith("register.html")
   ? "register"
   : "login";

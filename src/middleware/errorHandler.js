@@ -2,6 +2,12 @@ const { nodeEnv } = require("../config/env");
 
 module.exports = (err, _req, res, _next) => {
   const status = err.statusCode || 500;
+  const retryAfterSeconds = Math.max(
+    Number(err?.retryAfterSeconds || 0) ||
+      Math.ceil(Number(err?.retryAfterMs || 0) / 1000) ||
+      0,
+    0
+  );
   const safeProductionCodes = new Set([
     "EMAIL_PROVIDER_NOT_CONFIGURED",
     "EMAIL_SEND_FAILED"
@@ -16,6 +22,10 @@ module.exports = (err, _req, res, _next) => {
 
   if (err.code) {
     payload.code = err.code;
+  }
+
+  if (status === 429 && retryAfterSeconds > 0) {
+    res.set("Retry-After", String(retryAfterSeconds));
   }
 
   res.status(status).json(payload);

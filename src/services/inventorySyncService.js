@@ -83,6 +83,43 @@ async function fetchInventoryByConfiguredSource(steamId64) {
   }
 }
 
+function getStatusCode(err) {
+  return (
+    Number(
+      err?.statusCode || err?.status || err?.httpStatus || err?.response?.status || 0
+    ) || 0
+  );
+}
+
+function buildItemsFromStoredHoldings(previousHoldings = []) {
+  const safeRows = Array.isArray(previousHoldings) ? previousHoldings : [];
+  const items = [];
+
+  for (const row of safeRows) {
+    const marketHashName = String(row?.skins?.market_hash_name || "").trim();
+    const quantity = Number(row?.quantity || 0);
+
+    if (!marketHashName || !Number.isFinite(quantity) || quantity <= 0) {
+      continue;
+    }
+
+    const steamItemIds = Array.isArray(row?.steam_item_ids)
+      ? row.steam_item_ids
+          .map((id) => String(id || "").trim())
+          .filter(Boolean)
+      : [];
+
+    items.push({
+      marketHashName,
+      quantity: Math.max(Math.floor(quantity), 1),
+      steamItemIds,
+      price: null
+    });
+  }
+
+  return items;
+}
+
 function isFresh(recordedAt, ttlMinutes) {
   if (!recordedAt || ttlMinutes <= 0) return false;
   const ts = new Date(recordedAt).getTime();
@@ -107,11 +144,31 @@ exports.syncUserInventory = async (userId) => {
 
   const previousHoldings = await inventoryRepo.getUserHoldings(userId);
 
+  let inventoryPayload = null;
+  let inventoryWarning = "";
+  try {
+    inventoryPayload = await fetchInventoryByConfiguredSource(user.steam_id64);
+  } catch (err) {
+    const status = getStatusCode(err);
+    const fallbackItems = buildItemsFromStoredHoldings(previousHoldings);
+    if (status === 429 && fallbackItems.length) {
+      inventoryPayload = {
+        items: fallbackItems,
+        excludedItems: [],
+        source: "stored-holdings-fallback"
+      };
+      inventoryWarning =
+        "Steam inventory is rate limited. Using last stored holdings for this sync.";
+    } else {
+      throw err;
+    }
+  }
+
   const {
     items,
     excludedItems: inventoryExcludedItems = [],
     source
-  } = await fetchInventoryByConfiguredSource(user.steam_id64);
+  } = inventoryPayload;
   if (!items.length) {
     throw new AppError("No CS2 inventory items found", 404);
   }
@@ -341,6 +398,8 @@ exports.syncUserInventory = async (userId) => {
 
   return {
     synced: true,
+    inventoryFallbackUsed: Boolean(inventoryWarning),
+    inventoryWarning: inventoryWarning || null,
     itemsSynced: normalizedPricedItems.length,
     pricedItems: normalizedPricedItems.length - unpricedItems.length,
     unpricedItemsCount: unpricedItems.length,
