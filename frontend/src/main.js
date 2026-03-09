@@ -11731,6 +11731,19 @@ function renderGlobalOpportunitiesTab() {
           )}</p>`
         : ""
     }
+    ${
+      summary?.snapshotWarmup?.triggered
+        ? `<p class="helper-text">Snapshot warmup: refreshed ${escapeHtml(
+            formatNumber(summary.snapshotWarmup.refreshedItems || 0, 0),
+          )}/${escapeHtml(formatNumber(summary.snapshotWarmup.attemptedItems || 0, 0))} missing/stale items this run.</p>`
+        : ""
+    }
+    ${
+      summary?.snapshotWarmup?.seedFilterMode === "allow_missing_snapshot_data" ||
+      summary?.snapshotWarmup?.seedFilterMode === "strict_plus_missing_snapshot_data"
+        ? '<p class="helper-text">Seed filter fallback active: scanner allowed missing snapshot seeds this run to avoid zero-item scans.</p>'
+        : ""
+    }
     <p class="helper-text">
       ${scannerStatusMarkup}
     </p>
@@ -11809,7 +11822,7 @@ function renderGlobalOpportunitiesTab() {
         className: "wide dashboard-arbitrage-panel dashboard-arbitrage-panel-live",
         title: "Top Arbitrage Opportunities",
         subtitle:
-          "Top 100 universe across skins, cases, and capsules. Default view shows only high-quality execution setups.",
+          `Top ${formatNumber(summary?.universeTarget || 100, 0)} universe across skins, cases, and capsules. Default view shows only high-quality execution setups.`,
         body,
       })}
     </section>
