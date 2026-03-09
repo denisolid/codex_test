@@ -6,7 +6,7 @@ process.env.SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "anon";
 process.env.SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY || "service-role";
 
-const marketUniverseTop100 = require("../src/config/marketUniverseTop100.json");
+const marketUniverseMvp = require("../src/config/marketUniverseMvp.json");
 const {
   __testables: {
     normalizeUniverseEntries,
@@ -27,21 +27,22 @@ const {
 } = require("../src/services/arbitrageScannerService");
 
 test("market universe is fixed and unique with category metadata", () => {
-  assert.equal(Array.isArray(marketUniverseTop100), true);
-  assert.equal(marketUniverseTop100.length >= 100, true);
-  assert.equal(marketUniverseTop100.length <= 160, true);
-  const normalized = normalizeUniverseEntries(marketUniverseTop100);
+  assert.equal(Array.isArray(marketUniverseMvp), true);
+  assert.equal(marketUniverseMvp.length >= 40, true);
+  assert.equal(marketUniverseMvp.length <= 60, true);
+  const normalized = normalizeUniverseEntries(marketUniverseMvp);
   assert.equal(
     normalized.length,
-    marketUniverseTop100.length,
+    marketUniverseMvp.length,
   );
+  const skins = normalized.filter((row) => row.category === "weapon_skin");
+  const cases = normalized.filter((row) => row.category === "case");
+  const capsules = normalized.filter((row) => row.category === "sticker_capsule");
+  assert.equal(skins.length >= 20 && skins.length <= 30, true);
+  assert.equal(cases.length >= 10 && cases.length <= 15, true);
+  assert.equal(capsules.length >= 10 && capsules.length <= 15, true);
   assert.equal(
-    normalized.some((row) => row.category === "weapon_skin"),
-    true,
-  );
-  assert.equal(normalized.some((row) => row.category === "case"), true);
-  assert.equal(
-    normalized.some((row) => row.category === "sticker_capsule"),
+    normalized.every((row) => Boolean(String(row.marketHashName || "").trim())),
     true,
   );
 });
@@ -181,7 +182,7 @@ test("scanner guards enforce spread/profit/liquidity thresholds", () => {
   );
 });
 
-test("universe seed filter allows fallback items without snapshot data", () => {
+test("universe seed filter rejects items without snapshot liquidity context", () => {
   const discardStats = {};
   const allowed = passesUniverseSeedFilters(
     {
@@ -194,8 +195,28 @@ test("universe seed filter allows fallback items without snapshot data", () => {
     discardStats
   );
 
-  assert.equal(allowed, true);
-  assert.equal(Object.keys(discardStats).length, 0);
+  assert.equal(allowed, false);
+  assert.equal(
+    Number(discardStats.ignored_missing_liquidity_data || 0) > 0,
+    true
+  );
+});
+
+test("universe seed filter rejects stale snapshot seeds", () => {
+  const discardStats = {};
+  const allowed = passesUniverseSeedFilters(
+    {
+      marketHashName: "AK-47 | Redline (Field-Tested)",
+      hasSnapshotData: true,
+      snapshotStale: true,
+      referencePrice: 15,
+      marketVolume7d: 300
+    },
+    discardStats
+  );
+
+  assert.equal(allowed, false);
+  assert.equal(Number(discardStats.ignored_stale_data || 0) > 0, true);
 });
 
 test("api row keeps required shape with clamped score", () => {

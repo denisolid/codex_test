@@ -120,6 +120,7 @@ exports.listFeed = async (options = {}) => {
   const category = normalizeCategory(options.category)
   const minScore = toFiniteOrNull(options.minScore)
   const excludeLowConfidence = Boolean(options.excludeLowConfidence)
+  const highConfidenceOnly = Boolean(options.highConfidenceOnly)
 
   let query = supabaseAdmin
     .from(TABLE)
@@ -140,6 +141,9 @@ exports.listFeed = async (options = {}) => {
   if (excludeLowConfidence) {
     query = query.neq("execution_confidence", "Low")
   }
+  if (highConfidenceOnly) {
+    query = query.contains("metadata", { is_high_confidence_eligible: true })
+  }
 
   const { data, error } = await query
 
@@ -155,6 +159,7 @@ exports.countFeed = async (options = {}) => {
   const category = normalizeCategory(options.category)
   const minScore = toFiniteOrNull(options.minScore)
   const excludeLowConfidence = Boolean(options.excludeLowConfidence)
+  const highConfidenceOnly = Boolean(options.highConfidenceOnly)
 
   let query = supabaseAdmin.from(TABLE).select("id", { count: "exact", head: true })
   if (!includeInactive) {
@@ -168,6 +173,9 @@ exports.countFeed = async (options = {}) => {
   }
   if (excludeLowConfidence) {
     query = query.neq("execution_confidence", "Low")
+  }
+  if (highConfidenceOnly) {
+    query = query.contains("metadata", { is_high_confidence_eligible: true })
   }
 
   const { count, error } = await query

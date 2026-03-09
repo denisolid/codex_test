@@ -416,7 +416,7 @@ render();
 
 async function checkExistingSession() {
   try {
-    const res = await fetch(`${API_URL}/auth/me`, {
+    const res = await fetch(`${API_URL}/auth/bootstrap`, {
       credentials: "include",
       headers: withAuthHeaders()
     });

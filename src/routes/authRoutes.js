@@ -23,6 +23,7 @@ router.get("/onboarding/verify", authRateLimiter, ctrl.verifySteamEmailOnboardin
 router.post("/logout", authRateLimiter, ctrl.logout);
 router.post("/logout-all", authRateLimiter, ctrl.logoutAll);
 router.delete("/me", authRateLimiter, ctrl.deleteAccount);
+router.get("/bootstrap", authRateLimiter, ctrl.bootstrap);
 router.get("/me", authRateLimiter, ctrl.me);
 
 module.exports = router;

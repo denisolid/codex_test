@@ -69,7 +69,7 @@ async function finalize() {
     if (steamError) {
       if (onboardingFlow) {
         try {
-          const meRes = await fetch(`${API_URL}/auth/me`, {
+          const meRes = await fetch(`${API_URL}/auth/bootstrap`, {
             credentials: "include",
             headers: withAuthHeaders()
           });
