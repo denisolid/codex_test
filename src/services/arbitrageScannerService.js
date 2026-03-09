@@ -27,6 +27,7 @@ const scannerRunRepo = require("../repositories/scannerRunRepository")
 const marketComparisonService = require("./marketComparisonService")
 const arbitrageEngine = require("./arbitrageEngineService")
 const marketService = require("./marketService")
+const marketSourceCatalogService = require("./marketSourceCatalogService")
 
 const SCANNER_TYPE = "global_arbitrage"
 const SCANNER_INTERVAL_MINUTES = Math.max(Number(arbitrageScannerIntervalMinutes || 30), 1)
@@ -2168,6 +2169,18 @@ function buildScanProgressStats({
 
 async function runScanInternal(options = {}) {
   const forceRefresh = Boolean(options.forceRefresh)
+  const sourceCatalogDiagnostics = await marketSourceCatalogService
+    .prepareSourceCatalog({
+      targetUniverseSize: UNIVERSE_TARGET_SIZE,
+      forceRefresh
+    })
+    .catch((err) => {
+      console.error("[arbitrage-scanner] Source catalog refresh failed", err.message)
+      return {
+        ...marketSourceCatalogService.getLastDiagnostics(),
+        error: String(err?.message || "source_catalog_refresh_failed")
+      }
+    })
   const discardStats = {}
   const rejectedByItem = {}
   const scannerInputs = await loadScannerInputs(discardStats, rejectedByItem)
@@ -2193,6 +2206,7 @@ async function runScanInternal(options = {}) {
         rejectionReasonsByItem: toRejectionReasonsByItem(rejectedByItem),
         opportunitiesByCategory: {},
         snapshotWarmup: snapshotWarmupSummary,
+        sourceCatalog: sourceCatalogDiagnostics,
         scanProgress: buildScanProgressStats({
           universeTarget: UNIVERSE_TARGET_SIZE,
           candidateItems: 0,
@@ -2247,7 +2261,8 @@ async function runScanInternal(options = {}) {
           rowsInserted: 0,
           persisted: true
         },
-        snapshotWarmup: snapshotWarmupSummary
+        snapshotWarmup: snapshotWarmupSummary,
+        sourceCatalog: sourceCatalogDiagnostics
       }
     }
     scannerState.latest = emptyPayload
@@ -2409,6 +2424,7 @@ async function runScanInternal(options = {}) {
       rejectionReasonsByItem: toRejectionReasonsByItem(rejectedByItem),
       opportunitiesByCategory,
       snapshotWarmup: snapshotWarmupSummary,
+      sourceCatalog: sourceCatalogDiagnostics,
       scanProgress,
       highConfidence: highConfidenceCount,
       riskyEligible: riskyEligibleCount
@@ -2427,7 +2443,8 @@ async function runScanInternal(options = {}) {
       quoteRefresh: quoteRefreshSummary,
       computeFromSavedQuotes: comparisonFromSaved?.diagnostics || null,
       quoteSnapshot: quoteSnapshotSummary,
-      snapshotWarmup: snapshotWarmupSummary
+      snapshotWarmup: snapshotWarmupSummary,
+      sourceCatalog: sourceCatalogDiagnostics
     }
   }
 
@@ -2467,6 +2484,8 @@ function toScanDiagnosticsSummary(scanPayload = {}, persistSummary = {}, trigger
     opportunitiesByCategory: scanPayload?.summary?.opportunitiesByCategory || {},
     snapshotWarmup:
       scanPayload?.summary?.snapshotWarmup || scanPayload?.pipeline?.snapshotWarmup || {},
+    sourceCatalog:
+      scanPayload?.summary?.sourceCatalog || scanPayload?.pipeline?.sourceCatalog || {},
     scanProgress: scanPayload?.summary?.scanProgress || {},
     highConfidence: Number(scanPayload?.summary?.highConfidence || 0),
     riskyEligible: Number(scanPayload?.summary?.riskyEligible || 0),
@@ -2707,6 +2726,15 @@ function resolveNoOpportunitiesReason(summary = {}, status = {}, opportunities =
 
   const scannedItems = Number(summary?.scannedItems || 0)
   if (!scannedItems) {
+    const sourceCatalog = summary?.sourceCatalog || {}
+    const missingToTarget = Number(sourceCatalog?.universeBuild?.missingToTarget || 0)
+    if (missingToTarget > 0) {
+      return {
+        code: "insufficient_catalog_coverage",
+        count: missingToTarget,
+        message: `Universe build is short by ${missingToTarget} item(s) due to insufficient eligible source catalog coverage.`
+      }
+    }
     return {
       code: "no_items_scanned",
       message: "No universe items were eligible for scan in the latest run."
@@ -2807,6 +2835,8 @@ exports.getFeed = async (options = {}) => {
     opportunitiesByCategory: diagnosticsSummary?.opportunitiesByCategory || {},
     snapshotWarmup:
       diagnosticsSummary?.snapshotWarmup || diagnosticsSummary?.pipeline?.snapshotWarmup || {},
+    sourceCatalog:
+      diagnosticsSummary?.sourceCatalog || diagnosticsSummary?.pipeline?.sourceCatalog || {},
     scanProgress: diagnosticsSummary?.scanProgress || {},
     highConfidence: Number(diagnosticsSummary?.highConfidence || 0),
     riskyEligible: Number(diagnosticsSummary?.riskyEligible || 0),

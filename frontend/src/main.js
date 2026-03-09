@@ -11739,6 +11739,31 @@ function renderGlobalOpportunitiesTab() {
         : ""
     }
     ${
+      summary?.sourceCatalog?.sourceCatalog || summary?.sourceCatalog?.universeBuild
+        ? `<p class="helper-text">${escapeHtml(
+            `Source catalog: ${formatNumber(
+              summary?.sourceCatalog?.sourceCatalog?.activeCatalogRows || 0,
+              0,
+            )} active, ${formatNumber(
+              summary?.sourceCatalog?.sourceCatalog?.eligibleTradableRows || 0,
+              0,
+            )} eligible. Universe built ${formatNumber(
+              summary?.sourceCatalog?.universeBuild?.activeUniverseBuilt || 0,
+              0,
+            )}/${formatNumber(
+              summary?.sourceCatalog?.universeBuild?.targetUniverseSize ||
+                summary?.sourceCatalog?.targetUniverseSize ||
+                0,
+              0,
+            )}${
+              Number(summary?.sourceCatalog?.universeBuild?.missingToTarget || 0) > 0
+                ? ` (missing ${formatNumber(summary.sourceCatalog.universeBuild.missingToTarget, 0)})`
+                : ""
+            }.`,
+          )}</p>`
+        : ""
+    }
+    ${
       summary?.snapshotWarmup?.seedFilterMode === "allow_missing_snapshot_data" ||
       summary?.snapshotWarmup?.seedFilterMode === "strict_plus_missing_snapshot_data"
         ? '<p class="helper-text">Seed filter fallback active: scanner allowed missing snapshot seeds this run to avoid zero-item scans.</p>'

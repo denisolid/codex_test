@@ -200,6 +200,12 @@ module.exports = {
   arbitrageUniverseDbLimit: Number(
     process.env.ARBITRAGE_UNIVERSE_DB_LIMIT || 800
   ),
+  arbitrageSourceCatalogLimit: Number(
+    process.env.ARBITRAGE_SOURCE_CATALOG_LIMIT || 1000
+  ),
+  arbitrageSourceCatalogRefreshMinutes: Number(
+    process.env.ARBITRAGE_SOURCE_CATALOG_REFRESH_MINUTES || 60
+  ),
   arbitrageFeedRetentionHours: Number(process.env.ARBITRAGE_FEED_RETENTION_HOURS || 24),
   arbitrageFeedActiveLimit: Number(process.env.ARBITRAGE_FEED_ACTIVE_LIMIT || 500),
   arbitrageDuplicateWindowHours: Number(process.env.ARBITRAGE_DUPLICATE_WINDOW_HOURS || 4),
