@@ -33,10 +33,15 @@ function isLocalHostname(hostname) {
 }
 
 function resolveApiOrigin(req) {
-  const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
-  const protocol = forwardedProto || req.protocol || "http";
-  const host = req.get("host");
-  const requestOrigin = `${protocol}://${host}`;
+  const headers = req?.headers || {};
+  const forwardedProto = String(headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  const protocol = forwardedProto || req?.protocol || "http";
+  const host =
+    (typeof req?.get === "function" && req.get("host")) ||
+    String(headers.host || "").trim();
+  const requestOrigin = host
+    ? `${protocol}://${host}`
+    : `${protocol}://${parseHostname(apiPublicUrl) || "localhost"}`;
 
   if (apiPublicUrl && !isLocalHostname(parseHostname(host))) {
     return String(apiPublicUrl).replace(/\/+$/, "");
@@ -171,10 +176,20 @@ async function resolveSteamLinkActor(req) {
 
 exports.register = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
-  const data = await authService.register(email, password);
+  const next = resolveFrontendTarget(req.body?.next || "/login.html");
+  const data = await authService.register(email, password, {
+    apiOrigin: resolveApiOrigin(req),
+    next
+  });
 
   if (data?.user?.id && data?.user?.email) {
-    await userRepo.ensureExists(data.user.id, data.user.email);
+    try {
+      await userRepo.ensureExists(data.user.id, data.user.email);
+    } catch (err) {
+      if (String(err?.code || "").trim().toUpperCase() !== "PROFILE_AUTH_USER_MISSING") {
+        throw err;
+      }
+    }
   }
 
   res.status(201).json(data);
@@ -345,9 +360,36 @@ exports.steamLinkCallback = asyncHandler(async (req, res) => {
 });
 
 exports.resendConfirmation = asyncHandler(async (req, res) => {
+  const next = resolveFrontendTarget(req.body?.next || "/login.html");
   const { email } = req.body;
-  const result = await authService.resendConfirmation(email);
+  const result = await authService.resendConfirmation(email, {
+    apiOrigin: resolveApiOrigin(req),
+    next
+  });
   res.json(result);
+});
+
+exports.verifyEmail = asyncHandler(async (req, res) => {
+  const target = resolveFrontendTarget(req.query.next || "/login.html");
+  const fallbackEmail = String(req.query.email || "").trim().toLowerCase();
+  try {
+    const result = await emailOnboardingService.verifyEmailToken(req.query.token);
+    const redirectUrl = new URL(target);
+    redirectUrl.searchParams.set("confirmed", "1");
+    if (result?.email) {
+      redirectUrl.searchParams.set("email", String(result.email).toLowerCase());
+    }
+    res.redirect(302, redirectUrl.toString());
+  } catch (err) {
+    const code = String(err?.code || "email_verification_failed").toLowerCase();
+    const redirectUrl = new URL(target);
+    redirectUrl.searchParams.set("verification", "1");
+    redirectUrl.searchParams.set("error", code);
+    if (fallbackEmail) {
+      redirectUrl.searchParams.set("email", fallbackEmail);
+    }
+    res.redirect(302, redirectUrl.toString());
+  }
 });
 
 exports.startSteamEmailOnboarding = [

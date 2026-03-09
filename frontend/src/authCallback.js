@@ -27,6 +27,7 @@ async function finalize() {
     const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     const urlParams = new URLSearchParams(window.location.search);
     const hashToken = String(hashParams.get("accessToken") || "").trim();
+    const hashProvider = String(hashParams.get("provider") || "").trim().toLowerCase();
     const steamOnboarding =
       hashParams.get("steamOnboarding") === "1" ||
       urlParams.get("steamOnboarding") === "1";
@@ -41,6 +42,9 @@ async function finalize() {
       window.history.replaceState({}, "", "/auth-callback.html");
       const target = new URL("/", window.location.origin);
       target.searchParams.set("syncOnLogin", "1");
+      if (hashProvider === "steam") {
+        target.searchParams.set("steamLogin", "1");
+      }
       if (steamOnboarding) {
         target.searchParams.set("steamOnboarding", "1");
       }

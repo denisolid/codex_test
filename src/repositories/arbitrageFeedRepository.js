@@ -3,6 +3,7 @@ const AppError = require("../utils/AppError")
 
 const TABLE = "arbitrage_feed"
 const MAX_LIMIT = 1000
+const INSERT_BATCH_SIZE = 200
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -102,16 +103,24 @@ exports.insertRows = async (rows = []) => {
   const payload = normalizeRows(rows)
   if (!payload.length) return []
 
-  const { data, error } = await supabaseAdmin
-    .from(TABLE)
-    .insert(payload)
-    .select("*")
+  const insertedRows = []
+  for (let index = 0; index < payload.length; index += INSERT_BATCH_SIZE) {
+    const chunk = payload.slice(index, index + INSERT_BATCH_SIZE)
+    const { data, error } = await supabaseAdmin
+      .from(TABLE)
+      .insert(chunk)
+      .select("*")
 
-  if (error) {
-    throw new AppError(error.message, 500)
+    if (error) {
+      throw new AppError(error.message, 500)
+    }
+
+    if (Array.isArray(data) && data.length) {
+      insertedRows.push(...data)
+    }
   }
 
-  return data || []
+  return insertedRows
 }
 
 exports.listFeed = async (options = {}) => {

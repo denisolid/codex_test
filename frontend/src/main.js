@@ -43,6 +43,7 @@ const TOAST_MAX_VISIBLE = 4;
 const TOAST_DEFAULT_TIMEOUT_MS = 5000;
 const GLOBAL_OPPORTUNITY_POLL_MS = 60 * 1000;
 const GLOBAL_OPPORTUNITY_RUNNING_POLL_MS = 10 * 1000;
+const GLOBAL_OPPORTUNITY_COUNTDOWN_TICK_MS = 1000;
 const GLOBAL_OPPORTUNITY_STALE_MULTIPLIER = 2;
 const GLOBAL_OPPORTUNITY_STALE_MIN_MS = 8 * 60 * 1000;
 const GLOBAL_OPPORTUNITY_FORCE_COOLDOWN_MS = 90 * 1000;
@@ -637,10 +638,13 @@ let bodyScrollLockY = 0;
 let bodyScrollLocked = false;
 let toastSequence = 0;
 let globalOpportunitiesFollowUpTimer = 0;
+let globalOpportunitiesCountdownTimer = 0;
 const toastTimers = new Map();
 let dashboardStickySyncBound = false;
 let dashboardStickyRafId = 0;
 let sessionAutoSyncOnLoginRequested = false;
+let steamLinkHintRequestedAfterLogin = false;
+let steamSyncHintRequestedAfterSteamLogin = false;
 let historyChartCache = {
   key: "",
   markup: "",
@@ -2244,6 +2248,43 @@ function clearGlobalOpportunitiesFollowUpPoll() {
   globalOpportunitiesFollowUpTimer = 0;
 }
 
+function clearGlobalOpportunitiesCountdownTimer() {
+  if (!globalOpportunitiesCountdownTimer) return;
+  clearInterval(globalOpportunitiesCountdownTimer);
+  globalOpportunitiesCountdownTimer = 0;
+}
+
+function updateGlobalOpportunitiesCountdownLabel() {
+  if (!state.authenticated) return false;
+  if (state.activeTab !== "opportunities") return false;
+  if (document.visibilityState !== "visible") return false;
+
+  const target = app.querySelector("[data-next-scan-at]");
+  if (!(target instanceof HTMLElement)) return false;
+
+  const nextScanAt = String(target.getAttribute("data-next-scan-at") || "").trim();
+  if (!nextScanAt) return false;
+
+  target.textContent = formatTimeUntil(nextScanAt);
+  return true;
+}
+
+function syncGlobalOpportunitiesCountdownTimer() {
+  const hasLiveCountdown = updateGlobalOpportunitiesCountdownLabel();
+  if (!hasLiveCountdown) {
+    clearGlobalOpportunitiesCountdownTimer();
+    return;
+  }
+  if (globalOpportunitiesCountdownTimer) {
+    return;
+  }
+  globalOpportunitiesCountdownTimer = window.setInterval(() => {
+    if (!updateGlobalOpportunitiesCountdownLabel()) {
+      clearGlobalOpportunitiesCountdownTimer();
+    }
+  }, GLOBAL_OPPORTUNITY_COUNTDOWN_TICK_MS);
+}
+
 function scheduleGlobalOpportunitiesFollowUpPoll(
   delayMs = GLOBAL_OPPORTUNITY_RUNNING_POLL_MS,
 ) {
@@ -3562,6 +3603,7 @@ async function handleTabSwitch(tab) {
   state.tabSwitch.loading = requiresLoad;
   if (target !== "opportunities") {
     clearGlobalOpportunitiesFollowUpPoll();
+    clearGlobalOpportunitiesCountdownTimer();
   }
   syncPathWithTab(target, { replace: false });
   render();
@@ -4993,6 +5035,41 @@ function shouldAutoSyncInventoryOnSessionBoot() {
   if (!state.authProfile?.steamLinked) return false;
   if (getSyncCooldownSecondsRemaining() > 0) return false;
   return true;
+}
+
+function maybeShowSteamSyncHintAfterSteamLogin() {
+  const shouldShowHint =
+    steamSyncHintRequestedAfterSteamLogin &&
+    String(state.authProfile?.provider || "").trim().toLowerCase() === "steam";
+
+  steamSyncHintRequestedAfterSteamLogin = false;
+
+  if (!shouldShowHint) return;
+  if (!state.authenticated) return;
+  if (isEmailOnboardingRequired()) return;
+  if (state.syncSummary) return;
+
+  const syncHint =
+    "Steam connected, but inventory is not synced yet. Click Sync Inventory to import your items.";
+  const existingNotice = String(state.accountNotice || "").trim();
+  state.accountNotice = existingNotice ? `${existingNotice} ${syncHint}` : syncHint;
+  render();
+}
+
+function maybeShowSteamLinkHintAfterLogin() {
+  const shouldShowHint = steamLinkHintRequestedAfterLogin;
+  steamLinkHintRequestedAfterLogin = false;
+
+  if (!shouldShowHint) return;
+  if (!state.authenticated) return;
+  if (isEmailOnboardingRequired()) return;
+  if (state.authProfile?.steamLinked) return;
+
+  const linkHint =
+    "Steam account is not linked yet. Link Steam Account to enable inventory sync.";
+  const existingNotice = String(state.accountNotice || "").trim();
+  state.accountNotice = existingNotice ? `${existingNotice} ${linkHint}` : linkHint;
+  render();
 }
 
 function renderSyncSummary() {
@@ -11356,10 +11433,11 @@ function renderGlobalOpportunitiesTab() {
       ? pendingScanLabel || "Scan running."
       : "Scanner idle.";
   const nextScanLabel = status?.nextScheduledAt
-    ? `Next automatic scan in ${escapeHtml(
-        formatTimeUntil(status.nextScheduledAt),
-      )}.`
+    ? `Next automatic scan in <span data-next-scan-at="${escapeHtml(
+        status.nextScheduledAt,
+      )}">${escapeHtml(formatTimeUntil(status.nextScheduledAt))}</span>.`
     : "";
+  const scannerStatusMarkup = `${escapeHtml(statusLabel)}${nextScanLabel ? ` ${nextScanLabel}` : ""}`;
   const summary =
     scanner.summary && typeof scanner.summary === "object" ? scanner.summary : null;
   const activeOpportunitiesCount = Number(
@@ -11584,7 +11662,6 @@ function renderGlobalOpportunitiesTab() {
             : "No high-confidence opportunities matched the current feed filters."
       }</p>`;
 
-  const hasOpportunities = rows.length > 0;
   const body = `
     <div class="row opportunities-toolbar">
       <button
@@ -11647,7 +11724,7 @@ function renderGlobalOpportunitiesTab() {
     ${
       summary
         ? `<p class="helper-text">Latest diagnostics: ${escapeHtml(
-            `${formatNumber(summary.highConfidence || summary.opportunities || 0, 0)} high-confidence, ${formatNumber(
+            `${formatNumber(summary.highConfidence ?? summary.opportunities ?? 0, 0)} high-confidence, ${formatNumber(
               summary.riskyEligible || 0,
               0,
             )} risky-eligible, ${formatNumber(summary.newOpportunitiesAdded || 0, 0)} newly added.`,
@@ -11655,7 +11732,7 @@ function renderGlobalOpportunitiesTab() {
         : ""
     }
     <p class="helper-text">
-      ${escapeHtml(statusLabel)} ${escapeHtml(nextScanLabel)}
+      ${scannerStatusMarkup}
     </p>
     ${
       !rows.length && noOpportunitiesReason?.message
@@ -11729,11 +11806,7 @@ function renderGlobalOpportunitiesTab() {
   return `
     <section class="grid">
       ${renderPanel({
-        className: `wide dashboard-arbitrage-panel ${
-          hasOpportunities
-            ? "dashboard-arbitrage-panel-live"
-            : "dashboard-arbitrage-panel-empty"
-        }`,
+        className: "wide dashboard-arbitrage-panel dashboard-arbitrage-panel-live",
         title: "Top Arbitrage Opportunities",
         subtitle:
           "Top 100 universe across skins, cases, and capsules. Default view shows only high-quality execution setups.",
@@ -12843,6 +12916,7 @@ function render() {
     applyImageFallbacks(app);
     syncBodyUiLocks();
     renderToastHost();
+    syncGlobalOpportunitiesCountdownTimer();
     return;
   }
 
@@ -12872,6 +12946,7 @@ function render() {
     applyImageFallbacks(app);
     syncBodyUiLocks();
     renderToastHost();
+    syncGlobalOpportunitiesCountdownTimer();
     return;
   }
 
@@ -12904,6 +12979,7 @@ function render() {
     applyImageFallbacks(app);
     syncBodyUiLocks();
     renderToastHost();
+    syncGlobalOpportunitiesCountdownTimer();
     return;
   }
 
@@ -12913,6 +12989,7 @@ function render() {
     applyImageFallbacks(app);
     syncBodyUiLocks();
     renderToastHost();
+    syncGlobalOpportunitiesCountdownTimer();
     return;
   }
 
@@ -12921,19 +12998,25 @@ function render() {
   applyImageFallbacks(app);
   syncBodyUiLocks();
   renderToastHost();
+  syncGlobalOpportunitiesCountdownTimer();
 }
 
 function hydrateAppNoticesFromUrl() {
   const params = new URLSearchParams(window.location.search);
   sessionAutoSyncOnLoginRequested = params.get("syncOnLogin") === "1";
+  const steamLogin = params.get("steamLogin") === "1";
   const linkedSteam = params.get("linkedSteam") === "1";
   const merged = params.get("merged") === "1";
   const steamOnboarding = params.get("steamOnboarding") === "1";
   const onboardingVerified = params.get("onboardingVerified") === "1";
   const onboardingError = String(params.get("onboarding") === "1" ? params.get("error") || "" : "").trim();
 
-  if (sessionAutoSyncOnLoginRequested) {
+  steamLinkHintRequestedAfterLogin = sessionAutoSyncOnLoginRequested;
+  steamSyncHintRequestedAfterSteamLogin = steamLogin;
+
+  if (sessionAutoSyncOnLoginRequested || steamLogin) {
     params.delete("syncOnLogin");
+    params.delete("steamLogin");
     const nextSearch = params.toString();
     const nextUrl = `${window.location.pathname}${
       nextSearch ? `?${nextSearch}` : ""
@@ -12945,8 +13028,8 @@ function hydrateAppNoticesFromUrl() {
 
   if (linkedSteam) {
     state.accountNotice = merged
-      ? "Steam account linked. Existing Steam-only profile was merged into this account."
-      : "Steam account linked successfully.";
+      ? "Steam account linked. Existing Steam-only profile was merged into this account. Click Sync Inventory to import your Steam items."
+      : "Steam account linked successfully. Click Sync Inventory to import your Steam items.";
   }
 
   if (steamOnboarding) {
@@ -13070,11 +13153,15 @@ async function bootstrapSession() {
       if (shouldAutoSync) {
         await syncInventory({ automatic: true });
       }
+      maybeShowSteamLinkHintAfterLogin();
+      maybeShowSteamSyncHintAfterSteamLogin();
     });
     return;
   }
 
   sessionAutoSyncOnLoginRequested = false;
+  steamLinkHintRequestedAfterLogin = false;
+  steamSyncHintRequestedAfterSteamLogin = false;
 }
 
 window.addEventListener("popstate", handleWindowNavigationChange);
@@ -13089,11 +13176,16 @@ window.addEventListener("hashchange", () => {
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible") {
     clearGlobalOpportunitiesFollowUpPoll();
+    clearGlobalOpportunitiesCountdownTimer();
     return;
   }
   if (!state.authenticated) return;
   if (isEmailOnboardingRequired()) return;
-  if (state.activeTab !== "opportunities") return;
+  if (state.activeTab !== "opportunities") {
+    clearGlobalOpportunitiesCountdownTimer();
+    return;
+  }
+  syncGlobalOpportunitiesCountdownTimer();
   if (state.globalOpportunities?.loading) return;
   runUiTask(() =>
     refreshGlobalOpportunities({
@@ -13123,6 +13215,8 @@ bootstrapSession().catch(() => {
   state.authBootstrapReady = true;
   state.sessionBooting = false;
   sessionAutoSyncOnLoginRequested = false;
+  steamLinkHintRequestedAfterLogin = false;
+  steamSyncHintRequestedAfterSteamLogin = false;
   render();
 });
 

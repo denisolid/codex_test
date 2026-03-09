@@ -58,6 +58,22 @@ function isRateLimited(payload) {
   return getErrorCode(payload) === "RATE_LIMITED";
 }
 
+function getVerificationErrorMessage(code) {
+  const safeCode = String(code || "").trim().toLowerCase();
+  const messageByCode = {
+    email_verification_token_missing: "Verification link is missing required token data.",
+    email_verification_invalid: "Verification link is invalid. Request a new verification email.",
+    email_verification_used: "Verification link was already used. Try logging in or request a new link.",
+    email_verification_expired: "Verification link expired. Request a new verification email.",
+    email_verification_failed: "Verification failed. Request a new verification email.",
+    email_in_use: "This email is already in use. Try logging in instead."
+  };
+  return (
+    messageByCode[safeCode] ||
+    "Verification failed. Request a new verification email."
+  );
+}
+
 function getResendButtonLabel() {
   if (resendInFlight) return "Sending...";
   if (resendCooldownActive) {
@@ -143,7 +159,7 @@ function render(
           isLogin && showResendConfirmation
             ? `<p class="helper-text">Need a new verification link for <strong>${escapeHtml(
                 pendingConfirmationEmail
-              )}</strong>? Supabase sends a confirmation link, not a 6-digit code.</p>`
+              )}</strong>? We will send another confirmation link to this inbox.</p>`
             : ""
         }
 
@@ -224,11 +240,19 @@ async function onSubmit(e) {
 
   try {
     const path = page === "login" ? "/auth/login" : "/auth/register";
+    const requestBody =
+      page === "register"
+        ? {
+            email,
+            password,
+            next: `${window.location.origin}/login.html`
+          }
+        : { email, password };
     const res = await fetch(`${API_URL}${path}`, {
       method: "POST",
       credentials: "include",
       headers: withAuthHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ email, password })
+      body: JSON.stringify(requestBody)
     });
     const payload = await res.json().catch(() => ({}));
 
@@ -264,6 +288,9 @@ async function onSubmit(e) {
       });
       if (requiresConfirmation) {
         params.set("confirm", "1");
+      }
+      if (payload?.verificationEmailSent === false) {
+        params.set("verifyEmailSent", "0");
       }
       window.location.href = `/login.html?${params.toString()}`;
       return;
@@ -345,7 +372,10 @@ async function onResendConfirmation() {
       method: "POST",
       credentials: "include",
       headers: withAuthHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ email: pendingConfirmationEmail })
+      body: JSON.stringify({
+        email: pendingConfirmationEmail,
+        next: `${window.location.origin}/login.html`
+      })
     });
     const payload = await res.json().catch(() => ({}));
 
@@ -390,6 +420,11 @@ function hydrateFromUrlState() {
   const confirmed = params.get("confirmed") === "1";
   const registered = params.get("registered") === "1";
   const requiresConfirmation = params.get("confirm") === "1";
+  const verificationEmailSent = params.get("verifyEmailSent") !== "0";
+  const verificationFlow = params.get("verification") === "1";
+  const verificationErrorCode = String(params.get("error") || "")
+    .trim()
+    .toLowerCase();
   const email = String(params.get("email") || "").trim();
 
   if (email) {
@@ -400,15 +435,19 @@ function hydrateFromUrlState() {
   if (confirmed) {
     viewState.info = "Email confirmed. You can now log in.";
     showResendConfirmation = false;
+  } else if (verificationFlow && verificationErrorCode) {
+    viewState.error = getVerificationErrorMessage(verificationErrorCode);
+    showResendConfirmation = Boolean(email);
   } else if (registered && requiresConfirmation) {
-    viewState.info =
-      "Account created. Confirm your email from inbox before logging in.";
+    viewState.info = verificationEmailSent
+      ? "Account created. Confirm your email from inbox before logging in."
+      : "Account created, but we could not send verification email. Use resend below.";
     showResendConfirmation = Boolean(email);
   } else if (registered) {
     viewState.info = "Account created. You can now log in.";
   }
 
-  if (confirmed || registered || email) {
+  if (confirmed || registered || verificationFlow || verificationErrorCode || email) {
     window.history.replaceState({}, "", "/login.html");
   }
 }

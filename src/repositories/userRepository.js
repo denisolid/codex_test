@@ -18,6 +18,37 @@ function isUniqueViolation(errorLike) {
   return code === "23505" || /duplicate|unique/.test(message);
 }
 
+function isForeignKeyViolation(errorLike) {
+  const code = String(errorLike?.code || "").trim().toLowerCase();
+  const message = String(errorLike?.message || "").trim().toLowerCase();
+  return (
+    code === "23503" ||
+    /foreign key/.test(message) ||
+    /users_id_fkey/.test(message)
+  );
+}
+
+async function hasAuthUser(id) {
+  const safeId = String(id || "").trim();
+  if (!safeId) {
+    return false;
+  }
+
+  const { data, error } = await supabaseAdmin.auth.admin.getUserById(safeId);
+  if (!error) {
+    return Boolean(data?.user);
+  }
+
+  if (
+    Number(error?.status || 0) === 404 ||
+    /user\s+not\s+found/i.test(String(error?.message || ""))
+  ) {
+    return false;
+  }
+
+  throw new AppError(error.message, 500);
+}
+
 exports.getById = async (id) => {
   const { data, error } = await supabaseAdmin
     .from("users")
@@ -128,6 +159,17 @@ exports.ensureExists = async (id, email) => {
       conflict.requestedUserId = safeId;
       conflict.email = safeEmail;
       throw conflict;
+    }
+  }
+
+  if (isForeignKeyViolation(error)) {
+    const authUserExists = await hasAuthUser(safeId);
+    if (!authUserExists) {
+      throw new AppError(
+        "Auth user is not available for profile creation.",
+        409,
+        "PROFILE_AUTH_USER_MISSING"
+      );
     }
   }
 

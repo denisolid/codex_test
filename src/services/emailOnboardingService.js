@@ -120,15 +120,26 @@ function buildTokenHash(token) {
   return crypto.createHash("sha256").update(String(token || "")).digest("hex");
 }
 
-function buildVerifyUrl({ apiOrigin, token, next }) {
+function buildVerifyUrl({
+  apiOrigin,
+  token,
+  next,
+  verifyPath = "/api/auth/onboarding/verify",
+  email = ""
+}) {
   const base = String(apiOrigin || "").replace(/\/+$/, "");
   if (!base) {
     throw new AppError("Missing API public URL for email verification link", 500, "MISSING_API_ORIGIN");
   }
-  const url = new URL("/api/auth/onboarding/verify", `${base}/`);
+  const path = String(verifyPath || "/api/auth/onboarding/verify").trim();
+  const safePath = path.startsWith("/") ? path : `/${path}`;
+  const url = new URL(safePath, `${base}/`);
   url.searchParams.set("token", token);
   if (next) {
     url.searchParams.set("next", String(next || ""));
+  }
+  if (email) {
+    url.searchParams.set("email", String(email || ""));
   }
   return url.toString();
 }
@@ -145,7 +156,9 @@ async function writeVerificationRequest({
   email,
   apiOrigin,
   next,
-  displayName
+  displayName,
+  verifyPath = "/api/auth/onboarding/verify",
+  verificationType = "steam_onboarding"
 }) {
   const token = crypto.randomBytes(32).toString("hex");
   const tokenHash = buildTokenHash(token);
@@ -171,14 +184,24 @@ async function writeVerificationRequest({
   const verifyUrl = buildVerifyUrl({
     apiOrigin,
     token,
-    next
+    next,
+    verifyPath,
+    email
   });
 
-  await emailService.sendSteamOnboardingVerificationEmail({
-    to: email,
-    verifyUrl,
-    displayName
-  });
+  if (verificationType === "account") {
+    await emailService.sendAccountVerificationEmail({
+      to: email,
+      verifyUrl,
+      displayName
+    });
+  } else {
+    await emailService.sendSteamOnboardingVerificationEmail({
+      to: email,
+      verifyUrl,
+      displayName
+    });
+  }
 
   return {
     email,
@@ -215,6 +238,46 @@ exports.requestEmailVerification = async ({
     email: safeEmail,
     apiOrigin,
     next,
+    displayName: user.display_name
+  });
+
+  return {
+    alreadyVerified: false,
+    message: "Verification email sent. Check your inbox.",
+    pendingEmail: verification.email,
+    expiresAt: verification.expiresAt
+  };
+};
+
+exports.requestAccountEmailVerification = async ({
+  userId,
+  email = "",
+  apiOrigin,
+  next = ""
+} = {}) => {
+  const user = await userRepo.getById(userId);
+  if (!user) {
+    throw new AppError("User not found", 404, "USER_NOT_FOUND");
+  }
+
+  const onboarding = resolveOnboardingState({ userProfile: user });
+  if (onboarding.emailVerified && onboarding.onboardingCompleted) {
+    return {
+      alreadyVerified: true,
+      message: "Email is already verified.",
+      pendingEmail: null
+    };
+  }
+
+  const safeEmail = validateEmail(email || user.email);
+  await ensureEmailAvailable(safeEmail, user.id);
+  const verification = await writeVerificationRequest({
+    userId: user.id,
+    email: safeEmail,
+    apiOrigin,
+    next,
+    verifyPath: "/api/auth/verify-email",
+    verificationType: "account",
     displayName: user.display_name
   });
 

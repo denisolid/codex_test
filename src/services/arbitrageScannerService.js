@@ -1,7 +1,11 @@
 const { round2, roundPrice } = require("../markets/marketUtils")
 const {
   arbitrageScannerIntervalMinutes,
+  arbitrageDefaultUniverseLimit,
   arbitrageScannerUniverseTargetSize,
+  arbitrageScanBatchSize,
+  arbitrageMaxConcurrentMarketRequests,
+  arbitrageScanTimeoutPerBatchMs,
   arbitrageQuoteRefreshBatchSize,
   arbitrageQuoteComputeBatchSize,
   arbitrageUniverseDbLimit,
@@ -13,7 +17,7 @@ const {
   arbitrageMinScoreChange,
   arbitrageInsertDuplicates
 } = require("../config/env")
-const marketUniverseMvp = require("../config/marketUniverseMvp.json")
+const marketUniverseTop100 = require("../config/marketUniverseTop100.json")
 const skinRepo = require("../repositories/skinRepository")
 const marketSnapshotRepo = require("../repositories/marketSnapshotRepository")
 const marketUniverseRepo = require("../repositories/marketUniverseRepository")
@@ -22,6 +26,7 @@ const arbitrageFeedRepo = require("../repositories/arbitrageFeedRepository")
 const scannerRunRepo = require("../repositories/scannerRunRepository")
 const marketComparisonService = require("./marketComparisonService")
 const arbitrageEngine = require("./arbitrageEngineService")
+const marketService = require("./marketService")
 
 const SCANNER_TYPE = "global_arbitrage"
 const SCANNER_INTERVAL_MINUTES = Math.max(Number(arbitrageScannerIntervalMinutes || 30), 1)
@@ -68,18 +73,49 @@ const ITEM_CATEGORIES = Object.freeze({
   CASE: "case",
   STICKER_CAPSULE: "sticker_capsule"
 })
-const FALLBACK_UNIVERSE = Object.freeze(normalizeUniverseEntries(marketUniverseMvp))
+const FALLBACK_UNIVERSE = Object.freeze(normalizeUniverseEntries(marketUniverseTop100))
+const DEFAULT_UNIVERSE_LIMIT = Math.max(
+  Number(arbitrageDefaultUniverseLimit || 500),
+  100
+)
 const UNIVERSE_TARGET_SIZE = Math.max(
-  Math.min(
-    Number(arbitrageScannerUniverseTargetSize || FALLBACK_UNIVERSE.length || 50),
-    Math.max(FALLBACK_UNIVERSE.length || 50, 20)
-  ),
+  Number(arbitrageScannerUniverseTargetSize || DEFAULT_UNIVERSE_LIMIT),
   20
 )
-const PRE_COMPARE_UNIVERSE_LIMIT = Math.max(UNIVERSE_TARGET_SIZE * 2, 80)
-const UNIVERSE_DB_LIMIT = Math.max(Number(arbitrageUniverseDbLimit || 120), PRE_COMPARE_UNIVERSE_LIMIT)
-const QUOTE_REFRESH_BATCH_SIZE = Math.max(Number(arbitrageQuoteRefreshBatchSize || 40), 10)
-const QUOTE_COMPUTE_BATCH_SIZE = Math.max(Number(arbitrageQuoteComputeBatchSize || 80), 20)
+const PRE_COMPARE_UNIVERSE_LIMIT = Math.max(
+  UNIVERSE_TARGET_SIZE * 2,
+  DEFAULT_UNIVERSE_LIMIT
+)
+const UNIVERSE_DB_LIMIT = Math.max(
+  Number(arbitrageUniverseDbLimit || DEFAULT_UNIVERSE_LIMIT * 2),
+  PRE_COMPARE_UNIVERSE_LIMIT
+)
+const SCAN_BATCH_SIZE = Math.max(
+  Math.min(
+    Number(
+      arbitrageScanBatchSize ||
+        arbitrageQuoteRefreshBatchSize ||
+        arbitrageQuoteComputeBatchSize ||
+        40
+    ),
+    100
+  ),
+  10
+)
+const MAX_CONCURRENT_MARKET_REQUESTS = Math.max(
+  Number(arbitrageMaxConcurrentMarketRequests || 6),
+  1
+)
+const SCAN_TIMEOUT_PER_BATCH = Math.max(
+  Number(arbitrageScanTimeoutPerBatchMs || 30000),
+  1000
+)
+const SNAPSHOT_WARMUP_MAX_ITEMS = Math.max(Math.min(SCAN_BATCH_SIZE, 30), 10)
+const SNAPSHOT_WARMUP_CONCURRENCY = Math.max(
+  Math.min(MAX_CONCURRENT_MARKET_REQUESTS, 3),
+  1
+)
+const SNAPSHOT_WARMUP_TRIGGER_FRESH_MIN = Math.max(SCAN_BATCH_SIZE, 20)
 const UNIVERSE_MIN_PRICE_FLOOR_BY_CATEGORY = Object.freeze({
   [ITEM_CATEGORIES.WEAPON_SKIN]: 2,
   [ITEM_CATEGORIES.CASE]: 1,
@@ -96,8 +132,11 @@ const LOW_VALUE_NAME_PATTERNS = Object.freeze([
   /^sealed graffiti\s*\|/i
 ])
 const DIAGNOSTIC_REASON_KEYS = Object.freeze([
-  "ignored_low_price",
+  "ignored_execution_floor",
+  "ignored_low_value_universe",
   "ignored_low_liquidity",
+  "spread_below_min",
+  "non_positive_profit",
   "ignored_extreme_spread",
   "ignored_reference_deviation",
   "ignored_missing_markets",
@@ -106,10 +145,8 @@ const DIAGNOSTIC_REASON_KEYS = Object.freeze([
   "ignored_stale_data"
 ])
 const DIAGNOSTIC_REASON_ALIAS = Object.freeze({
-  spread_below_min: "ignored_low_score",
-  non_positive_profit: "ignored_low_score",
-  insufficient_market_data: "ignored_missing_markets",
-  ignored_low_value_universe: "ignored_low_price"
+  ignored_low_price: "ignored_execution_floor",
+  insufficient_market_data: "ignored_missing_markets"
 })
 
 const HARD_REJECTION_REASONS = Object.freeze(
@@ -386,6 +423,7 @@ function sourceRank(value) {
     .toLowerCase()
   if (source === "curated_db") return 4
   if (source === "dynamic_snapshot") return 3
+  if (source === "fallback_curated") return 2
   if (source === "fallback_mvp") return 2
   return 1
 }
@@ -580,10 +618,25 @@ function normalizeDiagnosticReason(reason = "") {
   return DIAGNOSTIC_REASON_ALIAS[raw] || raw
 }
 
-function incrementReasonCounter(counter = {}, reason, _category = "") {
+function incrementReasonCounter(counter = {}, reason, category = "") {
   const key = normalizeDiagnosticReason(reason)
   if (!key) return
   counter[key] = Number(counter[key] || 0) + 1
+
+  const normalizedCategory = String(category || "").trim()
+    ? normalizeItemCategory(category)
+    : ""
+  if (!normalizedCategory) return
+
+  if (!counter.__byCategory || typeof counter.__byCategory !== "object") {
+    counter.__byCategory = {}
+  }
+  if (!counter.__byCategory[normalizedCategory]) {
+    counter.__byCategory[normalizedCategory] = {}
+  }
+
+  const categoryBucket = counter.__byCategory[normalizedCategory]
+  categoryBucket[key] = Number(categoryBucket[key] || 0) + 1
 }
 
 function incrementItemReasonCounter(rejectionsByItem = {}, itemName, reason, category = "") {
@@ -647,9 +700,32 @@ function normalizeDiscardStats(counter = {}) {
     normalized[key] = Number(counter?.[key] || 0)
   }
   for (const [reason, count] of Object.entries(counter || {})) {
+    if (String(reason || "").startsWith("__")) continue
     if (DIAGNOSTIC_REASON_KEYS.includes(reason)) continue
     normalized[reason] = Number(count || 0)
   }
+  return normalized
+}
+
+function normalizeDiscardStatsByCategory(counter = {}) {
+  const byCategory =
+    counter?.__byCategory && typeof counter.__byCategory === "object"
+      ? counter.__byCategory
+      : {}
+
+  const normalized = {}
+  for (const [category, reasonMap] of Object.entries(byCategory)) {
+    const normalizedCategory = normalizeItemCategory(category)
+    const reasonStats = normalizeDiscardStats(reasonMap || {})
+    normalized[normalizedCategory] = {
+      totalRejected: Object.values(reasonStats).reduce(
+        (sum, value) => sum + Number(value || 0),
+        0
+      ),
+      reasons: reasonStats
+    }
+  }
+
   return normalized
 }
 
@@ -659,7 +735,7 @@ function buildInputItemFromSkinAndSnapshot({
   marketHashName = "",
   category = ITEM_CATEGORIES.WEAPON_SKIN,
   subcategory = null,
-  universeSource = "fallback_mvp",
+  universeSource = "fallback_curated",
   liquidityRank = null
 } = {}) {
   const normalizedName = normalizeMarketHashName(
@@ -691,9 +767,48 @@ function buildInputItemFromSkinAndSnapshot({
     hasSnapshotData: Boolean(snapshot),
     snapshotCapturedAt: snapshot?.captured_at || null,
     snapshotStale: snapshot ? isSnapshotStale(snapshot) : false,
-    universeSource: String(universeSource || "fallback_mvp").trim() || "fallback_mvp",
+    universeSource: String(universeSource || "fallback_curated").trim() || "fallback_curated",
     liquidityRank: toFiniteOrNull(liquidityRank)
   }
+}
+
+async function ensureSkinsForMarketNames(marketNames = []) {
+  const uniqueNames = Array.from(
+    new Set(
+      (Array.isArray(marketNames) ? marketNames : [])
+        .map((name) => normalizeMarketHashName(name))
+        .filter(Boolean)
+    )
+  )
+  if (!uniqueNames.length) {
+    return []
+  }
+
+  const existing = await skinRepo.getByMarketHashNames(uniqueNames)
+  const existingByName = toByNameMap(
+    (Array.isArray(existing) ? existing : []).map((row) => ({
+      ...row,
+      market_hash_name: normalizeMarketHashName(row?.market_hash_name)
+    })),
+    "market_hash_name"
+  )
+
+  const missingNames = uniqueNames.filter((name) => !existingByName[name])
+  if (!missingNames.length) {
+    return Array.isArray(existing) ? existing : []
+  }
+
+  try {
+    await skinRepo.upsertSkins(
+      missingNames.map((marketHashName) => ({
+        market_hash_name: marketHashName
+      }))
+    )
+  } catch (err) {
+    console.error("[arbitrage-scanner] Failed to auto-seed missing skins", err.message)
+  }
+
+  return skinRepo.getByMarketHashNames(uniqueNames)
 }
 
 async function loadCuratedUniverseSeeds() {
@@ -728,7 +843,7 @@ async function loadCuratedUniverseSeeds() {
     return []
   }
 
-  const skins = await skinRepo.getByMarketHashNames(normalizedRows.map((row) => row.marketHashName))
+  const skins = await ensureSkinsForMarketNames(normalizedRows.map((row) => row.marketHashName))
   const skinsByName = toByNameMap(
     (Array.isArray(skins) ? skins : []).map((row) => ({
       ...row,
@@ -763,7 +878,7 @@ async function loadCuratedUniverseSeeds() {
 
 async function loadFallbackUniverseSeeds() {
   const marketNames = FALLBACK_UNIVERSE.map((entry) => entry.marketHashName)
-  const skins = await skinRepo.getByMarketHashNames(marketNames)
+  const skins = await ensureSkinsForMarketNames(marketNames)
   const skinsByName = toByNameMap(
     (Array.isArray(skins) ? skins : []).map((row) => ({
       ...row,
@@ -789,7 +904,7 @@ async function loadFallbackUniverseSeeds() {
       marketHashName: entry.marketHashName,
       category: entry.category,
       subcategory: entry.subcategory,
-      universeSource: "fallback_mvp",
+      universeSource: "fallback_curated",
       liquidityRank: index + 1
     })
   ).filter(Boolean)
@@ -838,9 +953,14 @@ function passesUniverseSeedFilters(inputItem = {}, discardStats = {}, rejectedBy
     UNIVERSE_MIN_PRICE_FLOOR_BY_CATEGORY[itemCategory] ?? UNIVERSE_MIN_PRICE_FLOOR_BY_CATEGORY[ITEM_CATEGORIES.WEAPON_SKIN]
   )
   if (referencePrice != null && referencePrice < universePriceFloor) {
-    incrementReasonCounter(discardStats, "ignored_low_price", itemCategory)
+    incrementReasonCounter(discardStats, "ignored_low_value_universe", itemCategory)
     if (rejectedByItem) {
-      incrementItemReasonCounter(rejectedByItem, marketHashName, "ignored_low_price", itemCategory)
+      incrementItemReasonCounter(
+        rejectedByItem,
+        marketHashName,
+        "ignored_low_value_universe",
+        itemCategory
+      )
     }
     return false
   }
@@ -937,7 +1057,7 @@ function computeRiskAdjustments({
     return { passed: false, primaryReason: "non_positive_profit", penalty: 0 }
   }
   if (buyPrice == null || buyPrice < Number(rules.minPriceUsd || profile.minPriceUsd || 0)) {
-    return { passed: false, primaryReason: "ignored_low_price", penalty: 0 }
+    return { passed: false, primaryReason: "ignored_execution_floor", penalty: 0 }
   }
   if (
     spread == null ||
@@ -1296,7 +1416,7 @@ function buildInputItemForComparison(item = {}) {
     marketVolume7d: toFiniteOrNull(item?.marketVolume7d),
     referencePrice: toFiniteOrNull(item?.referencePrice),
     snapshotStale: Boolean(item?.snapshotStale),
-    universeSource: String(item?.universeSource || "").trim() || "fallback_mvp",
+    universeSource: String(item?.universeSource || "").trim() || "fallback_curated",
     liquidityRank: toFiniteOrNull(item?.liquidityRank)
   }
 }
@@ -1357,7 +1477,7 @@ function applyGuardFallbackReason(
     }
   }
   if (buyPrice != null && buyPrice < MIN_EXECUTION_PRICE_USD) {
-    record("ignored_low_price")
+    record("ignored_execution_floor")
   }
   if (volume7d == null || volume7d < MIN_VOLUME_7D) {
     record("ignored_low_liquidity")
@@ -1420,11 +1540,16 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
       console.error("[arbitrage-scanner] Curated universe load failed", err.message)
       return []
     }),
-    loadFallbackUniverseSeeds()
+    loadFallbackUniverseSeeds().catch((err) => {
+      console.error("[arbitrage-scanner] Fallback universe load failed", err.message)
+      return []
+    })
   ])
 
   const mergedSeeds = mergeUniverseSeeds([curatedSeeds, fallbackSeeds])
-  const filteredSeeds = mergedSeeds.filter((row) =>
+  const { seeds: hydratedSeeds, snapshotWarmup } = await refreshSeedSnapshotsIfNeeded(mergedSeeds)
+
+  const filteredSeeds = hydratedSeeds.filter((row) =>
     passesUniverseSeedFilters(row, discardStats, rejectedByItem)
   )
 
@@ -1447,7 +1572,156 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
     )
     .slice(0, PRE_COMPARE_UNIVERSE_LIMIT)
 
-  return ranked
+  return {
+    seeds: ranked,
+    snapshotWarmup
+  }
+}
+
+function toSnapshotWarmupSummary(overrides = {}) {
+  return {
+    triggered: false,
+    reason: "",
+    freshSeedsBefore: 0,
+    warmupCandidates: 0,
+    attemptedItems: 0,
+    refreshedItems: 0,
+    failedItems: 0,
+    batchSize: SNAPSHOT_WARMUP_MAX_ITEMS,
+    concurrency: SNAPSHOT_WARMUP_CONCURRENCY,
+    errors: [],
+    ...overrides
+  }
+}
+
+async function mapWithConcurrency(items = [], concurrencyLimit = 1, mapper = async () => null) {
+  const source = Array.isArray(items) ? items : []
+  if (!source.length) return []
+
+  const limit = Math.max(Number(concurrencyLimit || 0), 1)
+  const results = new Array(source.length)
+  let index = 0
+
+  async function worker() {
+    while (true) {
+      const current = index
+      index += 1
+      if (current >= source.length) return
+      results[current] = await mapper(source[current], current)
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(limit, source.length) }, () => worker())
+  await Promise.all(workers)
+  return results
+}
+
+function mergeSeedWithSnapshot(seed = {}, snapshot = null) {
+  if (!snapshot || typeof snapshot !== "object") return seed
+  const referencePrice =
+    toFiniteOrNull(snapshot?.average_7d_price) ??
+    toFiniteOrNull(snapshot?.lowest_listing_price) ??
+    toFiniteOrNull(seed?.referencePrice) ??
+    null
+
+  return {
+    ...seed,
+    marketVolume7d: resolveVolume7d(snapshot),
+    liquidityScore: computeLiquidityScoreFromSnapshot(snapshot),
+    sevenDayChangePercent: resolveSevenDayChangePercent(snapshot),
+    referencePrice,
+    hasSnapshotData: true,
+    snapshotCapturedAt: snapshot?.captured_at || seed?.snapshotCapturedAt || null,
+    snapshotStale: isSnapshotStale(snapshot)
+  }
+}
+
+async function refreshSeedSnapshotsIfNeeded(seeds = []) {
+  const rows = Array.isArray(seeds) ? seeds : []
+  if (!rows.length) {
+    return {
+      seeds: rows,
+      snapshotWarmup: toSnapshotWarmupSummary()
+    }
+  }
+
+  const freshSeedsBefore = rows.filter(
+    (seed) => Boolean(seed?.hasSnapshotData) && !Boolean(seed?.snapshotStale)
+  ).length
+  const warmupCandidates = rows
+    .filter((seed) => {
+      const skinId = Number(seed?.skinId || 0)
+      return Number.isInteger(skinId) && skinId > 0 && (!seed?.hasSnapshotData || seed?.snapshotStale)
+    })
+    .sort(
+      (a, b) =>
+        sourceRank(b?.universeSource) - sourceRank(a?.universeSource) ||
+        Number(a?.liquidityRank || Number.MAX_SAFE_INTEGER) -
+          Number(b?.liquidityRank || Number.MAX_SAFE_INTEGER)
+    )
+
+  if (
+    freshSeedsBefore >= SNAPSHOT_WARMUP_TRIGGER_FRESH_MIN ||
+    !warmupCandidates.length
+  ) {
+    return {
+      seeds: rows,
+      snapshotWarmup: toSnapshotWarmupSummary({
+        freshSeedsBefore,
+        warmupCandidates: warmupCandidates.length
+      })
+    }
+  }
+
+  const selected = warmupCandidates.slice(0, SNAPSHOT_WARMUP_MAX_ITEMS)
+  const errors = []
+  const refreshedSkinIds = []
+  const results = await mapWithConcurrency(
+    selected,
+    SNAPSHOT_WARMUP_CONCURRENCY,
+    async (seed) => {
+      const skinId = Number(seed?.skinId || 0)
+      try {
+        await marketService.getLiquidityScore(skinId)
+        refreshedSkinIds.push(skinId)
+        return true
+      } catch (err) {
+        errors.push(String(err?.message || `snapshot_refresh_failed:${skinId}`))
+        return false
+      }
+    }
+  )
+
+  const refreshedCount = results.filter((ok) => Boolean(ok)).length
+  const snapshotsBySkinId = refreshedSkinIds.length
+    ? await marketSnapshotRepo.getLatestBySkinIds(refreshedSkinIds)
+    : {}
+
+  const refreshedBySkinId = {}
+  for (const skinId of refreshedSkinIds) {
+    if (snapshotsBySkinId[skinId]) {
+      refreshedBySkinId[skinId] = snapshotsBySkinId[skinId]
+    }
+  }
+
+  const hydratedSeeds = rows.map((seed) => {
+    const skinId = Number(seed?.skinId || 0)
+    return mergeSeedWithSnapshot(seed, refreshedBySkinId[skinId] || null)
+  })
+
+  return {
+    seeds: hydratedSeeds,
+    snapshotWarmup: toSnapshotWarmupSummary({
+      triggered: true,
+      reason: "insufficient_fresh_snapshot_coverage",
+      freshSeedsBefore,
+      warmupCandidates: warmupCandidates.length,
+      attemptedItems: selected.length,
+      refreshedItems: refreshedCount,
+      failedItems: Math.max(selected.length - refreshedCount, 0),
+      errors: errors.slice(0, 8)
+    })
+  }
 }
 
 function countAvailableQuotes(items = []) {
@@ -1467,61 +1741,110 @@ function countAvailableQuotes(items = []) {
   return total
 }
 
+function isBatchTimeoutError(err = {}) {
+  return String(err?.code || "")
+    .trim()
+    .toLowerCase() === "scan_batch_timeout"
+}
+
+async function compareBatchItems(batch = [], options = {}) {
+  const comparePromise = marketComparisonService.compareItems(batch, {
+    currency: "USD",
+    pricingMode: "lowest_buy",
+    allowLiveFetch: options.allowLiveFetch !== false,
+    forceRefresh: Boolean(options.forceRefresh),
+    userId: null,
+    concurrency: MAX_CONCURRENT_MARKET_REQUESTS,
+    timeoutMs: SCAN_TIMEOUT_PER_BATCH
+  })
+
+  let timeoutId = null
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      const timeoutErr = new Error(`scan_batch_timeout_${SCAN_TIMEOUT_PER_BATCH}ms`)
+      timeoutErr.code = "scan_batch_timeout"
+      reject(timeoutErr)
+    }, SCAN_TIMEOUT_PER_BATCH)
+  })
+
+  try {
+    return await Promise.race([comparePromise, timeoutPromise])
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
 async function refreshQuotesInBatches(inputItems = [], options = {}) {
   const forceRefresh = Boolean(options.forceRefresh)
-  const batches = chunkArray(inputItems, QUOTE_REFRESH_BATCH_SIZE)
+  const batches = chunkArray(inputItems, SCAN_BATCH_SIZE)
   let itemsCompared = 0
   let availableQuotes = 0
   let completedBatches = 0
+  let timedOutBatches = 0
+  let totalBatchMs = 0
+  let slowestBatchMs = 0
   const errors = []
 
-  for (const batch of batches) {
+  for (let index = 0; index < batches.length; index += 1) {
+    const batch = batches[index]
+    const startedAt = Date.now()
     try {
-      const comparison = await marketComparisonService.compareItems(batch, {
-        currency: "USD",
-        pricingMode: "lowest_buy",
+      const comparison = await compareBatchItems(batch, {
         allowLiveFetch: true,
-        forceRefresh,
-        userId: null
+        forceRefresh
       })
       const comparedItems = Array.isArray(comparison?.items) ? comparison.items : []
       itemsCompared += comparedItems.length
       availableQuotes += countAvailableQuotes(comparedItems)
       completedBatches += 1
     } catch (err) {
-      errors.push(String(err?.message || "quote_batch_failed"))
+      if (isBatchTimeoutError(err)) {
+        timedOutBatches += 1
+      }
+      errors.push(`[batch ${index + 1}] ${String(err?.message || "quote_batch_failed")}`)
+    } finally {
+      const batchMs = Math.max(Date.now() - startedAt, 0)
+      totalBatchMs += batchMs
+      slowestBatchMs = Math.max(slowestBatchMs, batchMs)
     }
   }
 
   return {
-    batchSize: QUOTE_REFRESH_BATCH_SIZE,
+    batchSize: SCAN_BATCH_SIZE,
+    timeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH,
+    maxConcurrentMarketRequests: MAX_CONCURRENT_MARKET_REQUESTS,
     requestedItems: inputItems.length,
     totalBatches: batches.length,
     completedBatches,
     failedBatches: errors.length,
+    timedOutBatches,
     itemsCompared,
     availableQuotes,
+    averageBatchMs: round2(totalBatchMs / Math.max(batches.length, 1)),
+    slowestBatchMs,
     errors: errors.slice(0, 5)
   }
 }
 
 async function compareFromSavedQuotes(inputItems = []) {
-  const batches = chunkArray(inputItems, QUOTE_COMPUTE_BATCH_SIZE)
+  const batches = chunkArray(inputItems, SCAN_BATCH_SIZE)
   const items = []
   let itemsCompared = 0
   let availableQuotes = 0
   let completedBatches = 0
+  let timedOutBatches = 0
+  let totalBatchMs = 0
+  let slowestBatchMs = 0
   const errors = []
   let currency = "USD"
 
-  for (const batch of batches) {
+  for (let index = 0; index < batches.length; index += 1) {
+    const batch = batches[index]
+    const startedAt = Date.now()
     try {
-      const comparison = await marketComparisonService.compareItems(batch, {
-        currency: "USD",
-        pricingMode: "lowest_buy",
+      const comparison = await compareBatchItems(batch, {
         allowLiveFetch: false,
-        forceRefresh: false,
-        userId: null
+        forceRefresh: false
       })
       const comparedItems = Array.isArray(comparison?.items) ? comparison.items : []
       items.push(...comparedItems)
@@ -1532,7 +1855,14 @@ async function compareFromSavedQuotes(inputItems = []) {
         .trim()
         .toUpperCase()
     } catch (err) {
-      errors.push(String(err?.message || "compare_saved_quotes_failed"))
+      if (isBatchTimeoutError(err)) {
+        timedOutBatches += 1
+      }
+      errors.push(`[batch ${index + 1}] ${String(err?.message || "compare_saved_quotes_failed")}`)
+    } finally {
+      const batchMs = Math.max(Date.now() - startedAt, 0)
+      totalBatchMs += batchMs
+      slowestBatchMs = Math.max(slowestBatchMs, batchMs)
     }
   }
 
@@ -1540,13 +1870,18 @@ async function compareFromSavedQuotes(inputItems = []) {
     currency,
     items,
     diagnostics: {
-      batchSize: QUOTE_COMPUTE_BATCH_SIZE,
+      batchSize: SCAN_BATCH_SIZE,
+      timeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH,
+      maxConcurrentMarketRequests: MAX_CONCURRENT_MARKET_REQUESTS,
       requestedItems: inputItems.length,
       totalBatches: batches.length,
       completedBatches,
       failedBatches: errors.length,
+      timedOutBatches,
       itemsCompared,
       availableQuotes,
+      averageBatchMs: round2(totalBatchMs / Math.max(batches.length, 1)),
+      slowestBatchMs,
       errors: errors.slice(0, 5)
     }
   }
@@ -1583,7 +1918,7 @@ function buildQuoteSnapshotRows(comparisonItems = [], inputByName = {}) {
           unavailable_reason: String(quote?.unavailableReason || "").trim() || null,
           quote_age_minutes: resolveQuoteAgeMinutes(quote),
           snapshot_stale: Boolean(inputItem?.snapshotStale),
-          universe_source: String(inputItem?.universeSource || "").trim() || "fallback_mvp"
+          universe_source: String(inputItem?.universeSource || "").trim() || "fallback_curated"
         }
       })
     }
@@ -1676,11 +2011,58 @@ function selectTopUniverseItems(
     .slice(0, UNIVERSE_TARGET_SIZE)
 }
 
+function countRowsByCategory(rows = []) {
+  const counts = {}
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const category = normalizeItemCategory(row?.itemCategory, row?.itemName)
+    counts[category] = Number(counts[category] || 0) + 1
+  }
+  return counts
+}
+
+function buildScanProgressStats({
+  universeTarget = 0,
+  candidateItems = 0,
+  scannedItems = 0,
+  quoteRefresh = {},
+  computeFromSavedQuotes = {}
+} = {}) {
+  const refreshBatches = Number(quoteRefresh?.totalBatches || 0)
+  const computeBatches = Number(computeFromSavedQuotes?.totalBatches || 0)
+  const totalBatches = refreshBatches + computeBatches
+  const completedBatches =
+    Number(quoteRefresh?.completedBatches || 0) +
+    Number(computeFromSavedQuotes?.completedBatches || 0)
+  const failedBatches =
+    Number(quoteRefresh?.failedBatches || 0) +
+    Number(computeFromSavedQuotes?.failedBatches || 0)
+  const timedOutBatches =
+    Number(quoteRefresh?.timedOutBatches || 0) +
+    Number(computeFromSavedQuotes?.timedOutBatches || 0)
+
+  return {
+    universeTarget: Number(universeTarget || 0),
+    candidateItems: Number(candidateItems || 0),
+    scannedItems: Number(scannedItems || 0),
+    batchSize: SCAN_BATCH_SIZE,
+    maxConcurrentMarketRequests: MAX_CONCURRENT_MARKET_REQUESTS,
+    timeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH,
+    totalBatches,
+    completedBatches,
+    failedBatches,
+    timedOutBatches,
+    completionPercent:
+      totalBatches > 0 ? round2((completedBatches / Math.max(totalBatches, 1)) * 100) : 100
+  }
+}
+
 async function runScanInternal(options = {}) {
   const forceRefresh = Boolean(options.forceRefresh)
   const discardStats = {}
   const rejectedByItem = {}
-  const universeSeeds = await loadScannerInputs(discardStats, rejectedByItem)
+  const scannerInputs = await loadScannerInputs(discardStats, rejectedByItem)
+  const universeSeeds = Array.isArray(scannerInputs?.seeds) ? scannerInputs.seeds : []
+  const snapshotWarmupSummary = scannerInputs?.snapshotWarmup || toSnapshotWarmupSummary()
   if (!universeSeeds.length) {
     const generatedTs = Date.now()
     const emptyPayload = {
@@ -1693,40 +2075,68 @@ async function runScanInternal(options = {}) {
         opportunities: 0,
         totalDetected: 0,
         universeSize: 0,
+        universeTarget: UNIVERSE_TARGET_SIZE,
         candidateItems: 0,
         discardedReasons: normalizeDiscardStats(discardStats),
+        discardedReasonsByCategory: normalizeDiscardStatsByCategory(discardStats),
         topRejectedItems: toTopRejectedItems(rejectedByItem),
         rejectionReasonsByItem: toRejectionReasonsByItem(rejectedByItem),
+        opportunitiesByCategory: {},
+        scanProgress: buildScanProgressStats({
+          universeTarget: UNIVERSE_TARGET_SIZE,
+          candidateItems: 0,
+          scannedItems: 0
+        }),
         highConfidence: 0,
         riskyEligible: 0
       },
       opportunities: [],
       pipeline: {
+        config: {
+          defaultUniverseLimit: DEFAULT_UNIVERSE_LIMIT,
+          universeTargetSize: UNIVERSE_TARGET_SIZE,
+          preCompareUniverseLimit: PRE_COMPARE_UNIVERSE_LIMIT,
+          universeDbLimit: UNIVERSE_DB_LIMIT,
+          scanBatchSize: SCAN_BATCH_SIZE,
+          maxConcurrentMarketRequests: MAX_CONCURRENT_MARKET_REQUESTS,
+          scanTimeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH
+        },
         quoteRefresh: {
-          batchSize: QUOTE_REFRESH_BATCH_SIZE,
+          batchSize: SCAN_BATCH_SIZE,
+          timeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH,
+          maxConcurrentMarketRequests: MAX_CONCURRENT_MARKET_REQUESTS,
           requestedItems: 0,
           totalBatches: 0,
           completedBatches: 0,
           failedBatches: 0,
+          timedOutBatches: 0,
           itemsCompared: 0,
           availableQuotes: 0,
+          averageBatchMs: 0,
+          slowestBatchMs: 0,
           errors: []
         },
         computeFromSavedQuotes: {
-          batchSize: QUOTE_COMPUTE_BATCH_SIZE,
+          batchSize: SCAN_BATCH_SIZE,
+          timeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH,
+          maxConcurrentMarketRequests: MAX_CONCURRENT_MARKET_REQUESTS,
           requestedItems: 0,
           totalBatches: 0,
           completedBatches: 0,
           failedBatches: 0,
+          timedOutBatches: 0,
           itemsCompared: 0,
           availableQuotes: 0,
+          averageBatchMs: 0,
+          slowestBatchMs: 0,
           errors: []
         },
         quoteSnapshot: {
           rowsPrepared: 0,
           rowsInserted: 0,
           persisted: true
-        }
+        },
+        snapshotWarmup: snapshotWarmupSummary
       }
     }
     scannerState.latest = emptyPayload
@@ -1857,6 +2267,16 @@ async function runScanInternal(options = {}) {
         .toLowerCase() !== "low"
   ).length
   const riskyEligibleCount = sortedRows.filter((row) => Boolean(row?.isRiskyEligible)).length
+  const opportunitiesByCategory = countRowsByCategory(sortedRows)
+  const discardedReasons = normalizeDiscardStats(discardStats)
+  const discardedReasonsByCategory = normalizeDiscardStatsByCategory(discardStats)
+  const scanProgress = buildScanProgressStats({
+    universeTarget: UNIVERSE_TARGET_SIZE,
+    candidateItems: universeSeeds.length,
+    scannedItems: selectedUniverse.length,
+    quoteRefresh: quoteRefreshSummary,
+    computeFromSavedQuotes: comparisonFromSaved?.diagnostics || {}
+  })
   const generatedTs = Date.now()
   const payload = {
     generatedAt: new Date(generatedTs).toISOString(),
@@ -1870,18 +2290,32 @@ async function runScanInternal(options = {}) {
       opportunities: highConfidenceCount,
       totalDetected: sortedRows.length,
       universeSize: selectedUniverse.length,
+      universeTarget: UNIVERSE_TARGET_SIZE,
       candidateItems: universeSeeds.length,
-      discardedReasons: normalizeDiscardStats(discardStats),
+      discardedReasons,
+      discardedReasonsByCategory,
       topRejectedItems: toTopRejectedItems(rejectedByItem),
       rejectionReasonsByItem: toRejectionReasonsByItem(rejectedByItem),
+      opportunitiesByCategory,
+      scanProgress,
       highConfidence: highConfidenceCount,
       riskyEligible: riskyEligibleCount
     },
     opportunities: sortedRows,
     pipeline: {
+      config: {
+        defaultUniverseLimit: DEFAULT_UNIVERSE_LIMIT,
+        universeTargetSize: UNIVERSE_TARGET_SIZE,
+        preCompareUniverseLimit: PRE_COMPARE_UNIVERSE_LIMIT,
+        universeDbLimit: UNIVERSE_DB_LIMIT,
+        scanBatchSize: SCAN_BATCH_SIZE,
+        maxConcurrentMarketRequests: MAX_CONCURRENT_MARKET_REQUESTS,
+        scanTimeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH
+      },
       quoteRefresh: quoteRefreshSummary,
       computeFromSavedQuotes: comparisonFromSaved?.diagnostics || null,
-      quoteSnapshot: quoteSnapshotSummary
+      quoteSnapshot: quoteSnapshotSummary,
+      snapshotWarmup: snapshotWarmupSummary
     }
   }
 
@@ -1912,10 +2346,14 @@ function toScanDiagnosticsSummary(scanPayload = {}, persistSummary = {}, trigger
     opportunities: Number(scanPayload?.summary?.opportunities || 0),
     totalDetected: Number(scanPayload?.summary?.totalDetected || 0),
     universeSize: Number(scanPayload?.summary?.universeSize || 0),
+    universeTarget: Number(scanPayload?.summary?.universeTarget || UNIVERSE_TARGET_SIZE),
     candidateItems: Number(scanPayload?.summary?.candidateItems || 0),
     discardedReasons: scanPayload?.summary?.discardedReasons || {},
+    discardedReasonsByCategory: scanPayload?.summary?.discardedReasonsByCategory || {},
     topRejectedItems: scanPayload?.summary?.topRejectedItems || [],
     rejectionReasonsByItem: scanPayload?.summary?.rejectionReasonsByItem || [],
+    opportunitiesByCategory: scanPayload?.summary?.opportunitiesByCategory || {},
+    scanProgress: scanPayload?.summary?.scanProgress || {},
     highConfidence: Number(scanPayload?.summary?.highConfidence || 0),
     riskyEligible: Number(scanPayload?.summary?.riskyEligible || 0),
     pipeline: scanPayload?.pipeline || {},
@@ -2176,8 +2614,12 @@ function resolveNoOpportunitiesReason(summary = {}, status = {}, opportunities =
 
   const [code, count] = topReasonEntry
   const reasonMessageMap = {
-    ignored_low_price: "Most candidates were below the minimum price threshold.",
+    ignored_execution_floor: "Most candidates failed execution floor checks.",
+    ignored_low_price: "Most candidates failed execution floor checks.",
+    ignored_low_value_universe: "Most candidates were filtered as low-value universe items.",
     ignored_low_liquidity: "Most candidates were rejected for low liquidity.",
+    spread_below_min: "Most candidates were below spread baseline.",
+    non_positive_profit: "Most candidates had non-positive projected profit.",
     ignored_extreme_spread: "Most candidates were rejected for extreme spread values.",
     ignored_reference_deviation: "Most candidates failed reference deviation checks.",
     ignored_missing_markets: "Most candidates were missing enough market coverage.",
@@ -2242,10 +2684,14 @@ exports.getFeed = async (options = {}) => {
     totalDetected: Number(totalCount || mappedRows.length),
     activeOpportunities: Number(activeCount || 0),
     universeSize: Number(diagnosticsSummary?.universeSize || 0),
+    universeTarget: Number(diagnosticsSummary?.universeTarget || UNIVERSE_TARGET_SIZE),
     candidateItems: Number(diagnosticsSummary?.candidateItems || 0),
     discardedReasons: diagnosticsSummary?.discardedReasons || {},
+    discardedReasonsByCategory: diagnosticsSummary?.discardedReasonsByCategory || {},
     topRejectedItems: diagnosticsSummary?.topRejectedItems || [],
     rejectionReasonsByItem: diagnosticsSummary?.rejectionReasonsByItem || [],
+    opportunitiesByCategory: diagnosticsSummary?.opportunitiesByCategory || {},
+    scanProgress: diagnosticsSummary?.scanProgress || {},
     highConfidence: Number(diagnosticsSummary?.highConfidence || 0),
     riskyEligible: Number(diagnosticsSummary?.riskyEligible || 0),
     newOpportunitiesAdded:
@@ -2353,5 +2799,9 @@ exports.__testables = {
   clampScore,
   computeLiquidityRank,
   countAvailableMarkets,
-  isLowValueJunkName
+  isLowValueJunkName,
+  DEFAULT_UNIVERSE_LIMIT,
+  SCAN_BATCH_SIZE,
+  MAX_CONCURRENT_MARKET_REQUESTS,
+  SCAN_TIMEOUT_PER_BATCH
 }
