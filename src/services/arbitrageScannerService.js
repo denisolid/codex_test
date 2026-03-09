@@ -116,6 +116,7 @@ const SNAPSHOT_WARMUP_CONCURRENCY = Math.max(
   1
 )
 const SNAPSHOT_WARMUP_TRIGGER_FRESH_MIN = Math.max(SCAN_BATCH_SIZE, 20)
+const MIN_STRICT_SEED_COVERAGE = Math.max(Math.round(SCAN_BATCH_SIZE / 2), 10)
 const UNIVERSE_MIN_PRICE_FLOOR_BY_CATEGORY = Object.freeze({
   [ITEM_CATEGORIES.WEAPON_SKIN]: 2,
   [ITEM_CATEGORIES.CASE]: 1,
@@ -293,6 +294,12 @@ function toFiniteOrNull(value) {
   if (typeof value === "string" && !value.trim()) return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
+}
+
+function toPositiveOrNull(value) {
+  const parsed = toFiniteOrNull(value)
+  if (parsed == null) return null
+  return parsed > 0 ? parsed : null
 }
 
 function toIsoStringOrNull(value) {
@@ -743,13 +750,15 @@ function buildInputItemFromSkinAndSnapshot({
   )
   if (!normalizedName) return null
 
-  const referencePrice =
-    toFiniteOrNull(snapshot?.average_7d_price) ??
-    toFiniteOrNull(snapshot?.lowest_listing_price) ??
-    null
-  const volume7d = resolveVolume7d(snapshot || {})
-  const liquidityScore = snapshot ? computeLiquidityScoreFromSnapshot(snapshot) : null
-  const sevenDayChangePercent = snapshot ? resolveSevenDayChangePercent(snapshot) : null
+  const referencePrice = toPositiveOrNull(
+    toFiniteOrNull(snapshot?.average_7d_price) ?? toFiniteOrNull(snapshot?.lowest_listing_price)
+  )
+  const volume7d = toPositiveOrNull(resolveVolume7d(snapshot || {}))
+  const hasUsableSnapshotLiquidity = referencePrice != null || volume7d != null
+  const liquidityScore =
+    snapshot && hasUsableSnapshotLiquidity ? computeLiquidityScoreFromSnapshot(snapshot) : null
+  const sevenDayChangePercent =
+    snapshot && hasUsableSnapshotLiquidity ? resolveSevenDayChangePercent(snapshot) : null
 
   return {
     skinId: Number(skin?.id || 0) || null,
@@ -764,7 +773,7 @@ function buildInputItemFromSkinAndSnapshot({
     liquidityScore,
     sevenDayChangePercent,
     referencePrice,
-    hasSnapshotData: Boolean(snapshot),
+    hasSnapshotData: Boolean(snapshot) && hasUsableSnapshotLiquidity,
     snapshotCapturedAt: snapshot?.captured_at || null,
     snapshotStale: snapshot ? isSnapshotStale(snapshot) : false,
     universeSource: String(universeSource || "fallback_curated").trim() || "fallback_curated",
@@ -910,7 +919,13 @@ async function loadFallbackUniverseSeeds() {
   ).filter(Boolean)
 }
 
-function passesUniverseSeedFilters(inputItem = {}, discardStats = {}, rejectedByItem = null) {
+function passesUniverseSeedFilters(
+  inputItem = {},
+  discardStats = {},
+  rejectedByItem = null,
+  options = {}
+) {
+  const allowMissingSnapshotData = Boolean(options?.allowMissingSnapshotData)
   const marketHashName = String(inputItem?.marketHashName || "").trim()
   const itemCategory = normalizeItemCategory(inputItem?.itemCategory, marketHashName)
   if (!marketHashName) return false
@@ -928,16 +943,18 @@ function passesUniverseSeedFilters(inputItem = {}, discardStats = {}, rejectedBy
   }
 
   if (!Boolean(inputItem?.hasSnapshotData)) {
-    incrementReasonCounter(discardStats, "ignored_missing_liquidity_data", itemCategory)
-    if (rejectedByItem) {
-      incrementItemReasonCounter(
-        rejectedByItem,
-        marketHashName,
-        "ignored_missing_liquidity_data",
-        itemCategory
-      )
+    if (!allowMissingSnapshotData) {
+      incrementReasonCounter(discardStats, "ignored_missing_liquidity_data", itemCategory)
+      if (rejectedByItem) {
+        incrementItemReasonCounter(
+          rejectedByItem,
+          marketHashName,
+          "ignored_missing_liquidity_data",
+          itemCategory
+        )
+      }
+      return false
     }
-    return false
   }
 
   if (Boolean(inputItem?.snapshotStale)) {
@@ -1534,6 +1551,71 @@ function isScannerRunOverdue(status = {}, nowMs = Date.now()) {
   return nowMs - lastActivityMs >= SCANNER_INTERVAL_MS + SCANNER_OVERDUE_GRACE_MS
 }
 
+function mergeDiscardStats(target = {}, source = {}) {
+  for (const [reason, count] of Object.entries(source || {})) {
+    if (reason === "__byCategory") continue
+    target[reason] = Number(target[reason] || 0) + Number(count || 0)
+  }
+
+  const sourceByCategory =
+    source?.__byCategory && typeof source.__byCategory === "object" ? source.__byCategory : {}
+  if (!Object.keys(sourceByCategory).length) return
+
+  if (!target.__byCategory || typeof target.__byCategory !== "object") {
+    target.__byCategory = {}
+  }
+
+  for (const [category, reasonStats] of Object.entries(sourceByCategory)) {
+    const normalizedCategory = normalizeItemCategory(category)
+    if (!target.__byCategory[normalizedCategory]) {
+      target.__byCategory[normalizedCategory] = {}
+    }
+    const bucket = target.__byCategory[normalizedCategory]
+    for (const [reason, count] of Object.entries(reasonStats || {})) {
+      const normalizedReason = normalizeDiagnosticReason(reason)
+      if (!normalizedReason) continue
+      bucket[normalizedReason] = Number(bucket[normalizedReason] || 0) + Number(count || 0)
+    }
+  }
+}
+
+function mergeRejectedByItem(target = {}, source = {}) {
+  for (const [itemName, payload] of Object.entries(source || {})) {
+    const normalizedItem = String(itemName || "").trim() || "Unknown item"
+    if (!target[normalizedItem]) {
+      target[normalizedItem] = {
+        total: 0,
+        category: normalizeItemCategory(payload?.category, normalizedItem),
+        reasons: {}
+      }
+    }
+    const bucket = target[normalizedItem]
+    if (!bucket.category) {
+      bucket.category = normalizeItemCategory(payload?.category, normalizedItem)
+    }
+    bucket.total += Number(payload?.total || 0)
+    for (const [reason, count] of Object.entries(payload?.reasons || {})) {
+      const normalizedReason = normalizeDiagnosticReason(reason) || "unknown"
+      bucket.reasons[normalizedReason] = Number(bucket.reasons[normalizedReason] || 0) + Number(count || 0)
+    }
+  }
+}
+
+function filterUniverseSeedsForScan(seeds = [], options = {}) {
+  const seedList = Array.isArray(seeds) ? seeds : []
+  const discardStats = {}
+  const rejectedByItem = {}
+  const selectedSeeds = seedList.filter((row) =>
+    passesUniverseSeedFilters(row, discardStats, rejectedByItem, options)
+  )
+
+  return {
+    selectedSeeds,
+    discardStats,
+    rejectedByItem
+  }
+}
+
 async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
   const [curatedSeeds, fallbackSeeds] = await Promise.all([
     loadCuratedUniverseSeeds().catch((err) => {
@@ -1548,12 +1630,26 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
 
   const mergedSeeds = mergeUniverseSeeds([curatedSeeds, fallbackSeeds])
   const { seeds: hydratedSeeds, snapshotWarmup } = await refreshSeedSnapshotsIfNeeded(mergedSeeds)
+  const strictFilterResult = filterUniverseSeedsForScan(hydratedSeeds)
+  let selectedFilterResult = strictFilterResult
+  let seedFilterMode = "strict"
+  if (strictFilterResult.selectedSeeds.length < MIN_STRICT_SEED_COVERAGE) {
+    const relaxedFilterResult = filterUniverseSeedsForScan(hydratedSeeds, {
+      allowMissingSnapshotData: true
+    })
+    if (relaxedFilterResult.selectedSeeds.length > strictFilterResult.selectedSeeds.length) {
+      selectedFilterResult = relaxedFilterResult
+      seedFilterMode =
+        strictFilterResult.selectedSeeds.length > 0
+          ? "strict_plus_missing_snapshot_data"
+          : "allow_missing_snapshot_data"
+    }
+  }
 
-  const filteredSeeds = hydratedSeeds.filter((row) =>
-    passesUniverseSeedFilters(row, discardStats, rejectedByItem)
-  )
+  mergeDiscardStats(discardStats, selectedFilterResult.discardStats)
+  mergeRejectedByItem(rejectedByItem, selectedFilterResult.rejectedByItem)
 
-  const ranked = filteredSeeds
+  const ranked = selectedFilterResult.selectedSeeds
     .map((row) => ({
       ...row,
       ...computeLiquidityRank({
@@ -1574,7 +1670,12 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
 
   return {
     seeds: ranked,
-    snapshotWarmup
+    snapshotWarmup: toSnapshotWarmupSummary({
+      ...snapshotWarmup,
+      seedFilterMode,
+      strictEligibleSeeds: strictFilterResult.selectedSeeds.length,
+      selectedEligibleSeeds: selectedFilterResult.selectedSeeds.length
+    })
   }
 }
 
@@ -1589,6 +1690,10 @@ function toSnapshotWarmupSummary(overrides = {}) {
     failedItems: 0,
     batchSize: SNAPSHOT_WARMUP_MAX_ITEMS,
     concurrency: SNAPSHOT_WARMUP_CONCURRENCY,
+    seedFilterMode: "strict",
+    strictCoverageThreshold: MIN_STRICT_SEED_COVERAGE,
+    strictEligibleSeeds: 0,
+    selectedEligibleSeeds: 0,
     errors: [],
     ...overrides
   }
@@ -1618,19 +1723,23 @@ async function mapWithConcurrency(items = [], concurrencyLimit = 1, mapper = asy
 
 function mergeSeedWithSnapshot(seed = {}, snapshot = null) {
   if (!snapshot || typeof snapshot !== "object") return seed
-  const referencePrice =
+  const referencePrice = toPositiveOrNull(
     toFiniteOrNull(snapshot?.average_7d_price) ??
-    toFiniteOrNull(snapshot?.lowest_listing_price) ??
-    toFiniteOrNull(seed?.referencePrice) ??
-    null
+      toFiniteOrNull(snapshot?.lowest_listing_price) ??
+      toFiniteOrNull(seed?.referencePrice)
+  )
+  const marketVolume7d = toPositiveOrNull(resolveVolume7d(snapshot))
+  const hasUsableSnapshotLiquidity = referencePrice != null || marketVolume7d != null
 
   return {
     ...seed,
-    marketVolume7d: resolveVolume7d(snapshot),
-    liquidityScore: computeLiquidityScoreFromSnapshot(snapshot),
-    sevenDayChangePercent: resolveSevenDayChangePercent(snapshot),
+    marketVolume7d,
+    liquidityScore:
+      hasUsableSnapshotLiquidity ? computeLiquidityScoreFromSnapshot(snapshot) : null,
+    sevenDayChangePercent:
+      hasUsableSnapshotLiquidity ? resolveSevenDayChangePercent(snapshot) : null,
     referencePrice,
-    hasSnapshotData: true,
+    hasSnapshotData: hasUsableSnapshotLiquidity,
     snapshotCapturedAt: snapshot?.captured_at || seed?.snapshotCapturedAt || null,
     snapshotStale: isSnapshotStale(snapshot)
   }
@@ -1660,10 +1769,7 @@ async function refreshSeedSnapshotsIfNeeded(seeds = []) {
           Number(b?.liquidityRank || Number.MAX_SAFE_INTEGER)
     )
 
-  if (
-    freshSeedsBefore >= SNAPSHOT_WARMUP_TRIGGER_FRESH_MIN ||
-    !warmupCandidates.length
-  ) {
+  if (!warmupCandidates.length) {
     return {
       seeds: rows,
       snapshotWarmup: toSnapshotWarmupSummary({
@@ -1673,7 +1779,11 @@ async function refreshSeedSnapshotsIfNeeded(seeds = []) {
     }
   }
 
-  const selected = warmupCandidates.slice(0, SNAPSHOT_WARMUP_MAX_ITEMS)
+  const warmupLimit =
+    freshSeedsBefore < SNAPSHOT_WARMUP_TRIGGER_FRESH_MIN
+      ? SNAPSHOT_WARMUP_MAX_ITEMS
+      : Math.max(Math.round(SNAPSHOT_WARMUP_MAX_ITEMS / 2), 5)
+  const selected = warmupCandidates.slice(0, warmupLimit)
   const errors = []
   const refreshedSkinIds = []
   const results = await mapWithConcurrency(
@@ -2082,6 +2192,7 @@ async function runScanInternal(options = {}) {
         topRejectedItems: toTopRejectedItems(rejectedByItem),
         rejectionReasonsByItem: toRejectionReasonsByItem(rejectedByItem),
         opportunitiesByCategory: {},
+        snapshotWarmup: snapshotWarmupSummary,
         scanProgress: buildScanProgressStats({
           universeTarget: UNIVERSE_TARGET_SIZE,
           candidateItems: 0,
@@ -2297,6 +2408,7 @@ async function runScanInternal(options = {}) {
       topRejectedItems: toTopRejectedItems(rejectedByItem),
       rejectionReasonsByItem: toRejectionReasonsByItem(rejectedByItem),
       opportunitiesByCategory,
+      snapshotWarmup: snapshotWarmupSummary,
       scanProgress,
       highConfidence: highConfidenceCount,
       riskyEligible: riskyEligibleCount
@@ -2353,6 +2465,8 @@ function toScanDiagnosticsSummary(scanPayload = {}, persistSummary = {}, trigger
     topRejectedItems: scanPayload?.summary?.topRejectedItems || [],
     rejectionReasonsByItem: scanPayload?.summary?.rejectionReasonsByItem || [],
     opportunitiesByCategory: scanPayload?.summary?.opportunitiesByCategory || {},
+    snapshotWarmup:
+      scanPayload?.summary?.snapshotWarmup || scanPayload?.pipeline?.snapshotWarmup || {},
     scanProgress: scanPayload?.summary?.scanProgress || {},
     highConfidence: Number(scanPayload?.summary?.highConfidence || 0),
     riskyEligible: Number(scanPayload?.summary?.riskyEligible || 0),
@@ -2691,6 +2805,8 @@ exports.getFeed = async (options = {}) => {
     topRejectedItems: diagnosticsSummary?.topRejectedItems || [],
     rejectionReasonsByItem: diagnosticsSummary?.rejectionReasonsByItem || [],
     opportunitiesByCategory: diagnosticsSummary?.opportunitiesByCategory || {},
+    snapshotWarmup:
+      diagnosticsSummary?.snapshotWarmup || diagnosticsSummary?.pipeline?.snapshotWarmup || {},
     scanProgress: diagnosticsSummary?.scanProgress || {},
     highConfidence: Number(diagnosticsSummary?.highConfidence || 0),
     riskyEligible: Number(diagnosticsSummary?.riskyEligible || 0),

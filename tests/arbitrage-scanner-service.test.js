@@ -206,6 +206,25 @@ test("universe seed filter rejects items without snapshot liquidity context", ()
   );
 });
 
+test("universe seed filter can allow missing snapshot data in fallback mode", () => {
+  const discardStats = {};
+  const allowed = passesUniverseSeedFilters(
+    {
+      marketHashName: "AK-47 | Redline (Field-Tested)",
+      hasSnapshotData: false,
+      snapshotStale: false,
+      referencePrice: null,
+      marketVolume7d: null
+    },
+    discardStats,
+    null,
+    { allowMissingSnapshotData: true }
+  );
+
+  assert.equal(allowed, true);
+  assert.equal(Number(discardStats.ignored_missing_liquidity_data || 0), 0);
+});
+
 test("universe seed filter rejects stale snapshot seeds", () => {
   const discardStats = {};
   const allowed = passesUniverseSeedFilters(
