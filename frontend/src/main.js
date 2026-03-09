@@ -1,5 +1,6 @@
 import "./style.css";
 import "./responsive.css";
+import { injectSpeedInsights } from "@vercel/speed-insights";
 import { API_URL } from "./config";
 import { clearAuthToken, getAuthToken, withAuthHeaders } from "./authToken";
 import {
@@ -23,6 +24,8 @@ import {
   renderStatTile,
 } from "./components/dashboardPrimitives";
 const app = document.querySelector("#app");
+injectSpeedInsights();
+
 const SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "UAH", "PLN", "CZK"];
 const CURRENCY_STORAGE_KEY = "cs2sa:selected_currency";
 const PRICING_MODE_STORAGE_KEY = "cs2sa:pricing_mode";
