@@ -123,7 +123,11 @@ async function fetchOverviewWithRetries(url, timeoutMs, maxRetries) {
 
       if (res.status === 429) {
         const retryAfter = Number(res.headers.get("retry-after") || 0);
-        const err = new AppError("Steam market rate limited", 429);
+        const err = new AppError(
+          "Steam market rate limited",
+          429,
+          "STEAM_MARKET_RATE_LIMITED"
+        );
         if (retryAfter > 0) {
           err.retryAfterMs = retryAfter * 1000;
         }
