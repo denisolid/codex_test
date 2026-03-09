@@ -170,8 +170,26 @@ module.exports = {
   arbitrageScannerIntervalMinutes: Number(
     process.env.ARBITRAGE_SCANNER_INTERVAL_MINUTES || 5
   ),
+  arbitrageDefaultUniverseLimit: Number(
+    process.env.ARBITRAGE_DEFAULT_UNIVERSE_LIMIT || 500
+  ),
   arbitrageScannerUniverseTargetSize: Number(
-    process.env.ARBITRAGE_SCANNER_UNIVERSE_TARGET_SIZE || 50
+    process.env.ARBITRAGE_SCANNER_UNIVERSE_TARGET_SIZE ||
+      process.env.ARBITRAGE_DEFAULT_UNIVERSE_LIMIT ||
+      500
+  ),
+  arbitrageScanBatchSize: Number(
+    process.env.ARBITRAGE_SCAN_BATCH_SIZE ||
+      process.env.ARBITRAGE_QUOTE_REFRESH_BATCH_SIZE ||
+      40
+  ),
+  arbitrageMaxConcurrentMarketRequests: Number(
+    process.env.ARBITRAGE_MAX_CONCURRENT_MARKET_REQUESTS ||
+      process.env.MARKET_COMPARE_CONCURRENCY ||
+      4
+  ),
+  arbitrageScanTimeoutPerBatchMs: Number(
+    process.env.ARBITRAGE_SCAN_TIMEOUT_PER_BATCH_MS || 30000
   ),
   arbitrageQuoteRefreshBatchSize: Number(
     process.env.ARBITRAGE_QUOTE_REFRESH_BATCH_SIZE || 40
@@ -180,7 +198,7 @@ module.exports = {
     process.env.ARBITRAGE_QUOTE_COMPUTE_BATCH_SIZE || 80
   ),
   arbitrageUniverseDbLimit: Number(
-    process.env.ARBITRAGE_UNIVERSE_DB_LIMIT || 120
+    process.env.ARBITRAGE_UNIVERSE_DB_LIMIT || 800
   ),
   arbitrageFeedRetentionHours: Number(process.env.ARBITRAGE_FEED_RETENTION_HOURS || 24),
   arbitrageFeedActiveLimit: Number(process.env.ARBITRAGE_FEED_ACTIVE_LIMIT || 500),

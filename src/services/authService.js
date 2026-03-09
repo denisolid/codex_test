@@ -111,23 +111,30 @@ function isRateLimitMessage(message) {
   return /rate\s*limit|too\s*many\s*requests/i.test(String(message || ""));
 }
 
-function isUserNotFoundMessage(message) {
-  return /user\s+not\s+found/i.test(String(message || ""));
-}
-
-exports.register = async (email, password) => {
+exports.register = async (email, password, { apiOrigin, next } = {}) => {
   const safeEmail = validateEmail(email);
   const safePassword = validatePassword(password);
+  const verifyNext = String(next || authEmailRedirectTo || "").trim();
+  const safeApiOrigin = String(apiOrigin || "").trim();
 
-  const { data, error } = await supabaseAuthClient.auth.signUp({
+  const { data, error } = await supabaseAdmin.auth.admin.createUser({
     email: safeEmail,
     password: safePassword,
-    options: {
-      emailRedirectTo: authEmailRedirectTo
+    email_confirm: false,
+    user_metadata: {
+      provider: "email"
     }
   });
 
   if (error) {
+    if (isDuplicateUserError(error)) {
+      throw new AppError(
+        "This email is already registered. Log in or request another verification email.",
+        409,
+        "EMAIL_IN_USE"
+      );
+    }
+
     if (isRateLimitMessage(error.message)) {
       throw new AppError(
         "Too many sign-up attempts. Try again shortly.",
@@ -143,13 +150,48 @@ exports.register = async (email, password) => {
     );
   }
 
+  const user = data?.user || null;
+  if (!user?.id || !user?.email) {
+    throw new AppError("Unable to complete registration. Try again.", 400, "REGISTER_FAILED");
+  }
+
+  try {
+    await userRepo.ensureExists(user.id, safeEmail);
+  } catch (err) {
+    if (String(err?.code || "").trim().toUpperCase() !== "PROFILE_AUTH_USER_MISSING") {
+      throw err;
+    }
+  }
+
+  let verificationEmailSent = true;
+  try {
+    await emailOnboardingService.requestAccountEmailVerification({
+      userId: user.id,
+      email: safeEmail,
+      apiOrigin: safeApiOrigin,
+      next: verifyNext
+    });
+  } catch (err) {
+    const code = String(err?.code || "").trim().toUpperCase();
+    if (
+      code === "EMAIL_PROVIDER_NOT_CONFIGURED" ||
+      code === "EMAIL_SEND_FAILED" ||
+      code === "MISSING_API_ORIGIN"
+    ) {
+      verificationEmailSent = false;
+    } else {
+      throw err;
+    }
+  }
+
   return {
-    user: data.user,
-    session: data.session,
-    requiresEmailConfirmation: !data.session,
-    message: data.session
-      ? "Registration successful."
-      : "Registration successful. Check your inbox for a confirmation link before login."
+    user,
+    session: null,
+    requiresEmailConfirmation: true,
+    verificationEmailSent,
+    message: verificationEmailSent
+      ? "Registration successful. Check your inbox for a confirmation link before login."
+      : "Registration successful. We could not send your verification email right now. Use resend confirmation on login."
   };
 };
 
@@ -205,38 +247,49 @@ exports.getUserByAccessToken = async (token) => {
   return data.user;
 };
 
-exports.resendConfirmation = async (email) => {
+exports.resendConfirmation = async (email, { apiOrigin, next } = {}) => {
   const safeEmail = validateEmail(email);
+  const safeApiOrigin = String(apiOrigin || "").trim();
+  const verifyNext = String(next || authEmailRedirectTo || "").trim();
+  const genericMessage =
+    "If this account exists and is not confirmed, a confirmation link has been sent. Check inbox and spam.";
 
-  const { error } = await supabaseAuthClient.auth.resend({
-    type: "signup",
-    email: safeEmail,
-    options: {
-      emailRedirectTo: authEmailRedirectTo
-    }
+  const user = await userRepo.getByEmail(safeEmail);
+  if (!user?.id) {
+    return {
+      message: genericMessage
+    };
+  }
+
+  const onboarding = emailOnboardingService.resolveOnboardingState({
+    userProfile: user
   });
+  if (onboarding.emailVerified && onboarding.onboardingCompleted) {
+    return {
+      message: genericMessage
+    };
+  }
 
-  if (error) {
-    if (isRateLimitMessage(error.message)) {
+  try {
+    await emailOnboardingService.requestAccountEmailVerification({
+      userId: user.id,
+      email: safeEmail,
+      apiOrigin: safeApiOrigin,
+      next: verifyNext
+    });
+  } catch (err) {
+    if (isRateLimitMessage(err?.message) || String(err?.code || "").trim().toUpperCase() === "RATE_LIMITED") {
       throw new AppError(
         "Too many resend attempts. Try again shortly.",
         429,
         "RATE_LIMITED"
       );
     }
-
-    if (!isUserNotFoundMessage(error.message)) {
-      throw new AppError(
-        "Could not resend confirmation email right now. Try again later.",
-        500,
-        "RESEND_FAILED"
-      );
-    }
+    throw err;
   }
 
   return {
-    message:
-      "If this account exists and is not confirmed, a confirmation link has been sent. Check inbox and spam."
+    message: genericMessage
   };
 };
 

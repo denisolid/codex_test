@@ -2330,6 +2330,7 @@ body.ui-sync-blocked .app-shell {
 .portfolio-tools-rail .panel {
   grid-column: auto;
   margin: 0;
+  flex: 0 0 auto;
 }
 
 .portfolio-tools-rail::-webkit-scrollbar {

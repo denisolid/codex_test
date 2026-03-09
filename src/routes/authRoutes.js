@@ -17,6 +17,7 @@ router.get("/steam/callback", authRateLimiter, ctrl.steamCallback);
 router.get("/steam/link/start", authRateLimiter, ctrl.steamLinkStart);
 router.get("/steam/link/callback", authRateLimiter, ctrl.steamLinkCallback);
 router.post("/resend-confirmation", authRateLimiter, ctrl.resendConfirmation);
+router.get("/verify-email", authRateLimiter, ctrl.verifyEmail);
 router.post("/onboarding/email/start", authRateLimiter, ctrl.startSteamEmailOnboarding);
 router.post("/onboarding/email/resend", authRateLimiter, ctrl.resendSteamEmailOnboarding);
 router.get("/onboarding/verify", authRateLimiter, ctrl.verifySteamEmailOnboarding);

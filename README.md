@@ -12,7 +12,7 @@ Backend MVP implemented with:
 1. Copy `.env.example` to `.env` and fill Supabase values.
    - for local frontend, keep `FRONTEND_ORIGIN=http://localhost:5173`
    - set `FRONTEND_ORIGINS` for production allowlist (comma-separated, origin only, no trailing slash/path)
-   - set `AUTH_EMAIL_REDIRECT_TO` so confirmation emails return to your login page
+   - set `AUTH_EMAIL_REDIRECT_TO` as the default login redirect after email verification
    - set `API_PUBLIC_URL` to your backend public URL (for Steam callback URL generation)
    - set `APP_AUTH_SECRET` to a long random secret
    - optional: set `STEAM_WEB_API_KEY` to enrich Steam profile name/avatar
@@ -63,6 +63,7 @@ After login, the same `/` page renders the authenticated app view.
 - `POST /auth/register`
 - `POST /auth/login`
 - `POST /auth/resend-confirmation`
+- `GET /auth/verify-email`
 - `POST /auth/session`
 - `GET /auth/steam/start`
 - `GET /auth/steam/callback`

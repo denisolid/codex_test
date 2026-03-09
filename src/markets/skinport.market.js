@@ -124,6 +124,10 @@ async function batchGetPrices(items = [], options = {}) {
   const currency = String(options.currency || "USD").trim().toUpperCase();
   const apiCurrency = resolveApiCurrency(currency);
   const chunks = splitIntoChunks(normalizedNames);
+  const concurrency = Math.max(
+    Math.min(Number(options.concurrency || 2), 6),
+    1
+  );
   const chunkResults = await mapWithConcurrency(
     chunks,
     async (namesChunk) => {
@@ -144,7 +148,7 @@ async function batchGetPrices(items = [], options = {}) {
         return [];
       }
     },
-    2
+    concurrency
   );
 
   const byName = {};

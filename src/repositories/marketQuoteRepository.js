@@ -3,6 +3,7 @@ const AppError = require("../utils/AppError")
 
 const TABLE = "market_quotes"
 const SOURCES = new Set(["steam", "skinport", "csfloat", "dmarket"])
+const INSERT_BATCH_SIZE = 400
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -69,10 +70,15 @@ exports.insertRows = async (rows = []) => {
   const payload = normalizeRows(rows)
   if (!payload.length) return 0
 
-  const { error } = await supabaseAdmin.from(TABLE).insert(payload)
-  if (error) {
-    throw new AppError(error.message, 500)
+  let insertedCount = 0
+  for (let index = 0; index < payload.length; index += INSERT_BATCH_SIZE) {
+    const chunk = payload.slice(index, index + INSERT_BATCH_SIZE)
+    const { error } = await supabaseAdmin.from(TABLE).insert(chunk)
+    if (error) {
+      throw new AppError(error.message, 500)
+    }
+    insertedCount += chunk.length
   }
 
-  return payload.length
+  return insertedCount
 }

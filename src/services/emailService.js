@@ -144,3 +144,54 @@ exports.sendSteamOnboardingVerificationEmail = async ({
     text
   });
 };
+
+exports.sendAccountVerificationEmail = async ({
+  to,
+  verifyUrl,
+  displayName = ""
+}) => {
+  const safeTo = normalizeEmail(to);
+  const safeVerifyUrl = String(verifyUrl || "").trim();
+  if (!safeTo) {
+    throw new AppError("Recipient email is required", 400, "INVALID_EMAIL");
+  }
+  if (!safeVerifyUrl) {
+    throw new AppError("Verification URL is required", 500, "EMAIL_VERIFICATION_URL_MISSING");
+  }
+
+  const greeting = String(displayName || "").trim() || "there";
+  const subject = "Confirm your Skin Alpha account";
+  const text = [
+    `Hi ${greeting},`,
+    "",
+    "Your account was created successfully.",
+    "Confirm your email address to complete registration:",
+    safeVerifyUrl,
+    "",
+    "If you did not create this account, you can ignore this email."
+  ].join("\n");
+
+  const html = `
+    <div style="background:#090f1f;padding:24px;font-family:Inter,Arial,sans-serif;color:#d7def5;">
+      <div style="max-width:560px;margin:0 auto;background:linear-gradient(140deg,#0e1730,#101a39);border:1px solid #1f2a4d;border-radius:14px;padding:24px;">
+        <p style="margin:0 0 10px;color:#96a5d9;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;">Skin Alpha</p>
+        <h1 style="margin:0 0 14px;font-size:24px;line-height:1.2;color:#f2f5ff;">Confirm your email</h1>
+        <p style="margin:0 0 18px;color:#c8d0ef;">Hi ${greeting}, your account was created successfully. Confirm your email to finish setup.</p>
+        <p style="margin:0 0 22px;">
+          <a href="${safeVerifyUrl}" style="display:inline-block;background:#3b82f6;color:#ffffff;text-decoration:none;padding:11px 16px;border-radius:10px;font-weight:600;">
+            Confirm Email
+          </a>
+        </p>
+        <p style="margin:0;color:#9aa7d6;font-size:13px;line-height:1.5;">If the button does not work, open this link:</p>
+        <p style="margin:6px 0 0;word-break:break-all;color:#9fc2ff;font-size:13px;">${safeVerifyUrl}</p>
+      </div>
+    </div>
+  `;
+
+  return exports.sendEmail({
+    to: safeTo,
+    subject,
+    html,
+    text
+  });
+};

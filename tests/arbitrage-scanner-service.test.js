@@ -22,7 +22,11 @@ const {
     buildFeedInsertRow,
     mapFeedRowToApiRow,
     isMateriallyNewOpportunity,
-    isScannerRunOverdue
+    isScannerRunOverdue,
+    DEFAULT_UNIVERSE_LIMIT,
+    SCAN_BATCH_SIZE,
+    MAX_CONCURRENT_MARKET_REQUESTS,
+    SCAN_TIMEOUT_PER_BATCH
   }
 } = require("../src/services/arbitrageScannerService");
 
@@ -351,4 +355,11 @@ test("scanner overdue watchdog respects running state and stale timestamps", () 
   );
 
   assert.equal(isScannerRunOverdue({}, now), true);
+});
+
+test("scanner defaults are configured for 500-scale batching", () => {
+  assert.equal(DEFAULT_UNIVERSE_LIMIT >= 500, true);
+  assert.equal(SCAN_BATCH_SIZE >= 25 && SCAN_BATCH_SIZE <= 50, true);
+  assert.equal(MAX_CONCURRENT_MARKET_REQUESTS >= 1, true);
+  assert.equal(SCAN_TIMEOUT_PER_BATCH >= 1000, true);
 });
