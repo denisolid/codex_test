@@ -5298,6 +5298,55 @@ a:hover {
   min-height: 174px;
 }
 
+.dashboard-kpi-skeleton {
+  display: grid;
+  gap: 14px;
+}
+
+.dashboard-kpi-skeleton-status {
+  width: min(240px, 48%);
+  height: 12px;
+}
+
+.dashboard-kpi-skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.dashboard-kpi-skeleton-card {
+  display: grid;
+  gap: 10px;
+}
+
+.dashboard-kpi-skeleton-card .table-row-skeleton {
+  height: 20px;
+}
+
+.opportunities-skeleton-row td {
+  padding: 11px 14px;
+}
+
+.opportunities-table-skeleton .table-row-skeleton {
+  height: 16px;
+}
+
+.account-loading-stack {
+  display: grid;
+  gap: 10px;
+  max-width: 520px;
+}
+
+.account-loading-stack .table-row-skeleton {
+  height: 13px;
+}
+
+@media (max-width: 900px) {
+  .dashboard-kpi-skeleton-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .movers-grid {
   display: grid;
   gap: 8px;
@@ -5422,119 +5471,166 @@ a:hover {
   display: inline-grid;
   grid-auto-flow: column;
   align-items: center;
-  gap: 5px;
-  padding: 5px;
-  border-radius: 16px;
-  border: 1px solid rgba(112, 133, 171, 0.26);
-  background: linear-gradient(146deg, rgba(6, 10, 18, 0.95), rgba(9, 14, 24, 0.94));
-  box-shadow:
-    0 4px 10px rgba(2, 6, 14, 0.24),
-    inset 0 1px 0 rgba(255, 255, 255, 0.025);
-  backdrop-filter: blur(10px) saturate(1.02);
+  gap: 13px;
+  padding: 0;
 }
 
 .scanner-switch-segment {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 9px;
-  min-height: 46px;
-  min-width: 186px;
-  padding: 9px 18px;
-  border-radius: 12px;
+  gap: 8px;
+  min-height: 50px;
+  min-width: 214px;
+  padding: 11px 22px;
+  border-radius: 15px;
   border: 1px solid transparent;
-  background: rgba(11, 16, 27, 0.2);
-  color: rgba(191, 205, 227, 0.78);
-  font-size: 0.91rem;
+  color: rgba(236, 243, 255, 0.96);
+  font-size: 0.96rem;
   font-weight: 600;
-  letter-spacing: 0.006em;
+  letter-spacing: 0.005em;
   line-height: 1;
   text-shadow: none;
-  box-shadow: none;
-  transform: none;
+  box-shadow:
+    0 14px 30px rgba(2, 8, 20, 0.46),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.02);
+  transform: translateY(0);
   filter: none;
   transition:
+    transform 140ms ease,
     background 140ms ease,
     border-color 140ms ease,
     color 140ms ease,
-    box-shadow 140ms ease;
+    box-shadow 160ms ease;
 }
 
-.scanner-switch-segment:not(.is-active) {
-  border-color: rgba(110, 132, 168, 0.08);
+.primaryScannerButton,
+.scanner-switch-segment-portfolio {
+  background: linear-gradient(135deg, #2563eb 0%, #4338ca 100%);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: rgba(249, 252, 255, 0.98);
+  box-shadow:
+    0 20px 42px rgba(13, 33, 82, 0.54),
+    0 8px 20px rgba(37, 99, 235, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -8px 18px rgba(19, 50, 143, 0.24);
 }
 
-.scanner-switcher .scanner-switch-segment:hover {
-  transform: none;
+.secondaryScannerButton,
+.scanner-switch-segment-global {
+  background:
+    linear-gradient(160deg, rgba(18, 25, 41, 0.86), rgba(10, 16, 30, 0.74)),
+    rgba(10, 16, 30, 0.72);
+  border-color: rgba(129, 140, 248, 0.22);
+  color: rgba(224, 233, 247, 0.95);
+  box-shadow:
+    0 16px 34px rgba(2, 8, 20, 0.52),
+    0 6px 16px rgba(41, 57, 108, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.scanner-switcher .primaryScannerButton:hover,
+.scanner-switcher .scanner-switch-segment-portfolio:hover {
+  transform: translateY(-1px);
   filter: none;
-  background: rgba(19, 27, 42, 0.28);
-  border-color: rgba(132, 155, 193, 0.18);
-  color: rgba(220, 232, 251, 0.94);
-  box-shadow: none;
+  background: linear-gradient(135deg, #2e6ef1 0%, #4d43d5 100%);
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow:
+    0 24px 48px rgba(13, 33, 82, 0.58),
+    0 10px 22px rgba(37, 99, 235, 0.36),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -8px 18px rgba(18, 47, 134, 0.22);
+}
+
+.scanner-switcher .secondaryScannerButton:hover,
+.scanner-switcher .scanner-switch-segment-global:hover {
+  transform: translateY(-1px);
+  filter: none;
+  background:
+    linear-gradient(160deg, rgba(34, 42, 71, 0.84), rgba(16, 23, 43, 0.82)),
+    rgba(13, 21, 38, 0.8);
+  border-color: rgba(129, 140, 248, 0.36);
+  color: rgba(238, 244, 252, 0.98);
+  box-shadow:
+    0 20px 40px rgba(3, 10, 24, 0.56),
+    0 8px 20px rgba(62, 79, 138, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
 .scanner-switcher .scanner-switch-segment:active {
-  transform: none;
+  transform: translateY(1px);
   filter: none;
 }
 
 .scanner-switcher .scanner-switch-segment:focus-visible {
-  outline: 2px solid rgba(138, 181, 238, 0.46);
-  outline-offset: 1px;
+  outline: 2px solid rgba(162, 196, 255, 0.62);
+  outline-offset: 2px;
 }
 
 .scanner-switch-segment.is-active {
-  color: #edf5ff;
+  box-shadow:
+    0 22px 42px rgba(5, 13, 33, 0.56),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14);
 }
 
+.primaryScannerButton.is-active,
 .scanner-switch-segment-portfolio.is-active {
-  background: linear-gradient(145deg, rgba(67, 128, 211, 0.2), rgba(34, 68, 131, 0.24));
-  border-color: rgba(117, 157, 222, 0.36);
-  box-shadow:
-    inset 0 0 0 1px rgba(176, 203, 241, 0.12),
-    0 2px 6px rgba(28, 80, 159, 0.14);
+  border-color: rgba(255, 255, 255, 0.2);
 }
 
-.scanner-switch-segment-global.is-active {
-  background: linear-gradient(145deg, rgba(120, 86, 211, 0.2), rgba(66, 42, 142, 0.24));
-  border-color: rgba(166, 133, 223, 0.38);
+.primaryScannerButton:active,
+.scanner-switch-segment-portfolio:active {
+  background: linear-gradient(135deg, #225ad9 0%, #3f35bb 100%);
   box-shadow:
-    inset 0 0 0 1px rgba(219, 196, 248, 0.12),
-    0 2px 6px rgba(89, 60, 176, 0.14);
+    0 10px 22px rgba(13, 33, 82, 0.44),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -8px 16px rgba(19, 47, 134, 0.2);
+}
+
+.secondaryScannerButton.is-active,
+.scanner-switch-segment-global.is-active {
+  border-color: rgba(145, 156, 255, 0.4);
+  background:
+    linear-gradient(160deg, rgba(40, 48, 78, 0.86), rgba(20, 26, 48, 0.82)),
+    rgba(14, 22, 40, 0.84);
+}
+
+.secondaryScannerButton:active,
+.scanner-switch-segment-global:active {
+  box-shadow:
+    0 10px 22px rgba(4, 10, 24, 0.44),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
 }
 
 .scanner-switch-icon {
   display: inline-grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(9, 14, 24, 0.58);
+  width: 30px;
+  height: 30px;
   flex-shrink: 0;
+  color: currentColor;
+  opacity: 0.9;
 }
 
-.scanner-switch-icon-portfolio {
-  background:
-    linear-gradient(150deg, rgba(106, 209, 255, 0.3), rgba(46, 132, 231, 0.3)),
-    rgba(8, 13, 23, 0.68);
-  color: rgba(213, 236, 255, 0.94);
+.primaryScannerButton .scanner-switch-icon,
+.scanner-switch-segment-portfolio .scanner-switch-icon {
+  color: rgba(238, 245, 255, 0.92);
 }
 
-.scanner-switch-icon-global {
-  background:
-    linear-gradient(150deg, rgba(210, 166, 255, 0.3), rgba(122, 82, 219, 0.3)),
-    rgba(14, 12, 25, 0.68);
-  color: rgba(235, 219, 255, 0.94);
+.secondaryScannerButton .scanner-switch-icon,
+.scanner-switch-segment-global .scanner-switch-icon {
+  color: rgba(199, 212, 235, 0.88);
 }
 
 .scanner-switch-icon-svg {
-  width: 11px;
-  height: 11px;
+  width: 22px;
+  height: 22px;
   display: block;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.65;
+  stroke-width: 1.7;
   stroke-linecap: round;
   stroke-linejoin: round;
 }

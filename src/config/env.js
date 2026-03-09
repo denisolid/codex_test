@@ -170,6 +170,18 @@ module.exports = {
   arbitrageScannerIntervalMinutes: Number(
     process.env.ARBITRAGE_SCANNER_INTERVAL_MINUTES || 5
   ),
+  arbitrageScannerUniverseTargetSize: Number(
+    process.env.ARBITRAGE_SCANNER_UNIVERSE_TARGET_SIZE || 50
+  ),
+  arbitrageQuoteRefreshBatchSize: Number(
+    process.env.ARBITRAGE_QUOTE_REFRESH_BATCH_SIZE || 40
+  ),
+  arbitrageQuoteComputeBatchSize: Number(
+    process.env.ARBITRAGE_QUOTE_COMPUTE_BATCH_SIZE || 80
+  ),
+  arbitrageUniverseDbLimit: Number(
+    process.env.ARBITRAGE_UNIVERSE_DB_LIMIT || 120
+  ),
   arbitrageFeedRetentionHours: Number(process.env.ARBITRAGE_FEED_RETENTION_HOURS || 24),
   arbitrageFeedActiveLimit: Number(process.env.ARBITRAGE_FEED_ACTIVE_LIMIT || 500),
   arbitrageDuplicateWindowHours: Number(process.env.ARBITRAGE_DUPLICATE_WINDOW_HOURS || 4),

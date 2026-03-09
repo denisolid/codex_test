@@ -28,6 +28,8 @@ const CURRENCY_STORAGE_KEY = "cs2sa:selected_currency";
 const PRICING_MODE_STORAGE_KEY = "cs2sa:pricing_mode";
 const DASHBOARD_DETAILS_STORAGE_KEY = "cs2sa:dashboard_details_open";
 const ACCOUNT_NOTIFICATIONS_STORAGE_KEY = "cs2sa:account_notifications";
+const AUTH_BOOTSTRAP_CACHE_STORAGE_KEY = "cs2sa:auth_bootstrap_cache_v1";
+const AUTH_BOOTSTRAP_CACHE_MAX_AGE_MS = 3 * 60 * 1000;
 const PRICING_MODE_LABELS = {
   steam: "Steam Price",
   best_sell_net: "Best Sell Net",
@@ -217,6 +219,147 @@ function persistDashboardDetailsPreference(nextOpen) {
   }
 }
 
+function clearAuthBootstrapCache() {
+  try {
+    localStorage.removeItem(AUTH_BOOTSTRAP_CACHE_STORAGE_KEY);
+  } catch (_err) {
+    // Ignore storage clear errors.
+  }
+}
+
+function readAuthBootstrapCache() {
+  try {
+    const raw = localStorage.getItem(AUTH_BOOTSTRAP_CACHE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const cachedAt = Number(parsed?.cachedAt || 0);
+    if (!Number.isFinite(cachedAt) || cachedAt <= 0) {
+      clearAuthBootstrapCache();
+      return null;
+    }
+    if (Date.now() - cachedAt > AUTH_BOOTSTRAP_CACHE_MAX_AGE_MS) {
+      clearAuthBootstrapCache();
+      return null;
+    }
+    if (!parsed?.payload || typeof parsed.payload !== "object") {
+      clearAuthBootstrapCache();
+      return null;
+    }
+    return parsed.payload;
+  } catch (_err) {
+    clearAuthBootstrapCache();
+    return null;
+  }
+}
+
+function persistAuthBootstrapCache(payload) {
+  const safePayload = payload && typeof payload === "object" ? payload : null;
+  const safeUser = safePayload?.user && typeof safePayload.user === "object"
+    ? safePayload.user
+    : null;
+  if (!safeUser?.id) {
+    clearAuthBootstrapCache();
+    return;
+  }
+
+  const onboarding =
+    safePayload?.onboarding && typeof safePayload.onboarding === "object"
+      ? safePayload.onboarding
+      : {};
+  const profile =
+    safePayload?.profile && typeof safePayload.profile === "object"
+      ? safePayload.profile
+      : {};
+  const metadata =
+    safeUser?.user_metadata && typeof safeUser.user_metadata === "object"
+      ? safeUser.user_metadata
+      : {};
+
+  const compactPayload = {
+    user: {
+      id: String(safeUser.id || ""),
+      email: String(safeUser.email || ""),
+      created_at: safeUser.created_at || null,
+      user_metadata: {
+        provider: metadata.provider || profile.provider || null,
+        steam_id64: metadata.steam_id64 || profile.steamId64 || null,
+        display_name: metadata.display_name || profile.displayName || null,
+        avatar_url: metadata.avatar_url || profile.avatarUrl || null,
+      },
+    },
+    emailConfirmed:
+      typeof safePayload?.emailConfirmed === "boolean"
+        ? safePayload.emailConfirmed
+        : Boolean(onboarding.emailVerified),
+    onboarding: {
+      email: onboarding.email || profile.email || safeUser.email || null,
+      pendingEmail: onboarding.pendingEmail || profile.pendingEmail || null,
+      emailVerified: Boolean(onboarding.emailVerified),
+      onboardingCompleted: Boolean(onboarding.onboardingCompleted),
+      onboardingRequired: Boolean(onboarding.onboardingRequired),
+      plan: onboarding.plan || profile.plan || profile.planTier || "free",
+      planStatus: onboarding.planStatus || profile.planStatus || "active",
+    },
+    profile: {
+      id: profile.id || safeUser.id,
+      steamId64: profile.steamId64 || metadata.steam_id64 || null,
+      email: profile.email || onboarding.email || safeUser.email || null,
+      pendingEmail: profile.pendingEmail || onboarding.pendingEmail || null,
+      emailVerified:
+        typeof profile.emailVerified === "boolean"
+          ? profile.emailVerified
+          : Boolean(onboarding.emailVerified),
+      onboardingCompleted:
+        typeof profile.onboardingCompleted === "boolean"
+          ? profile.onboardingCompleted
+          : Boolean(onboarding.onboardingCompleted),
+      onboardingRequired:
+        typeof profile.onboardingRequired === "boolean"
+          ? profile.onboardingRequired
+          : Boolean(onboarding.onboardingRequired),
+      displayName: profile.displayName || metadata.display_name || null,
+      avatarUrl: profile.avatarUrl || metadata.avatar_url || null,
+      linkedSteam:
+        typeof profile.linkedSteam === "boolean"
+          ? profile.linkedSteam
+          : Boolean(profile.steamId64 || metadata.steam_id64),
+      publicPortfolioEnabled: profile.publicPortfolioEnabled !== false,
+      ownershipAlertsEnabled: profile.ownershipAlertsEnabled !== false,
+      planTier: profile.planTier || "free",
+      plan: profile.plan || onboarding.plan || profile.planTier || "free",
+      planStatus: profile.planStatus || onboarding.planStatus || "active",
+      provider: profile.provider || metadata.provider || "email",
+    },
+  };
+
+  try {
+    localStorage.setItem(
+      AUTH_BOOTSTRAP_CACHE_STORAGE_KEY,
+      JSON.stringify({
+        cachedAt: Date.now(),
+        payload: compactPayload,
+      }),
+    );
+  } catch (_err) {
+    // Ignore storage write errors.
+  }
+}
+
+function hydrateAuthFromBootstrapCache() {
+  const cachedPayload = readAuthBootstrapCache();
+  if (!cachedPayload) return false;
+  const profile = buildAuthProfile(cachedPayload);
+  if (!profile) {
+    clearAuthBootstrapCache();
+    return false;
+  }
+
+  state.authenticated = true;
+  state.authProfile = profile;
+  syncEmailOnboardingStateFromProfile();
+  return true;
+}
+
 function createExitWhatIfState() {
   return {
     quantity: "1",
@@ -290,6 +433,8 @@ function formatCountdownLabel(totalSeconds) {
 
 const state = {
   sessionBooting: true,
+  authBootstrapLoading: true,
+  authBootstrapReady: false,
   authenticated: false,
   authProfile: null,
   portfolio: null,
@@ -549,6 +694,7 @@ const ACCOUNT_NAV_SECTIONS = [
 const HEADER_NAV_TAB_IDS = new Set([
   "portfolio",
   "dashboard",
+  "opportunities",
   "market",
   "alerts",
   "trades",
@@ -1106,6 +1252,16 @@ function getHeaderEmailLabel() {
 
 function isEmailOnboardingRequired() {
   return Boolean(state.authenticated && state.authProfile?.onboardingRequired);
+}
+
+function isInitialPortfolioHydration() {
+  return Boolean(
+    state.authenticated &&
+      !state.publicPage.steamId64 &&
+      !isEmailOnboardingRequired() &&
+      state.portfolioLoading &&
+      !state.portfolio,
+  );
 }
 
 function getOnboardingRedirectTarget() {
@@ -2373,8 +2529,10 @@ async function api(path, options = {}) {
   const payload = await res.json().catch(() => ({}));
   if (res.status === 401) {
     clearAuthToken();
+    clearAuthBootstrapCache();
     state.authenticated = false;
     state.authProfile = null;
+    state.authBootstrapReady = true;
   }
   if (!res.ok) {
     const err = new Error(payload.error || "Request failed");
@@ -4617,6 +4775,9 @@ async function logout() {
   }
 
   clearAuthToken();
+  clearAuthBootstrapCache();
+  state.authBootstrapLoading = false;
+  state.authBootstrapReady = true;
   state.authenticated = false;
   state.authProfile = null;
   state.portfolio = null;
@@ -4865,14 +5026,28 @@ async function refreshPortfolio(options = {}) {
   const { silent = false } = options;
   clearError();
   state.portfolioLoading = true;
-  if (!silent) {
+  if (!silent || !state.portfolio) {
     render();
   }
 
   try {
-    const mePayload = await api("/auth/me");
-    state.authProfile = buildAuthProfile(mePayload);
-    syncEmailOnboardingStateFromProfile();
+    if (!state.authenticated) {
+      state.portfolio = null;
+      state.history = [];
+      state.transactions = [];
+      state.alertsFeed = [];
+      state.alertEvents = [];
+      state.ownershipAlertEvents = [];
+      state.social.watchlist = [];
+      state.social.leaderboard = [];
+      state.alerts = [];
+      state.marketTab.autoLoaded = false;
+      state.marketTab.inventoryValue = null;
+      state.marketTab.opportunities = createMarketOpportunitiesState();
+      state.globalOpportunities = createGlobalOpportunitiesState();
+      return false;
+    }
+
     if (isEmailOnboardingRequired()) {
       state.portfolio = null;
       state.history = [];
@@ -5046,14 +5221,40 @@ async function refreshPortfolio(options = {}) {
   }
 }
 
-async function refreshAuthProfile() {
+async function refreshAuthBootstrap(options = {}) {
+  const { silent = true } = options;
+  state.authBootstrapLoading = true;
+  if (!silent) {
+    clearError();
+    render();
+  }
+
   try {
-    const mePayload = await api("/auth/me");
-    state.authProfile = buildAuthProfile(mePayload);
+    const bootstrapPayload = await api("/auth/bootstrap");
+    const profile = buildAuthProfile(bootstrapPayload);
+    state.authenticated = Boolean(profile);
+    state.authProfile = profile;
+    state.authBootstrapReady = true;
     syncEmailOnboardingStateFromProfile();
+    persistAuthBootstrapCache(bootstrapPayload);
     return true;
-  } catch (_err) {
+  } catch (err) {
+    if (Number(err?.status || 0) === 401) {
+      clearAuthBootstrapCache();
+      state.authenticated = false;
+      state.authProfile = null;
+      state.authBootstrapReady = true;
+      return false;
+    }
+    if (!silent) {
+      setError(err.message || "Failed to restore session.");
+    }
     return false;
+  } finally {
+    state.authBootstrapLoading = false;
+    if (!silent) {
+      render();
+    }
   }
 }
 
@@ -5088,7 +5289,7 @@ async function submitEmailOnboarding(event) {
       payload?.pendingEmail || email,
     ).toLowerCase();
     state.emailOnboarding.editMode = false;
-    await refreshAuthProfile();
+    await refreshAuthBootstrap({ silent: true });
   } catch (err) {
     state.emailOnboarding.error =
       err.message || "Failed to send verification email.";
@@ -5120,7 +5321,7 @@ async function resendEmailOnboarding() {
     state.emailOnboarding.email = String(
       payload?.pendingEmail || state.emailOnboarding.email,
     ).toLowerCase();
-    await refreshAuthProfile();
+    await refreshAuthBootstrap({ silent: true });
   } catch (err) {
     state.emailOnboarding.error =
       err.message || "Failed to resend verification email.";
@@ -5139,11 +5340,12 @@ async function refreshEmailOnboardingStatus() {
   render();
 
   try {
-    await refreshPortfolio({ silent: true });
+    await refreshAuthBootstrap({ silent: true });
     if (isEmailOnboardingRequired()) {
       state.emailOnboarding.info =
         "Verification still pending. Confirm from your email, then refresh.";
     } else {
+      await refreshPortfolio({ silent: true });
       state.emailOnboarding.info = "Email verified. Free plan activated.";
     }
   } catch (err) {
@@ -5327,7 +5529,10 @@ async function disconnectSteamAccount() {
 
   try {
     const payload = await api("/users/me/steam", { method: "DELETE" });
-    await refreshPortfolio({ silent: true });
+    await Promise.all([
+      refreshAuthBootstrap({ silent: true }),
+      refreshPortfolio({ silent: true }),
+    ]);
     notify("success", payload?.message || "Steam disconnected.");
   } catch (err) {
     setError(err.message);
@@ -5355,7 +5560,10 @@ async function editAccountProfile() {
       method: "PATCH",
       body: JSON.stringify({ displayName }),
     });
-    await refreshPortfolio({ silent: true });
+    await Promise.all([
+      refreshAuthBootstrap({ silent: true }),
+      refreshPortfolio({ silent: true }),
+    ]);
     notify("success", "Profile updated.");
   } catch (err) {
     setError(err.message);
@@ -5514,7 +5722,10 @@ async function updatePublicPortfolioSettings(e) {
       method: "PATCH",
       body: JSON.stringify({ publicPortfolioEnabled: enabled }),
     });
-    await refreshPortfolio({ silent: true });
+    await Promise.all([
+      refreshAuthBootstrap({ silent: true }),
+      refreshPortfolio({ silent: true }),
+    ]);
     state.accountNotice = enabled
       ? "Public portfolio enabled. Your /u/SteamID page is now visible."
       : "Public portfolio disabled.";
@@ -5540,7 +5751,10 @@ async function updateOwnershipAlertSettings(e) {
       method: "PATCH",
       body: JSON.stringify({ enabled }),
     });
-    await refreshPortfolio({ silent: true });
+    await Promise.all([
+      refreshAuthBootstrap({ silent: true }),
+      refreshPortfolio({ silent: true }),
+    ]);
     state.accountNotice = enabled
       ? "Ownership-change alerts enabled."
       : "Ownership-change alerts disabled.";
@@ -5650,7 +5864,10 @@ async function updatePlanTier(planTier) {
       method: "PATCH",
       body: JSON.stringify({ planTier }),
     });
-    await refreshPortfolio({ silent: true });
+    await Promise.all([
+      refreshAuthBootstrap({ silent: true }),
+      refreshPortfolio({ silent: true }),
+    ]);
     if (String(planTier || "").toLowerCase() === "team") {
       await refreshTeamDashboard({ silent: true });
     } else {
@@ -5935,17 +6152,36 @@ async function refreshGlobalOpportunities(options = {}) {
     const autoForce = !force && shouldAutoForceGlobalRefresh(scanner);
     const shouldForceRefresh = Boolean(force || autoForce);
     let pendingScanRunId = String(scanner.pendingScanRunId || "").trim();
+    let triggerScanPromise = null;
     if (shouldForceRefresh) {
       const trigger = force ? "manual" : "auto_stale_watchdog";
-      const refreshPayload = await api("/opportunities/refresh", {
-        method: "POST",
-        body: JSON.stringify({ trigger }),
-      });
-      pendingScanRunId = String(refreshPayload?.scanRunId || "").trim();
-      scanner.pendingScanRunId = pendingScanRunId;
       if (autoForce) {
         scanner.lastAutoForceAt = new Date().toISOString();
       }
+      triggerScanPromise = api("/opportunities/refresh", {
+        method: "POST",
+        body: JSON.stringify({ trigger }),
+      })
+        .then((refreshPayload) => {
+          const scanRunId = String(refreshPayload?.scanRunId || "").trim();
+          if (!scanRunId) return;
+          scanner.pendingScanRunId = scanRunId;
+          scanner.status = {
+            ...(scanner.status && typeof scanner.status === "object"
+              ? scanner.status
+              : {}),
+            currentStatus: "running",
+            currentRunId: scanRunId,
+          };
+          scheduleGlobalOpportunitiesFollowUpPoll(1500);
+          render();
+        })
+        .catch((err) => {
+          if (force) {
+            scanner.error = err.message || "Failed to trigger scanner refresh.";
+          }
+          console.error("[global-opportunities] Failed to trigger refresh", err.message);
+        });
     }
 
     const feedQuery = buildQuery({
@@ -5996,8 +6232,8 @@ async function refreshGlobalOpportunities(options = {}) {
     scanner.status = statusPayload || feedPayload?.status || null;
     if (String(scanner.status?.currentStatus || "").toLowerCase() !== "running") {
       scanner.pendingScanRunId = "";
-    } else if (pendingScanRunId) {
-      scanner.pendingScanRunId = pendingScanRunId;
+    } else if (pendingScanRunId || scanner.pendingScanRunId) {
+      scanner.pendingScanRunId = scanner.pendingScanRunId || pendingScanRunId;
     }
     scanner.generatedAt =
       feedPayload?.generatedAt ||
@@ -6008,6 +6244,9 @@ async function refreshGlobalOpportunities(options = {}) {
       .trim()
       .toUpperCase();
     scanner.loaded = true;
+    if (triggerScanPromise) {
+      triggerScanPromise.catch(() => {});
+    }
   } catch (err) {
     scanner.error = err.message || "Failed to load top opportunities.";
     scanner.loaded = true;
@@ -6896,6 +7135,8 @@ function formatArbitrageReasonLabel(reasonCode) {
     ignored_extreme_spread: "Extreme spread",
     ignored_reference_deviation: "Reference deviation",
     ignored_missing_markets: "Missing market coverage",
+    ignored_missing_liquidity_data: "Missing liquidity data",
+    ignored_low_score: "Low score after risk checks",
     ignored_stale_data: "Stale market data",
     ignored_low_value_universe: "Low-value item",
     adjusted_buy_outlier: "Buy outlier adjusted",
@@ -8238,7 +8479,37 @@ function renderHistoryChart() {
   return markup;
 }
 
+function renderDashboardKpiSkeletonBar() {
+  return `
+    <section class="grid">
+      <div class="dashboard-kpi-anchor">
+        <article class="panel dashboard-kpi-skeleton" aria-hidden="true">
+          <div class="dashboard-kpi-skeleton-status table-row-skeleton"></div>
+          <div class="dashboard-kpi-skeleton-grid">
+            <div class="dashboard-kpi-skeleton-card">
+              <div class="skeleton-line w-40"></div>
+              <div class="table-row-skeleton"></div>
+            </div>
+            <div class="dashboard-kpi-skeleton-card">
+              <div class="skeleton-line w-40"></div>
+              <div class="table-row-skeleton"></div>
+            </div>
+            <div class="dashboard-kpi-skeleton-card">
+              <div class="skeleton-line w-40"></div>
+              <div class="table-row-skeleton"></div>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+  `;
+}
+
 function renderDashboardKpiBar() {
+  if (isInitialPortfolioHydration()) {
+    return renderDashboardKpiSkeletonBar();
+  }
+
   const portfolio = state.portfolio || {};
   const currencyCode = portfolio.currency || state.currency;
   const signal = buildPortfolioSignals();
@@ -9621,7 +9892,7 @@ function renderScannerSwitcher(options = {}) {
     <div class="scanner-switcher" role="group" aria-label="Scanner mode">
       <button
         type="button"
-        class="ghost-btn tab-jump-btn scanner-switch-segment scanner-switch-segment-portfolio ${
+        class="ghost-btn tab-jump-btn scanner-switch-segment scanner-switch-segment-portfolio primaryScannerButton ${
           portfolioActive ? "is-active" : ""
         }"
         data-tab-target="portfolio"
@@ -9641,7 +9912,7 @@ function renderScannerSwitcher(options = {}) {
       </button>
       <button
         type="button"
-        class="ghost-btn tab-jump-btn scanner-switch-segment scanner-switch-segment-global ${
+        class="ghost-btn tab-jump-btn scanner-switch-segment scanner-switch-segment-global secondaryScannerButton ${
           globalActive ? "is-active" : ""
         }"
         data-tab-target="opportunities"
@@ -9774,7 +10045,6 @@ function renderPortfolioArbitrageWidget() {
     }`,
     title: "Portfolio Arbitrage",
     subtitle: "Top 3 execution-quality opportunities from your holdings.",
-    actions: renderScannerSwitcher(),
     body,
   });
 }
@@ -10999,6 +11269,36 @@ function buildSteamListingUrlByName(marketHashName) {
   return `https://steamcommunity.com/market/listings/730/${encodeURIComponent(name)}`;
 }
 
+function renderGlobalOpportunitiesTableSkeleton(rowCount = 8) {
+  return `
+    <div class="table-wrap table-wrap-opportunities opportunities-table-skeleton-wrap" aria-hidden="true">
+      <table class="opportunities-table opportunities-table-global opportunities-table-skeleton">
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Buy</th>
+            <th>Sell</th>
+            <th>Profit</th>
+            <th>Spread</th>
+            <th>Quality Score</th>
+            <th>Confidence</th>
+            <th>Liquidity</th>
+            <th>Signals</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${Array.from({ length: Math.max(Number(rowCount) || 0, 1) }, (_row, idx) => `
+            <tr class="opportunities-skeleton-row" data-skeleton-index="${idx}">
+              <td colspan="10"><div class="table-row-skeleton"></div></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 function renderGlobalOpportunitiesTab() {
   const scanner = state.globalOpportunities || createGlobalOpportunitiesState();
   const rows = Array.isArray(scanner.items) ? scanner.items : [];
@@ -11040,13 +11340,19 @@ function renderGlobalOpportunitiesTab() {
       status?.activeOpportunities ??
       rows.filter((row) => row?.isActive !== false).length,
   );
-  const topRejectedItems = Array.isArray(summary?.topRejectedItems)
-    ? summary.topRejectedItems
+  const rejectionReasonsByItem = Array.isArray(summary?.rejectionReasonsByItem)
+    ? summary.rejectionReasonsByItem
     : [];
+  const noOpportunitiesReason =
+    summary?.noOpportunitiesReason &&
+    typeof summary.noOpportunitiesReason === "object"
+      ? summary.noOpportunitiesReason
+      : null;
   const discardReasonRows = Object.entries(summary?.discardedReasons || {})
     .filter(([, count]) => Number(count || 0) > 0)
     .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0));
 
+  const showTableSkeleton = scanner.loading && !rows.length;
   const tableMarkup = rows.length
     ? `
       <div class="table-wrap table-wrap-opportunities">
@@ -11241,6 +11547,8 @@ function renderGlobalOpportunitiesTab() {
       </table>
       </div>
     `
+    : showTableSkeleton
+      ? renderGlobalOpportunitiesTableSkeleton(8)
     : `<p class="muted">${
         scanner.loading
           ? "Loading opportunities..."
@@ -11309,9 +11617,24 @@ function renderGlobalOpportunitiesTab() {
         formatNumber(activeOpportunitiesCount, 0),
       )}.
     </p>
+    ${
+      summary
+        ? `<p class="helper-text">Latest diagnostics: ${escapeHtml(
+            `${formatNumber(summary.highConfidence || summary.opportunities || 0, 0)} high-confidence, ${formatNumber(
+              summary.riskyEligible || 0,
+              0,
+            )} risky-eligible, ${formatNumber(summary.newOpportunitiesAdded || 0, 0)} newly added.`,
+          )}</p>`
+        : ""
+    }
     <p class="helper-text">
       ${escapeHtml(statusLabel)} ${escapeHtml(nextScanLabel)}
     </p>
+    ${
+      !rows.length && noOpportunitiesReason?.message
+        ? `<p class="helper-text">${escapeHtml(noOpportunitiesReason.message)}</p>`
+        : ""
+    }
     ${
       !showRisky
         ? '<p class="helper-text">High-quality mode hides low-confidence opportunities by default.</p>'
@@ -11333,11 +11656,11 @@ function renderGlobalOpportunitiesTab() {
                 .join("")}
             </ul>
             ${
-              topRejectedItems.length
+              rejectionReasonsByItem.length
                 ? `<div class="opportunity-debug-rejected">
                     <p class="opportunity-debug-rejected-title">Top rejected items</p>
                     <ul class="opportunity-debug-rejected-list">
-                      ${topRejectedItems
+                      ${rejectionReasonsByItem
                         .map((entry) => {
                           const itemName = String(entry?.itemName || "Unknown item");
                           const rejectedCount = Number(entry?.rejectedCount || 0);
@@ -11345,18 +11668,24 @@ function renderGlobalOpportunitiesTab() {
                             entry?.category,
                             itemName,
                           );
-                          const mainReason = formatArbitrageReasonLabel(
-                            entry?.mainReason,
-                          );
+                          const reasons = Object.entries(entry?.reasons || {})
+                            .filter(([, value]) => Number(value || 0) > 0)
+                            .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+                            .slice(0, 3)
+                            .map(
+                              ([reason, count]) =>
+                                `${formatArbitrageReasonLabel(reason)} (${formatNumber(
+                                  count,
+                                  0,
+                                )})`,
+                            )
+                            .join(", ");
                           return `<li><strong>${escapeHtml(
                             itemName,
                           )}</strong> <span>${escapeHtml(
                             `${formatOpportunityCategoryLabel(itemCategory)} \u2022 `,
                           )}${escapeHtml(
-                            `${mainReason} (${formatNumber(
-                              rejectedCount,
-                              0,
-                            )})`,
+                            `${reasons || "Rejected"} \u2022 ${formatNumber(rejectedCount, 0)}`,
                           )}</span></li>`;
                         })
                         .join("")}
@@ -11387,7 +11716,27 @@ function renderGlobalOpportunitiesTab() {
   `;
 }
 
+function renderSettingsLoadingState() {
+  return `
+    <section class="grid">
+      <article class="panel wide account-loading-panel">
+        <h2>Account</h2>
+        <p class="helper-text">Loading account profile...</p>
+        <div class="account-loading-stack" aria-hidden="true">
+          <div class="table-row-skeleton"></div>
+          <div class="table-row-skeleton"></div>
+          <div class="table-row-skeleton"></div>
+        </div>
+      </article>
+    </section>
+  `;
+}
+
 function renderSettingsTab() {
+  if (!state.authProfile) {
+    return renderSettingsLoadingState();
+  }
+
   const profile = state.authProfile || {};
   const sectionId = normalizeAccountSection(state.accountPage.activeSection);
   const steamLinked = Boolean(profile.steamLinked);
@@ -12462,7 +12811,7 @@ function renderApp() {
 }
 
 function render() {
-  if (state.sessionBooting) {
+  if (state.sessionBooting && !state.authBootstrapReady && !state.authProfile) {
     renderSessionBoot();
     applyImageFallbacks(app);
     syncBodyUiLocks();
@@ -12657,22 +13006,39 @@ async function bootstrapSession() {
     }
   }
   hydrateAppNoticesFromUrl();
-  render();
-  if (state.publicPage.steamId64) {
-    await Promise.all([
-      loadPublicPortfolio({ silent: true }),
-      refreshAuthProfile(),
-    ]);
-  } else {
-    await refreshPortfolio({ silent: true });
+
+  const restoredFromCache = hydrateAuthFromBootstrapCache();
+  if (restoredFromCache) {
+    state.sessionBooting = false;
   }
+  render();
+
+  if (state.publicPage.steamId64) {
+    runUiTask(() => loadPublicPortfolio({ silent: true }));
+  }
+
+  await refreshAuthBootstrap({ silent: true });
+  state.authBootstrapReady = true;
   state.sessionBooting = false;
   render();
-  const shouldAutoSync = shouldAutoSyncInventoryOnSessionBoot();
-  sessionAutoSyncOnLoginRequested = false;
-  if (shouldAutoSync) {
-    await syncInventory({ automatic: true });
+
+  if (
+    state.authenticated &&
+    !state.publicPage.steamId64 &&
+    !isEmailOnboardingRequired()
+  ) {
+    runUiTask(async () => {
+      await refreshPortfolio({ silent: true });
+      const shouldAutoSync = shouldAutoSyncInventoryOnSessionBoot();
+      sessionAutoSyncOnLoginRequested = false;
+      if (shouldAutoSync) {
+        await syncInventory({ automatic: true });
+      }
+    });
+    return;
   }
+
+  sessionAutoSyncOnLoginRequested = false;
 }
 
 window.addEventListener("popstate", handleWindowNavigationChange);
@@ -12717,7 +13083,10 @@ setInterval(() => {
 }, GLOBAL_OPPORTUNITY_POLL_MS);
 
 bootstrapSession().catch(() => {
+  state.authBootstrapLoading = false;
+  state.authBootstrapReady = true;
   state.sessionBooting = false;
+  sessionAutoSyncOnLoginRequested = false;
   render();
 });
 

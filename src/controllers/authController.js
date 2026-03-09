@@ -90,6 +90,38 @@ function resolveOAuthProvider(user = {}) {
   );
 }
 
+async function resolveAuthProfileContext(req) {
+  let profileRow = req.userProfile || (await userRepo.getById(req.userId));
+  if (!profileRow) {
+    throw new AppError("Unauthorized", 401, "USER_NOT_FOUND");
+  }
+
+  profileRow = await emailOnboardingService.syncProfileVerificationState({
+    userProfile: profileRow,
+    authUser: req.authUser
+  });
+
+  const metadata = req.authUser?.user_metadata || {};
+  const steamId64 = profileRow?.steam_id64 || metadata.steam_id64 || null;
+  const onboarding = emailOnboardingService.resolveOnboardingState({
+    userProfile: profileRow,
+    authUser: req.authUser
+  });
+  const provider =
+    metadata.provider || (Boolean(steamId64) ? "steam" : "email");
+  const displayName = profileRow?.display_name || metadata.display_name || null;
+  const avatarUrl = profileRow?.avatar_url || metadata.avatar_url || null;
+
+  return {
+    profileRow,
+    steamId64,
+    onboarding,
+    provider,
+    displayName,
+    avatarUrl
+  };
+}
+
 function encodeLinkStateNext(nextUrl) {
   return Buffer.from(String(nextUrl || ""), "utf8").toString("base64url");
 }
@@ -391,28 +423,78 @@ exports.deleteAccount = [
   })
 ];
 
+exports.bootstrap = [
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const {
+      profileRow,
+      steamId64,
+      onboarding,
+      provider,
+      displayName,
+      avatarUrl
+    } = await resolveAuthProfileContext(req);
+    const planTier = planService.normalizePlanTier(profileRow?.plan_tier);
+
+    res.json({
+      user: {
+        id: req.authUser?.id || req.userId,
+        email: onboarding.email || req.authUser?.email || profileRow?.email || null,
+        created_at: req.authUser?.created_at || profileRow?.created_at || null,
+        user_metadata: {
+          provider,
+          steam_id64: steamId64,
+          display_name: displayName,
+          avatar_url: avatarUrl
+        }
+      },
+      emailConfirmed: onboarding.emailVerified,
+      onboarding: {
+        email: onboarding.email,
+        pendingEmail: onboarding.pendingEmail,
+        emailVerified: onboarding.emailVerified,
+        onboardingCompleted: onboarding.onboardingCompleted,
+        onboardingRequired: onboarding.onboardingRequired,
+        plan: onboarding.plan,
+        planStatus: onboarding.planStatus
+      },
+      profile: {
+        id: req.userId,
+        steamId64,
+        email: onboarding.email,
+        pendingEmail: onboarding.pendingEmail,
+        emailVerified: onboarding.emailVerified,
+        onboardingCompleted: onboarding.onboardingCompleted,
+        onboardingRequired: onboarding.onboardingRequired,
+        displayName,
+        avatarUrl,
+        linkedSteam: Boolean(steamId64),
+        publicPortfolioEnabled: profileRow?.public_portfolio_enabled !== false,
+        ownershipAlertsEnabled: profileRow?.ownership_alerts_enabled !== false,
+        planTier,
+        plan: onboarding.plan,
+        planStatus: onboarding.planStatus,
+        provider
+      }
+    });
+  })
+];
+
 exports.me = [
   authMiddleware,
   asyncHandler(async (req, res) => {
-    let profileRow = req.userProfile || (await userRepo.getById(req.userId));
-    if (!profileRow) {
-      throw new AppError("Unauthorized", 401, "USER_NOT_FOUND");
-    }
-
-    profileRow = await emailOnboardingService.syncProfileVerificationState({
-      userProfile: profileRow,
-      authUser: req.authUser
-    });
-    const metadata = req.authUser?.user_metadata || {};
-    const steamId64 = profileRow?.steam_id64 || metadata.steam_id64 || null;
+    const {
+      profileRow,
+      steamId64,
+      onboarding,
+      provider,
+      displayName,
+      avatarUrl
+    } = await resolveAuthProfileContext(req);
     const planTier = planService.normalizePlanTier(profileRow?.plan_tier);
     const traderModeUnlocked = Boolean(profileRow?.trader_mode_unlocked);
     const entitlements = planService.getEntitlements(planTier, {
       traderModeUnlocked
-    });
-    const onboarding = emailOnboardingService.resolveOnboardingState({
-      userProfile: profileRow,
-      authUser: req.authUser
     });
 
     res.json({
@@ -434,8 +516,8 @@ exports.me = [
         emailVerified: onboarding.emailVerified,
         onboardingCompleted: onboarding.onboardingCompleted,
         onboardingRequired: onboarding.onboardingRequired,
-        displayName: profileRow?.display_name || metadata.display_name || null,
-        avatarUrl: profileRow?.avatar_url || metadata.avatar_url || null,
+        displayName,
+        avatarUrl,
         linkedSteam: Boolean(steamId64),
         publicPortfolioEnabled: profileRow?.public_portfolio_enabled !== false,
         ownershipAlertsEnabled: profileRow?.ownership_alerts_enabled !== false,
@@ -449,9 +531,7 @@ exports.me = [
         traderModeUnlockedAt: profileRow?.trader_mode_unlocked_at || null,
         traderModeUnlockSource: profileRow?.trader_mode_unlock_source || null,
         entitlements,
-        provider:
-          metadata.provider ||
-          (Boolean(steamId64) ? "steam" : "email")
+        provider
       }
     });
   })

@@ -1,6 +1,10 @@
 const { round2, roundPrice } = require("../markets/marketUtils")
 const {
   arbitrageScannerIntervalMinutes,
+  arbitrageScannerUniverseTargetSize,
+  arbitrageQuoteRefreshBatchSize,
+  arbitrageQuoteComputeBatchSize,
+  arbitrageUniverseDbLimit,
   marketSnapshotTtlMinutes,
   arbitrageFeedRetentionHours,
   arbitrageFeedActiveLimit,
@@ -9,9 +13,11 @@ const {
   arbitrageMinScoreChange,
   arbitrageInsertDuplicates
 } = require("../config/env")
-const marketUniverseTop100 = require("../config/marketUniverseTop100.json")
+const marketUniverseMvp = require("../config/marketUniverseMvp.json")
 const skinRepo = require("../repositories/skinRepository")
 const marketSnapshotRepo = require("../repositories/marketSnapshotRepository")
+const marketUniverseRepo = require("../repositories/marketUniverseRepository")
+const marketQuoteRepo = require("../repositories/marketQuoteRepository")
 const arbitrageFeedRepo = require("../repositories/arbitrageFeedRepository")
 const scannerRunRepo = require("../repositories/scannerRunRepository")
 const marketComparisonService = require("./marketComparisonService")
@@ -22,20 +28,27 @@ const SCANNER_INTERVAL_MINUTES = Math.max(Number(arbitrageScannerIntervalMinutes
 const SCANNER_INTERVAL_MS = SCANNER_INTERVAL_MINUTES * 60 * 1000
 const CACHE_TTL_MS = SCANNER_INTERVAL_MS
 const SCANNER_OVERDUE_GRACE_MS = Math.max(Math.round(SCANNER_INTERVAL_MS * 0.2), 15 * 1000)
-const MIN_SPREAD_PERCENT = Number(arbitrageEngine.MIN_SPREAD_PERCENT || 5)
-const MAX_SPREAD_PERCENT = Number(arbitrageEngine.SPREAD_SANITY_MAX_PERCENT || 300)
-const MIN_VOLUME_7D = 100
-const MIN_EXECUTION_PRICE_USD = Number(arbitrageEngine.MIN_EXECUTION_PRICE_USD || 3)
+const HIGH_CONFIDENCE_MIN_PRICE_USD = 5
+const HIGH_CONFIDENCE_MIN_SPREAD_PERCENT = 5
+const HIGH_CONFIDENCE_MAX_SPREAD_PERCENT = 120
+const HIGH_CONFIDENCE_MIN_VOLUME_7D = 100
+const HIGH_CONFIDENCE_MIN_SCORE = 75
+const RISKY_MIN_PRICE_USD = 2
+const RISKY_MIN_SPREAD_PERCENT = 3
+const RISKY_MAX_SPREAD_PERCENT = 250
+const RISKY_MIN_VOLUME_7D = 20
+const RISKY_MIN_SCORE = 45
+const MIN_SPREAD_PERCENT = HIGH_CONFIDENCE_MIN_SPREAD_PERCENT
+const MAX_SPREAD_PERCENT = RISKY_MAX_SPREAD_PERCENT
+const MIN_VOLUME_7D = HIGH_CONFIDENCE_MIN_VOLUME_7D
+const MIN_EXECUTION_PRICE_USD = HIGH_CONFIDENCE_MIN_PRICE_USD
 const MIN_MARKET_COVERAGE = 2
-const DEFAULT_SCORE_CUTOFF = Number(arbitrageEngine.DEFAULT_SCORE_CUTOFF || 75)
-const RISKY_SCORE_CUTOFF = Number(arbitrageEngine.RISKY_SCORE_CUTOFF || 60)
+const DEFAULT_SCORE_CUTOFF = HIGH_CONFIDENCE_MIN_SCORE
+const RISKY_SCORE_CUTOFF = RISKY_MIN_SCORE
+const FEED_RISKY_MIN_SCORE = RISKY_MIN_SCORE
 const MAX_API_LIMIT = 200
 const DEFAULT_API_LIMIT = 100
 const MAX_FEED_LIMIT = 500
-const RISKY_MIN_PRICE_USD = 2
-const RISKY_MIN_SPREAD_PERCENT = 3
-const RISKY_MIN_VOLUME_7D = 30
-const RECENT_SNAPSHOT_FETCH_LIMIT = 25000
 const FEED_RETENTION_HOURS = Math.max(Number(arbitrageFeedRetentionHours || 24), 1)
 const FEED_ACTIVE_LIMIT = Math.max(Number(arbitrageFeedActiveLimit || 500), 50)
 const DUPLICATE_WINDOW_HOURS = Math.max(Number(arbitrageDuplicateWindowHours || 4), 1)
@@ -55,14 +68,49 @@ const ITEM_CATEGORIES = Object.freeze({
   CASE: "case",
   STICKER_CAPSULE: "sticker_capsule"
 })
-const FALLBACK_UNIVERSE = Object.freeze(normalizeUniverseEntries(marketUniverseTop100))
-const UNIVERSE_TARGET_SIZE = Math.max(Math.min(FALLBACK_UNIVERSE.length || 100, 100), 20)
-const PRE_COMPARE_UNIVERSE_LIMIT = Math.max(UNIVERSE_TARGET_SIZE * 2, 120)
+const FALLBACK_UNIVERSE = Object.freeze(normalizeUniverseEntries(marketUniverseMvp))
+const UNIVERSE_TARGET_SIZE = Math.max(
+  Math.min(
+    Number(arbitrageScannerUniverseTargetSize || FALLBACK_UNIVERSE.length || 50),
+    Math.max(FALLBACK_UNIVERSE.length || 50, 20)
+  ),
+  20
+)
+const PRE_COMPARE_UNIVERSE_LIMIT = Math.max(UNIVERSE_TARGET_SIZE * 2, 80)
+const UNIVERSE_DB_LIMIT = Math.max(Number(arbitrageUniverseDbLimit || 120), PRE_COMPARE_UNIVERSE_LIMIT)
+const QUOTE_REFRESH_BATCH_SIZE = Math.max(Number(arbitrageQuoteRefreshBatchSize || 40), 10)
+const QUOTE_COMPUTE_BATCH_SIZE = Math.max(Number(arbitrageQuoteComputeBatchSize || 80), 20)
+const UNIVERSE_MIN_PRICE_FLOOR_BY_CATEGORY = Object.freeze({
+  [ITEM_CATEGORIES.WEAPON_SKIN]: 2,
+  [ITEM_CATEGORIES.CASE]: 1,
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: 1
+})
+const UNIVERSE_MIN_VOLUME_7D_BY_CATEGORY = Object.freeze({
+  [ITEM_CATEGORIES.WEAPON_SKIN]: 20,
+  [ITEM_CATEGORIES.CASE]: 20,
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: 20
+})
 const LOW_VALUE_NAME_PATTERNS = Object.freeze([
   /^sticker\s*\|/i,
   /^graffiti\s*\|/i,
   /^sealed graffiti\s*\|/i
 ])
+const DIAGNOSTIC_REASON_KEYS = Object.freeze([
+  "ignored_low_price",
+  "ignored_low_liquidity",
+  "ignored_extreme_spread",
+  "ignored_reference_deviation",
+  "ignored_missing_markets",
+  "ignored_missing_liquidity_data",
+  "ignored_low_score",
+  "ignored_stale_data"
+])
+const DIAGNOSTIC_REASON_ALIAS = Object.freeze({
+  spread_below_min: "ignored_low_score",
+  non_positive_profit: "ignored_low_score",
+  insufficient_market_data: "ignored_missing_markets",
+  ignored_low_value_universe: "ignored_low_price"
+})
 
 const HARD_REJECTION_REASONS = Object.freeze(
   new Set([
@@ -76,12 +124,13 @@ const HARD_REJECTION_REASONS = Object.freeze(
 
 const STRICT_SCAN_PROFILE = Object.freeze({
   name: "strict",
-  minPriceUsd: MIN_EXECUTION_PRICE_USD,
-  minSpreadPercent: MIN_SPREAD_PERCENT,
-  minVolume7d: MIN_VOLUME_7D,
+  minPriceUsd: HIGH_CONFIDENCE_MIN_PRICE_USD,
+  minSpreadPercent: HIGH_CONFIDENCE_MIN_SPREAD_PERCENT,
+  minVolume7d: HIGH_CONFIDENCE_MIN_VOLUME_7D,
   allowMissingLiquidity: false,
   requireFreshData: true,
-  maxQuoteAgeMinutes: 60
+  maxQuoteAgeMinutes: 60,
+  minScore: HIGH_CONFIDENCE_MIN_SCORE
 })
 
 const RISKY_SCAN_PROFILE = Object.freeze({
@@ -91,56 +140,57 @@ const RISKY_SCAN_PROFILE = Object.freeze({
   minVolume7d: RISKY_MIN_VOLUME_7D,
   allowMissingLiquidity: true,
   requireFreshData: false,
-  maxQuoteAgeMinutes: Infinity
+  maxQuoteAgeMinutes: Infinity,
+  minScore: RISKY_MIN_SCORE
 })
 
 const CATEGORY_SCAN_RULES = Object.freeze({
   [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({
     strict: Object.freeze({
-      minPriceUsd: MIN_EXECUTION_PRICE_USD,
-      minSpreadPercent: MIN_SPREAD_PERCENT,
-      maxSpreadPercent: MAX_SPREAD_PERCENT,
-      minVolume7d: MIN_VOLUME_7D,
+      minPriceUsd: HIGH_CONFIDENCE_MIN_PRICE_USD,
+      minSpreadPercent: HIGH_CONFIDENCE_MIN_SPREAD_PERCENT,
+      maxSpreadPercent: HIGH_CONFIDENCE_MAX_SPREAD_PERCENT,
+      minVolume7d: HIGH_CONFIDENCE_MIN_VOLUME_7D,
       minMarketCoverage: MIN_MARKET_COVERAGE
     }),
     risky: Object.freeze({
       minPriceUsd: RISKY_MIN_PRICE_USD,
       minSpreadPercent: RISKY_MIN_SPREAD_PERCENT,
-      maxSpreadPercent: MAX_SPREAD_PERCENT,
+      maxSpreadPercent: RISKY_MAX_SPREAD_PERCENT,
       minVolume7d: RISKY_MIN_VOLUME_7D,
       minMarketCoverage: MIN_MARKET_COVERAGE
     })
   }),
   [ITEM_CATEGORIES.CASE]: Object.freeze({
     strict: Object.freeze({
-      minPriceUsd: 0.5,
-      minSpreadPercent: 3,
-      maxSpreadPercent: 150,
-      minVolume7d: 50,
-      minMarketCoverage: 2
+      minPriceUsd: HIGH_CONFIDENCE_MIN_PRICE_USD,
+      minSpreadPercent: HIGH_CONFIDENCE_MIN_SPREAD_PERCENT,
+      maxSpreadPercent: HIGH_CONFIDENCE_MAX_SPREAD_PERCENT,
+      minVolume7d: HIGH_CONFIDENCE_MIN_VOLUME_7D,
+      minMarketCoverage: MIN_MARKET_COVERAGE
     }),
     risky: Object.freeze({
-      minPriceUsd: 0.5,
-      minSpreadPercent: 3,
-      maxSpreadPercent: 150,
-      minVolume7d: 50,
-      minMarketCoverage: 2
+      minPriceUsd: RISKY_MIN_PRICE_USD,
+      minSpreadPercent: RISKY_MIN_SPREAD_PERCENT,
+      maxSpreadPercent: RISKY_MAX_SPREAD_PERCENT,
+      minVolume7d: RISKY_MIN_VOLUME_7D,
+      minMarketCoverage: MIN_MARKET_COVERAGE
     })
   }),
   [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
     strict: Object.freeze({
-      minPriceUsd: 0.75,
-      minSpreadPercent: 3,
-      maxSpreadPercent: 150,
-      minVolume7d: 40,
-      minMarketCoverage: 2
+      minPriceUsd: HIGH_CONFIDENCE_MIN_PRICE_USD,
+      minSpreadPercent: HIGH_CONFIDENCE_MIN_SPREAD_PERCENT,
+      maxSpreadPercent: HIGH_CONFIDENCE_MAX_SPREAD_PERCENT,
+      minVolume7d: HIGH_CONFIDENCE_MIN_VOLUME_7D,
+      minMarketCoverage: MIN_MARKET_COVERAGE
     }),
     risky: Object.freeze({
-      minPriceUsd: 0.75,
-      minSpreadPercent: 3,
-      maxSpreadPercent: 150,
-      minVolume7d: 40,
-      minMarketCoverage: 2
+      minPriceUsd: RISKY_MIN_PRICE_USD,
+      minSpreadPercent: RISKY_MIN_SPREAD_PERCENT,
+      maxSpreadPercent: RISKY_MAX_SPREAD_PERCENT,
+      minVolume7d: RISKY_MIN_VOLUME_7D,
+      minMarketCoverage: MIN_MARKET_COVERAGE
     })
   })
 })
@@ -316,6 +366,68 @@ function toBySourceMap(rows = []) {
   return map
 }
 
+function chunkArray(items = [], chunkSize = 50) {
+  const safeChunkSize = Math.max(Number(chunkSize || 0), 1)
+  const rows = Array.isArray(items) ? items : []
+  const chunks = []
+  for (let index = 0; index < rows.length; index += safeChunkSize) {
+    chunks.push(rows.slice(index, index + safeChunkSize))
+  }
+  return chunks
+}
+
+function toNameKey(value) {
+  return normalizeMarketHashName(value).toLowerCase()
+}
+
+function sourceRank(value) {
+  const source = String(value || "")
+    .trim()
+    .toLowerCase()
+  if (source === "curated_db") return 4
+  if (source === "dynamic_snapshot") return 3
+  if (source === "fallback_mvp") return 2
+  return 1
+}
+
+function computeUniverseSeedRank(seed = {}) {
+  const volume7d = toFiniteOrNull(seed?.marketVolume7d) ?? 0
+  const liquidityScore = toFiniteOrNull(seed?.liquidityScore) ?? 0
+  const referencePrice = toFiniteOrNull(seed?.referencePrice) ?? 0
+  const snapshotFreshness = seed?.hasSnapshotData ? (seed?.snapshotStale ? 0 : 1) : 0
+  return (
+    sourceRank(seed?.universeSource) * 100000 +
+    snapshotFreshness * 50000 +
+    Math.min(volume7d, 6000) * 8 +
+    Math.min(liquidityScore, 100) * 55 +
+    Math.min(referencePrice, 1000)
+  )
+}
+
+function mergeUniverseSeeds(seedSets = []) {
+  const byName = {}
+  for (const set of Array.isArray(seedSets) ? seedSets : []) {
+    for (const seed of Array.isArray(set) ? set : []) {
+      const marketHashName = normalizeMarketHashName(seed?.marketHashName)
+      if (!marketHashName) continue
+      const key = toNameKey(marketHashName)
+      const nextSeed = {
+        ...seed,
+        marketHashName
+      }
+      const existing = byName[key]
+      if (!existing) {
+        byName[key] = nextSeed
+        continue
+      }
+      if (computeUniverseSeedRank(nextSeed) > computeUniverseSeedRank(existing)) {
+        byName[key] = nextSeed
+      }
+    }
+  }
+  return Object.values(byName)
+}
+
 function resolveQuoteAgeMinutes(quote = {}) {
   const updatedAt = toIsoStringOrNull(quote?.updatedAt || quote?.fetched_at || quote?.recorded_at)
   if (!updatedAt) return null
@@ -462,18 +574,21 @@ function computeLiquidityRank({
   }
 }
 
-function incrementReasonCounter(counter = {}, reason, category = "") {
-  const key = String(reason || "").trim()
+function normalizeDiagnosticReason(reason = "") {
+  const raw = String(reason || "").trim()
+  if (!raw) return ""
+  return DIAGNOSTIC_REASON_ALIAS[raw] || raw
+}
+
+function incrementReasonCounter(counter = {}, reason, _category = "") {
+  const key = normalizeDiagnosticReason(reason)
   if (!key) return
   counter[key] = Number(counter[key] || 0) + 1
-  const normalizedCategory = normalizeItemCategory(category)
-  const scopedKey = `${key}__${normalizedCategory}`
-  counter[scopedKey] = Number(counter[scopedKey] || 0) + 1
 }
 
 function incrementItemReasonCounter(rejectionsByItem = {}, itemName, reason, category = "") {
   const normalizedItem = String(itemName || "").trim() || "Unknown item"
-  const normalizedReason = String(reason || "").trim() || "unknown"
+  const normalizedReason = normalizeDiagnosticReason(reason) || "unknown"
   const normalizedCategory = normalizeItemCategory(category)
   if (!rejectionsByItem[normalizedItem]) {
     rejectionsByItem[normalizedItem] = {
@@ -502,7 +617,8 @@ function toTopRejectedItems(rejectionsByItem = {}, limit = 8) {
         category: normalizeItemCategory(payload?.category),
         rejectedCount: Number(payload?.total || 0),
         mainReason,
-        mainReasonCount: Number(mainReasonCount || 0)
+        mainReasonCount: Number(mainReasonCount || 0),
+        reasons: payload?.reasons || {}
       }
     })
     .sort(
@@ -513,12 +629,38 @@ function toTopRejectedItems(rejectionsByItem = {}, limit = 8) {
     .slice(0, Math.max(Number(limit || 0), 0))
 }
 
+function toRejectionReasonsByItem(rejectionsByItem = {}, limit = 20) {
+  return Object.entries(rejectionsByItem)
+    .map(([itemName, payload]) => ({
+      itemName,
+      category: normalizeItemCategory(payload?.category),
+      rejectedCount: Number(payload?.total || 0),
+      reasons: payload?.reasons || {}
+    }))
+    .sort((a, b) => Number(b.rejectedCount || 0) - Number(a.rejectedCount || 0))
+    .slice(0, Math.max(Number(limit || 0), 0))
+}
+
+function normalizeDiscardStats(counter = {}) {
+  const normalized = {}
+  for (const key of DIAGNOSTIC_REASON_KEYS) {
+    normalized[key] = Number(counter?.[key] || 0)
+  }
+  for (const [reason, count] of Object.entries(counter || {})) {
+    if (DIAGNOSTIC_REASON_KEYS.includes(reason)) continue
+    normalized[reason] = Number(count || 0)
+  }
+  return normalized
+}
+
 function buildInputItemFromSkinAndSnapshot({
   skin = null,
   snapshot = null,
   marketHashName = "",
   category = ITEM_CATEGORIES.WEAPON_SKIN,
-  subcategory = null
+  subcategory = null,
+  universeSource = "fallback_mvp",
+  liquidityRank = null
 } = {}) {
   const normalizedName = normalizeMarketHashName(
     marketHashName || skin?.market_hash_name || skin?.marketHashName
@@ -548,44 +690,75 @@ function buildInputItemFromSkinAndSnapshot({
     referencePrice,
     hasSnapshotData: Boolean(snapshot),
     snapshotCapturedAt: snapshot?.captured_at || null,
-    snapshotStale: snapshot ? isSnapshotStale(snapshot) : false
+    snapshotStale: snapshot ? isSnapshotStale(snapshot) : false,
+    universeSource: String(universeSource || "fallback_mvp").trim() || "fallback_mvp",
+    liquidityRank: toFiniteOrNull(liquidityRank)
   }
 }
 
-async function loadDynamicUniverseSeeds() {
-  const recentSnapshots = await marketSnapshotRepo.getRecentSnapshots({
-    limit: RECENT_SNAPSHOT_FETCH_LIMIT
-  })
-  const latestBySkinId = {}
-  for (const row of Array.isArray(recentSnapshots) ? recentSnapshots : []) {
-    const skinId = Number(row?.skin_id || 0)
-    if (!Number.isInteger(skinId) || skinId <= 0) continue
-    if (!latestBySkinId[skinId]) {
-      latestBySkinId[skinId] = row
-    }
-  }
-
-  const skinIds = Object.keys(latestBySkinId).map((value) => Number(value))
-  if (!skinIds.length) return []
-  const skins = await skinRepo.getByIds(skinIds)
-  const skinsById = {}
-  for (const row of Array.isArray(skins) ? skins : []) {
-    const skinId = Number(row?.id || 0)
-    if (!Number.isInteger(skinId) || skinId <= 0) continue
-    skinsById[skinId] = row
-  }
-
-  const seeds = []
-  for (const skinId of skinIds) {
-    const skin = skinsById[skinId]
-    if (!skin) continue
-    const input = buildInputItemFromSkinAndSnapshot({
-      skin,
-      snapshot: latestBySkinId[skinId]
+async function loadCuratedUniverseSeeds() {
+  let curatedRows = []
+  try {
+    curatedRows = await marketUniverseRepo.listActiveByLiquidityRank({
+      limit: UNIVERSE_DB_LIMIT
     })
-    if (input) seeds.push(input)
+  } catch (err) {
+    console.error("[arbitrage-scanner] Failed to load curated market universe", err.message)
+    return []
   }
-  return seeds
+
+  if (!Array.isArray(curatedRows) || !curatedRows.length) {
+    return []
+  }
+
+  const normalizedRows = curatedRows
+    .map((row) => {
+      const marketHashName = normalizeMarketHashName(
+        row?.market_hash_name || row?.marketHashName || row?.item_name || row?.itemName
+      )
+      if (!marketHashName) return null
+      return {
+        marketHashName,
+        liquidityRank: toFiniteOrNull(row?.liquidity_rank || row?.liquidityRank)
+      }
+    })
+    .filter(Boolean)
+
+  if (!normalizedRows.length) {
+    return []
+  }
+
+  const skins = await skinRepo.getByMarketHashNames(normalizedRows.map((row) => row.marketHashName))
+  const skinsByName = toByNameMap(
+    (Array.isArray(skins) ? skins : []).map((row) => ({
+      ...row,
+      market_hash_name: normalizeMarketHashName(row?.market_hash_name)
+    })),
+    "market_hash_name"
+  )
+
+  const skinIds = (Array.isArray(skins) ? skins : [])
+    .map((row) => Number(row?.id || 0))
+    .filter((value) => Number.isInteger(value) && value > 0)
+  const snapshotsBySkinId = skinIds.length
+    ? await marketSnapshotRepo.getLatestBySkinIds(skinIds)
+    : {}
+
+  return normalizedRows
+    .map((row) =>
+      buildInputItemFromSkinAndSnapshot({
+        skin: skinsByName[row.marketHashName] || null,
+        snapshot:
+          Number(skinsByName[row.marketHashName]?.id || 0) > 0
+            ? snapshotsBySkinId[Number(skinsByName[row.marketHashName].id)] || null
+            : null,
+        marketHashName: row.marketHashName,
+        category: normalizeItemCategory("", row.marketHashName),
+        universeSource: "curated_db",
+        liquidityRank: row.liquidityRank
+      })
+    )
+    .filter(Boolean)
 }
 
 async function loadFallbackUniverseSeeds() {
@@ -606,7 +779,7 @@ async function loadFallbackUniverseSeeds() {
     ? await marketSnapshotRepo.getLatestBySkinIds(skinIds)
     : {}
 
-  return FALLBACK_UNIVERSE.map((entry) =>
+  return FALLBACK_UNIVERSE.map((entry, index) =>
     buildInputItemFromSkinAndSnapshot({
       skin: skinsByName[entry.marketHashName] || null,
       snapshot:
@@ -615,7 +788,9 @@ async function loadFallbackUniverseSeeds() {
           : null,
       marketHashName: entry.marketHashName,
       category: entry.category,
-      subcategory: entry.subcategory
+      subcategory: entry.subcategory,
+      universeSource: "fallback_mvp",
+      liquidityRank: index + 1
     })
   ).filter(Boolean)
 }
@@ -636,15 +811,53 @@ function passesUniverseSeedFilters(inputItem = {}, discardStats = {}, rejectedBy
     }
     return false
   }
+
+  if (!Boolean(inputItem?.hasSnapshotData)) {
+    incrementReasonCounter(discardStats, "ignored_missing_liquidity_data", itemCategory)
+    if (rejectedByItem) {
+      incrementItemReasonCounter(
+        rejectedByItem,
+        marketHashName,
+        "ignored_missing_liquidity_data",
+        itemCategory
+      )
+    }
+    return false
+  }
+
+  if (Boolean(inputItem?.snapshotStale)) {
+    incrementReasonCounter(discardStats, "ignored_stale_data", itemCategory)
+    if (rejectedByItem) {
+      incrementItemReasonCounter(rejectedByItem, marketHashName, "ignored_stale_data", itemCategory)
+    }
+    return false
+  }
+
   const referencePrice = toFiniteOrNull(inputItem?.referencePrice)
-  const seedRules = getCategoryScanRules(itemCategory, "risky")
-  if (referencePrice != null && referencePrice < Number(seedRules.minPriceUsd || RISKY_MIN_PRICE_USD)) {
+  const universePriceFloor = Number(
+    UNIVERSE_MIN_PRICE_FLOOR_BY_CATEGORY[itemCategory] ?? UNIVERSE_MIN_PRICE_FLOOR_BY_CATEGORY[ITEM_CATEGORIES.WEAPON_SKIN]
+  )
+  if (referencePrice != null && referencePrice < universePriceFloor) {
     incrementReasonCounter(discardStats, "ignored_low_price", itemCategory)
     if (rejectedByItem) {
       incrementItemReasonCounter(rejectedByItem, marketHashName, "ignored_low_price", itemCategory)
     }
     return false
   }
+
+  const volume7d = toFiniteOrNull(inputItem?.marketVolume7d)
+  const universeVolumeFloor = Number(
+    UNIVERSE_MIN_VOLUME_7D_BY_CATEGORY[itemCategory] ??
+      UNIVERSE_MIN_VOLUME_7D_BY_CATEGORY[ITEM_CATEGORIES.WEAPON_SKIN]
+  )
+  if (volume7d != null && volume7d < universeVolumeFloor) {
+    incrementReasonCounter(discardStats, "ignored_low_liquidity", itemCategory)
+    if (rejectedByItem) {
+      incrementItemReasonCounter(rejectedByItem, marketHashName, "ignored_low_liquidity", itemCategory)
+    }
+    return false
+  }
+
   return true
 }
 
@@ -746,7 +959,7 @@ function computeRiskAdjustments({
 
   if (volume7d == null) {
     if (!profile.allowMissingLiquidity) {
-      return { passed: false, primaryReason: "ignored_low_liquidity", penalty: 0 }
+      return { passed: false, primaryReason: "ignored_missing_liquidity_data", penalty: 0 }
     }
   } else if (volume7d < Number(rules.minVolume7d || profile.minVolume7d || 0)) {
     return { passed: false, primaryReason: "ignored_low_liquidity", penalty: 0 }
@@ -910,11 +1123,14 @@ function confidenceRank(value) {
   return 1
 }
 
-function toGradeFromScore(score) {
+function toGradeFromScore(score, row = {}) {
   const safeScore = clampScore(score)
-  if (safeScore >= 90) return "A"
-  if (safeScore >= 75) return "B"
-  if (safeScore >= 60) return "C"
+  const executionConfidence = normalizeConfidence(row?.executionConfidence)
+  const isHighConfidence = Boolean(row?.isHighConfidenceEligible)
+  if (isHighConfidence && safeScore >= 90) return "A"
+  if (isHighConfidence && safeScore >= 78) return "B"
+  if (isHighConfidence) return "C"
+  if (safeScore >= DEFAULT_SCORE_CUTOFF && executionConfidence !== "Low") return "C"
   return "RISKY"
 }
 
@@ -964,7 +1180,7 @@ function buildFeedInsertRow(row = {}, scanRunId = "", options = {}) {
     spread_pct: round2(row?.spread || 0),
     opportunity_score: Math.round(score),
     execution_confidence: executionConfidence,
-    quality_grade: toGradeFromScore(score),
+    quality_grade: toGradeFromScore(score, row),
     liquidity_label: String(row?.liquidityBand || "Low").trim() || "Low",
     detected_at: detectedAt,
     scan_run_id: String(scanRunId || "").trim() || null,
@@ -1024,7 +1240,9 @@ function mapFeedRowToApiRow(row = {}) {
     scoreCategory:
       String(metadata?.score_category || "").trim() || arbitrageEngine.categorizeOpportunityScore(score),
     executionConfidence,
+    qualityGrade: String(row?.quality_grade || "").trim() || null,
     liquidityBand: String(row?.liquidity_label || "Low").trim() || "Low",
+    liquidityLabel: String(row?.liquidity_label || "Low").trim() || "Low",
     liquidity: toFiniteOrNull(metadata?.liquidity_value),
     liquidityScore: toFiniteOrNull(metadata?.liquidity_score),
     volume7d: toFiniteOrNull(metadata?.volume_7d),
@@ -1077,7 +1295,9 @@ function buildInputItemForComparison(item = {}) {
     liquidityScore: toFiniteOrNull(item?.liquidityScore),
     marketVolume7d: toFiniteOrNull(item?.marketVolume7d),
     referencePrice: toFiniteOrNull(item?.referencePrice),
-    snapshotStale: Boolean(item?.snapshotStale)
+    snapshotStale: Boolean(item?.snapshotStale),
+    universeSource: String(item?.universeSource || "").trim() || "fallback_mvp",
+    liquidityRank: toFiniteOrNull(item?.liquidityRank)
   }
 }
 
@@ -1195,12 +1415,20 @@ function isScannerRunOverdue(status = {}, nowMs = Date.now()) {
 }
 
 async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
-  const fallbackSeeds = await loadFallbackUniverseSeeds()
-  const fallbackFiltered = fallbackSeeds.filter((row) =>
+  const [curatedSeeds, fallbackSeeds] = await Promise.all([
+    loadCuratedUniverseSeeds().catch((err) => {
+      console.error("[arbitrage-scanner] Curated universe load failed", err.message)
+      return []
+    }),
+    loadFallbackUniverseSeeds()
+  ])
+
+  const mergedSeeds = mergeUniverseSeeds([curatedSeeds, fallbackSeeds])
+  const filteredSeeds = mergedSeeds.filter((row) =>
     passesUniverseSeedFilters(row, discardStats, rejectedByItem)
   )
 
-  const ranked = fallbackFiltered
+  const ranked = filteredSeeds
     .map((row) => ({
       ...row,
       ...computeLiquidityRank({
@@ -1214,11 +1442,182 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
     .sort(
       (a, b) =>
         Number(b.liquidityRank || 0) - Number(a.liquidityRank || 0) ||
+        sourceRank(b.universeSource) - sourceRank(a.universeSource) ||
         Number(b.marketVolume7d || 0) - Number(a.marketVolume7d || 0)
     )
     .slice(0, PRE_COMPARE_UNIVERSE_LIMIT)
 
   return ranked
+}
+
+function countAvailableQuotes(items = []) {
+  let total = 0
+  for (const item of Array.isArray(items) ? items : []) {
+    for (const row of Array.isArray(item?.perMarket) ? item.perMarket : []) {
+      const source = normalizeMarketLabel(row?.source || row?.market)
+      if (!source) continue
+      const hasGross = Number.isFinite(Number(row?.grossPrice)) && Number(row.grossPrice) > 0
+      const hasNet =
+        Number.isFinite(Number(row?.netPriceAfterFees)) && Number(row.netPriceAfterFees) > 0
+      if (Boolean(row?.available) && (hasGross || hasNet)) {
+        total += 1
+      }
+    }
+  }
+  return total
+}
+
+async function refreshQuotesInBatches(inputItems = [], options = {}) {
+  const forceRefresh = Boolean(options.forceRefresh)
+  const batches = chunkArray(inputItems, QUOTE_REFRESH_BATCH_SIZE)
+  let itemsCompared = 0
+  let availableQuotes = 0
+  let completedBatches = 0
+  const errors = []
+
+  for (const batch of batches) {
+    try {
+      const comparison = await marketComparisonService.compareItems(batch, {
+        currency: "USD",
+        pricingMode: "lowest_buy",
+        allowLiveFetch: true,
+        forceRefresh,
+        userId: null
+      })
+      const comparedItems = Array.isArray(comparison?.items) ? comparison.items : []
+      itemsCompared += comparedItems.length
+      availableQuotes += countAvailableQuotes(comparedItems)
+      completedBatches += 1
+    } catch (err) {
+      errors.push(String(err?.message || "quote_batch_failed"))
+    }
+  }
+
+  return {
+    batchSize: QUOTE_REFRESH_BATCH_SIZE,
+    requestedItems: inputItems.length,
+    totalBatches: batches.length,
+    completedBatches,
+    failedBatches: errors.length,
+    itemsCompared,
+    availableQuotes,
+    errors: errors.slice(0, 5)
+  }
+}
+
+async function compareFromSavedQuotes(inputItems = []) {
+  const batches = chunkArray(inputItems, QUOTE_COMPUTE_BATCH_SIZE)
+  const items = []
+  let itemsCompared = 0
+  let availableQuotes = 0
+  let completedBatches = 0
+  const errors = []
+  let currency = "USD"
+
+  for (const batch of batches) {
+    try {
+      const comparison = await marketComparisonService.compareItems(batch, {
+        currency: "USD",
+        pricingMode: "lowest_buy",
+        allowLiveFetch: false,
+        forceRefresh: false,
+        userId: null
+      })
+      const comparedItems = Array.isArray(comparison?.items) ? comparison.items : []
+      items.push(...comparedItems)
+      itemsCompared += comparedItems.length
+      availableQuotes += countAvailableQuotes(comparedItems)
+      completedBatches += 1
+      currency = String(comparison?.currency || currency)
+        .trim()
+        .toUpperCase()
+    } catch (err) {
+      errors.push(String(err?.message || "compare_saved_quotes_failed"))
+    }
+  }
+
+  return {
+    currency,
+    items,
+    diagnostics: {
+      batchSize: QUOTE_COMPUTE_BATCH_SIZE,
+      requestedItems: inputItems.length,
+      totalBatches: batches.length,
+      completedBatches,
+      failedBatches: errors.length,
+      itemsCompared,
+      availableQuotes,
+      errors: errors.slice(0, 5)
+    }
+  }
+}
+
+function buildQuoteSnapshotRows(comparisonItems = [], inputByName = {}) {
+  const rows = []
+  const nowIso = new Date().toISOString()
+
+  for (const item of Array.isArray(comparisonItems) ? comparisonItems : []) {
+    const marketHashName = normalizeMarketHashName(item?.marketHashName)
+    if (!marketHashName) continue
+    const inputItem = inputByName[marketHashName] || null
+    const volume7d = toFiniteOrNull(inputItem?.marketVolume7d)
+    const liquidityScore = toFiniteOrNull(inputItem?.liquidityScore)
+
+    for (const quote of Array.isArray(item?.perMarket) ? item.perMarket : []) {
+      const market = normalizeMarketLabel(quote?.source || quote?.market)
+      if (!market || !SOURCE_ORDER.includes(market)) continue
+      const gross = toFiniteOrNull(quote?.grossPrice)
+      const sellNet = toFiniteOrNull(quote?.netPriceAfterFees)
+      rows.push({
+        item_name: marketHashName,
+        market,
+        best_buy: gross,
+        best_sell: gross,
+        best_sell_net: sellNet,
+        volume_7d: volume7d,
+        liquidity_score: liquidityScore,
+        fetched_at: quote?.updatedAt || nowIso,
+        quality_flags: {
+          available: Boolean(quote?.available),
+          confidence: String(quote?.confidence || "low").trim() || "low",
+          unavailable_reason: String(quote?.unavailableReason || "").trim() || null,
+          quote_age_minutes: resolveQuoteAgeMinutes(quote),
+          snapshot_stale: Boolean(inputItem?.snapshotStale),
+          universe_source: String(inputItem?.universeSource || "").trim() || "fallback_mvp"
+        }
+      })
+    }
+  }
+
+  return rows
+}
+
+async function persistQuoteSnapshot(comparisonItems = [], inputByName = {}) {
+  const rows = buildQuoteSnapshotRows(comparisonItems, inputByName)
+  if (!rows.length) {
+    return {
+      rowsPrepared: 0,
+      rowsInserted: 0,
+      persisted: true
+    }
+  }
+
+  try {
+    const rowsInserted = await marketQuoteRepo.insertRows(rows)
+    return {
+      rowsPrepared: rows.length,
+      rowsInserted,
+      persisted: true
+    }
+  } catch (err) {
+    console.error("[arbitrage-scanner] Failed to persist scanner quote snapshot", err.message)
+    return {
+      rowsPrepared: rows.length,
+      rowsInserted: 0,
+      persisted: false,
+      error: String(err?.message || "quote_snapshot_persist_failed")
+    }
+  }
 }
 
 function selectTopUniverseItems(
@@ -1261,9 +1660,18 @@ function selectTopUniverseItems(
 
   return ranked
     .sort(
-      (a, b) =>
+      (a, b) => {
+        const curatedRankA = toFiniteOrNull(a.inputItem?.liquidityRank)
+        const curatedRankB = toFiniteOrNull(b.inputItem?.liquidityRank)
+        const curatedRankDelta =
+          curatedRankA == null || curatedRankB == null ? 0 : curatedRankA - curatedRankB
+        return (
         Number(b.liquidityRank || 0) - Number(a.liquidityRank || 0) ||
+        sourceRank(b.inputItem?.universeSource) - sourceRank(a.inputItem?.universeSource) ||
+        curatedRankDelta ||
         Number(b.inputItem?.marketVolume7d || 0) - Number(a.inputItem?.marketVolume7d || 0)
+        )
+      }
     )
     .slice(0, UNIVERSE_TARGET_SIZE)
 }
@@ -1286,24 +1694,46 @@ async function runScanInternal(options = {}) {
         totalDetected: 0,
         universeSize: 0,
         candidateItems: 0,
-        discardedReasons: discardStats,
-        topRejectedItems: toTopRejectedItems(rejectedByItem)
+        discardedReasons: normalizeDiscardStats(discardStats),
+        topRejectedItems: toTopRejectedItems(rejectedByItem),
+        rejectionReasonsByItem: toRejectionReasonsByItem(rejectedByItem),
+        highConfidence: 0,
+        riskyEligible: 0
       },
-      opportunities: []
+      opportunities: [],
+      pipeline: {
+        quoteRefresh: {
+          batchSize: QUOTE_REFRESH_BATCH_SIZE,
+          requestedItems: 0,
+          totalBatches: 0,
+          completedBatches: 0,
+          failedBatches: 0,
+          itemsCompared: 0,
+          availableQuotes: 0,
+          errors: []
+        },
+        computeFromSavedQuotes: {
+          batchSize: QUOTE_COMPUTE_BATCH_SIZE,
+          requestedItems: 0,
+          totalBatches: 0,
+          completedBatches: 0,
+          failedBatches: 0,
+          itemsCompared: 0,
+          availableQuotes: 0,
+          errors: []
+        },
+        quoteSnapshot: {
+          rowsPrepared: 0,
+          rowsInserted: 0,
+          persisted: true
+        }
+      }
     }
     scannerState.latest = emptyPayload
     return emptyPayload
   }
 
   const comparisonInputItems = universeSeeds.map((row) => buildInputItemForComparison(row))
-  const comparison = await marketComparisonService.compareItems(comparisonInputItems, {
-    currency: "USD",
-    pricingMode: "lowest_buy",
-    allowLiveFetch: true,
-    forceRefresh,
-    userId: null
-  })
-
   const inputByName = toByNameMap(
     universeSeeds.map((row) => ({
       ...row,
@@ -1312,8 +1742,14 @@ async function runScanInternal(options = {}) {
     "marketHashName"
   )
 
+  const quoteRefreshSummary = await refreshQuotesInBatches(comparisonInputItems, {
+    forceRefresh
+  })
+  const comparisonFromSaved = await compareFromSavedQuotes(comparisonInputItems)
+  const quoteSnapshotSummary = await persistQuoteSnapshot(comparisonFromSaved.items, inputByName)
+
   const selectedUniverse = selectTopUniverseItems(
-    comparison?.items,
+    comparisonFromSaved?.items,
     inputByName,
     discardStats,
     rejectedByItem
@@ -1382,46 +1818,71 @@ async function runScanInternal(options = {}) {
       profile: STRICT_SCAN_PROFILE
     })
 
-    rows.push(
-      buildApiOpportunityRow({
-        opportunity: enrichedOpportunity,
-        inputItem,
-        liquidity,
-        stale,
-        perMarket: item?.perMarket,
-        extraPenalty: riskyEvaluation.penalty,
-        isRiskyEligible: true,
-        isHighConfidenceEligible: strictEvaluation.passed
-      })
-    )
+    const apiRow = buildApiOpportunityRow({
+      opportunity: enrichedOpportunity,
+      inputItem,
+      liquidity,
+      stale,
+      perMarket: item?.perMarket,
+      extraPenalty: riskyEvaluation.penalty,
+      isRiskyEligible: true,
+      isHighConfidenceEligible: strictEvaluation.passed
+    })
+
+    if (Number(apiRow?.score || 0) < RISKY_MIN_SCORE) {
+      incrementReasonCounter(discardStats, "ignored_low_score", itemCategory)
+      incrementItemReasonCounter(rejectedByItem, itemName, "ignored_low_score", itemCategory)
+      continue
+    }
+
+    const highConfidenceEligible =
+      Boolean(strictEvaluation?.passed) &&
+      Number(apiRow?.score || 0) >= HIGH_CONFIDENCE_MIN_SCORE &&
+      String(apiRow?.executionConfidence || "")
+        .trim()
+        .toLowerCase() !== "low"
+    rows.push({
+      ...apiRow,
+      isHighConfidenceEligible: highConfidenceEligible
+    })
   }
 
   const sortedRows = sortOpportunities(rows)
+  const highConfidenceCount = sortedRows.filter(
+    (row) =>
+      Boolean(row?.isHighConfidenceEligible) &&
+      Number(row?.score || 0) >= DEFAULT_SCORE_CUTOFF &&
+      String(row?.executionConfidence || "")
+        .trim()
+        .toLowerCase() !== "low"
+  ).length
+  const riskyEligibleCount = sortedRows.filter((row) => Boolean(row?.isRiskyEligible)).length
   const generatedTs = Date.now()
   const payload = {
     generatedAt: new Date(generatedTs).toISOString(),
     expiresAt: generatedTs + CACHE_TTL_MS,
     ttlSeconds: Math.round(CACHE_TTL_MS / 1000),
-    currency: String(comparison?.currency || "USD")
+    currency: String(comparisonFromSaved?.currency || "USD")
       .trim()
       .toUpperCase(),
     summary: {
       scannedItems: selectedUniverse.length,
-      opportunities: sortedRows.filter(
-        (row) =>
-          Boolean(row?.isHighConfidenceEligible) &&
-          Number(row?.score || 0) >= DEFAULT_SCORE_CUTOFF &&
-          String(row?.executionConfidence || "")
-            .trim()
-            .toLowerCase() !== "low"
-      ).length,
+      opportunities: highConfidenceCount,
       totalDetected: sortedRows.length,
       universeSize: selectedUniverse.length,
       candidateItems: universeSeeds.length,
-      discardedReasons: discardStats,
-      topRejectedItems: toTopRejectedItems(rejectedByItem)
+      discardedReasons: normalizeDiscardStats(discardStats),
+      topRejectedItems: toTopRejectedItems(rejectedByItem),
+      rejectionReasonsByItem: toRejectionReasonsByItem(rejectedByItem),
+      highConfidence: highConfidenceCount,
+      riskyEligible: riskyEligibleCount
     },
-    opportunities: sortedRows
+    opportunities: sortedRows,
+    pipeline: {
+      quoteRefresh: quoteRefreshSummary,
+      computeFromSavedQuotes: comparisonFromSaved?.diagnostics || null,
+      quoteSnapshot: quoteSnapshotSummary
+    }
   }
 
   scannerState.latest = payload
@@ -1454,6 +1915,10 @@ function toScanDiagnosticsSummary(scanPayload = {}, persistSummary = {}, trigger
     candidateItems: Number(scanPayload?.summary?.candidateItems || 0),
     discardedReasons: scanPayload?.summary?.discardedReasons || {},
     topRejectedItems: scanPayload?.summary?.topRejectedItems || [],
+    rejectionReasonsByItem: scanPayload?.summary?.rejectionReasonsByItem || [],
+    highConfidence: Number(scanPayload?.summary?.highConfidence || 0),
+    riskyEligible: Number(scanPayload?.summary?.riskyEligible || 0),
+    pipeline: scanPayload?.pipeline || {},
     persisted: persistSummary || {}
   }
 }
@@ -1474,9 +1939,9 @@ async function appendOpportunitiesToFeed(rows = [], scanRunId = "") {
     .filter((row) => {
       const marketHashName = String(row?.itemName || "").trim()
       if (!marketHashName) return false
-      if (!Boolean(row?.isRiskyEligible)) return false
+      if (!Boolean(row?.isRiskyEligible) && !Boolean(row?.isHighConfidenceEligible)) return false
       const score = Number(row?.score || 0)
-      return score >= RISKY_SCORE_CUTOFF
+      return score >= FEED_RISKY_MIN_SCORE
     })
     .map((row) => ({
       ...row,
@@ -1636,13 +2101,18 @@ async function getScannerStatusInternal() {
     scannerRunRepo.getLatestCompletedRun(SCANNER_TYPE),
     arbitrageFeedRepo.countFeed({ includeInactive: false })
   ])
+  const latestRunStatus = String(latestRun?.status || "")
+    .trim()
+    .toLowerCase()
+  const currentStatus = scannerState.inFlight || latestRunStatus === "running" ? "running" : "idle"
+  const currentRunId = scannerState.inFlightRunId || (currentStatus === "running" ? latestRun?.id || null : null)
 
   return {
     scannerType: SCANNER_TYPE,
     intervalMinutes: SCANNER_INTERVAL_MINUTES,
     schedulerRunning: Boolean(scannerState.timer),
-    currentStatus: scannerState.inFlight ? "running" : "idle",
-    currentRunId: scannerState.inFlightRunId,
+    currentStatus,
+    currentRunId,
     nextScheduledAt: scannerState.nextScheduledAt,
     activeOpportunities: Number(activeCount || 0),
     latestRun,
@@ -1668,25 +2138,70 @@ async function ensureScheduledScanHeartbeat(statusHint = null, trigger = "watchd
   return Boolean(enqueue?.scanRunId)
 }
 
+function resolveNoOpportunitiesReason(summary = {}, status = {}, opportunities = []) {
+  if (Array.isArray(opportunities) && opportunities.length) {
+    return null
+  }
+
+  const currentStatus = String(status?.currentStatus || "")
+    .trim()
+    .toLowerCase()
+  if (currentStatus === "running") {
+    return {
+      code: "scan_in_progress",
+      message: "Scanner run is in progress. Feed will update after completion."
+    }
+  }
+
+  const scannedItems = Number(summary?.scannedItems || 0)
+  if (!scannedItems) {
+    return {
+      code: "no_items_scanned",
+      message: "No universe items were eligible for scan in the latest run."
+    }
+  }
+
+  const discardedReasons = summary?.discardedReasons && typeof summary.discardedReasons === "object"
+    ? summary.discardedReasons
+    : {}
+  const topReasonEntry = Object.entries(discardedReasons)
+    .filter(([, count]) => Number(count || 0) > 0)
+    .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))[0]
+  if (!topReasonEntry) {
+    return {
+      code: "no_matching_feed_rows",
+      message: "Scanner completed but no opportunities passed current filters."
+    }
+  }
+
+  const [code, count] = topReasonEntry
+  const reasonMessageMap = {
+    ignored_low_price: "Most candidates were below the minimum price threshold.",
+    ignored_low_liquidity: "Most candidates were rejected for low liquidity.",
+    ignored_extreme_spread: "Most candidates were rejected for extreme spread values.",
+    ignored_reference_deviation: "Most candidates failed reference deviation checks.",
+    ignored_missing_markets: "Most candidates were missing enough market coverage.",
+    ignored_missing_liquidity_data: "Most candidates were missing liquidity data.",
+    ignored_low_score: "Most candidates scored below profile thresholds.",
+    ignored_stale_data: "Most candidates were rejected due to stale data."
+  }
+  return {
+    code,
+    count: Number(count || 0),
+    message:
+      reasonMessageMap[code] || "Most candidates were rejected by scanner quality filters."
+  }
+}
+
 exports.getFeed = async (options = {}) => {
   const limit = normalizeLimit(options.limit, DEFAULT_API_LIMIT, MAX_FEED_LIMIT)
   const showRisky = normalizeBoolean(options.showRisky)
   const includeOlder = normalizeBoolean(options.includeOlder || options.showOlder)
-  const forceRefresh = normalizeBoolean(options.forceRefresh || options.force)
   const categoryFilter = normalizeCategoryFilter(options.category)
 
-  if (forceRefresh) {
-    await enqueueScan({ forceRefresh: true, trigger: "manual" }).catch((err) => {
-      console.error("[arbitrage-scanner] Failed to enqueue manual refresh", err.message)
-    })
-  } else {
-    await ensureScheduledScanHeartbeat(null, "feed_watchdog").catch((err) => {
-      console.error("[arbitrage-scanner] Failed to enqueue watchdog scan", err.message)
-    })
-  }
-
-  const minScore = showRisky ? RISKY_SCORE_CUTOFF : DEFAULT_SCORE_CUTOFF
+  const minScore = showRisky ? FEED_RISKY_MIN_SCORE : DEFAULT_SCORE_CUTOFF
   const excludeLowConfidence = !showRisky
+  const highConfidenceOnly = !showRisky
 
   const [feedRows, totalCount, activeCount, status] = await Promise.all([
     arbitrageFeedRepo.listFeed({
@@ -1694,19 +2209,22 @@ exports.getFeed = async (options = {}) => {
       includeInactive: includeOlder,
       category: categoryFilter === "all" ? "" : categoryFilter,
       minScore,
-      excludeLowConfidence
+      excludeLowConfidence,
+      highConfidenceOnly
     }),
     arbitrageFeedRepo.countFeed({
       includeInactive: includeOlder,
       category: categoryFilter === "all" ? "" : categoryFilter,
       minScore,
-      excludeLowConfidence
+      excludeLowConfidence,
+      highConfidenceOnly
     }),
     arbitrageFeedRepo.countFeed({
       includeInactive: false,
       category: categoryFilter === "all" ? "" : categoryFilter,
       minScore,
-      excludeLowConfidence
+      excludeLowConfidence,
+      highConfidenceOnly
     }),
     getScannerStatusInternal()
   ])
@@ -1717,26 +2235,31 @@ exports.getFeed = async (options = {}) => {
     latestCompleted?.diagnostics_summary && typeof latestCompleted.diagnostics_summary === "object"
       ? latestCompleted.diagnostics_summary
       : {}
+  const summary = {
+    scannedItems:
+      Number(diagnosticsSummary?.scannedItems || 0) || Number(latestCompleted?.items_scanned || 0),
+    opportunities: mappedRows.length,
+    totalDetected: Number(totalCount || mappedRows.length),
+    activeOpportunities: Number(activeCount || 0),
+    universeSize: Number(diagnosticsSummary?.universeSize || 0),
+    candidateItems: Number(diagnosticsSummary?.candidateItems || 0),
+    discardedReasons: diagnosticsSummary?.discardedReasons || {},
+    topRejectedItems: diagnosticsSummary?.topRejectedItems || [],
+    rejectionReasonsByItem: diagnosticsSummary?.rejectionReasonsByItem || [],
+    highConfidence: Number(diagnosticsSummary?.highConfidence || 0),
+    riskyEligible: Number(diagnosticsSummary?.riskyEligible || 0),
+    newOpportunitiesAdded:
+      Number(latestCompleted?.new_opportunities_added || diagnosticsSummary?.persisted?.insertedCount || 0),
+    feedRetentionHours: FEED_RETENTION_HOURS,
+    feedActiveLimit: FEED_ACTIVE_LIMIT
+  }
+  summary.noOpportunitiesReason = resolveNoOpportunitiesReason(summary, status, mappedRows)
 
   return {
     generatedAt: latestCompleted?.completed_at || latestCompleted?.started_at || null,
     ttlSeconds: Math.round(CACHE_TTL_MS / 1000),
     currency: "USD",
-    summary: {
-      scannedItems:
-        Number(diagnosticsSummary?.scannedItems || 0) || Number(latestCompleted?.items_scanned || 0),
-      opportunities: mappedRows.length,
-      totalDetected: Number(totalCount || mappedRows.length),
-      activeOpportunities: Number(activeCount || 0),
-      universeSize: Number(diagnosticsSummary?.universeSize || 0),
-      candidateItems: Number(diagnosticsSummary?.candidateItems || 0),
-      discardedReasons: diagnosticsSummary?.discardedReasons || {},
-      topRejectedItems: diagnosticsSummary?.topRejectedItems || [],
-      newOpportunitiesAdded:
-        Number(latestCompleted?.new_opportunities_added || diagnosticsSummary?.persisted?.insertedCount || 0),
-      feedRetentionHours: FEED_RETENTION_HOURS,
-      feedActiveLimit: FEED_ACTIVE_LIMIT
-    },
+    summary,
     opportunities: mappedRows,
     status: {
       scannerType: SCANNER_TYPE,
@@ -1768,11 +2291,7 @@ exports.triggerRefresh = async (options = {}) => {
 }
 
 exports.getStatus = async () => {
-  let status = await getScannerStatusInternal()
-  await ensureScheduledScanHeartbeat(status, "status_watchdog").catch((err) => {
-    console.error("[arbitrage-scanner] Failed to enqueue status watchdog scan", err.message)
-  })
-  status = await getScannerStatusInternal()
+  const status = await getScannerStatusInternal()
   return {
     scannerType: SCANNER_TYPE,
     intervalMinutes: SCANNER_INTERVAL_MINUTES,
