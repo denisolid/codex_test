@@ -9597,45 +9597,69 @@ function renderDashboardArbitragePanel() {
     }`,
     title: "Arbitrage Opportunities",
     subtitle: "Top 5 execution-quality opportunities (portfolio-first).",
-    actions: `
-      <div class="arb-panel-actions">
-        <button
-          type="button"
-          class="ghost-btn tab-jump-btn arb-action-btn arb-action-btn-portfolio"
-          data-tab-target="portfolio"
-        >
-          <span class="arb-action-icon arb-action-icon-portfolio" aria-hidden="true">
-            <svg class="arb-action-icon-svg arb-action-icon-svg-portfolio" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-              <path d="M4 19.5h16" />
-              <path d="M6.5 17.5v-4.2" />
-              <path d="M10.5 17.5V9.3" />
-              <path d="M14.5 17.5v-6.1" />
-              <path d="M18.5 17.5V6.4" />
-              <path d="M6.5 11.2l4-2.8 3.8 1.9 4.2-3.9" />
-            </svg>
-          </span>
-          <span class="arb-action-label">Portfolio Scanner</span>
-        </button>
-        <button
-          type="button"
-          class="ghost-btn tab-jump-btn arb-action-btn arb-action-btn-global"
-          data-tab-target="opportunities"
-        >
-          <span class="arb-action-icon arb-action-icon-global" aria-hidden="true">
-            <svg class="arb-action-icon-svg arb-action-icon-svg-global" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-              <circle cx="12" cy="12" r="7.2" />
-              <circle cx="12" cy="12" r="3.2" />
-              <path d="M12 4.8v14.4" />
-              <path d="M4.8 12h14.4" />
-              <path d="M12 12l5.2-3.1" />
-            </svg>
-          </span>
-          <span class="arb-action-label">Global Scanner</span>
-        </button>
-      </div>
-    `,
+    actions: renderScannerSwitcher(),
     body,
   });
+}
+
+function renderScannerSwitcher(options = {}) {
+  const explicitActiveTab = String(options?.activeTabTarget || "")
+    .trim()
+    .toLowerCase();
+  const currentTab = String(options?.currentTab || state.activeTab || "")
+    .trim()
+    .toLowerCase();
+  const activeTabTarget =
+    explicitActiveTab === "portfolio" || explicitActiveTab === "opportunities"
+      ? explicitActiveTab
+      : currentTab === "portfolio" || currentTab === "opportunities"
+        ? currentTab
+        : "";
+  const portfolioActive = activeTabTarget === "portfolio";
+  const globalActive = activeTabTarget === "opportunities";
+  return `
+    <div class="scanner-switcher" role="group" aria-label="Scanner mode">
+      <button
+        type="button"
+        class="ghost-btn tab-jump-btn scanner-switch-segment scanner-switch-segment-portfolio ${
+          portfolioActive ? "is-active" : ""
+        }"
+        data-tab-target="portfolio"
+        ${portfolioActive ? 'aria-current="page"' : ""}
+      >
+        <span class="scanner-switch-icon scanner-switch-icon-portfolio" aria-hidden="true">
+          <svg class="scanner-switch-icon-svg" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+            <path d="M4 19.5h16" />
+            <path d="M6.5 17.5v-4.2" />
+            <path d="M10.5 17.5V9.3" />
+            <path d="M14.5 17.5v-6.1" />
+            <path d="M18.5 17.5V6.4" />
+            <path d="M6.5 11.2l4-2.8 3.8 1.9 4.2-3.9" />
+          </svg>
+        </span>
+        <span class="scanner-switch-label">Portfolio Scanner</span>
+      </button>
+      <button
+        type="button"
+        class="ghost-btn tab-jump-btn scanner-switch-segment scanner-switch-segment-global ${
+          globalActive ? "is-active" : ""
+        }"
+        data-tab-target="opportunities"
+        ${globalActive ? 'aria-current="page"' : ""}
+      >
+        <span class="scanner-switch-icon scanner-switch-icon-global" aria-hidden="true">
+          <svg class="scanner-switch-icon-svg" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+            <circle cx="12" cy="12" r="7.2" />
+            <circle cx="12" cy="12" r="3.2" />
+            <path d="M12 4.8v14.4" />
+            <path d="M4.8 12h14.4" />
+            <path d="M12 12l5.2-3.1" />
+          </svg>
+        </span>
+        <span class="scanner-switch-label">Global Scanner</span>
+      </button>
+    </div>
+  `;
 }
 
 function renderPortfolioArbitrageWidget() {
@@ -9750,6 +9774,7 @@ function renderPortfolioArbitrageWidget() {
     }`,
     title: "Portfolio Arbitrage",
     subtitle: "Top 3 execution-quality opportunities from your holdings.",
+    actions: renderScannerSwitcher(),
     body,
   });
 }
