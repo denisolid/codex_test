@@ -4920,7 +4920,10 @@ async function syncInventory(options = {}) {
     return true;
   } catch (err) {
     const status = Number(err?.status || 0);
-    if (status === 429) {
+    const isSyncRouteRateLimit =
+      status === 429 && String(err?.code || "").toUpperCase() === "RATE_LIMITED";
+
+    if (isSyncRouteRateLimit) {
       const retryAfter = Math.max(
         Math.ceil(Number(err?.retryAfterSeconds || 60)),
         1,
@@ -4936,8 +4939,12 @@ async function syncInventory(options = {}) {
 
     if (!automatic) {
       setError(err.message);
-      if (status !== 429) {
-        notify("warning", "Inventory sync failed. Please try again.");
+      if (!isSyncRouteRateLimit) {
+        const fallbackMessage =
+          status === 429
+            ? "Inventory provider is rate limited right now. Please try again shortly."
+            : "Inventory sync failed. Please try again.";
+        notify("warning", err.message || fallbackMessage);
       }
       state.alerts = [
         {
@@ -4947,7 +4954,7 @@ async function syncInventory(options = {}) {
         },
         ...(state.alerts || []).filter((a) => a.code !== "SYNC_FAILED"),
       ];
-    } else if (status !== 429) {
+    } else if (!isSyncRouteRateLimit) {
       notify("warning", `Auto inventory sync failed: ${err.message}`);
     }
     return false;
@@ -12904,6 +12911,15 @@ function hydrateAppNoticesFromUrl() {
   const steamOnboarding = params.get("steamOnboarding") === "1";
   const onboardingVerified = params.get("onboardingVerified") === "1";
   const onboardingError = String(params.get("onboarding") === "1" ? params.get("error") || "" : "").trim();
+
+  if (sessionAutoSyncOnLoginRequested) {
+    params.delete("syncOnLogin");
+    const nextSearch = params.toString();
+    const nextUrl = `${window.location.pathname}${
+      nextSearch ? `?${nextSearch}` : ""
+    }${window.location.hash}`;
+    window.history.replaceState({}, "", nextUrl);
+  }
 
   if (!linkedSteam && !steamOnboarding && !onboardingVerified && !onboardingError) return;
 
