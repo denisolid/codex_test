@@ -5898,7 +5898,10 @@ a:hover {
 }
 
 .opportunities-table .opportunity-item-cell {
-  --rarity-color: #7f8ba5;
+  --rarity-color: #5aaeff;
+  --rarity-rgb: 90, 174, 255;
+  --item-pan-x: 0px;
+  --item-pan-y: 0px;
   display: grid;
   grid-template-columns: 124px minmax(0, 1fr);
   align-items: center;
@@ -5912,17 +5915,29 @@ a:hover {
   height: 90px;
   cursor: zoom-in;
   border-radius: 14px;
-  border: 1px solid transparent;
+  border: 1px solid rgba(var(--rarity-rgb), 0.88);
+  border: 1px solid color-mix(in srgb, var(--rarity-color) 82%, #12213f 18%);
+  outline: 1px solid rgba(var(--rarity-rgb), 0.58);
+  outline: 1px solid color-mix(in srgb, var(--rarity-color) 58%, transparent);
+  outline-offset: -1px;
   overflow: hidden;
   background:
     linear-gradient(155deg, rgba(7, 11, 20, 0.96), rgba(10, 15, 27, 0.9)) padding-box,
     linear-gradient(
       118deg,
-      color-mix(in srgb, var(--rarity-color) 34%, transparent),
-      rgba(255, 255, 255, 0.32),
-      color-mix(in srgb, var(--rarity-color) 68%, transparent),
-      rgba(255, 255, 255, 0.18),
-      color-mix(in srgb, var(--rarity-color) 30%, transparent)
+      rgba(var(--rarity-rgb), 0.94),
+      rgba(255, 255, 255, 0.38),
+      rgba(var(--rarity-rgb), 0.96),
+      rgba(var(--rarity-rgb), 0.7)
+    ) border-box;
+  background:
+    linear-gradient(155deg, rgba(7, 11, 20, 0.96), rgba(10, 15, 27, 0.9)) padding-box,
+    linear-gradient(
+      118deg,
+      color-mix(in srgb, var(--rarity-color) 94%, transparent),
+      color-mix(in srgb, var(--rarity-color) 62%, #ffffff 38%),
+      color-mix(in srgb, var(--rarity-color) 96%, transparent),
+      color-mix(in srgb, var(--rarity-color) 70%, transparent)
     ) border-box;
   background-size:
     100% 100%,
@@ -5930,9 +5945,14 @@ a:hover {
   animation: opportunity-rarity-border-flow 7.4s linear infinite;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 0 0 1px color-mix(in srgb, var(--rarity-color) 28%, transparent),
+    0 0 0 1px rgba(var(--rarity-rgb), 0.48),
     0 10px 22px rgba(3, 7, 15, 0.56),
-    0 0 26px color-mix(in srgb, var(--rarity-color) 20%, transparent);
+    0 0 32px rgba(var(--rarity-rgb), 0.34);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 0 1px color-mix(in srgb, var(--rarity-color) 48%, transparent),
+    0 10px 22px rgba(3, 7, 15, 0.56),
+    0 0 32px color-mix(in srgb, var(--rarity-color) 34%, transparent);
   transition:
     transform 200ms ease,
     box-shadow 220ms ease,
@@ -5945,6 +5965,11 @@ a:hover {
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
+  background: radial-gradient(
+    120% 86% at 12% 0%,
+    rgba(var(--rarity-rgb), 0.22),
+    transparent 66%
+  );
   background: radial-gradient(
     120% 86% at 12% 0%,
     color-mix(in srgb, var(--rarity-color) 22%, transparent),
@@ -5971,6 +5996,90 @@ a:hover {
     transform 340ms cubic-bezier(0.2, 0.78, 0.24, 1);
 }
 
+.opportunity-item-zoom-window {
+  --rarity-color: #5aaeff;
+  --rarity-rgb: 90, 174, 255;
+  --zoom-pan-x: 0px;
+  --zoom-pan-y: 0px;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 248px;
+  height: 176px;
+  pointer-events: none;
+  z-index: 1200;
+  opacity: 0;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid rgba(var(--rarity-rgb), 0.9);
+  outline: 1px solid rgba(var(--rarity-rgb), 0.56);
+  outline-offset: -1px;
+  background:
+    linear-gradient(156deg, rgba(6, 11, 22, 0.98), rgba(9, 16, 30, 0.96)) padding-box,
+    linear-gradient(
+      122deg,
+      rgba(var(--rarity-rgb), 0.82),
+      rgba(255, 255, 255, 0.42),
+      rgba(var(--rarity-rgb), 0.9),
+      rgba(var(--rarity-rgb), 0.74)
+    ) border-box;
+  box-shadow:
+    0 20px 36px rgba(2, 5, 14, 0.64),
+    0 0 0 1px rgba(var(--rarity-rgb), 0.44),
+    0 0 40px rgba(var(--rarity-rgb), 0.32);
+  transform: translate3d(0, 8px, 0) scale(0.985);
+  transition:
+    opacity 130ms ease,
+    transform 180ms cubic-bezier(0.2, 0.78, 0.24, 1);
+}
+
+.opportunity-item-zoom-window::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    112% 86% at 14% 0%,
+    rgba(var(--rarity-rgb), 0.22),
+    transparent 68%
+  );
+}
+
+.opportunity-item-zoom-window::after {
+  content: "";
+  position: absolute;
+  inset: -30%;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  opacity: 0.72;
+  background: radial-gradient(
+    circle at 34% 24%,
+    rgba(255, 255, 255, 0.44),
+    rgba(255, 255, 255, 0.16) 26%,
+    transparent 64%
+  );
+}
+
+.opportunity-item-zoom-window.is-visible {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+}
+
+.opportunity-item-zoom-thumb {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center center;
+  background: rgba(7, 11, 22, 0.92);
+  border: 1px solid rgba(var(--rarity-rgb), 0.34);
+  filter: drop-shadow(0 16px 24px rgba(0, 0, 0, 0.56));
+  transform: scale(2.18) translate3d(var(--zoom-pan-x), var(--zoom-pan-y), 0);
+  transform-origin: 50% 50%;
+  transition: transform 80ms linear;
+}
+
 @keyframes opportunity-rarity-border-flow {
   0% {
     background-position:
@@ -5990,17 +6099,25 @@ a:hover {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  object-position: center center;
   border-radius: 10px;
   background: rgba(6, 10, 19, 0.9);
+  border: 1px solid rgba(var(--rarity-rgb), 0.38);
   border: 1px solid color-mix(in srgb, var(--rarity-color) 38%, transparent);
   filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.48));
-  transform: scale(1) translate3d(0, 0, 0);
+  transform: scale(1.02) translate3d(0, 0, 0);
   will-change: transform;
   backface-visibility: hidden;
-  transform-origin: 56% 44%;
+  transform-origin: 50% 50%;
   transition:
     transform 300ms cubic-bezier(0.2, 0.78, 0.24, 1),
     filter 300ms ease;
+}
+
+@media (max-width: 1140px) {
+  .opportunity-item-zoom-window {
+    display: none;
+  }
 }
 
 .opportunity-item-meta {
@@ -6123,25 +6240,46 @@ a:hover {
 }
 
 .opportunity-table-row:hover .opportunity-item-media,
-.opportunity-item-media:hover {
-  transform: translateY(-2px);
+.opportunity-item-media:hover,
+.opportunity-item-media.is-hovered {
+  transform: translateY(-2px) scale(1.04);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 0 0 1px color-mix(in srgb, var(--rarity-color) 36%, transparent),
+    0 0 0 2px rgba(var(--rarity-rgb), 0.64),
     0 14px 26px rgba(4, 8, 18, 0.58),
-    0 0 30px color-mix(in srgb, var(--rarity-color) 28%, transparent);
+    0 0 38px rgba(var(--rarity-rgb), 0.44);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 0 2px color-mix(in srgb, var(--rarity-color) 64%, transparent),
+    0 14px 26px rgba(4, 8, 18, 0.58),
+    0 0 38px color-mix(in srgb, var(--rarity-color) 44%, transparent);
 }
 
 .opportunity-table-row:hover .opportunity-item-media::after,
-.opportunity-item-media:hover::after {
+.opportunity-item-media:hover::after,
+.opportunity-item-media.is-hovered::after {
   opacity: 0.9;
   transform: translate3d(16%, 10%, 0) scale(1.08);
 }
 
 .opportunity-table-row:hover .opportunity-item-thumb,
-.opportunity-item-media:hover .opportunity-item-thumb {
-  transform: scale(1.18) translate3d(2%, -1%, 0);
+.opportunity-item-media:hover .opportunity-item-thumb,
+.opportunity-item-media.is-hovered .opportunity-item-thumb {
+  transform: scale(1.52) translate3d(var(--item-pan-x), var(--item-pan-y), 0);
   filter: drop-shadow(0 10px 22px rgba(0, 0, 0, 0.56));
+}
+
+.opportunities-table .opportunity-item-media:hover .opportunity-item-thumb,
+.opportunities-table .opportunity-item-media.is-hovered .opportunity-item-thumb,
+.opportunities-table .opportunity-item-thumb:hover {
+  transform: scale(1.62) translate3d(var(--item-pan-x), var(--item-pan-y), 0)
+    !important;
+}
+
+.opportunities-table .opportunity-item-media:active .opportunity-item-thumb,
+.opportunities-table .opportunity-item-thumb:active {
+  transform: scale(1.72) translate3d(var(--item-pan-x), var(--item-pan-y), 0)
+    !important;
 }
 
 .opportunity-table-row:hover .opportunity-rarity-tag {

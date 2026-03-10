@@ -5,9 +5,11 @@ const {
   pickImageFromMarketRow,
   __testables: {
     normalizeNameKey,
+    buildSearchQueries,
     buildSteamImageUrlFromIcon,
     resolveImageFromCandidate,
-    pickSteamSearchResult
+    pickSteamSearchResult,
+    resolveRarityFromSearchResult
   }
 } = require("../src/services/marketImageService");
 
@@ -55,6 +57,30 @@ test("steam search result picker prefers exact hash name matches", () => {
   assert.equal(result.hash_name, "AWP | Neo-Noir (Field-Tested)");
 });
 
+test("steam search helper builds fallback queries without wear suffix", () => {
+  const queries = buildSearchQueries("StatTrak™ Desert Eagle | Printstream (Field-Tested)");
+  assert.equal(
+    queries.includes("StatTrak™ Desert Eagle | Printstream (Field-Tested)"),
+    true
+  );
+  assert.equal(queries.includes("StatTrak™ Desert Eagle | Printstream"), true);
+  assert.equal(queries.includes("Desert Eagle | Printstream"), true);
+});
+
+test("rarity resolver extracts rarity and color from steam search result", () => {
+  const rarity = resolveRarityFromSearchResult(
+    {
+      asset_description: {
+        type: "Covert Pistol",
+        name_color: "eb4b4b"
+      }
+    },
+    "Desert Eagle | Printstream (Field-Tested)"
+  );
+  assert.equal(rarity.rarity, "Covert");
+  assert.equal(rarity.rarityColor, "#eb4b4b");
+});
+
 test("market row image picker reads nested raw payload image metadata", () => {
   const image = pickImageFromMarketRow({
     raw: {
@@ -69,4 +95,3 @@ test("market row image picker reads nested raw payload image metadata", () => {
     "https://community.akamai.steamstatic.com/economy/image/nested_icon_hash/360fx360f"
   );
 });
-

@@ -59,6 +59,7 @@ const FEED_RISKY_MIN_SCORE = RISKY_MIN_SCORE
 const MAX_API_LIMIT = 200
 const DEFAULT_API_LIMIT = 100
 const MAX_FEED_LIMIT = 500
+const FEED_METADATA_ENRICH_LIMIT = 60
 const FEED_RETENTION_HOURS = Math.max(Number(arbitrageFeedRetentionHours || 24), 1)
 const FEED_ACTIVE_LIMIT = Math.max(Number(arbitrageFeedActiveLimit || 500), 50)
 const DUPLICATE_WINDOW_HOURS = Math.max(Number(arbitrageDuplicateWindowHours || 4), 1)
@@ -134,6 +135,7 @@ const SNAPSHOT_WARMUP_CONCURRENCY = Math.max(
 )
 const SNAPSHOT_WARMUP_TRIGGER_FRESH_MIN = Math.max(SCAN_BATCH_SIZE, 20)
 const MIN_STRICT_SEED_COVERAGE = Math.max(Math.round(SCAN_BATCH_SIZE / 2), 10)
+const STRICT_SEED_COVERAGE_RATIO_TARGET = 0.6
 const UNIVERSE_MIN_PRICE_FLOOR_BY_CATEGORY = Object.freeze({
   [ITEM_CATEGORIES.WEAPON_SKIN]: 2,
   [ITEM_CATEGORIES.CASE]: 1,
@@ -813,7 +815,13 @@ async function ensureSkinsForMarketNames(marketNames = []) {
     return []
   }
 
-  const existing = await skinRepo.getByMarketHashNames(uniqueNames)
+  let existing = []
+  try {
+    existing = await skinRepo.getByMarketHashNames(uniqueNames)
+  } catch (err) {
+    console.error("[arbitrage-scanner] Failed to fetch skins by market hash name", err.message)
+    existing = uniqueNames.map((marketHashName) => ({ market_hash_name: marketHashName }))
+  }
   const existingByName = toByNameMap(
     (Array.isArray(existing) ? existing : []).map((row) => ({
       ...row,
@@ -837,7 +845,19 @@ async function ensureSkinsForMarketNames(marketNames = []) {
     console.error("[arbitrage-scanner] Failed to auto-seed missing skins", err.message)
   }
 
-  return skinRepo.getByMarketHashNames(uniqueNames)
+  try {
+    return await skinRepo.getByMarketHashNames(uniqueNames)
+  } catch (err) {
+    console.error("[arbitrage-scanner] Failed to refetch skins after auto-seed", err.message)
+    return Array.isArray(existing) ? existing : []
+  }
+}
+
+function computeStrictCoverageThreshold(totalSeeds = 0) {
+  const seedCount = Math.max(Math.round(Number(totalSeeds || 0)), 0)
+  if (!seedCount) return MIN_STRICT_SEED_COVERAGE
+  const ratioThreshold = Math.round(seedCount * STRICT_SEED_COVERAGE_RATIO_TARGET)
+  return Math.max(Math.min(ratioThreshold, seedCount), MIN_STRICT_SEED_COVERAGE)
 }
 
 async function loadCuratedUniverseSeeds() {
@@ -1438,6 +1458,179 @@ function mapFeedRowToApiRow(row = {}) {
   }
 }
 
+async function enrichFeedRowsWithSkinMetadata(rows = []) {
+  const items = Array.isArray(rows) ? rows : []
+  if (!items.length) return []
+
+  const skinIds = Array.from(
+    new Set(
+      items
+        .map((row) => Number(row?.itemId || 0))
+        .filter((value) => Number.isInteger(value) && value > 0)
+    )
+  )
+  const marketHashNames = Array.from(
+    new Set(
+      items
+        .map((row) => normalizeMarketHashName(row?.itemName))
+        .filter(Boolean)
+    )
+  )
+  if (!marketHashNames.length && !skinIds.length) return items
+
+  let skinsByNameRows = []
+  let skinsByIdRows = []
+  try {
+    const [byName, byId] = await Promise.all([
+      marketHashNames.length ? skinRepo.getByMarketHashNames(marketHashNames) : Promise.resolve([]),
+      skinIds.length ? skinRepo.getByIds(skinIds) : Promise.resolve([])
+    ])
+    skinsByNameRows = Array.isArray(byName) ? byName : []
+    skinsByIdRows = Array.isArray(byId) ? byId : []
+  } catch (err) {
+    console.error("[arbitrage-scanner] Failed to enrich feed rows with skin metadata", err.message)
+    return items
+  }
+
+  const skinsById = {}
+  for (const row of skinsByIdRows) {
+    const id = Number(row?.id || 0)
+    if (!Number.isInteger(id) || id <= 0) continue
+    skinsById[id] = row
+  }
+  const skinsByName = toByNameMap(
+    skinsByNameRows.map((row) => ({
+      ...row,
+      market_hash_name: normalizeMarketHashName(row?.market_hash_name)
+    })),
+    "market_hash_name"
+  )
+
+  const merged = items.map((row) => {
+    const key = normalizeMarketHashName(row?.itemName)
+    const skinId = Number(row?.itemId || 0)
+    const skin =
+      (Number.isInteger(skinId) && skinId > 0 ? skinsById[skinId] || null : null) ||
+      (key ? skinsByName[key] || null : null)
+    if (!skin) return row
+    return {
+      ...row,
+      itemRarity:
+        String(row?.itemRarity || "").trim() || String(skin?.rarity || "").trim() || null,
+      itemRarityColor:
+        String(row?.itemRarityColor || "").trim() ||
+        String(skin?.rarity_color || skin?.rarityColor || "").trim() ||
+        null,
+      itemImageUrl:
+        String(row?.itemImageUrl || "").trim() ||
+        String(skin?.image_url_large || skin?.image_url || "").trim() ||
+        null
+    }
+  })
+
+  const missingMetadataNames = Array.from(
+    new Set(
+      merged
+        .filter((row) => {
+          const itemName = normalizeMarketHashName(row?.itemName)
+          if (!itemName) return false
+          const rarity = String(row?.itemRarity || "")
+            .trim()
+            .toLowerCase()
+          const missingImage = !String(row?.itemImageUrl || "").trim()
+          const missingRarity = !rarity
+          const weakRarity = rarity === "consumer grade"
+          return missingImage || missingRarity || weakRarity
+        })
+        .map((row) => normalizeMarketHashName(row?.itemName))
+        .filter(Boolean)
+    )
+  ).slice(0, FEED_METADATA_ENRICH_LIMIT)
+
+  if (!missingMetadataNames.length) {
+    return merged
+  }
+
+  let steamMetadataByName = {}
+  try {
+    steamMetadataByName = await marketImageService.fetchSteamSearchMetadataBatch(
+      missingMetadataNames,
+      {
+        timeoutMs: 8000,
+        maxRetries: 1,
+        concurrency: 2,
+        count: 50
+      }
+    )
+  } catch (err) {
+    console.error("[arbitrage-scanner] Failed to fetch steam metadata for feed rows", err.message)
+    steamMetadataByName = {}
+  }
+
+  const steamKeys = Object.keys(steamMetadataByName || {})
+  if (!steamKeys.length) {
+    return merged
+  }
+
+  try {
+    const upsertRows = steamKeys
+      .map((marketHashName) => {
+        const metadata = steamMetadataByName[marketHashName] || {}
+        const imageUrl = String(metadata?.imageUrl || "").trim() || null
+        const imageUrlLarge = String(metadata?.imageUrlLarge || "").trim() || imageUrl
+        const rarity = String(metadata?.rarity || "").trim() || null
+        const rarityColor = String(metadata?.rarityColor || "").trim() || null
+        if (!imageUrl && !imageUrlLarge && !rarity && !rarityColor) {
+          return null
+        }
+        return {
+          market_hash_name: marketHashName,
+          rarity,
+          rarity_color: rarityColor,
+          image_url: imageUrl,
+          image_url_large: imageUrlLarge
+        }
+      })
+      .filter(Boolean)
+    if (upsertRows.length) {
+      await skinRepo.upsertSkins(upsertRows)
+    }
+  } catch (err) {
+    console.error("[arbitrage-scanner] Failed to persist steam metadata enrichment", err.message)
+  }
+
+  return merged.map((row) => {
+    const key = normalizeMarketHashName(row?.itemName)
+    const metadata = key ? steamMetadataByName[key] || null : null
+    if (!metadata) return row
+
+    const currentRarity = String(row?.itemRarity || "").trim()
+    const currentRarityColor = String(row?.itemRarityColor || "").trim()
+    const shouldReplaceRarity = !currentRarity || currentRarity.toLowerCase() === "consumer grade"
+    const shouldReplaceRarityColor =
+      shouldReplaceRarity ||
+      !currentRarityColor ||
+      currentRarityColor.toLowerCase() === "#b0c3d9" ||
+      currentRarityColor.toLowerCase() === "#7f8ba5"
+
+    return {
+      ...row,
+      itemRarity:
+        shouldReplaceRarity && metadata?.rarity
+          ? String(metadata.rarity).trim() || currentRarity || null
+          : currentRarity || null,
+      itemRarityColor:
+        shouldReplaceRarityColor && metadata?.rarityColor
+          ? String(metadata.rarityColor).trim() || currentRarityColor || null
+          : currentRarityColor || null,
+      itemImageUrl:
+        String(row?.itemImageUrl || "").trim() ||
+        String(metadata?.imageUrlLarge || metadata?.imageUrl || "").trim() ||
+        null
+    }
+  })
+}
+
 function sortOpportunities(rows = []) {
   return [...rows].sort(
     (a, b) =>
@@ -1669,9 +1862,10 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
   const mergedSeeds = mergeUniverseSeeds([curatedSeeds, fallbackSeeds])
   const { seeds: hydratedSeeds, snapshotWarmup } = await refreshSeedSnapshotsIfNeeded(mergedSeeds)
   const strictFilterResult = filterUniverseSeedsForScan(hydratedSeeds)
+  const strictCoverageThreshold = computeStrictCoverageThreshold(hydratedSeeds.length)
   let selectedFilterResult = strictFilterResult
   let seedFilterMode = "strict"
-  if (strictFilterResult.selectedSeeds.length < MIN_STRICT_SEED_COVERAGE) {
+  if (strictFilterResult.selectedSeeds.length < strictCoverageThreshold) {
     const relaxedFilterResult = filterUniverseSeedsForScan(hydratedSeeds, {
       allowMissingSnapshotData: true
     })
@@ -1711,6 +1905,7 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
     snapshotWarmup: toSnapshotWarmupSummary({
       ...snapshotWarmup,
       seedFilterMode,
+      strictCoverageThreshold,
       strictEligibleSeeds: strictFilterResult.selectedSeeds.length,
       selectedEligibleSeeds: selectedFilterResult.selectedSeeds.length
     })
@@ -3005,7 +3200,8 @@ exports.getFeed = async (options = {}) => {
     getScannerStatusInternal()
   ])
 
-  const mappedRows = (Array.isArray(feedRows) ? feedRows : []).map((row) => mapFeedRowToApiRow(row))
+  let mappedRows = (Array.isArray(feedRows) ? feedRows : []).map((row) => mapFeedRowToApiRow(row))
+  mappedRows = await enrichFeedRowsWithSkinMetadata(mappedRows)
   const latestCompleted = status?.latestCompletedRun || null
   const diagnosticsSummary =
     latestCompleted?.diagnostics_summary && typeof latestCompleted.diagnostics_summary === "object"
@@ -3140,6 +3336,7 @@ exports.__testables = {
   computeLiquidityRank,
   countAvailableMarkets,
   isLowValueJunkName,
+  computeStrictCoverageThreshold,
   DEFAULT_UNIVERSE_LIMIT,
   SCAN_BATCH_SIZE,
   MAX_CONCURRENT_MARKET_REQUESTS,

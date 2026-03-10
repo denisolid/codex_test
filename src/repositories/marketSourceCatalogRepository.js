@@ -2,7 +2,7 @@ const { supabaseAdmin } = require("../config/supabase")
 const AppError = require("../utils/AppError")
 
 const TABLE = "market_source_catalog"
-const INSERT_BATCH_SIZE = 400
+const INSERT_BATCH_SIZE = 200
 const MAX_LIMIT = 5000
 const CATEGORY_SET = new Set(["weapon_skin", "case", "sticker_capsule"])
 
@@ -39,6 +39,50 @@ function normalizeLimit(value, fallback = 1000) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
   return Math.min(Math.max(Math.round(parsed), 1), MAX_LIMIT)
+}
+
+function formatSupabaseError(error, fallbackMessage = "database_error") {
+  const message = normalizeText(error?.message) || fallbackMessage
+  const details = normalizeText(error?.details)
+  const hint = normalizeText(error?.hint)
+  const code = normalizeText(error?.code)
+
+  const chunks = [message]
+  if (details) chunks.push(`details: ${details}`)
+  if (hint) chunks.push(`hint: ${hint}`)
+  if (code) chunks.push(`code: ${code}`)
+  return chunks.join(" | ")
+}
+
+function isTransientNetworkError(error) {
+  const message = normalizeText(error?.message).toLowerCase()
+  return (
+    message.includes("fetch failed") ||
+    message.includes("connect timeout") ||
+    message.includes("etimedout") ||
+    message.includes("ecconnreset")
+  )
+}
+
+async function upsertChunkWithRetry(chunk = [], maxAttempts = 2) {
+  let lastError = null
+  for (let attempt = 1; attempt <= Math.max(Number(maxAttempts || 0), 1); attempt += 1) {
+    const { error } = await supabaseAdmin
+      .from(TABLE)
+      .upsert(chunk, { onConflict: "market_hash_name" })
+    if (!error) {
+      return
+    }
+    lastError = error
+    if (!isTransientNetworkError(error) || attempt >= maxAttempts) {
+      break
+    }
+  }
+
+  throw new AppError(
+    formatSupabaseError(lastError, "market_source_catalog_upsert_failed"),
+    500
+  )
 }
 
 function normalizeRows(rows = []) {
@@ -84,13 +128,7 @@ async function upsertInChunks(rows = []) {
   let total = 0
   for (let index = 0; index < payload.length; index += INSERT_BATCH_SIZE) {
     const chunk = payload.slice(index, index + INSERT_BATCH_SIZE)
-    const { error } = await supabaseAdmin
-      .from(TABLE)
-      .upsert(chunk, { onConflict: "market_hash_name" })
-
-    if (error) {
-      throw new AppError(error.message, 500)
-    }
+    await upsertChunkWithRetry(chunk, 2)
     total += chunk.length
   }
 
@@ -112,7 +150,7 @@ exports.listActiveTradable = async (options = {}) => {
     .limit(limit)
 
   if (error) {
-    throw new AppError(error.message, 500)
+    throw new AppError(formatSupabaseError(error, "market_source_catalog_list_active_failed"), 500)
   }
   return data || []
 }
@@ -131,7 +169,7 @@ exports.listScanEligible = async (options = {}) => {
     .limit(limit)
 
   if (error) {
-    throw new AppError(error.message, 500)
+    throw new AppError(formatSupabaseError(error, "market_source_catalog_list_eligible_failed"), 500)
   }
   return data || []
 }
@@ -147,7 +185,7 @@ exports.listCoverageSummary = async (options = {}) => {
     .limit(limit)
 
   if (error) {
-    throw new AppError(error.message, 500)
+    throw new AppError(formatSupabaseError(error, "market_source_catalog_coverage_failed"), 500)
   }
 
   return data || []
@@ -156,5 +194,6 @@ exports.listCoverageSummary = async (options = {}) => {
 exports.__testables = {
   normalizeRows,
   toIntegerOrNull,
-  toIntegerOrDefault
+  toIntegerOrDefault,
+  formatSupabaseError
 }

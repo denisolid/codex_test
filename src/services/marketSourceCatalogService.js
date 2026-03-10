@@ -251,7 +251,13 @@ async function ensureSkinsForCatalogNames(marketNames = []) {
     return []
   }
 
-  const existing = await skinRepo.getByMarketHashNames(names)
+  let existing = []
+  try {
+    existing = await skinRepo.getByMarketHashNames(names)
+  } catch (err) {
+    console.error("[source-catalog] Failed to fetch skins by market hash names", err.message)
+    existing = names.map((marketHashName) => ({ market_hash_name: marketHashName }))
+  }
   const existingByName = toByNameMap(existing, "market_hash_name")
   const missingNames = names.filter((name) => !existingByName[name])
 
@@ -265,7 +271,12 @@ async function ensureSkinsForCatalogNames(marketNames = []) {
     }
   }
 
-  return skinRepo.getByMarketHashNames(names)
+  try {
+    return await skinRepo.getByMarketHashNames(names)
+  } catch (err) {
+    console.error("[source-catalog] Failed to refetch skins after auto-seed", err.message)
+    return existing
+  }
 }
 
 async function ingestSourceCatalogSeeds() {
@@ -336,10 +347,29 @@ async function enrichSourceCatalog() {
   }
 
   const marketNames = rows.map((row) => normalizeText(row?.market_hash_name || row?.marketHashName)).filter(Boolean)
-  const [skins, quoteCoverageByItem] = await Promise.all([
+  const [skinsResult, quoteCoverageResult] = await Promise.allSettled([
     ensureSkinsForCatalogNames(marketNames),
     marketQuoteRepo.getLatestCoverageByItemNames(marketNames)
   ])
+
+  const skins =
+    skinsResult.status === "fulfilled" && Array.isArray(skinsResult.value)
+      ? skinsResult.value
+      : []
+  const quoteCoverageByItem =
+    quoteCoverageResult.status === "fulfilled" && quoteCoverageResult.value
+      ? quoteCoverageResult.value
+      : {}
+
+  if (skinsResult.status === "rejected") {
+    console.error("[source-catalog] Failed to load skins for enrichment", skinsResult.reason?.message || skinsResult.reason)
+  }
+  if (quoteCoverageResult.status === "rejected") {
+    console.error(
+      "[source-catalog] Failed to load quote coverage for enrichment",
+      quoteCoverageResult.reason?.message || quoteCoverageResult.reason
+    )
+  }
 
   const skinsByName = toByNameMap(
     (Array.isArray(skins) ? skins : []).map((row) => ({
@@ -489,26 +519,64 @@ function takeTopByCategory(rows = [], quotas = {}) {
   }
 }
 
+function normalizeCatalogCandidateRows(rows = [], selectionTier = "strict_eligible") {
+  const tier = normalizeText(selectionTier) || "strict_eligible"
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => {
+      const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
+      if (!marketHashName) return null
+      return {
+        ...row,
+        market_hash_name: marketHashName,
+        item_name: normalizeText(row?.item_name || row?.itemName || marketHashName) || marketHashName,
+        category: normalizeCategory(row?.category, marketHashName),
+        liquidity_rank: toFiniteOrNull(row?.liquidity_rank) ?? 0,
+        market_coverage_count: Math.max(Number(row?.market_coverage_count || 0), 0),
+        volume_7d: Math.max(Number(row?.volume_7d || 0), 0),
+        reference_price: toFiniteOrNull(row?.reference_price) ?? 0,
+        selectionTier: tier,
+        selectionTierRank: tier === "strict_eligible" ? 2 : 1
+      }
+    })
+    .filter(Boolean)
+}
+
+function dedupeByMarketHashName(rows = []) {
+  const deduped = []
+  const seen = new Set()
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const name = normalizeText(row?.market_hash_name)
+    if (!name || seen.has(name)) continue
+    seen.add(name)
+    deduped.push(row)
+  }
+  return deduped
+}
+
 async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) {
   const safeTarget = Math.max(Math.round(Number(targetSize || DEFAULT_UNIVERSE_TARGET)), 1)
-  const eligibleRows = await marketSourceCatalogRepo.listScanEligible({
-    limit: Math.max(SOURCE_CATALOG_LIMIT, safeTarget * 3)
-  })
+  const strictEligibleRows = normalizeCatalogCandidateRows(
+    await marketSourceCatalogRepo.listScanEligible({
+      limit: Math.max(SOURCE_CATALOG_LIMIT, safeTarget * 3)
+    }),
+    "strict_eligible"
+  )
 
-  const rankedRows = (Array.isArray(eligibleRows) ? eligibleRows : [])
-    .map((row) => ({
-      ...row,
-      market_hash_name: normalizeText(row?.market_hash_name),
-      item_name: normalizeText(row?.item_name || row?.market_hash_name),
-      category: normalizeCategory(row?.category, row?.market_hash_name),
-      liquidity_rank: toFiniteOrNull(row?.liquidity_rank) ?? 0,
-      market_coverage_count: Number(row?.market_coverage_count || 0),
-      volume_7d: Number(row?.volume_7d || 0),
-      reference_price: toFiniteOrNull(row?.reference_price) ?? 0
-    }))
-    .filter((row) => Boolean(row.market_hash_name))
+  let fallbackTradableRows = []
+  if (strictEligibleRows.length < safeTarget) {
+    const strictNames = new Set(strictEligibleRows.map((row) => row.market_hash_name))
+    fallbackTradableRows = normalizeCatalogCandidateRows(
+      await marketSourceCatalogRepo.listActiveTradable({
+        limit: Math.max(SOURCE_CATALOG_LIMIT, safeTarget * 4)
+      }),
+      "fallback_tradable"
+    ).filter((row) => !strictNames.has(row.market_hash_name))
+  }
+
+  const rankedRows = dedupeByMarketHashName([...strictEligibleRows, ...fallbackTradableRows])
     .sort(
       (a, b) =>
+        Number(b.selectionTierRank || 0) - Number(a.selectionTierRank || 0) ||
         Number(b.liquidity_rank || 0) - Number(a.liquidity_rank || 0) ||
         Number(b.market_coverage_count || 0) - Number(a.market_coverage_count || 0) ||
         Number(b.volume_7d || 0) - Number(a.volume_7d || 0) ||
@@ -530,6 +598,9 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
     const category = normalizeCategory(row?.category, row?.market_hash_name)
     selectedByCategory[category] = Number(selectedByCategory[category] || 0) + 1
   }
+
+  const selectedFromStrict = finalRows.filter((row) => row.selectionTier === "strict_eligible").length
+  const selectedFromFallback = Math.max(finalRows.length - selectedFromStrict, 0)
 
   const normalizedUniverseRows = finalRows.slice(0, safeTarget).map((row, index) => ({
     marketHashName: row.market_hash_name,
@@ -558,7 +629,11 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
 
   return {
     targetUniverseSize: safeTarget,
-    eligibleRows: rankedRows.length,
+    eligibleRows: strictEligibleRows.length,
+    strictEligibleRows: strictEligibleRows.length,
+    fallbackTradableRows: fallbackTradableRows.length,
+    selectedFromStrict,
+    selectedFromFallback,
     activeUniverseBuilt: normalizedUniverseRows.length,
     missingToTarget: Math.max(safeTarget - normalizedUniverseRows.length, 0),
     quotaTargetByCategory: quotas,
@@ -610,6 +685,7 @@ async function runPipeline(options = {}) {
 
 function shouldRefresh(force = false) {
   if (force) return true
+  if (sourceCatalogState.lastDiagnostics?.error) return true
   if (!sourceCatalogState.lastPreparedAt) return true
   return Date.now() - sourceCatalogState.lastPreparedAt >= SOURCE_CATALOG_REFRESH_MS
 }

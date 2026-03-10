@@ -1,5 +1,9 @@
-const { supabaseAdmin } = require("../config/supabase");
-const AppError = require("../utils/AppError");
+const { supabaseAdmin } = require("../config/supabase")
+const AppError = require("../utils/AppError")
+
+const UPSERT_BATCH_SIZE = 250
+const MARKET_HASH_QUERY_BATCH_SIZE = 60
+const ID_QUERY_BATCH_SIZE = 400
 
 function normalizeMarketHashNames(names = []) {
   return Array.from(
@@ -8,7 +12,7 @@ function normalizeMarketHashNames(names = []) {
         .map((name) => String(name || "").trim())
         .filter(Boolean)
     )
-  );
+  )
 }
 
 function normalizeIds(ids = []) {
@@ -18,86 +22,129 @@ function normalizeIds(ids = []) {
         .map((value) => Number(value))
         .filter((value) => Number.isInteger(value) && value > 0)
     )
-  );
+  )
 }
 
-exports.upsertSkins = async (rows) => {
-  const { data, error } = await supabaseAdmin
-    .from("skins")
-    .upsert(rows, { onConflict: "market_hash_name" })
-    .select("*");
-
-  if (error) {
-    throw new AppError(error.message, 500);
+function chunkArray(values = [], chunkSize = 100) {
+  const rows = Array.isArray(values) ? values : []
+  const size = Math.max(Number(chunkSize || 0), 1)
+  const chunks = []
+  for (let index = 0; index < rows.length; index += size) {
+    chunks.push(rows.slice(index, index + size))
   }
-  return data;
-};
+  return chunks
+}
 
-exports.getByMarketHashNames = async (names = []) => {
-  const safeNames = normalizeMarketHashNames(names);
-  if (!safeNames.length) {
-    return [];
-  }
+function formatSupabaseError(error, fallbackMessage = "database_error") {
+  const message = String(error?.message || "").trim() || fallbackMessage
+  const details = String(error?.details || "").trim()
+  const hint = String(error?.hint || "").trim()
+  const code = String(error?.code || "").trim()
 
-  const { data, error } = await supabaseAdmin
-    .from("skins")
-    .select("*")
-    .in("market_hash_name", safeNames);
+  const parts = [message]
+  if (details) parts.push(`details: ${details}`)
+  if (hint) parts.push(`hint: ${hint}`)
+  if (code) parts.push(`code: ${code}`)
+  return parts.join(" | ")
+}
 
-  if (error) {
-    throw new AppError(error.message, 500);
-  }
-  return data || [];
-};
+exports.upsertSkins = async (rows = []) => {
+  const payload = (Array.isArray(rows) ? rows : []).filter(Boolean)
+  if (!payload.length) return []
 
-exports.getByIds = async (ids = []) => {
-  const safeIds = normalizeIds(ids);
-  if (!safeIds.length) {
-    return [];
-  }
-
-  const chunkSize = 400;
-  const rows = [];
-  for (let index = 0; index < safeIds.length; index += chunkSize) {
-    const chunk = safeIds.slice(index, index + chunkSize);
+  const mergedRows = []
+  for (const chunk of chunkArray(payload, UPSERT_BATCH_SIZE)) {
     const { data, error } = await supabaseAdmin
       .from("skins")
-      .select("id, market_hash_name")
-      .in("id", chunk);
+      .upsert(chunk, { onConflict: "market_hash_name" })
+      .select("*")
 
     if (error) {
-      throw new AppError(error.message, 500);
+      throw new AppError(formatSupabaseError(error, "skins_upsert_failed"), 500)
     }
 
     if (Array.isArray(data) && data.length) {
-      rows.push(...data);
+      mergedRows.push(...data)
     }
   }
 
-  return rows;
-};
+  return mergedRows
+}
+
+exports.getByMarketHashNames = async (names = []) => {
+  const safeNames = normalizeMarketHashNames(names)
+  if (!safeNames.length) return []
+
+  const rows = []
+  for (const chunk of chunkArray(safeNames, MARKET_HASH_QUERY_BATCH_SIZE)) {
+    const { data, error } = await supabaseAdmin
+      .from("skins")
+      .select("*")
+      .in("market_hash_name", chunk)
+
+    if (error) {
+      throw new AppError(formatSupabaseError(error, "skins_lookup_failed"), 500)
+    }
+
+    if (Array.isArray(data) && data.length) {
+      rows.push(...data)
+    }
+  }
+
+  return rows
+}
+
+exports.getByIds = async (ids = []) => {
+  const safeIds = normalizeIds(ids)
+  if (!safeIds.length) return []
+
+  const rows = []
+  for (const chunk of chunkArray(safeIds, ID_QUERY_BATCH_SIZE)) {
+    const { data, error } = await supabaseAdmin
+      .from("skins")
+      .select("*")
+      .in("id", chunk)
+
+    if (error) {
+      throw new AppError(formatSupabaseError(error, "skins_lookup_by_ids_failed"), 500)
+    }
+
+    if (Array.isArray(data) && data.length) {
+      rows.push(...data)
+    }
+  }
+
+  return rows
+}
 
 exports.getById = async (id) => {
   const { data, error } = await supabaseAdmin
     .from("skins")
     .select("*")
     .eq("id", id)
-    .single();
+    .single()
 
   if (error && error.code !== "PGRST116") {
-    throw new AppError(error.message, 500);
+    throw new AppError(formatSupabaseError(error, "skin_lookup_failed"), 500)
   }
-  return data || null;
-};
+  return data || null
+}
 
 exports.listAll = async () => {
   const { data, error } = await supabaseAdmin
     .from("skins")
     .select("id, market_hash_name")
-    .order("id", { ascending: true });
+    .order("id", { ascending: true })
 
   if (error) {
-    throw new AppError(error.message, 500);
+    throw new AppError(formatSupabaseError(error, "skins_list_failed"), 500)
   }
-  return data || [];
-};
+  return data || []
+}
+
+exports.__testables = {
+  chunkArray,
+  normalizeMarketHashNames,
+  normalizeIds,
+  formatSupabaseError
+}

@@ -4,7 +4,7 @@ const AppError = require("../utils/AppError")
 const TABLE = "market_quotes"
 const SOURCES = new Set(["steam", "skinport", "csfloat", "dmarket"])
 const INSERT_BATCH_SIZE = 400
-const QUERY_BATCH_SIZE = 300
+const QUERY_BATCH_SIZE = 60
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -77,6 +77,19 @@ function normalizeItemNames(names = []) {
   )
 }
 
+function formatSupabaseError(error, fallbackMessage = "database_error") {
+  const message = normalizeText(error?.message) || fallbackMessage
+  const details = normalizeText(error?.details)
+  const hint = normalizeText(error?.hint)
+  const code = normalizeText(error?.code)
+
+  const chunks = [message]
+  if (details) chunks.push(`details: ${details}`)
+  if (hint) chunks.push(`hint: ${hint}`)
+  if (code) chunks.push(`code: ${code}`)
+  return chunks.join(" | ")
+}
+
 exports.insertRows = async (rows = []) => {
   const payload = normalizeRows(rows)
   if (!payload.length) return 0
@@ -86,7 +99,7 @@ exports.insertRows = async (rows = []) => {
     const chunk = payload.slice(index, index + INSERT_BATCH_SIZE)
     const { error } = await supabaseAdmin.from(TABLE).insert(chunk)
     if (error) {
-      throw new AppError(error.message, 500)
+      throw new AppError(formatSupabaseError(error, "market_quotes_insert_failed"), 500)
     }
     insertedCount += chunk.length
   }
@@ -109,7 +122,7 @@ exports.getLatestCoverageByItemNames = async (itemNames = []) => {
       .limit(50000)
 
     if (error) {
-      throw new AppError(error.message, 500)
+      throw new AppError(formatSupabaseError(error, "market_quote_coverage_lookup_failed"), 500)
     }
 
     for (const row of data || []) {
@@ -148,4 +161,9 @@ exports.getLatestCoverageByItemNames = async (itemNames = []) => {
   }
 
   return coverageByItem
+}
+
+exports.__testables = {
+  normalizeItemNames,
+  formatSupabaseError
 }

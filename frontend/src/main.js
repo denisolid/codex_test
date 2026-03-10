@@ -649,6 +649,11 @@ let historyChartCache = {
   key: "",
   markup: "",
 };
+const opportunityZoomWindowState = {
+  root: null,
+  image: null,
+  activeMedia: null,
+};
 const APP_TABS = [
   {
     id: "portfolio",
@@ -2519,6 +2524,16 @@ function getItemRarityTheme(item = {}) {
   return { rarity, color };
 }
 
+function toRgbTriplet(value, fallback = "90,174,255") {
+  const raw = String(value || "").trim().replace(/^#/, "");
+  if (!/^[\da-f]{6}$/i.test(raw)) return fallback;
+  const r = Number.parseInt(raw.slice(0, 2), 16);
+  const g = Number.parseInt(raw.slice(2, 4), 16);
+  const b = Number.parseInt(raw.slice(4, 6), 16);
+  if (![r, g, b].every(Number.isFinite)) return fallback;
+  return `${r},${g},${b}`;
+}
+
 function getItemImageUrl(item = {}) {
   return resolveItemImageUrl(item);
 }
@@ -3752,6 +3767,177 @@ function closeInspectModal() {
   inspectModalLastTriggerElement = null;
 }
 
+function resetOpportunityItemLensPosition(media) {
+  if (!(media instanceof HTMLElement)) return;
+  media.style.setProperty("--item-pan-x", "0px");
+  media.style.setProperty("--item-pan-y", "0px");
+}
+
+function setOpportunityItemLensPosition(media, clientX, clientY) {
+  if (!(media instanceof HTMLElement)) return;
+  const rect = media.getBoundingClientRect();
+  if (!rect?.width || !rect?.height) return;
+  const relativeX = (clientX - rect.left) / rect.width - 0.5;
+  const relativeY = (clientY - rect.top) / rect.height - 0.5;
+  const panX = Math.max(Math.min(relativeX * -14, 8), -8);
+  const panY = Math.max(Math.min(relativeY * -12, 7), -7);
+  media.style.setProperty("--item-pan-x", `${panX.toFixed(2)}px`);
+  media.style.setProperty("--item-pan-y", `${panY.toFixed(2)}px`);
+}
+
+function ensureOpportunityZoomWindow() {
+  const existingRoot = opportunityZoomWindowState.root;
+  const existingImage = opportunityZoomWindowState.image;
+  if (existingRoot?.isConnected && existingImage?.isConnected) {
+    return opportunityZoomWindowState;
+  }
+
+  const root = document.createElement("div");
+  root.className = "opportunity-item-zoom-window";
+  root.setAttribute("aria-hidden", "true");
+  root.innerHTML =
+    '<img class="opportunity-item-zoom-thumb" alt="Item zoom preview" loading="lazy" decoding="async" />';
+  document.body.append(root);
+  const image = root.querySelector(".opportunity-item-zoom-thumb");
+  opportunityZoomWindowState.root = root;
+  opportunityZoomWindowState.image =
+    image instanceof HTMLImageElement ? image : null;
+  opportunityZoomWindowState.activeMedia = null;
+  return opportunityZoomWindowState;
+}
+
+function hideOpportunityZoomWindow() {
+  const { root } = opportunityZoomWindowState;
+  if (!(root instanceof HTMLElement)) return;
+  root.classList.remove("is-visible");
+  root.style.setProperty("--zoom-pan-x", "0px");
+  root.style.setProperty("--zoom-pan-y", "0px");
+  opportunityZoomWindowState.activeMedia = null;
+}
+
+function positionOpportunityZoomWindow(media, clientX, clientY) {
+  const { root } = ensureOpportunityZoomWindow();
+  if (!(root instanceof HTMLElement) || !(media instanceof HTMLElement)) return;
+
+  const sourceRect = media.getBoundingClientRect();
+  if (!sourceRect?.width || !sourceRect?.height) return;
+
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const windowWidth = Number(root.offsetWidth || 248);
+  const windowHeight = Number(root.offsetHeight || 176);
+  const gap = 14;
+  const edgePadding = 10;
+
+  let left = sourceRect.right + gap;
+  if (left + windowWidth > viewportWidth - edgePadding) {
+    left = sourceRect.left - windowWidth - gap;
+  }
+  let top = sourceRect.top + sourceRect.height / 2 - windowHeight / 2;
+
+  left = Math.max(edgePadding, Math.min(left, viewportWidth - windowWidth - edgePadding));
+  top = Math.max(edgePadding, Math.min(top, viewportHeight - windowHeight - edgePadding));
+
+  root.style.left = `${left.toFixed(1)}px`;
+  root.style.top = `${top.toFixed(1)}px`;
+
+  const relativeX = (clientX - sourceRect.left) / sourceRect.width - 0.5;
+  const relativeY = (clientY - sourceRect.top) / sourceRect.height - 0.5;
+  const zoomPanX = Math.max(Math.min(relativeX * -52, 26), -26);
+  const zoomPanY = Math.max(Math.min(relativeY * -46, 22), -22);
+  root.style.setProperty("--zoom-pan-x", `${zoomPanX.toFixed(2)}px`);
+  root.style.setProperty("--zoom-pan-y", `${zoomPanY.toFixed(2)}px`);
+}
+
+function syncOpportunityZoomWindow(media, clientX, clientY) {
+  if (!(media instanceof HTMLElement)) return;
+  const thumb = media.querySelector(".opportunity-item-thumb");
+  if (!(thumb instanceof HTMLImageElement)) return;
+
+  const { root, image } = ensureOpportunityZoomWindow();
+  if (!(root instanceof HTMLElement) || !(image instanceof HTMLImageElement)) return;
+
+  const sourceUrl = String(thumb.currentSrc || thumb.getAttribute("src") || "").trim();
+  const fallbackUrl = String(thumb.getAttribute("data-fallback-src") || "").trim();
+  const nextUrl = sourceUrl || fallbackUrl;
+  if (!nextUrl) return;
+  if (image.getAttribute("src") !== nextUrl) {
+    image.setAttribute("src", nextUrl);
+  }
+  image.alt = thumb.alt || "Item zoom preview";
+
+  const cell = media.closest(".opportunity-item-cell");
+  const sourceNode = cell instanceof HTMLElement ? cell : media;
+  const computed = window.getComputedStyle(sourceNode);
+  const rarityColor = String(computed.getPropertyValue("--rarity-color") || "").trim();
+  const rarityRgb = String(computed.getPropertyValue("--rarity-rgb") || "").trim();
+  if (rarityColor) {
+    root.style.setProperty("--rarity-color", rarityColor);
+  }
+  root.style.setProperty(
+    "--rarity-rgb",
+    rarityRgb || toRgbTriplet(rarityColor || "#5aaeff"),
+  );
+
+  positionOpportunityZoomWindow(media, clientX, clientY);
+  root.classList.add("is-visible");
+  opportunityZoomWindowState.activeMedia = media;
+}
+
+function onAppPointerOver(event) {
+  if (!app) return;
+  if (event.pointerType && !["mouse", "pen"].includes(event.pointerType)) return;
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) return;
+  const media = target.closest(".opportunity-item-media");
+  if (!(media instanceof HTMLElement)) return;
+  media.classList.add("is-hovered");
+  if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
+    setOpportunityItemLensPosition(media, event.clientX, event.clientY);
+    syncOpportunityZoomWindow(media, event.clientX, event.clientY);
+  }
+}
+
+function onAppPointerMove(event) {
+  if (!app) return;
+  if (event.pointerType && !["mouse", "pen"].includes(event.pointerType)) return;
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) return;
+  const media = target.closest(".opportunity-item-media");
+  if (!(media instanceof HTMLElement)) return;
+  if (!media.classList.contains("is-hovered")) {
+    media.classList.add("is-hovered");
+  }
+  if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
+    setOpportunityItemLensPosition(media, event.clientX, event.clientY);
+    syncOpportunityZoomWindow(media, event.clientX, event.clientY);
+  }
+}
+
+function onAppPointerOut(event) {
+  if (!app) return;
+  if (event.pointerType && !["mouse", "pen"].includes(event.pointerType)) return;
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) return;
+  const media = target.closest(".opportunity-item-media");
+  if (!(media instanceof HTMLElement)) return;
+  const related = event.relatedTarget instanceof Element ? event.relatedTarget : null;
+  if (related && media.contains(related)) return;
+  media.classList.remove("is-hovered");
+  resetOpportunityItemLensPosition(media);
+  if (
+    opportunityZoomWindowState.activeMedia &&
+    opportunityZoomWindowState.activeMedia.isSameNode(media)
+  ) {
+    hideOpportunityZoomWindow();
+  }
+}
+
+function onAppPointerLeave(event) {
+  if (event.pointerType && !["mouse", "pen"].includes(event.pointerType)) return;
+  hideOpportunityZoomWindow();
+}
+
 function onAppClick(event) {
   if (!app) return;
   const target = event.target instanceof Element ? event.target : null;
@@ -4874,6 +5060,10 @@ function ensureAppEventDelegation() {
   app.addEventListener("input", onAppInput);
   app.addEventListener("change", onAppChange);
   app.addEventListener("submit", onAppSubmit);
+  app.addEventListener("pointerover", onAppPointerOver);
+  app.addEventListener("pointermove", onAppPointerMove);
+  app.addEventListener("pointerout", onAppPointerOut);
+  app.addEventListener("pointerleave", onAppPointerLeave);
 
   delegatedAppEventsBound = true;
 }
@@ -11120,6 +11310,34 @@ function renderMarketTab() {
                   "",
                 marketHashName,
               });
+              const categoryAccentColor =
+                itemCategory === "case"
+                  ? "#ffbf57"
+                  : itemCategory === "sticker_capsule"
+                    ? "#7ee7cb"
+                    : "#5aaeff";
+              const explicitRarityColor = String(
+                row?.rarityColor ||
+                  row?.item_rarity_color ||
+                  row?.itemRarityColor ||
+                  visualItem?.rarityColor ||
+                  "",
+              ).trim();
+              const rarityColorSafe = String(rarityTheme.color || "")
+                .trim()
+                .toLowerCase();
+              const isCaseOrCapsule =
+                itemCategory === "case" || itemCategory === "sticker_capsule";
+              const shouldUseCategoryAccent =
+                !explicitRarityColor &&
+                isCaseOrCapsule &&
+                (!rarityColorSafe ||
+                  rarityColorSafe === "#7f8ba5" ||
+                  rarityColorSafe === "#b0c3d9");
+              const mediaAccentColor = shouldUseCategoryAccent
+                ? categoryAccentColor
+                : rarityTheme.color;
+              const mediaAccentRgb = toRgbTriplet(mediaAccentColor);
               const itemImage = String(
                 row?.itemImageUrl || getItemImageUrl(visualItem),
               ).trim();
@@ -11144,7 +11362,7 @@ function renderMarketTab() {
               return `
                 <tr class="opportunity-table-row">
                   <td>
-                    <div class="opportunity-item-cell" style="--rarity-color: ${escapeHtml(rarityTheme.color)};">
+                    <div class="opportunity-item-cell" style="--rarity-color: ${escapeHtml(mediaAccentColor)}; --rarity-rgb: ${escapeHtml(mediaAccentRgb)};">
                       <div class="opportunity-item-media">
                         <img
                           class="opportunity-item-thumb"
@@ -11160,7 +11378,7 @@ function renderMarketTab() {
                         )}</strong>
                         <div class="opportunity-item-tags">
                           <span class="rarity-tag opportunity-rarity-tag" style="--rarity-color: ${escapeHtml(
-                            rarityTheme.color,
+                            mediaAccentColor,
                           )};">${escapeHtml(rarityTheme.rarity)}</span>
                           <span class="opportunity-category-badge ${escapeHtml(
                             categoryTone,
@@ -11641,6 +11859,34 @@ function renderGlobalOpportunitiesTab() {
                   "",
                 marketHashName,
               });
+              const categoryAccentColor =
+                itemCategory === "case"
+                  ? "#ffbf57"
+                  : itemCategory === "sticker_capsule"
+                    ? "#7ee7cb"
+                    : "#5aaeff";
+              const explicitRarityColor = String(
+                row?.rarityColor ||
+                  row?.item_rarity_color ||
+                  row?.itemRarityColor ||
+                  visualItem?.rarityColor ||
+                  "",
+              ).trim();
+              const rarityColorSafe = String(rarityTheme.color || "")
+                .trim()
+                .toLowerCase();
+              const isCaseOrCapsule =
+                itemCategory === "case" || itemCategory === "sticker_capsule";
+              const shouldUseCategoryAccent =
+                !explicitRarityColor &&
+                isCaseOrCapsule &&
+                (!rarityColorSafe ||
+                  rarityColorSafe === "#7f8ba5" ||
+                  rarityColorSafe === "#b0c3d9");
+              const mediaAccentColor = shouldUseCategoryAccent
+                ? categoryAccentColor
+                : rarityTheme.color;
+              const mediaAccentRgb = toRgbTriplet(mediaAccentColor);
               const itemImage = String(
                 row?.itemImageUrl || getItemImageUrl(visualItem),
               ).trim();
@@ -11674,7 +11920,7 @@ function renderGlobalOpportunitiesTab() {
               return `
                 <tr class="opportunity-table-row ${row?.isNew ? "opportunity-row-new" : ""}" data-feed-id="${escapeHtml(feedId)}">
                   <td>
-                    <div class="opportunity-item-cell" style="--rarity-color: ${escapeHtml(rarityTheme.color)};">
+                    <div class="opportunity-item-cell" style="--rarity-color: ${escapeHtml(mediaAccentColor)}; --rarity-rgb: ${escapeHtml(mediaAccentRgb)};">
                       <div class="opportunity-item-media">
                         <img
                           class="opportunity-item-thumb"
@@ -11690,7 +11936,7 @@ function renderGlobalOpportunitiesTab() {
                         )}</strong>
                         <div class="opportunity-item-tags">
                           <span class="rarity-tag opportunity-rarity-tag" style="--rarity-color: ${escapeHtml(
-                            rarityTheme.color,
+                            mediaAccentColor,
                           )};">${escapeHtml(rarityTheme.rarity)}</span>
                           <span class="opportunity-category-badge ${escapeHtml(
                             categoryTone,
