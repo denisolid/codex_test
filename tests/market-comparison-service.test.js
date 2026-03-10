@@ -9,6 +9,8 @@ process.env.SUPABASE_SERVICE_ROLE_KEY =
 const {
   __testables: {
     normalizePricingMode,
+    normalizeItems,
+    applyQuoteCoverageFallback,
     pickBestBuy,
     pickBestSellNet,
     selectByPricingMode,
@@ -96,4 +98,61 @@ test("legacy dmarket cached rows are repaired from raw USD cents", () => {
     maybeRepairLegacyDmarketGross({ raw: { price: { USD: "100" } } }, "dmarket", "USD", 1),
     1
   );
+});
+
+test("compare item normalization keeps explicit liquidity/volume fields", () => {
+  const [item] = normalizeItems([
+    {
+      marketHashName: "AWP | Neo-Noir (Field-Tested)",
+      liquiditySales: 273,
+      volume7d: 273,
+      liquidityScore: 88
+    }
+  ]);
+
+  assert.equal(item.marketHashName, "AWP | Neo-Noir (Field-Tested)");
+  assert.equal(item.liquiditySales, 273);
+  assert.equal(item.volume7d, 273);
+  assert.equal(item.marketVolume7d, null);
+  assert.equal(item.liquidityScore, 88);
+});
+
+test("compare item liquidity falls back to saved quote coverage volume", () => {
+  const [normalized] = normalizeItems([
+    {
+      marketHashName: "AWP | Neo-Noir (Field-Tested)"
+    }
+  ]);
+
+  const [enriched] = applyQuoteCoverageFallback([normalized], {
+    "AWP | Neo-Noir (Field-Tested)": {
+      marketCoverageCount: 4,
+      volume7dMax: 273
+    }
+  });
+
+  assert.equal(enriched.volume7d, 273);
+  assert.equal(enriched.marketVolume7d, 273);
+  assert.equal(enriched.liquiditySales, 273);
+  assert.equal(enriched.marketCoverageCount, 4);
+});
+
+test("7d coverage overrides ambiguous liquiditySales when explicit 7d is missing", () => {
+  const [normalized] = normalizeItems([
+    {
+      marketHashName: "AWP | Neo-Noir (Field-Tested)",
+      liquiditySales: 30
+    }
+  ]);
+
+  const [enriched] = applyQuoteCoverageFallback([normalized], {
+    "AWP | Neo-Noir (Field-Tested)": {
+      marketCoverageCount: 4,
+      volume7dMax: 273
+    }
+  });
+
+  assert.equal(enriched.volume7d, 273);
+  assert.equal(enriched.marketVolume7d, 273);
+  assert.equal(enriched.liquiditySales, 30);
 });

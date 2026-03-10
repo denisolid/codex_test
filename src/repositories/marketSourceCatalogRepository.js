@@ -22,6 +22,14 @@ function toIntegerOrNull(value, min = 0) {
   return Math.max(Math.round(parsed), min)
 }
 
+function toIntegerOrDefault(value, defaultValue = 0, min = 0) {
+  const parsed = toIntegerOrNull(value, min)
+  if (parsed == null) {
+    return Math.max(Math.round(Number(defaultValue || 0)), min)
+  }
+  return parsed
+}
+
 function normalizeCategory(value) {
   const text = normalizeText(value).toLowerCase()
   return CATEGORY_SET.has(text) ? text : "weapon_skin"
@@ -51,8 +59,9 @@ function normalizeRows(rows = []) {
         tradable: row?.tradable == null ? true : Boolean(row.tradable),
         scan_eligible: row?.scan_eligible == null ? Boolean(row?.scanEligible) : Boolean(row.scan_eligible),
         reference_price: toFiniteOrNull(row?.reference_price ?? row?.referencePrice),
-        market_coverage_count: toIntegerOrNull(
+        market_coverage_count: toIntegerOrDefault(
           row?.market_coverage_count ?? row?.marketCoverageCount,
+          0,
           0
         ),
         liquidity_rank: toFiniteOrNull(row?.liquidity_rank ?? row?.liquidityRank),
@@ -142,4 +151,10 @@ exports.listCoverageSummary = async (options = {}) => {
   }
 
   return data || []
+}
+
+exports.__testables = {
+  normalizeRows,
+  toIntegerOrNull,
+  toIntegerOrDefault
 }

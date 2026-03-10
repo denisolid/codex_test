@@ -3018,6 +3018,41 @@ function buildComparisonItemsPayload(items = []) {
   return (Array.isArray(items) ? items : [])
     .map((item) => {
       const marketHashName = String(item.marketHashName || "").trim();
+      const liquiditySignal =
+        item?.marketComparison?.arbitrage?.antiFake?.liquidity ||
+        item?.arbitrage?.antiFake?.liquidity ||
+        {};
+      const volume7dFromSignal =
+        String(liquiditySignal?.signalType || "").trim().toLowerCase() ===
+        "volume_7d"
+          ? Number(liquiditySignal?.signalValue)
+          : null;
+      const volume7d = [
+        item?.volume7d,
+        item?.marketVolume7d,
+        item?.marketComparison?.arbitrage?.volume7d,
+        item?.arbitrage?.volume7d,
+        volume7dFromSignal,
+      ]
+        .map((value) => Number(value))
+        .find((value) => Number.isFinite(value) && value >= 0);
+      const liquidityScore = [
+        item?.liquidityScore,
+        item?.marketComparison?.arbitrage?.liquidityScore,
+        item?.arbitrage?.liquidityScore,
+        item?.managementClue?.metrics?.liquidityScore,
+      ]
+        .map((value) => Number(value))
+        .find((value) => Number.isFinite(value) && value >= 0);
+      const liquiditySales = [
+        item?.liquiditySales,
+        item?.marketVolume24h,
+        item?.marketVolume7d,
+        volume7d,
+      ]
+        .map((value) => Number(value))
+        .find((value) => Number.isFinite(value) && value >= 0);
+
       return {
         skinId: Number(item.skinId || 0) || null,
         marketHashName,
@@ -3025,10 +3060,15 @@ function buildComparisonItemsPayload(items = []) {
           item?.itemCategory || item?.category,
           marketHashName,
         ),
+        itemSubcategory: String(item?.itemSubcategory || item?.subcategory || "").trim() || null,
         quantity: Number(item.quantity || 0),
         steamPrice: Number(item.steamPrice || item.currentPrice || 0),
         steamCurrency: state.portfolio?.currency || state.currency,
         steamRecordedAt: item.currentPriceRecordedAt || null,
+        volume7d: Number.isFinite(volume7d) ? volume7d : null,
+        marketVolume7d: Number.isFinite(volume7d) ? volume7d : null,
+        liquiditySales: Number.isFinite(liquiditySales) ? liquiditySales : null,
+        liquidityScore: Number.isFinite(liquidityScore) ? liquidityScore : null,
       };
     })
     .filter((row) => row.marketHashName);
@@ -3225,6 +3265,10 @@ async function refreshCompareDrawerDataForItemSeed(itemSeed = {}) {
   const seedSteamCurrency = String(itemSeed.steamCurrency || state.currency)
     .trim()
     .toUpperCase() || state.currency;
+  const seedVolume7d = Number(
+    itemSeed.volume7d ?? itemSeed.marketVolume7d ?? itemSeed.liquiditySales,
+  );
+  const seedLiquidityScore = Number(itemSeed.liquidityScore);
 
   const ticket = ++compareDrawerRequestTicket;
   state.compareDrawer.loading = true;
@@ -3247,6 +3291,23 @@ async function refreshCompareDrawerDataForItemSeed(itemSeed = {}) {
             steamCurrency: seedSteamCurrency,
             steamRecordedAt: itemSeed.steamRecordedAt || null,
             itemCategory: itemSeed.itemCategory || null,
+            itemSubcategory: itemSeed.itemSubcategory || null,
+            volume7d:
+              Number.isFinite(seedVolume7d) && seedVolume7d >= 0
+                ? seedVolume7d
+                : null,
+            marketVolume7d:
+              Number.isFinite(seedVolume7d) && seedVolume7d >= 0
+                ? seedVolume7d
+                : null,
+            liquiditySales:
+              Number.isFinite(seedVolume7d) && seedVolume7d >= 0
+                ? seedVolume7d
+                : null,
+            liquidityScore:
+              Number.isFinite(seedLiquidityScore) && seedLiquidityScore >= 0
+                ? seedLiquidityScore
+                : null,
           },
         ],
         pricingMode: state.pricingMode,
@@ -3475,6 +3536,11 @@ function openCompareDrawerByOpportunity(opportunity, triggerElement = null) {
       steamRecordedAt: row?.detectedAt || state.globalOpportunities?.generatedAt || null,
       currentPriceSource: seedSourceLabel,
       itemCategory: row?.itemCategory || "",
+      itemSubcategory: row?.itemSubcategory || "",
+      volume7d: row?.volume7d ?? row?.liquidity ?? null,
+      marketVolume7d: row?.volume7d ?? row?.liquidity ?? null,
+      liquiditySales: row?.volume7d ?? row?.liquidity ?? null,
+      liquidityScore: row?.liquidityScore ?? null,
       imageUrl: fallbackImage,
     }),
   );
@@ -11039,6 +11105,21 @@ function renderMarketTab() {
                   marketHashName,
                   itemCategory,
                 };
+              const rarityTheme = getItemRarityTheme({
+                rarity:
+                  row?.rarity ||
+                  row?.item_rarity ||
+                  row?.itemRarity ||
+                  visualItem?.rarity ||
+                  "Consumer Grade",
+                rarityColor:
+                  row?.rarityColor ||
+                  row?.item_rarity_color ||
+                  row?.itemRarityColor ||
+                  visualItem?.rarityColor ||
+                  "",
+                marketHashName,
+              });
               const itemImage = String(
                 row?.itemImageUrl || getItemImageUrl(visualItem),
               ).trim();
@@ -11061,21 +11142,30 @@ function renderMarketTab() {
                 row?.spreadPercent ?? row?.spread ?? row?.spread_pct;
 
               return `
-                <tr>
+                <tr class="opportunity-table-row">
                   <td>
-                    <div class="opportunity-item-cell">
-                      <img
-                        class="opportunity-item-thumb"
-                        src="${escapeHtml(itemImage || fallbackImage)}"
-                        alt="${escapeHtml(row?.itemName || "Tracked Item")}"
-                        loading="lazy"
-                        data-fallback-src="${escapeHtml(fallbackImage)}"
-                      />
+                    <div class="opportunity-item-cell" style="--rarity-color: ${escapeHtml(rarityTheme.color)};">
+                      <div class="opportunity-item-media">
+                        <img
+                          class="opportunity-item-thumb"
+                          src="${escapeHtml(itemImage || fallbackImage)}"
+                          alt="${escapeHtml(row?.itemName || "Tracked Item")}"
+                          loading="lazy"
+                          data-fallback-src="${escapeHtml(fallbackImage)}"
+                        />
+                      </div>
                       <div class="opportunity-item-meta">
-                        <strong>${escapeHtml(row?.itemName || "Tracked Item")}</strong>
-                        <span class="opportunity-category-badge ${escapeHtml(
-                          categoryTone,
-                        )}">${escapeHtml(categoryLabel)}</span>
+                        <strong class="opportunity-item-title">${escapeHtml(
+                          row?.itemName || "Tracked Item",
+                        )}</strong>
+                        <div class="opportunity-item-tags">
+                          <span class="rarity-tag opportunity-rarity-tag" style="--rarity-color: ${escapeHtml(
+                            rarityTheme.color,
+                          )};">${escapeHtml(rarityTheme.rarity)}</span>
+                          <span class="opportunity-category-badge ${escapeHtml(
+                            categoryTone,
+                          )}">${escapeHtml(categoryLabel)}</span>
+                        </div>
                         <small class="opportunity-item-subline">${escapeHtml(
                           `Portfolio item \u2022 ${updatedLabel}`,
                         )}</small>
@@ -11094,27 +11184,29 @@ function renderMarketTab() {
                     )}</strong>
                     <small>${formatMoney(row?.sellNet, opportunityCurrency)}</small>
                   </td>
-                  <td class="opportunity-metric-cell">
-                    <strong class="opportunity-metric-value positive">${formatSignedMoney(
+                  <td class="opportunity-metric-cell opportunity-metric-profit-cell">
+                    <strong class="opportunity-metric-value opportunity-profit-value positive">${formatSignedMoney(
                       row?.profit,
                       opportunityCurrency,
                     )}</strong>
                     <small>Net profit</small>
                   </td>
                   <td class="opportunity-metric-cell">
-                    <strong class="opportunity-metric-value">${formatPercent(
+                    <strong class="opportunity-metric-value opportunity-spread-value">${formatPercent(
                       spreadValue,
                     )}</strong>
                     <small>Price spread</small>
                   </td>
-                  <td class="opportunity-metric-cell">
-                    <strong class="opportunity-metric-value ${escapeHtml(scoreTone)}">${escapeHtml(
+                  <td class="opportunity-metric-cell opportunity-score-cell">
+                    <strong class="opportunity-metric-value opportunity-score-value ${escapeHtml(
+                      scoreTone,
+                    )}">${escapeHtml(
                       `${formatNumber(score, 0)}/100`,
                     )}</strong>
                     <small>${escapeHtml(`${scoreLabel} quality`)}</small>
                   </td>
-                  <td class="opportunity-metric-cell">
-                    <strong class="opportunity-metric-value ${escapeHtml(
+                  <td class="opportunity-metric-cell opportunity-confidence-cell">
+                    <strong class="opportunity-metric-value opportunity-confidence-value ${escapeHtml(
                       confidenceTone,
                     )}">${escapeHtml(executionConfidence)}</strong>
                     <small>Execution confidence</small>
@@ -11407,6 +11499,21 @@ function renderGlobalOpportunitiesTab() {
   const scanner = state.globalOpportunities || createGlobalOpportunitiesState();
   const rows = Array.isArray(scanner.items) ? scanner.items : [];
   const currencyCode = scanner.currency || "USD";
+  const holdings = getHoldingsList();
+  const holdingById = new Map();
+  const holdingByName = new Map();
+  holdings.forEach((item) => {
+    const skinId = Number(item?.skinId || 0);
+    if (Number.isInteger(skinId) && skinId > 0) {
+      holdingById.set(skinId, item);
+    }
+    const normalizedName = String(item?.marketHashName || "")
+      .trim()
+      .toLowerCase();
+    if (normalizedName) {
+      holdingByName.set(normalizedName, item);
+    }
+  });
   const showRisky = Boolean(scanner.showRisky);
   const showOlder = Boolean(scanner.showOlder);
   const categoryFilter = String(scanner.category || "all")
@@ -11510,7 +11617,33 @@ function renderGlobalOpportunitiesTab() {
                 itemCategory,
                 marketHashName,
               );
-              const itemImage = String(row?.itemImageUrl || "").trim();
+              const normalizedName = marketHashName.toLowerCase();
+              const visualItem =
+                (Number.isInteger(itemId) && itemId > 0
+                  ? holdingById.get(itemId)
+                  : null) ||
+                (normalizedName ? holdingByName.get(normalizedName) : null) || {
+                  marketHashName,
+                  itemCategory,
+                };
+              const rarityTheme = getItemRarityTheme({
+                rarity:
+                  row?.rarity ||
+                  row?.item_rarity ||
+                  row?.itemRarity ||
+                  visualItem?.rarity ||
+                  "Consumer Grade",
+                rarityColor:
+                  row?.rarityColor ||
+                  row?.item_rarity_color ||
+                  row?.itemRarityColor ||
+                  visualItem?.rarityColor ||
+                  "",
+                marketHashName,
+              });
+              const itemImage = String(
+                row?.itemImageUrl || getItemImageUrl(visualItem),
+              ).trim();
               const feedId = normalizeFeedId(row);
               const detectedAt = String(row?.detectedAt || "").trim();
               const detectedLabel = detectedAt
@@ -11539,21 +11672,30 @@ function renderGlobalOpportunitiesTab() {
               );
 
               return `
-                <tr class="${row?.isNew ? "opportunity-row-new" : ""}" data-feed-id="${escapeHtml(feedId)}">
+                <tr class="opportunity-table-row ${row?.isNew ? "opportunity-row-new" : ""}" data-feed-id="${escapeHtml(feedId)}">
                   <td>
-                    <div class="opportunity-item-cell">
-                      <img
-                        class="opportunity-item-thumb"
-                        src="${escapeHtml(itemImage || fallbackImage)}"
-                        alt="${escapeHtml(row?.itemName || "Tracked Item")}"
-                        loading="lazy"
-                        data-fallback-src="${escapeHtml(fallbackImage)}"
-                      />
+                    <div class="opportunity-item-cell" style="--rarity-color: ${escapeHtml(rarityTheme.color)};">
+                      <div class="opportunity-item-media">
+                        <img
+                          class="opportunity-item-thumb"
+                          src="${escapeHtml(itemImage || fallbackImage)}"
+                          alt="${escapeHtml(row?.itemName || "Tracked Item")}"
+                          loading="lazy"
+                          data-fallback-src="${escapeHtml(fallbackImage)}"
+                        />
+                      </div>
                       <div class="opportunity-item-meta">
-                        <strong>${escapeHtml(row?.itemName || "Tracked Item")}</strong>
-                        <span class="opportunity-category-badge ${escapeHtml(
-                          categoryTone,
-                        )}">${escapeHtml(categoryLabel)}</span>
+                        <strong class="opportunity-item-title">${escapeHtml(
+                          row?.itemName || "Tracked Item",
+                        )}</strong>
+                        <div class="opportunity-item-tags">
+                          <span class="rarity-tag opportunity-rarity-tag" style="--rarity-color: ${escapeHtml(
+                            rarityTheme.color,
+                          )};">${escapeHtml(rarityTheme.rarity)}</span>
+                          <span class="opportunity-category-badge ${escapeHtml(
+                            categoryTone,
+                          )}">${escapeHtml(categoryLabel)}</span>
+                        </div>
                         <small class="opportunity-item-subline">${escapeHtml(
                           `${detectedLabel}${scanLabel ? ` \u2022 ${scanLabel}` : ""}`,
                         )}</small>
@@ -11572,27 +11714,29 @@ function renderGlobalOpportunitiesTab() {
                     )}</strong>
                     <small>${formatMoney(row?.sellNet, currencyCode)}</small>
                   </td>
-                  <td class="opportunity-metric-cell">
-                    <strong class="opportunity-metric-value positive">${formatSignedMoney(
+                  <td class="opportunity-metric-cell opportunity-metric-profit-cell">
+                    <strong class="opportunity-metric-value opportunity-profit-value positive">${formatSignedMoney(
                       row?.profit,
                       currencyCode,
                     )}</strong>
                     <small>Net profit</small>
                   </td>
                   <td class="opportunity-metric-cell">
-                    <strong class="opportunity-metric-value">${formatPercent(
+                    <strong class="opportunity-metric-value opportunity-spread-value">${formatPercent(
                       row?.spread,
                     )}</strong>
                     <small>Price spread</small>
                   </td>
-                  <td class="opportunity-metric-cell">
-                    <strong class="opportunity-metric-value ${escapeHtml(scoreTone)}">${escapeHtml(
+                  <td class="opportunity-metric-cell opportunity-score-cell">
+                    <strong class="opportunity-metric-value opportunity-score-value ${escapeHtml(
+                      scoreTone,
+                    )}">${escapeHtml(
                       `${formatNumber(score, 0)}/100`,
                     )}</strong>
                     <small>${escapeHtml(`${scoreLabel} quality`)}</small>
                   </td>
-                  <td class="opportunity-metric-cell">
-                    <strong class="opportunity-metric-value ${escapeHtml(
+                  <td class="opportunity-metric-cell opportunity-confidence-cell">
+                    <strong class="opportunity-metric-value opportunity-confidence-value ${escapeHtml(
                       confidenceTone,
                     )}">${escapeHtml(executionConfidence)}</strong>
                     <small>Execution confidence</small>
@@ -11760,6 +11904,37 @@ function renderGlobalOpportunitiesTab() {
                 ? ` (missing ${formatNumber(summary.sourceCatalog.universeBuild.missingToTarget, 0)})`
                 : ""
             }.`,
+          )}</p>`
+        : ""
+    }
+    ${
+      summary?.sourceCatalog?.universeBuild?.selectedByCategory
+        ? `<p class="helper-text">${escapeHtml(
+            `Universe quota/actual by category: skins ${formatNumber(
+              summary?.sourceCatalog?.universeBuild?.selectedByCategory?.weapon_skin || 0,
+              0,
+            )}/${formatNumber(
+              summary?.sourceCatalog?.universeBuild?.quotaTargetByCategory?.weapon_skin ??
+                summary?.sourceCatalog?.universeBuild?.quotas?.weapon_skin ??
+                0,
+              0,
+            )}, cases ${formatNumber(
+              summary?.sourceCatalog?.universeBuild?.selectedByCategory?.case || 0,
+              0,
+            )}/${formatNumber(
+              summary?.sourceCatalog?.universeBuild?.quotaTargetByCategory?.case ??
+                summary?.sourceCatalog?.universeBuild?.quotas?.case ??
+                0,
+              0,
+            )}, capsules ${formatNumber(
+              summary?.sourceCatalog?.universeBuild?.selectedByCategory?.sticker_capsule || 0,
+              0,
+            )}/${formatNumber(
+              summary?.sourceCatalog?.universeBuild?.quotaTargetByCategory?.sticker_capsule ??
+                summary?.sourceCatalog?.universeBuild?.quotas?.sticker_capsule ??
+                0,
+              0,
+            )}.`,
           )}</p>`
         : ""
     }
