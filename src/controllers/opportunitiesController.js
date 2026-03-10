@@ -11,6 +11,8 @@ function toOpportunityRow(row = {}) {
     itemName: row?.itemName || "Tracked Item",
     itemCategory: row?.itemCategory || "weapon_skin",
     itemSubcategory: row?.itemSubcategory || null,
+    itemRarity: row?.itemRarity || null,
+    itemRarityColor: row?.itemRarityColor || null,
     itemImageUrl: row?.itemImageUrl || null,
     buyMarket: row?.buyMarket || null,
     buyPrice: row?.buyPrice ?? null,

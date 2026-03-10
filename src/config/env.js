@@ -191,6 +191,15 @@ module.exports = {
   arbitrageScanTimeoutPerBatchMs: Number(
     process.env.ARBITRAGE_SCAN_TIMEOUT_PER_BATCH_MS || 30000
   ),
+  arbitrageImageEnrichBatchSize: Number(
+    process.env.ARBITRAGE_IMAGE_ENRICH_BATCH_SIZE || 30
+  ),
+  arbitrageImageEnrichConcurrency: Number(
+    process.env.ARBITRAGE_IMAGE_ENRICH_CONCURRENCY || 2
+  ),
+  arbitrageImageEnrichTimeoutMs: Number(
+    process.env.ARBITRAGE_IMAGE_ENRICH_TIMEOUT_MS || 9000
+  ),
   arbitrageQuoteRefreshBatchSize: Number(
     process.env.ARBITRAGE_QUOTE_REFRESH_BATCH_SIZE || 40
   ),

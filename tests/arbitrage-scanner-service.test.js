@@ -256,7 +256,9 @@ test("api row keeps required shape with clamped score", () => {
       opportunityScore: 92
     },
     inputItem: {
-      skinId: 1001
+      skinId: 1001,
+      itemRarity: "Covert",
+      itemRarityColor: "#eb4b4b"
     },
     liquidity: {
       liquidityScore: 65,
@@ -275,6 +277,8 @@ test("api row keeps required shape with clamped score", () => {
   assert.equal(row.score, 82);
   assert.equal(row.spread, 11);
   assert.equal(row.liquidity, 420);
+  assert.equal(row.itemRarity, "Covert");
+  assert.equal(row.itemRarityColor, "#eb4b4b");
   assert.equal(typeof row.itemName, "string");
   assert.equal(typeof row.buyMarket, "string");
   assert.equal(typeof row.sellMarket, "string");
@@ -295,6 +299,8 @@ test("feed mapper keeps scanner row core fields", () => {
       executionConfidence: "High",
       liquidityBand: "High",
       itemId: 1001,
+      itemRarity: "Covert",
+      itemRarityColor: "#eb4b4b",
       itemImageUrl: "https://cdn.example.com/item.png",
       badges: ["High liquidity"],
       flags: ["MISSING_DEPTH"],
@@ -319,6 +325,8 @@ test("feed mapper keeps scanner row core fields", () => {
   assert.equal(apiRow.sellMarket, "skinport");
   assert.equal(apiRow.score, 86);
   assert.equal(apiRow.executionConfidence, "High");
+  assert.equal(apiRow.itemRarity, "Covert");
+  assert.equal(apiRow.itemRarityColor, "#eb4b4b");
   assert.equal(Array.isArray(apiRow.badges), true);
 });
 

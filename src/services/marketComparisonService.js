@@ -1,5 +1,6 @@
 const AppError = require("../utils/AppError");
 const marketPriceRepo = require("../repositories/marketPriceRepository");
+const marketQuoteRepo = require("../repositories/marketQuoteRepository");
 const userPricePreferenceRepo = require("../repositories/userPricePreferenceRepository");
 const steamMarket = require("../markets/steam.market");
 const skinportMarket = require("../markets/skinport.market");
@@ -128,6 +129,8 @@ function normalizeItems(items = []) {
     );
     const liquiditySales = toFiniteOrNull(
       item?.liquiditySales ??
+        item?.volume7d ??
+        item?.volume_7d ??
         item?.salesCount ??
         item?.sales ??
         item?.volume24h ??
@@ -150,11 +153,44 @@ function normalizeItems(items = []) {
       steamRecordedAt: item?.steamRecordedAt || item?.currentPriceRecordedAt || null,
       sevenDayChangePercent,
       liquiditySales,
-      liquidityScore
+      liquidityScore,
+      volume7d: toFiniteOrNull(item?.volume7d ?? item?.volume_7d),
+      marketVolume7d: toFiniteOrNull(item?.marketVolume7d ?? item?.market_volume_7d),
+      marketCoverageCount: toFiniteOrNull(item?.marketCoverageCount ?? item?.market_coverage_count)
     });
   }
 
   return normalized;
+}
+
+function applyQuoteCoverageFallback(items = [], coverageByItemName = {}) {
+  return (Array.isArray(items) ? items : []).map((item) => {
+    const marketHashName = normalizeText(item?.marketHashName);
+    const coverage =
+      marketHashName && coverageByItemName && typeof coverageByItemName === "object"
+        ? coverageByItemName[marketHashName] || {}
+        : {};
+    const coverageVolume7d = toFiniteOrNull(coverage?.volume7dMax);
+    const directVolume7d = [
+      toFiniteOrNull(item?.volume7d),
+      toFiniteOrNull(item?.marketVolume7d)
+    ].find((value) => value != null && value >= 0);
+    const resolvedVolume7d = directVolume7d != null ? directVolume7d : coverageVolume7d;
+    const directMarketCoverage = toFiniteOrNull(item?.marketCoverageCount);
+    const coverageMarketCount = toFiniteOrNull(coverage?.marketCoverageCount);
+
+    return {
+      ...item,
+      volume7d: resolvedVolume7d,
+      marketVolume7d: resolvedVolume7d,
+      liquiditySales:
+        toFiniteOrNull(item?.liquiditySales) != null
+          ? toFiniteOrNull(item?.liquiditySales)
+          : resolvedVolume7d,
+      marketCoverageCount:
+        directMarketCoverage != null ? directMarketCoverage : coverageMarketCount
+    };
+  });
 }
 
 function normalizeLiveRecord(record, displayCurrency) {
@@ -509,6 +545,17 @@ exports.compareItems = async (items = [], options = {}) => {
   }
 
   const marketHashNames = normalizedItems.map((item) => item.marketHashName);
+  let quoteCoverageByItemName = {};
+  try {
+    quoteCoverageByItemName = await marketQuoteRepo.getLatestCoverageByItemNames(marketHashNames);
+  } catch (_err) {
+    quoteCoverageByItemName = {};
+  }
+  const normalizedItemsWithCoverage = applyQuoteCoverageFallback(
+    normalizedItems,
+    quoteCoverageByItemName
+  );
+
   const cachedBySource = await marketPriceRepo.getLatestByMarketHashNames(marketHashNames, {
     sources: SOURCE_ORDER
   });
@@ -519,7 +566,7 @@ exports.compareItems = async (items = [], options = {}) => {
 
   for (const source of SOURCE_ORDER) {
     const sourceRows = cachedBySource[source] || {};
-    staleItemsBySource[source] = normalizedItems.filter((item) => {
+    staleItemsBySource[source] = normalizedItemsWithCoverage.filter((item) => {
       const cached = sourceRows[item.marketHashName];
       if (!cached) return true;
       if (forceRefresh) return true;
@@ -554,7 +601,7 @@ exports.compareItems = async (items = [], options = {}) => {
     unavailableItemsCount: 0
   };
 
-  const enrichedItems = normalizedItems.map((item) => {
+  const enrichedItems = normalizedItemsWithCoverage.map((item) => {
     const perMarket = SOURCE_ORDER.map((source) => {
       const live = liveBySource?.[source]?.[item.marketHashName] || null;
       if (live) {
@@ -705,6 +752,8 @@ exports.PRICING_MODES = PRICING_MODES;
 exports.DEFAULT_PRICING_MODE = DEFAULT_PRICING_MODE;
 exports.__testables = {
   normalizePricingMode,
+  normalizeItems,
+  applyQuoteCoverageFallback,
   pickBestBuy,
   pickBestSellNet,
   selectByPricingMode,

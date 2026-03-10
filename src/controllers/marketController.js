@@ -9,6 +9,13 @@ function parseItemsPayload(input) {
     throw new AppError("items must be an array", 400, "VALIDATION_ERROR");
   }
 
+  const toFiniteOrNull = (value) => {
+    if (value == null) return null;
+    if (typeof value === "string" && !value.trim()) return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
   const items = input
     .map((row) => ({
       skinId: row?.skinId,
@@ -16,7 +23,25 @@ function parseItemsPayload(input) {
       quantity: row?.quantity,
       steamPrice: row?.steamPrice,
       steamCurrency: row?.steamCurrency,
-      steamRecordedAt: row?.steamRecordedAt
+      steamRecordedAt: row?.steamRecordedAt,
+      itemCategory: row?.itemCategory,
+      itemSubcategory: row?.itemSubcategory,
+      sevenDayChangePercent: toFiniteOrNull(
+        row?.sevenDayChangePercent ??
+          row?.seven_day_change_percent ??
+          row?.change7dPercent ??
+          row?.priceChange7dPercent
+      ),
+      volume7d: toFiniteOrNull(row?.volume7d ?? row?.volume_7d),
+      marketVolume7d: toFiniteOrNull(row?.marketVolume7d ?? row?.market_volume_7d),
+      liquiditySales: toFiniteOrNull(
+        row?.liquiditySales ??
+          row?.salesCount ??
+          row?.sales ??
+          row?.marketVolume24h ??
+          row?.marketVolume7d
+      ),
+      liquidityScore: toFiniteOrNull(row?.liquidityScore ?? row?.liquidity_score)
     }))
     .filter((row) => String(row.marketHashName || "").trim());
 
@@ -109,3 +134,7 @@ exports.getArbitrageOpportunities = asyncHandler(async (req, res) => {
   });
   res.json(data);
 });
+
+exports.__testables = {
+  parseItemsPayload
+};

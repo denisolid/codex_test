@@ -6,6 +6,9 @@ const {
   arbitrageScanBatchSize,
   arbitrageMaxConcurrentMarketRequests,
   arbitrageScanTimeoutPerBatchMs,
+  arbitrageImageEnrichBatchSize,
+  arbitrageImageEnrichConcurrency,
+  arbitrageImageEnrichTimeoutMs,
   arbitrageQuoteRefreshBatchSize,
   arbitrageQuoteComputeBatchSize,
   arbitrageUniverseDbLimit,
@@ -28,6 +31,7 @@ const marketComparisonService = require("./marketComparisonService")
 const arbitrageEngine = require("./arbitrageEngineService")
 const marketService = require("./marketService")
 const marketSourceCatalogService = require("./marketSourceCatalogService")
+const marketImageService = require("./marketImageService")
 
 const SCANNER_TYPE = "global_arbitrage"
 const SCANNER_INTERVAL_MINUTES = Math.max(Number(arbitrageScannerIntervalMinutes || 30), 1)
@@ -109,6 +113,18 @@ const MAX_CONCURRENT_MARKET_REQUESTS = Math.max(
 )
 const SCAN_TIMEOUT_PER_BATCH = Math.max(
   Number(arbitrageScanTimeoutPerBatchMs || 30000),
+  1000
+)
+const IMAGE_ENRICH_BATCH_SIZE = Math.max(
+  Math.min(Number(arbitrageImageEnrichBatchSize || 30), 120),
+  0
+)
+const IMAGE_ENRICH_CONCURRENCY = Math.max(
+  Math.min(Number(arbitrageImageEnrichConcurrency || 2), 6),
+  1
+)
+const IMAGE_ENRICH_TIMEOUT_MS = Math.max(
+  Number(arbitrageImageEnrichTimeoutMs || 9000),
   1000
 )
 const SNAPSHOT_WARMUP_MAX_ITEMS = Math.max(Math.min(SCAN_BATCH_SIZE, 30), 10)
@@ -766,6 +782,9 @@ function buildInputItemFromSkinAndSnapshot({
     marketHashName: normalizedName,
     itemCategory: normalizeItemCategory(category, normalizedName),
     itemSubcategory: String(subcategory || "").trim() || null,
+    itemRarity: String(skin?.rarity || "").trim() || null,
+    itemRarityColor:
+      String(skin?.rarity_color || skin?.rarityColor || "").trim() || null,
     itemImageUrl: String(skin?.image_url || skin?.imageUrl || "").trim() || null,
     itemImageUrlLarge:
       String(skin?.image_url_large || skin?.imageUrlLarge || "").trim() || null,
@@ -1214,6 +1233,17 @@ function buildApiOpportunityRow({
       opportunity?.itemName || inputItem?.marketHashName
     ),
     itemSubcategory: String(inputItem?.itemSubcategory || "").trim() || null,
+    itemRarity:
+      String(
+        opportunity?.itemRarity || inputItem?.itemRarity || inputItem?.rarity || ""
+      ).trim() || null,
+    itemRarityColor:
+      String(
+        opportunity?.itemRarityColor ||
+          inputItem?.itemRarityColor ||
+          inputItem?.rarityColor ||
+          ""
+      ).trim() || null,
     itemImageUrl:
       String(inputItem?.itemImageUrlLarge || inputItem?.itemImageUrl || "").trim() || null,
     buyMarket: buySource || null,
@@ -1276,6 +1306,8 @@ function toMetadataObject(row = {}) {
   return {
     item_id: Number(row?.itemId || 0) || null,
     item_subcategory: String(row?.itemSubcategory || "").trim() || null,
+    item_rarity: String(row?.itemRarity || "").trim() || null,
+    item_rarity_color: String(row?.itemRarityColor || "").trim() || null,
     item_image_url: String(row?.itemImageUrl || "").trim() || null,
     score_category: String(row?.scoreCategory || "").trim() || null,
     liquidity_value: toFiniteOrNull(row?.liquidity),
@@ -1367,6 +1399,8 @@ function mapFeedRowToApiRow(row = {}) {
     itemName,
     itemCategory: normalizeItemCategory(row?.category, itemName),
     itemSubcategory: String(metadata?.item_subcategory || "").trim() || null,
+    itemRarity: String(metadata?.item_rarity || "").trim() || null,
+    itemRarityColor: String(metadata?.item_rarity_color || "").trim() || null,
     itemImageUrl: String(metadata?.item_image_url || "").trim() || null,
     buyMarket: normalizeMarketLabel(row?.buy_market),
     buyPrice: roundPrice(row?.buy_price || 0),
@@ -1420,6 +1454,9 @@ function buildInputItemForComparison(item = {}) {
     marketHashName: String(item?.marketHashName || "").trim(),
     itemCategory: normalizeItemCategory(item?.itemCategory, item?.marketHashName),
     itemSubcategory: String(item?.itemSubcategory || "").trim() || null,
+    itemRarity: String(item?.itemRarity || item?.rarity || "").trim() || null,
+    itemRarityColor:
+      String(item?.itemRarityColor || item?.rarityColor || "").trim() || null,
     imageUrl: String(item?.itemImageUrl || "").trim() || null,
     imageUrlLarge: String(item?.itemImageUrlLarge || "").trim() || null,
     quantity: 1,
@@ -1720,6 +1757,147 @@ async function mapWithConcurrency(items = [], concurrencyLimit = 1, mapper = asy
   const workers = Array.from({ length: Math.min(limit, source.length) }, () => worker())
   await Promise.all(workers)
   return results
+}
+
+function hasUsableItemImage(inputItem = {}) {
+  return Boolean(
+    String(inputItem?.itemImageUrlLarge || inputItem?.itemImageUrl || "").trim()
+  )
+}
+
+function applyImageToInputItem(inputItem = {}, image = {}) {
+  if (!inputItem || typeof inputItem !== "object") return false
+  const imageUrl = String(image?.imageUrl || "").trim() || null
+  const imageUrlLarge = String(image?.imageUrlLarge || "").trim() || imageUrl || null
+
+  let changed = false
+  if (!String(inputItem?.itemImageUrl || "").trim() && imageUrl) {
+    inputItem.itemImageUrl = imageUrl
+    changed = true
+  }
+  if (!String(inputItem?.itemImageUrlLarge || "").trim() && imageUrlLarge) {
+    inputItem.itemImageUrlLarge = imageUrlLarge
+    changed = true
+  }
+  return changed
+}
+
+function toSkinImageUpsertRows(imageByName = {}) {
+  const rows = []
+  for (const [marketHashName, image] of Object.entries(imageByName || {})) {
+    const normalizedName = normalizeMarketHashName(marketHashName)
+    if (!normalizedName) continue
+    const imageUrl = String(image?.imageUrl || "").trim() || null
+    const imageUrlLarge = String(image?.imageUrlLarge || "").trim() || imageUrl || null
+    if (!imageUrl && !imageUrlLarge) continue
+    rows.push({
+      market_hash_name: normalizedName,
+      image_url: imageUrl || imageUrlLarge,
+      image_url_large: imageUrlLarge || imageUrl
+    })
+  }
+  return rows
+}
+
+function buildDefaultImageEnrichmentSummary() {
+  return {
+    enabled: IMAGE_ENRICH_BATCH_SIZE > 0,
+    missingBefore: 0,
+    missingAfter: 0,
+    fromMarketPayload: 0,
+    steamSearchAttempted: 0,
+    fromSteamSearch: 0,
+    persistedRows: 0,
+    errors: []
+  }
+}
+
+async function hydrateUniverseImages(inputByName = {}, comparisonItems = []) {
+  const summary = buildDefaultImageEnrichmentSummary()
+  const inputItems = Object.values(inputByName || {})
+  if (!inputItems.length) return summary
+
+  summary.missingBefore = inputItems.filter((item) => !hasUsableItemImage(item)).length
+  if (!summary.missingBefore) return summary
+
+  const imageUpdatesByName = {}
+  for (const comparisonItem of Array.isArray(comparisonItems) ? comparisonItems : []) {
+    const marketHashName = normalizeMarketHashName(comparisonItem?.marketHashName)
+    if (!marketHashName) continue
+    const inputItem = inputByName[marketHashName] || null
+    if (!inputItem || hasUsableItemImage(inputItem)) continue
+
+    for (const quote of Array.isArray(comparisonItem?.perMarket) ? comparisonItem.perMarket : []) {
+      const image = marketImageService.pickImageFromMarketRow(quote)
+      if (!image?.imageUrl && !image?.imageUrlLarge) continue
+      const changed = applyImageToInputItem(inputItem, image)
+      if (!changed) continue
+      imageUpdatesByName[marketHashName] = {
+        imageUrl: String(inputItem?.itemImageUrl || image?.imageUrl || "").trim() || null,
+        imageUrlLarge:
+          String(inputItem?.itemImageUrlLarge || image?.imageUrlLarge || "").trim() ||
+          String(inputItem?.itemImageUrl || image?.imageUrl || "").trim() ||
+          null
+      }
+      summary.fromMarketPayload += 1
+      break
+    }
+  }
+
+  const missingAfterPayload = inputItems.filter((item) => !hasUsableItemImage(item))
+  if (IMAGE_ENRICH_BATCH_SIZE > 0 && missingAfterPayload.length) {
+    const targetNames = missingAfterPayload
+      .slice()
+      .sort(
+        (a, b) =>
+          Number(b?.marketVolume7d || 0) - Number(a?.marketVolume7d || 0) ||
+          Number(b?.referencePrice || 0) - Number(a?.referencePrice || 0)
+      )
+      .slice(0, IMAGE_ENRICH_BATCH_SIZE)
+      .map((row) => normalizeMarketHashName(row?.marketHashName))
+      .filter(Boolean)
+
+    summary.steamSearchAttempted = targetNames.length
+    if (targetNames.length) {
+      try {
+        const steamImagesByName = await marketImageService.fetchSteamSearchImagesBatch(targetNames, {
+          concurrency: IMAGE_ENRICH_CONCURRENCY,
+          timeoutMs: IMAGE_ENRICH_TIMEOUT_MS,
+          maxRetries: 2
+        })
+        for (const [marketHashName, image] of Object.entries(steamImagesByName || {})) {
+          const inputItem = inputByName[marketHashName] || null
+          if (!inputItem) continue
+          const changed = applyImageToInputItem(inputItem, image)
+          if (!changed) continue
+          imageUpdatesByName[marketHashName] = {
+            imageUrl: String(inputItem?.itemImageUrl || image?.imageUrl || "").trim() || null,
+            imageUrlLarge:
+              String(inputItem?.itemImageUrlLarge || image?.imageUrlLarge || "").trim() ||
+              String(inputItem?.itemImageUrl || image?.imageUrl || "").trim() ||
+              null
+          }
+          summary.fromSteamSearch += 1
+        }
+      } catch (err) {
+        summary.errors.push(String(err?.message || "steam_image_search_failed"))
+      }
+    }
+  }
+
+  const upsertRows = toSkinImageUpsertRows(imageUpdatesByName)
+  if (upsertRows.length) {
+    try {
+      const persisted = await skinRepo.upsertSkins(upsertRows)
+      summary.persistedRows = Array.isArray(persisted) ? persisted.length : upsertRows.length
+    } catch (err) {
+      summary.errors.push(String(err?.message || "skin_image_upsert_failed"))
+    }
+  }
+
+  summary.missingAfter = inputItems.filter((item) => !hasUsableItemImage(item)).length
+  summary.errors = summary.errors.slice(0, 5)
+  return summary
 }
 
 function mergeSeedWithSnapshot(seed = {}, snapshot = null) {
@@ -2169,6 +2347,7 @@ function buildScanProgressStats({
 
 async function runScanInternal(options = {}) {
   const forceRefresh = Boolean(options.forceRefresh)
+  let imageEnrichmentSummary = buildDefaultImageEnrichmentSummary()
   const sourceCatalogDiagnostics = await marketSourceCatalogService
     .prepareSourceCatalog({
       targetUniverseSize: UNIVERSE_TARGET_SIZE,
@@ -2206,6 +2385,7 @@ async function runScanInternal(options = {}) {
         rejectionReasonsByItem: toRejectionReasonsByItem(rejectedByItem),
         opportunitiesByCategory: {},
         snapshotWarmup: snapshotWarmupSummary,
+        imageEnrichment: imageEnrichmentSummary,
         sourceCatalog: sourceCatalogDiagnostics,
         scanProgress: buildScanProgressStats({
           universeTarget: UNIVERSE_TARGET_SIZE,
@@ -2224,7 +2404,10 @@ async function runScanInternal(options = {}) {
           universeDbLimit: UNIVERSE_DB_LIMIT,
           scanBatchSize: SCAN_BATCH_SIZE,
           maxConcurrentMarketRequests: MAX_CONCURRENT_MARKET_REQUESTS,
-          scanTimeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH
+          scanTimeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH,
+          imageEnrichBatchSize: IMAGE_ENRICH_BATCH_SIZE,
+          imageEnrichConcurrency: IMAGE_ENRICH_CONCURRENCY,
+          imageEnrichTimeoutMs: IMAGE_ENRICH_TIMEOUT_MS
         },
         quoteRefresh: {
           batchSize: SCAN_BATCH_SIZE,
@@ -2262,6 +2445,7 @@ async function runScanInternal(options = {}) {
           persisted: true
         },
         snapshotWarmup: snapshotWarmupSummary,
+        imageEnrichment: imageEnrichmentSummary,
         sourceCatalog: sourceCatalogDiagnostics
       }
     }
@@ -2282,6 +2466,7 @@ async function runScanInternal(options = {}) {
     forceRefresh
   })
   const comparisonFromSaved = await compareFromSavedQuotes(comparisonInputItems)
+  imageEnrichmentSummary = await hydrateUniverseImages(inputByName, comparisonFromSaved.items)
   const quoteSnapshotSummary = await persistQuoteSnapshot(comparisonFromSaved.items, inputByName)
 
   const selectedUniverse = selectTopUniverseItems(
@@ -2424,6 +2609,7 @@ async function runScanInternal(options = {}) {
       rejectionReasonsByItem: toRejectionReasonsByItem(rejectedByItem),
       opportunitiesByCategory,
       snapshotWarmup: snapshotWarmupSummary,
+      imageEnrichment: imageEnrichmentSummary,
       sourceCatalog: sourceCatalogDiagnostics,
       scanProgress,
       highConfidence: highConfidenceCount,
@@ -2438,12 +2624,16 @@ async function runScanInternal(options = {}) {
         universeDbLimit: UNIVERSE_DB_LIMIT,
         scanBatchSize: SCAN_BATCH_SIZE,
         maxConcurrentMarketRequests: MAX_CONCURRENT_MARKET_REQUESTS,
-        scanTimeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH
+        scanTimeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH,
+        imageEnrichBatchSize: IMAGE_ENRICH_BATCH_SIZE,
+        imageEnrichConcurrency: IMAGE_ENRICH_CONCURRENCY,
+        imageEnrichTimeoutMs: IMAGE_ENRICH_TIMEOUT_MS
       },
       quoteRefresh: quoteRefreshSummary,
       computeFromSavedQuotes: comparisonFromSaved?.diagnostics || null,
       quoteSnapshot: quoteSnapshotSummary,
       snapshotWarmup: snapshotWarmupSummary,
+      imageEnrichment: imageEnrichmentSummary,
       sourceCatalog: sourceCatalogDiagnostics
     }
   }
@@ -2484,6 +2674,8 @@ function toScanDiagnosticsSummary(scanPayload = {}, persistSummary = {}, trigger
     opportunitiesByCategory: scanPayload?.summary?.opportunitiesByCategory || {},
     snapshotWarmup:
       scanPayload?.summary?.snapshotWarmup || scanPayload?.pipeline?.snapshotWarmup || {},
+    imageEnrichment:
+      scanPayload?.summary?.imageEnrichment || scanPayload?.pipeline?.imageEnrichment || {},
     sourceCatalog:
       scanPayload?.summary?.sourceCatalog || scanPayload?.pipeline?.sourceCatalog || {},
     scanProgress: scanPayload?.summary?.scanProgress || {},
@@ -2835,6 +3027,8 @@ exports.getFeed = async (options = {}) => {
     opportunitiesByCategory: diagnosticsSummary?.opportunitiesByCategory || {},
     snapshotWarmup:
       diagnosticsSummary?.snapshotWarmup || diagnosticsSummary?.pipeline?.snapshotWarmup || {},
+    imageEnrichment:
+      diagnosticsSummary?.imageEnrichment || diagnosticsSummary?.pipeline?.imageEnrichment || {},
     sourceCatalog:
       diagnosticsSummary?.sourceCatalog || diagnosticsSummary?.pipeline?.sourceCatalog || {},
     scanProgress: diagnosticsSummary?.scanProgress || {},

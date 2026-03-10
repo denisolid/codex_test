@@ -1223,7 +1223,24 @@ button:active,
   }
 
   .opportunities-table .opportunity-item-cell {
-    min-width: 220px;
+    grid-template-columns: 94px minmax(0, 1fr);
+    min-width: 248px;
+    gap: 8px;
+  }
+
+  .opportunities-table .opportunity-item-media {
+    width: 94px;
+    height: 68px;
+  }
+
+  .opportunities-table .opportunity-item-title {
+    font-size: 0.8rem;
+  }
+
+  .opportunities-table .opportunity-rarity-tag,
+  .opportunities-table .opportunity-category-badge {
+    font-size: 0.56rem;
+    padding: 2px 6px;
   }
 
   .opportunities-table .opportunity-metric-cell {
@@ -1232,6 +1249,11 @@ button:active,
 
   .opportunities-table .actions-cell {
     min-width: 132px;
+  }
+
+  .opportunities-table-global .actions-cell,
+  .opportunities-table-global thead th:last-child {
+    position: static;
   }
 
   .position-inspector-form {
