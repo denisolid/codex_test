@@ -1493,6 +1493,66 @@ body.tx-edit-modal-open {
   color: #f0a8ba;
 }
 
+.account-plan-switcher-form {
+  margin-top: 4px;
+}
+
+.account-plan-switcher-group {
+  border: 1px solid rgba(127, 153, 204, 0.24);
+  border-radius: 12px;
+  background: rgba(8, 13, 24, 0.7);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.account-plan-switcher-group legend {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  padding: 0 4px;
+}
+
+.account-plan-option {
+  border: 1px solid rgba(127, 153, 204, 0.24);
+  border-radius: 10px;
+  background: rgba(8, 13, 24, 0.72);
+  padding: 10px 11px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.account-plan-option.active {
+  border-color: rgba(87, 166, 255, 0.58);
+  background:
+    linear-gradient(140deg, rgba(39, 102, 196, 0.18), rgba(82, 54, 153, 0.18)),
+    rgba(8, 13, 24, 0.84);
+}
+
+.account-plan-option input[type="radio"] {
+  margin-top: 2px;
+  accent-color: #4c9fff;
+}
+
+.account-plan-option span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.account-plan-option strong {
+  font-size: 0.86rem;
+}
+
+.account-plan-option small {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
 .account-feature-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -5999,13 +6059,14 @@ a:hover {
 .opportunity-item-zoom-window {
   --rarity-color: #5aaeff;
   --rarity-rgb: 90, 174, 255;
+  --zoom-scale: 2.12;
   --zoom-pan-x: 0px;
   --zoom-pan-y: 0px;
   position: fixed;
   top: 0;
   left: 0;
-  width: 248px;
-  height: 176px;
+  width: 340px;
+  height: 246px;
   pointer-events: none;
   z-index: 1200;
   opacity: 0;
@@ -6075,9 +6136,10 @@ a:hover {
   background: rgba(7, 11, 22, 0.92);
   border: 1px solid rgba(var(--rarity-rgb), 0.34);
   filter: drop-shadow(0 16px 24px rgba(0, 0, 0, 0.56));
-  transform: scale(2.18) translate3d(var(--zoom-pan-x), var(--zoom-pan-y), 0);
+  transform: translate3d(var(--zoom-pan-x), var(--zoom-pan-y), 0)
+    scale(var(--zoom-scale));
   transform-origin: 50% 50%;
-  transition: transform 80ms linear;
+  transition: transform 72ms linear;
 }
 
 @keyframes opportunity-rarity-border-flow {
@@ -6242,7 +6304,7 @@ a:hover {
 .opportunity-table-row:hover .opportunity-item-media,
 .opportunity-item-media:hover,
 .opportunity-item-media.is-hovered {
-  transform: translateY(-2px) scale(1.04);
+  transform: translateY(-2px);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
     0 0 0 2px rgba(var(--rarity-rgb), 0.64),
@@ -6265,20 +6327,20 @@ a:hover {
 .opportunity-table-row:hover .opportunity-item-thumb,
 .opportunity-item-media:hover .opportunity-item-thumb,
 .opportunity-item-media.is-hovered .opportunity-item-thumb {
-  transform: scale(1.52) translate3d(var(--item-pan-x), var(--item-pan-y), 0);
+  transform: scale(1.02) translate3d(0, 0, 0);
   filter: drop-shadow(0 10px 22px rgba(0, 0, 0, 0.56));
 }
 
 .opportunities-table .opportunity-item-media:hover .opportunity-item-thumb,
 .opportunities-table .opportunity-item-media.is-hovered .opportunity-item-thumb,
 .opportunities-table .opportunity-item-thumb:hover {
-  transform: scale(1.62) translate3d(var(--item-pan-x), var(--item-pan-y), 0)
+  transform: scale(1.02) translate3d(0, 0, 0)
     !important;
 }
 
 .opportunities-table .opportunity-item-media:active .opportunity-item-thumb,
 .opportunities-table .opportunity-item-thumb:active {
-  transform: scale(1.72) translate3d(var(--item-pan-x), var(--item-pan-y), 0)
+  transform: scale(1.02) translate3d(0, 0, 0)
     !important;
 }
 

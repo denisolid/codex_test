@@ -609,7 +609,7 @@ exports.getPortfolioBacktest = async (userId, options = {}) => {
 
   if (!entitlements.backtesting || Number(entitlements.maxBacktestDays || 0) <= 0) {
     throw new AppError(
-      "Historical backtesting is available on Pro plan and above.",
+      "Historical backtesting is available on Full Access plan and above.",
       402,
       "PLAN_UPGRADE_REQUIRED"
     );

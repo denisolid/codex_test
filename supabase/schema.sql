@@ -18,7 +18,7 @@ create table if not exists public.users (
   steam_id64 text unique,
   public_portfolio_enabled boolean not null default true,
   ownership_alerts_enabled boolean not null default true,
-  plan_tier text not null default 'free' check (plan_tier in ('free', 'pro', 'team')),
+  plan_tier text not null default 'free' check (plan_tier in ('free', 'full_access', 'api_advanced')),
   billing_status text not null default 'inactive' check (
     billing_status in ('inactive', 'trialing', 'active', 'past_due', 'canceled')
   ),
@@ -229,8 +229,8 @@ create index if not exists idx_public_portfolio_views_owner_time
 create table if not exists public.plan_change_events (
   id bigserial primary key,
   user_id uuid not null references public.users(id) on delete cascade,
-  old_plan_tier text not null check (old_plan_tier in ('free', 'pro', 'team')),
-  new_plan_tier text not null check (new_plan_tier in ('free', 'pro', 'team')),
+  old_plan_tier text not null check (old_plan_tier in ('free', 'full_access', 'api_advanced')),
+  new_plan_tier text not null check (new_plan_tier in ('free', 'full_access', 'api_advanced')),
   changed_by text not null default 'self_service',
   created_at timestamptz not null default now()
 );

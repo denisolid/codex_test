@@ -100,7 +100,17 @@ test("bootstrap returns compact auth payload for routing/onboarding decisions", 
   });
   primeModule(steamAuthServicePath, {});
   primeModule(planServicePath, {
-    normalizePlanTier: (tier) => String(tier || "free").trim().toLowerCase() || "free"
+    normalizePlanTier: (tier) => {
+      const safe = String(tier || "free").trim().toLowerCase();
+      if (safe === "pro" || safe === "team") return "full_access";
+      if (safe === "api_advanced") return "api_advanced";
+      return "free";
+    },
+    getEntitlements: (tier) => ({
+      planTier: String(tier || "free"),
+      advancedAnalytics: String(tier || "free") !== "free"
+    }),
+    isTestSubscriptionSwitcherEnabled: () => true
   });
   primeModule(emailOnboardingServicePath, {
     syncProfileVerificationState: async ({ userProfile }) => userProfile,
@@ -110,7 +120,7 @@ test("bootstrap returns compact auth payload for routing/onboarding decisions", 
       emailVerified: true,
       onboardingCompleted: true,
       onboardingRequired: false,
-      plan: "pro",
+      plan: "full_access",
       planStatus: "active"
     })
   });
@@ -145,9 +155,10 @@ test("bootstrap returns compact auth payload for routing/onboarding decisions", 
 
   assert.equal(err, null);
   assert.equal(res.payload?.user?.id, "user-1");
-  assert.equal(res.payload?.profile?.planTier, "pro");
+  assert.equal(res.payload?.profile?.planTier, "full_access");
   assert.equal(res.payload?.profile?.linkedSteam, true);
   assert.equal(res.payload?.profile?.onboardingRequired, false);
-  assert.equal("entitlements" in (res.payload?.profile || {}), false);
-  assert.equal("billingStatus" in (res.payload?.profile || {}), false);
+  assert.equal(res.payload?.profile?.entitlements?.advancedAnalytics, true);
+  assert.equal(res.payload?.profile?.subscriptionSwitcherEnabled, true);
+  assert.equal("billingStatus" in (res.payload?.profile || {}), true);
 });

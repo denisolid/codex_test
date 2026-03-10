@@ -7,6 +7,17 @@ const arbitrageRules = require("../config/arbitrageRules");
 const CACHE_TTL_MS = 60 * 1000;
 const MAX_LIMIT = 1000;
 const scanCache = new Map();
+const DEFAULT_FREE_FILTERS = Object.freeze({
+  minProfit:
+    arbitrageEngine.DEFAULT_MIN_PROFIT_ABSOLUTE ??
+    arbitrageRules.DEFAULT_MIN_PROFIT_ABSOLUTE,
+  minSpreadPercent: arbitrageEngine.MIN_SPREAD_PERCENT,
+  minScore: arbitrageEngine.DEFAULT_SCORE_CUTOFF ?? arbitrageRules.DEFAULT_SCORE_CUTOFF,
+  liquidityMin: 0,
+  showRisky: false,
+  sortBy: "score",
+  markets: ""
+});
 
 function toFiniteOrNull(value) {
   const parsed = Number(value);
@@ -41,6 +52,7 @@ function normalizeMarkets(value) {
 function buildCacheKey(userId, options) {
   return [
     String(userId || ""),
+    String(options.planTier || "free"),
     String(options.currency || "USD"),
     String(options.pricingMode || ""),
     String(options.minProfit),
@@ -98,9 +110,18 @@ function extractOpportunityFromPortfolioItem(item = {}) {
 exports.CACHE_TTL_MS = CACHE_TTL_MS;
 
 exports.getArbitrageOpportunities = async (userId, options = {}) => {
+  const { planTier, entitlements } = await planService.getUserPlanProfile(userId);
+  const advancedFiltersEnabled = Boolean(entitlements?.advancedFilters);
+  const visibleFeedLimit = Math.max(Number(entitlements?.visibleFeedLimit || MAX_LIMIT), 1);
+  const opportunitiesDailyLimit = Math.max(
+    Number(entitlements?.opportunitiesDailyLimit || visibleFeedLimit),
+    1
+  );
+  const hardLimit = Math.min(visibleFeedLimit, opportunitiesDailyLimit, MAX_LIMIT);
   const currency = resolveCurrency(options.currency || "USD");
   const showRisky = normalizeBoolean(options.showRisky);
   const normalized = {
+    planTier,
     currency,
     pricingMode: options.pricingMode || null,
     minProfit: clampNumber(
@@ -128,13 +149,24 @@ exports.getArbitrageOpportunities = async (userId, options = {}) => {
     markets: normalizeMarkets(options.markets || options.market),
     limit: Math.round(clampNumber(options.limit, 250, 1, MAX_LIMIT))
   };
+
+  if (!advancedFiltersEnabled) {
+    normalized.minProfit = Number(DEFAULT_FREE_FILTERS.minProfit);
+    normalized.minSpreadPercent = Number(DEFAULT_FREE_FILTERS.minSpreadPercent);
+    normalized.minScore = Number(DEFAULT_FREE_FILTERS.minScore);
+    normalized.liquidityMin = Number(DEFAULT_FREE_FILTERS.liquidityMin);
+    normalized.showRisky = Boolean(DEFAULT_FREE_FILTERS.showRisky);
+    normalized.sortBy = String(DEFAULT_FREE_FILTERS.sortBy);
+    normalized.markets = String(DEFAULT_FREE_FILTERS.markets);
+  }
+  normalized.limit = Math.min(Math.max(Number(normalized.limit || 0), 1), hardLimit);
+
   const cacheKey = buildCacheKey(userId, normalized);
   const cached = getCachedValue(cacheKey);
   if (cached) {
     return cached;
   }
 
-  const { planTier, entitlements } = await planService.getUserPlanProfile(userId);
   const portfolio = await portfolioService.getPortfolio(userId, {
     currency: normalized.currency,
     pricingMode: normalized.pricingMode,
@@ -169,7 +201,14 @@ exports.getArbitrageOpportunities = async (userId, options = {}) => {
     },
     summary: {
       scannedItems: sourceItems.length,
-      opportunities: ranked.length
+      opportunities: Math.min(ranked.length, normalized.limit)
+    },
+    plan: {
+      planTier,
+      advancedFilters: advancedFiltersEnabled,
+      opportunitiesDailyLimit,
+      visibleFeedLimit,
+      appliedLimit: normalized.limit
     },
     items: ranked.slice(0, normalized.limit)
   };

@@ -30,7 +30,7 @@ exports.remove = asyncHandler(async (req, res) => {
 
 exports.exportCsv = asyncHandler(async (req, res) => {
   const { entitlements } = await planService.requireFeature(req.userId, "csvExport", {
-    message: "CSV export is available on Pro plan and above."
+    message: "CSV export is available on Full Access plan and above."
   });
 
   const rows = await txService.list(req.userId);

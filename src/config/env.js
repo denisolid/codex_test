@@ -230,5 +230,9 @@ module.exports = {
   traderModeMockCheckoutEnabled:
     process.env.TRADER_MODE_MOCK_CHECKOUT_ENABLED == null
       ? true
-      : process.env.TRADER_MODE_MOCK_CHECKOUT_ENABLED === "true"
+      : process.env.TRADER_MODE_MOCK_CHECKOUT_ENABLED === "true",
+  testSubscriptionSwitcherEnabled:
+    process.env.TEST_SUBSCRIPTION_SWITCHER == null
+      ? false
+      : process.env.TEST_SUBSCRIPTION_SWITCHER === "true"
 };

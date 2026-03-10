@@ -32,6 +32,8 @@ const arbitrageEngine = require("./arbitrageEngineService")
 const marketService = require("./marketService")
 const marketSourceCatalogService = require("./marketSourceCatalogService")
 const marketImageService = require("./marketImageService")
+const planService = require("./planService")
+const AppError = require("../utils/AppError")
 
 const SCANNER_TYPE = "global_arbitrage"
 const SCANNER_INTERVAL_MINUTES = Math.max(Number(arbitrageScannerIntervalMinutes || 30), 1)
@@ -66,6 +68,8 @@ const DUPLICATE_WINDOW_HOURS = Math.max(Number(arbitrageDuplicateWindowHours || 
 const MIN_PROFIT_CHANGE_PCT = Math.max(Number(arbitrageMinProfitChangePct || 10), 0)
 const MIN_SCORE_CHANGE = Math.max(Number(arbitrageMinScoreChange || 8), 0)
 const INSERT_DUPLICATES = Boolean(arbitrageInsertDuplicates)
+const MANUAL_REFRESH_TRACKER_MAX = 4000
+const manualRefreshTracker = new Map()
 
 const STALE_PENALTY_RULES = Object.freeze([
   { minMinutes: 180, penalty: 25 },
@@ -151,6 +155,9 @@ const LOW_VALUE_NAME_PATTERNS = Object.freeze([
   /^graffiti\s*\|/i,
   /^sealed graffiti\s*\|/i
 ])
+const KNOWN_BAD_IMAGE_HOSTS = Object.freeze(
+  new Set(["example.com", "www.example.com"])
+)
 const DIAGNOSTIC_REASON_KEYS = Object.freeze([
   "ignored_execution_floor",
   "ignored_low_value_universe",
@@ -254,6 +261,21 @@ const CATEGORY_SCAN_RULES = Object.freeze({
 
 function normalizeMarketHashName(value) {
   return String(value || "").trim()
+}
+
+function sanitizeImageUrl(value) {
+  const raw = String(value || "").trim()
+  if (!raw) return null
+  try {
+    const parsed = new URL(raw)
+    if (!["http:", "https:"].includes(parsed.protocol)) return null
+    if (KNOWN_BAD_IMAGE_HOSTS.has(String(parsed.hostname || "").trim().toLowerCase())) {
+      return null
+    }
+    return parsed.toString()
+  } catch (_err) {
+    return null
+  }
 }
 
 function normalizeItemCategory(value, marketHashName = "") {
@@ -778,6 +800,9 @@ function buildInputItemFromSkinAndSnapshot({
     snapshot && hasUsableSnapshotLiquidity ? computeLiquidityScoreFromSnapshot(snapshot) : null
   const sevenDayChangePercent =
     snapshot && hasUsableSnapshotLiquidity ? resolveSevenDayChangePercent(snapshot) : null
+  const imageUrl = sanitizeImageUrl(skin?.image_url || skin?.imageUrl)
+  const imageUrlLarge =
+    sanitizeImageUrl(skin?.image_url_large || skin?.imageUrlLarge) || imageUrl || null
 
   return {
     skinId: Number(skin?.id || 0) || null,
@@ -787,9 +812,8 @@ function buildInputItemFromSkinAndSnapshot({
     itemRarity: String(skin?.rarity || "").trim() || null,
     itemRarityColor:
       String(skin?.rarity_color || skin?.rarityColor || "").trim() || null,
-    itemImageUrl: String(skin?.image_url || skin?.imageUrl || "").trim() || null,
-    itemImageUrlLarge:
-      String(skin?.image_url_large || skin?.imageUrlLarge || "").trim() || null,
+    itemImageUrl: imageUrl,
+    itemImageUrlLarge: imageUrlLarge,
     quantity: 1,
     marketVolume7d: volume7d,
     liquidityScore,
@@ -1265,7 +1289,7 @@ function buildApiOpportunityRow({
           ""
       ).trim() || null,
     itemImageUrl:
-      String(inputItem?.itemImageUrlLarge || inputItem?.itemImageUrl || "").trim() || null,
+      sanitizeImageUrl(inputItem?.itemImageUrlLarge || inputItem?.itemImageUrl) || null,
     buyMarket: buySource || null,
     buyPrice: roundPrice(opportunity?.buyPrice || 0),
     sellMarket: sellSource || null,
@@ -1328,7 +1352,7 @@ function toMetadataObject(row = {}) {
     item_subcategory: String(row?.itemSubcategory || "").trim() || null,
     item_rarity: String(row?.itemRarity || "").trim() || null,
     item_rarity_color: String(row?.itemRarityColor || "").trim() || null,
-    item_image_url: String(row?.itemImageUrl || "").trim() || null,
+    item_image_url: sanitizeImageUrl(row?.itemImageUrl) || null,
     score_category: String(row?.scoreCategory || "").trim() || null,
     liquidity_value: toFiniteOrNull(row?.liquidity),
     liquidity_score: toFiniteOrNull(row?.liquidityScore),
@@ -1421,7 +1445,7 @@ function mapFeedRowToApiRow(row = {}) {
     itemSubcategory: String(metadata?.item_subcategory || "").trim() || null,
     itemRarity: String(metadata?.item_rarity || "").trim() || null,
     itemRarityColor: String(metadata?.item_rarity_color || "").trim() || null,
-    itemImageUrl: String(metadata?.item_image_url || "").trim() || null,
+    itemImageUrl: sanitizeImageUrl(metadata?.item_image_url) || null,
     buyMarket: normalizeMarketLabel(row?.buy_market),
     buyPrice: roundPrice(row?.buy_price || 0),
     sellMarket: normalizeMarketLabel(row?.sell_market),
@@ -1513,6 +1537,8 @@ async function enrichFeedRowsWithSkinMetadata(rows = []) {
       (Number.isInteger(skinId) && skinId > 0 ? skinsById[skinId] || null : null) ||
       (key ? skinsByName[key] || null : null)
     if (!skin) return row
+    const currentImage = sanitizeImageUrl(row?.itemImageUrl)
+    const skinImage = sanitizeImageUrl(skin?.image_url_large || skin?.image_url)
     return {
       ...row,
       itemRarity:
@@ -1522,9 +1548,7 @@ async function enrichFeedRowsWithSkinMetadata(rows = []) {
         String(skin?.rarity_color || skin?.rarityColor || "").trim() ||
         null,
       itemImageUrl:
-        String(row?.itemImageUrl || "").trim() ||
-        String(skin?.image_url_large || skin?.image_url || "").trim() ||
-        null
+        currentImage || skinImage || null
     }
   })
 
@@ -1537,7 +1561,7 @@ async function enrichFeedRowsWithSkinMetadata(rows = []) {
           const rarity = String(row?.itemRarity || "")
             .trim()
             .toLowerCase()
-          const missingImage = !String(row?.itemImageUrl || "").trim()
+          const missingImage = !sanitizeImageUrl(row?.itemImageUrl)
           const missingRarity = !rarity
           const weakRarity = rarity === "consumer grade"
           return missingImage || missingRarity || weakRarity
@@ -1612,6 +1636,8 @@ async function enrichFeedRowsWithSkinMetadata(rows = []) {
       !currentRarityColor ||
       currentRarityColor.toLowerCase() === "#b0c3d9" ||
       currentRarityColor.toLowerCase() === "#7f8ba5"
+    const currentImage = sanitizeImageUrl(row?.itemImageUrl)
+    const metadataImage = sanitizeImageUrl(metadata?.imageUrlLarge || metadata?.imageUrl)
 
     return {
       ...row,
@@ -1624,9 +1650,7 @@ async function enrichFeedRowsWithSkinMetadata(rows = []) {
           ? String(metadata.rarityColor).trim() || currentRarityColor || null
           : currentRarityColor || null,
       itemImageUrl:
-        String(row?.itemImageUrl || "").trim() ||
-        String(metadata?.imageUrlLarge || metadata?.imageUrl || "").trim() ||
-        null
+        currentImage || metadataImage || null
     }
   })
 }
@@ -1650,8 +1674,9 @@ function buildInputItemForComparison(item = {}) {
     itemRarity: String(item?.itemRarity || item?.rarity || "").trim() || null,
     itemRarityColor:
       String(item?.itemRarityColor || item?.rarityColor || "").trim() || null,
-    imageUrl: String(item?.itemImageUrl || "").trim() || null,
-    imageUrlLarge: String(item?.itemImageUrlLarge || "").trim() || null,
+    imageUrl: sanitizeImageUrl(item?.itemImageUrl) || null,
+    imageUrlLarge:
+      sanitizeImageUrl(item?.itemImageUrlLarge) || sanitizeImageUrl(item?.itemImageUrl) || null,
     quantity: 1,
     steamPrice:
       toFiniteOrNull(item?.referencePrice) ??
@@ -1956,21 +1981,23 @@ async function mapWithConcurrency(items = [], concurrencyLimit = 1, mapper = asy
 
 function hasUsableItemImage(inputItem = {}) {
   return Boolean(
-    String(inputItem?.itemImageUrlLarge || inputItem?.itemImageUrl || "").trim()
+    sanitizeImageUrl(inputItem?.itemImageUrlLarge) || sanitizeImageUrl(inputItem?.itemImageUrl)
   )
 }
 
 function applyImageToInputItem(inputItem = {}, image = {}) {
   if (!inputItem || typeof inputItem !== "object") return false
-  const imageUrl = String(image?.imageUrl || "").trim() || null
-  const imageUrlLarge = String(image?.imageUrlLarge || "").trim() || imageUrl || null
+  const imageUrl = sanitizeImageUrl(image?.imageUrl) || null
+  const imageUrlLarge = sanitizeImageUrl(image?.imageUrlLarge) || imageUrl || null
+  const currentImage = sanitizeImageUrl(inputItem?.itemImageUrl)
+  const currentImageLarge = sanitizeImageUrl(inputItem?.itemImageUrlLarge) || currentImage || null
 
   let changed = false
-  if (!String(inputItem?.itemImageUrl || "").trim() && imageUrl) {
+  if (!currentImage && imageUrl) {
     inputItem.itemImageUrl = imageUrl
     changed = true
   }
-  if (!String(inputItem?.itemImageUrlLarge || "").trim() && imageUrlLarge) {
+  if (!currentImageLarge && imageUrlLarge) {
     inputItem.itemImageUrlLarge = imageUrlLarge
     changed = true
   }
@@ -1982,8 +2009,8 @@ function toSkinImageUpsertRows(imageByName = {}) {
   for (const [marketHashName, image] of Object.entries(imageByName || {})) {
     const normalizedName = normalizeMarketHashName(marketHashName)
     if (!normalizedName) continue
-    const imageUrl = String(image?.imageUrl || "").trim() || null
-    const imageUrlLarge = String(image?.imageUrlLarge || "").trim() || imageUrl || null
+    const imageUrl = sanitizeImageUrl(image?.imageUrl) || null
+    const imageUrlLarge = sanitizeImageUrl(image?.imageUrlLarge) || imageUrl || null
     if (!imageUrl && !imageUrlLarge) continue
     rows.push({
       market_hash_name: normalizedName,
@@ -3096,6 +3123,129 @@ async function ensureScheduledScanHeartbeat(statusHint = null, trigger = "watchd
   return Boolean(enqueue?.scanRunId)
 }
 
+function parseIsoTimestampMs(value) {
+  const text = String(value || "").trim()
+  if (!text) return null
+  const ts = new Date(text).getTime()
+  return Number.isFinite(ts) ? ts : null
+}
+
+async function resolvePlanContext(options = {}) {
+  if (options?.entitlements && typeof options.entitlements === "object") {
+    return {
+      userId: String(options.userId || "").trim(),
+      planTier: planService.normalizePlanTier(
+        options.planTier || options.entitlements.planTier
+      ),
+      entitlements: options.entitlements
+    }
+  }
+
+  const userId = String(options.userId || "").trim()
+  if (!userId) {
+    const planTier = planService.normalizePlanTier(options.planTier || "full_access")
+    return {
+      userId: "",
+      planTier,
+      entitlements: planService.getEntitlements(planTier)
+    }
+  }
+
+  const { planTier, entitlements } = await planService.getUserPlanProfile(userId)
+  return { userId, planTier, entitlements }
+}
+
+function applyFeedPlanRestrictions(rows = [], entitlements = {}) {
+  const safeRows = Array.isArray(rows) ? rows : []
+  const visibleFeedLimit = Math.max(Number(entitlements?.visibleFeedLimit || MAX_FEED_LIMIT), 1)
+  const limitedRows = safeRows.slice(0, visibleFeedLimit)
+
+  const delayedSignals = Boolean(entitlements?.delayedSignals)
+  const signalDelayMinutes = delayedSignals
+    ? Math.max(Number(entitlements?.signalDelayMinutes || 0), 0)
+    : 0
+  const cutoffTs = signalDelayMinutes > 0 ? Date.now() - signalDelayMinutes * 60 * 1000 : null
+  const delayFilteredRows =
+    cutoffTs == null
+      ? limitedRows
+      : limitedRows.filter((row) => {
+          const detectedAtTs = parseIsoTimestampMs(row?.detectedAt || row?.detected_at)
+          if (detectedAtTs == null) return true
+          return detectedAtTs <= cutoffTs
+        })
+
+  return {
+    rows: delayFilteredRows,
+    planLimits: {
+      visibleFeedLimit,
+      delayedSignals,
+      signalDelayMinutes,
+      advancedFilters: Boolean(entitlements?.advancedFilters),
+      fullGlobalScanner: Boolean(entitlements?.fullGlobalScanner),
+      fullOpportunitiesFeed: Boolean(entitlements?.fullOpportunitiesFeed),
+      feedTruncatedByLimit: Math.max(safeRows.length - limitedRows.length, 0),
+      feedTruncatedByDelay: Math.max(limitedRows.length - delayFilteredRows.length, 0)
+    }
+  }
+}
+
+function pruneManualRefreshTracker(nowMs) {
+  if (manualRefreshTracker.size <= MANUAL_REFRESH_TRACKER_MAX) {
+    return
+  }
+
+  const staleCutoffMs = nowMs - 7 * 24 * 60 * 60 * 1000
+  for (const [userId, entry] of manualRefreshTracker.entries()) {
+    if (Number(entry?.lastTriggeredAtMs || 0) < staleCutoffMs) {
+      manualRefreshTracker.delete(userId)
+    }
+    if (manualRefreshTracker.size <= MANUAL_REFRESH_TRACKER_MAX) {
+      break
+    }
+  }
+}
+
+function formatRetryWindow(remainingMs) {
+  const remainingMinutes = Math.max(Math.ceil(Number(remainingMs || 0) / 60000), 1)
+  if (remainingMinutes >= 60) {
+    const hours = Math.max(Math.ceil(remainingMinutes / 60), 1)
+    return `${hours} hour(s)`
+  }
+  return `${remainingMinutes} minute(s)`
+}
+
+function enforceManualRefreshCooldown(userId, entitlements = {}, nowMs = Date.now()) {
+  const safeUserId = String(userId || "").trim()
+  if (!safeUserId) return
+
+  const intervalMinutes = Math.max(
+    Number(entitlements?.scannerRefreshIntervalMinutes || SCANNER_INTERVAL_MINUTES),
+    1
+  )
+  const cooldownMs = intervalMinutes * 60 * 1000
+  const previous = manualRefreshTracker.get(safeUserId)
+  const lastTriggeredAtMs = Number(previous?.lastTriggeredAtMs || 0)
+
+  if (lastTriggeredAtMs > 0 && nowMs - lastTriggeredAtMs < cooldownMs) {
+    const retryAfterMs = cooldownMs - (nowMs - lastTriggeredAtMs)
+    const err = new AppError(
+      `Manual scanner refresh is available every ${intervalMinutes} minute(s) on your plan. Try again in ${formatRetryWindow(
+        retryAfterMs
+      )}.`,
+      429,
+      "SCANNER_REFRESH_COOLDOWN"
+    )
+    err.retryAfterMs = retryAfterMs
+    throw err
+  }
+
+  manualRefreshTracker.set(safeUserId, {
+    lastTriggeredAtMs: nowMs,
+    intervalMinutes
+  })
+  pruneManualRefreshTracker(nowMs)
+}
+
 function resolveNoOpportunitiesReason(summary = {}, status = {}, opportunities = []) {
   if (Array.isArray(opportunities) && opportunities.length) {
     return null
@@ -3165,10 +3315,18 @@ function resolveNoOpportunitiesReason(summary = {}, status = {}, opportunities =
 }
 
 exports.getFeed = async (options = {}) => {
-  const limit = normalizeLimit(options.limit, DEFAULT_API_LIMIT, MAX_FEED_LIMIT)
-  const showRisky = normalizeBoolean(options.showRisky)
-  const includeOlder = normalizeBoolean(options.includeOlder || options.showOlder)
-  const categoryFilter = normalizeCategoryFilter(options.category)
+  const planContext = await resolvePlanContext(options)
+  const entitlements = planContext?.entitlements || planService.getEntitlements(planContext?.planTier)
+  const advancedFiltersEnabled = Boolean(entitlements?.advancedFilters)
+  const requestedLimit = normalizeLimit(options.limit, DEFAULT_API_LIMIT, MAX_FEED_LIMIT)
+  const planVisibleLimit = Math.max(Number(entitlements?.visibleFeedLimit || MAX_FEED_LIMIT), 1)
+  const limit = Math.min(requestedLimit, planVisibleLimit)
+  const requestedShowRisky = normalizeBoolean(options.showRisky)
+  const requestedIncludeOlder = normalizeBoolean(options.includeOlder || options.showOlder)
+  const requestedCategory = normalizeCategoryFilter(options.category)
+  const showRisky = advancedFiltersEnabled ? requestedShowRisky : false
+  const includeOlder = advancedFiltersEnabled ? requestedIncludeOlder : false
+  const categoryFilter = advancedFiltersEnabled ? requestedCategory : "all"
 
   const minScore = showRisky ? FEED_RISKY_MIN_SCORE : DEFAULT_SCORE_CUTOFF
   const excludeLowConfidence = !showRisky
@@ -3202,6 +3360,9 @@ exports.getFeed = async (options = {}) => {
 
   let mappedRows = (Array.isArray(feedRows) ? feedRows : []).map((row) => mapFeedRowToApiRow(row))
   mappedRows = await enrichFeedRowsWithSkinMetadata(mappedRows)
+  const feedRestrictionResult = applyFeedPlanRestrictions(mappedRows, entitlements)
+  mappedRows = feedRestrictionResult.rows
+  const feedPlanLimits = feedRestrictionResult.planLimits
   const latestCompleted = status?.latestCompletedRun || null
   const diagnosticsSummary =
     latestCompleted?.diagnostics_summary && typeof latestCompleted.diagnostics_summary === "object"
@@ -3233,9 +3394,28 @@ exports.getFeed = async (options = {}) => {
     newOpportunitiesAdded:
       Number(latestCompleted?.new_opportunities_added || diagnosticsSummary?.persisted?.insertedCount || 0),
     feedRetentionHours: FEED_RETENTION_HOURS,
-    feedActiveLimit: FEED_ACTIVE_LIMIT
+    feedActiveLimit: FEED_ACTIVE_LIMIT,
+    plan: {
+      planTier: planContext?.planTier || "free",
+      requestedLimit,
+      appliedLimit: limit,
+      requestedShowRisky,
+      appliedShowRisky: showRisky,
+      requestedIncludeOlder,
+      appliedIncludeOlder: includeOlder,
+      requestedCategory,
+      appliedCategory: categoryFilter,
+      ...feedPlanLimits
+    }
   }
-  summary.noOpportunitiesReason = resolveNoOpportunitiesReason(summary, status, mappedRows)
+  if (!mappedRows.length && Number(feedPlanLimits?.feedTruncatedByDelay || 0) > 0) {
+    summary.noOpportunitiesReason = {
+      code: "signals_delayed_by_plan",
+      message: `Signals are delayed by ${Number(feedPlanLimits?.signalDelayMinutes || 0)} minute(s) on your current plan.`
+    }
+  } else {
+    summary.noOpportunitiesReason = resolveNoOpportunitiesReason(summary, status, mappedRows)
+  }
 
   return {
     generatedAt: latestCompleted?.completed_at || latestCompleted?.started_at || null,
@@ -3243,6 +3423,7 @@ exports.getFeed = async (options = {}) => {
     currency: "USD",
     summary,
     opportunities: mappedRows,
+    plan: summary.plan,
     status: {
       scannerType: SCANNER_TYPE,
       intervalMinutes: SCANNER_INTERVAL_MINUTES,
@@ -3260,6 +3441,8 @@ exports.getFeed = async (options = {}) => {
 exports.getTopOpportunities = async (options = {}) => exports.getFeed(options)
 
 exports.triggerRefresh = async (options = {}) => {
+  const planContext = await resolvePlanContext(options)
+  enforceManualRefreshCooldown(planContext?.userId, planContext?.entitlements, Date.now())
   const forceRefresh = options.forceRefresh == null ? true : normalizeBoolean(options.forceRefresh)
   const enqueue = await enqueueScan({
     forceRefresh,
@@ -3268,7 +3451,13 @@ exports.triggerRefresh = async (options = {}) => {
   return {
     scanRunId: enqueue.scanRunId || null,
     alreadyRunning: Boolean(enqueue.alreadyRunning),
-    startedAt: new Date().toISOString()
+    startedAt: new Date().toISOString(),
+    plan: {
+      planTier: planContext?.planTier || "free",
+      scannerRefreshIntervalMinutes: Number(
+        planContext?.entitlements?.scannerRefreshIntervalMinutes || SCANNER_INTERVAL_MINUTES
+      )
+    }
   }
 }
 

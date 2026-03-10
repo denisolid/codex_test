@@ -7,6 +7,7 @@ import {
   defaultCaseImage,
   defaultSkinImage,
   getRarityColor,
+  isKnownBrokenImageUrl,
   isCaseLikeItem,
   normalizeRarity,
   resolveItemImageUrl,
@@ -63,23 +64,135 @@ const ACCOUNT_DEFAULT_NOTIFICATION_PREFS = Object.freeze({
   marketSignals: true,
   emailNotifications: true,
 });
+const PLAN_TIER_ALIASES = Object.freeze({
+  pro: "full_access",
+  team: "full_access",
+});
+const ACCOUNT_PLAN_SWITCH_OPTIONS = Object.freeze([
+  {
+    value: "free",
+    label: "Free",
+    description: "Free - limited access",
+  },
+  {
+    value: "full_access",
+    label: "Full Access",
+    description: "Full Access - unlock all current premium features",
+  },
+  {
+    value: "api_advanced",
+    label: "API / Advanced",
+    description: "API / Advanced - future roadmap and internal testing only",
+  },
+]);
 const ACCOUNT_PLAN_LIMITS = Object.freeze({
   free: {
-    portfolioSize: "Up to 50 tracked items",
-    scannerRefresh: "15 minute refresh",
-    signalsAccess: "Basic price alerts",
+    opportunitiesDailyLimit: "3 opportunities/day",
+    alertsLimit: "3 active alerts",
+    scannerRefresh: "Refresh every 12 hours",
+    historyDaysLimit: "7 days history",
+    visibleFeedLimit: "Top 10 feed items",
+    advancedFilters: "Advanced filters locked",
+    delayedSignals: "Signals delayed by 15 minutes",
+    compareView: "Compare view limited",
+    portfolioInsights: "Portfolio insights: basic",
+    apiFlags: "API automation flags unavailable",
   },
-  pro: {
-    portfolioSize: "Up to 500 tracked items",
-    scannerRefresh: "5 minute refresh",
-    signalsAccess: "Advanced arbitrage signals",
+  full_access: {
+    opportunitiesDailyLimit: "High/unlimited opportunities",
+    alertsLimit: "25 active alerts",
+    scannerRefresh: "Refresh every 30 minutes",
+    historyDaysLimit: "90 days history",
+    visibleFeedLimit: "Full opportunities feed",
+    advancedFilters: "Advanced filters enabled",
+    delayedSignals: "Real-time signals (no delay)",
+    compareView: "Compare view full",
+    portfolioInsights: "Portfolio insights: full",
+    apiFlags: "API automation flags pending API plan",
   },
-  team: {
-    portfolioSize: "Unlimited tracking",
-    scannerRefresh: "Near real-time refresh",
-    signalsAccess: "Full market signals suite",
+  api_advanced: {
+    opportunitiesDailyLimit: "High/unlimited opportunities",
+    alertsLimit: "25 active alerts",
+    scannerRefresh: "Refresh every 30 minutes",
+    historyDaysLimit: "90 days history",
+    visibleFeedLimit: "Full opportunities feed",
+    advancedFilters: "Advanced filters enabled",
+    delayedSignals: "Real-time signals (no delay)",
+    compareView: "Compare view full",
+    portfolioInsights: "Portfolio insights: full",
+    apiFlags: "API export + webhooks + automation flags enabled",
   },
 });
+const ACCOUNT_PLAN_ENTITLEMENT_FALLBACKS = Object.freeze({
+  free: {
+    opportunitiesDailyLimit: 3,
+    maxAlerts: 3,
+    scannerRefreshIntervalMinutes: 720,
+    maxHistoryDays: 7,
+    visibleFeedLimit: 10,
+    advancedFilters: false,
+    delayedSignals: true,
+    signalDelayMinutes: 15,
+    compareView: "limited",
+    portfolioInsights: "basic",
+    fullGlobalScanner: false,
+    fullOpportunitiesFeed: false,
+    teamDashboard: false,
+    exportApiReady: false,
+    webhooksReady: false,
+    automationReady: false,
+  },
+  full_access: {
+    opportunitiesDailyLimit: 500,
+    maxAlerts: 25,
+    scannerRefreshIntervalMinutes: 30,
+    maxHistoryDays: 90,
+    visibleFeedLimit: 500,
+    advancedFilters: true,
+    delayedSignals: false,
+    signalDelayMinutes: 0,
+    compareView: "full",
+    portfolioInsights: "full",
+    fullGlobalScanner: true,
+    fullOpportunitiesFeed: true,
+    teamDashboard: true,
+    exportApiReady: false,
+    webhooksReady: false,
+    automationReady: false,
+  },
+  api_advanced: {
+    opportunitiesDailyLimit: 500,
+    maxAlerts: 25,
+    scannerRefreshIntervalMinutes: 30,
+    maxHistoryDays: 90,
+    visibleFeedLimit: 500,
+    advancedFilters: true,
+    delayedSignals: false,
+    signalDelayMinutes: 0,
+    compareView: "full",
+    portfolioInsights: "full",
+    fullGlobalScanner: true,
+    fullOpportunitiesFeed: true,
+    teamDashboard: true,
+    exportApiReady: true,
+    webhooksReady: true,
+    automationReady: true,
+  },
+});
+
+function normalizePlanTier(value) {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (!raw) return "free";
+  if (Object.prototype.hasOwnProperty.call(PLAN_TIER_ALIASES, raw)) {
+    return PLAN_TIER_ALIASES[raw];
+  }
+  if (Object.prototype.hasOwnProperty.call(ACCOUNT_PLAN_LIMITS, raw)) {
+    return raw;
+  }
+  return "free";
+}
 
 function cloneDefaultNotificationPrefs() {
   return {
@@ -177,14 +290,33 @@ function getPathForTab(tabId) {
 }
 
 function planTierToLabel(planTier) {
-  const tier = String(planTier || "free").trim().toLowerCase();
-  if (tier === "team") return "Premium";
-  return toTitle(tier || "free");
+  const tier = normalizePlanTier(planTier);
+  if (tier === "full_access") return "Full Access";
+  if (tier === "api_advanced") return "API / Advanced";
+  return "Free";
 }
 
 function getAccountPlanLimits(planTier) {
-  const tier = String(planTier || "").trim().toLowerCase();
+  const tier = normalizePlanTier(planTier);
   return ACCOUNT_PLAN_LIMITS[tier] || ACCOUNT_PLAN_LIMITS.free;
+}
+
+function getProfileEntitlements(profile = state.authProfile || {}) {
+  const planTier = normalizePlanTier(profile?.planTier || profile?.plan || "free");
+  const fallback = ACCOUNT_PLAN_ENTITLEMENT_FALLBACKS[planTier] || ACCOUNT_PLAN_ENTITLEMENT_FALLBACKS.free;
+  const fromProfile =
+    profile?.entitlements && typeof profile.entitlements === "object"
+      ? profile.entitlements
+      : {};
+  return {
+    ...fallback,
+    ...fromProfile,
+  };
+}
+
+function canAccessTeamDashboard(profile = state.authProfile || {}) {
+  const entitlements = getProfileEntitlements(profile);
+  return Boolean(entitlements.teamDashboard);
 }
 
 function normalizeCurrencyCode(value) {
@@ -301,7 +433,9 @@ function persistAuthBootstrapCache(payload) {
       emailVerified: Boolean(onboarding.emailVerified),
       onboardingCompleted: Boolean(onboarding.onboardingCompleted),
       onboardingRequired: Boolean(onboarding.onboardingRequired),
-      plan: onboarding.plan || profile.plan || profile.planTier || "free",
+      plan: normalizePlanTier(
+        onboarding.plan || profile.plan || profile.planTier || "free",
+      ),
       planStatus: onboarding.planStatus || profile.planStatus || "active",
     },
     profile: {
@@ -329,9 +463,14 @@ function persistAuthBootstrapCache(payload) {
           : Boolean(profile.steamId64 || metadata.steam_id64),
       publicPortfolioEnabled: profile.publicPortfolioEnabled !== false,
       ownershipAlertsEnabled: profile.ownershipAlertsEnabled !== false,
-      planTier: profile.planTier || "free",
-      plan: profile.plan || onboarding.plan || profile.planTier || "free",
+      planTier: normalizePlanTier(profile.planTier || profile.plan || "free"),
+      plan: normalizePlanTier(profile.plan || onboarding.plan || profile.planTier || "free"),
       planStatus: profile.planStatus || onboarding.planStatus || "active",
+      billingStatus: profile.billingStatus || "inactive",
+      planSeats: Number(profile.planSeats || 1),
+      planStartedAt: profile.planStartedAt || null,
+      entitlements: profile.entitlements || null,
+      subscriptionSwitcherEnabled: Boolean(profile.subscriptionSwitcherEnabled),
       provider: profile.provider || metadata.provider || "email",
     },
   };
@@ -361,6 +500,7 @@ function hydrateAuthFromBootstrapCache() {
   state.authenticated = true;
   state.authProfile = profile;
   syncEmailOnboardingStateFromProfile();
+  syncPlanAwareUiState();
   return true;
 }
 
@@ -581,6 +721,10 @@ const state = {
   accountPage: {
     activeSection: "profile",
     notifications: readAccountNotificationPrefs(),
+    planSwitcher: {
+      selected: "free",
+      saving: false,
+    },
     apiKeys: {
       items: [],
       loading: false,
@@ -623,6 +767,36 @@ const state = {
   toasts: [],
 };
 
+function syncPlanAwareUiState() {
+  const profile = state.authProfile || {};
+  const planTier = normalizePlanTier(profile.planTier || profile.plan || "free");
+  const entitlements = getProfileEntitlements({
+    ...profile,
+    planTier,
+    plan: planTier,
+  });
+
+  state.accountPage.planSwitcher.selected = planTier;
+
+  if (!entitlements.advancedFilters) {
+    state.globalOpportunities.showRisky = false;
+    state.globalOpportunities.showOlder = false;
+    state.globalOpportunities.category = "all";
+    state.marketTab.opportunities.filters.showRisky = "0";
+    state.marketTab.opportunities.filters.market = "all";
+    state.marketTab.opportunities.filters.sortBy = "score";
+  }
+
+  const visibleFeedLimit = Math.max(Number(entitlements.visibleFeedLimit || 10), 1);
+  const currentMarketLimit = Math.max(
+    Number(state.marketTab.opportunities.filters.limit || 250),
+    1,
+  );
+  state.marketTab.opportunities.filters.limit = String(
+    Math.min(currentMarketLimit, visibleFeedLimit),
+  );
+}
+
 const holdingsValueMemory = new Map();
 const metricCounterMemory = new Map();
 let delegatedAppEventsBound = false;
@@ -654,6 +828,7 @@ const opportunityZoomWindowState = {
   image: null,
   activeMedia: null,
 };
+const OPPORTUNITY_ZOOM_SCALE = 2.12;
 const APP_TABS = [
   {
     id: "portfolio",
@@ -2116,8 +2291,8 @@ function buildAuthProfile(payload) {
       String(profile.avatarUrl || metadata.avatar_url || "").trim() || null,
     publicPortfolioEnabled: profile.publicPortfolioEnabled !== false,
     ownershipAlertsEnabled: profile.ownershipAlertsEnabled !== false,
-    planTier: String(profile.planTier || "free").toLowerCase(),
-    plan: String(profile.plan || onboarding.plan || profile.planTier || "free").toLowerCase(),
+    planTier: normalizePlanTier(profile.planTier || profile.plan || "free"),
+    plan: normalizePlanTier(profile.plan || onboarding.plan || profile.planTier || "free"),
     planStatus: String(
       profile.planStatus || onboarding.planStatus || "active",
     ).toLowerCase(),
@@ -2126,6 +2301,7 @@ function buildAuthProfile(payload) {
     planStartedAt: profile.planStartedAt || null,
     createdAt: user.created_at || null,
     entitlements: profile.entitlements || null,
+    subscriptionSwitcherEnabled: Boolean(profile.subscriptionSwitcherEnabled),
     provider:
       String(profile.provider || metadata.provider || "").trim() || "email",
   };
@@ -2536,6 +2712,39 @@ function toRgbTriplet(value, fallback = "90,174,255") {
 
 function getItemImageUrl(item = {}) {
   return resolveItemImageUrl(item);
+}
+
+function getOpportunityImageUrl(row = {}, visualItem = {}) {
+  const rowImage = resolveItemImageUrl({
+    imageUrlLarge:
+      row?.itemImageUrlLarge ||
+      row?.item_image_url_large ||
+      row?.itemImageUrl ||
+      row?.item_image_url,
+    imageUrl: row?.itemImageUrl || row?.item_image_url,
+    marketHashName:
+      row?.itemName ||
+      visualItem?.marketHashName ||
+      visualItem?.skinName ||
+      "",
+    skinName:
+      row?.itemName ||
+      visualItem?.skinName ||
+      visualItem?.marketHashName ||
+      "",
+    weapon: visualItem?.weapon || "",
+  });
+
+  if (
+    rowImage &&
+    rowImage !== defaultSkinImage &&
+    rowImage !== defaultCaseImage &&
+    !isKnownBrokenImageUrl(rowImage)
+  ) {
+    return rowImage;
+  }
+
+  return getItemImageUrl(visualItem);
 }
 
 function formatManagementClue(clue) {
@@ -3654,7 +3863,7 @@ async function handleTabSwitch(tab) {
   const target = String(tab || "");
   const requiresLoad =
     (target === "team" &&
-      String(state.authProfile?.planTier || "free").toLowerCase() === "team" &&
+      canAccessTeamDashboard(state.authProfile) &&
       !state.teamDashboard.loading &&
       !state.teamDashboard.payload) ||
     (target === "settings" &&
@@ -3717,7 +3926,7 @@ async function handleTabSwitch(tab) {
 
     if (
       target === "team" &&
-      String(state.authProfile?.planTier || "free").toLowerCase() === "team" &&
+      canAccessTeamDashboard(state.authProfile) &&
       !state.teamDashboard.loading &&
       !state.teamDashboard.payload
     ) {
@@ -3785,6 +3994,45 @@ function setOpportunityItemLensPosition(media, clientX, clientY) {
   media.style.setProperty("--item-pan-y", `${panY.toFixed(2)}px`);
 }
 
+function clampRange(value, min, max) {
+  return Math.max(min, Math.min(value, max));
+}
+
+function resolveZoomPreviewBaseSize(
+  frameWidth,
+  frameHeight,
+  previewImage,
+  sourceRect,
+) {
+  const safeFrameWidth = Math.max(Number(frameWidth || 0), 1);
+  const safeFrameHeight = Math.max(Number(frameHeight || 0), 1);
+
+  let imageWidth = Number(previewImage?.naturalWidth || 0);
+  let imageHeight = Number(previewImage?.naturalHeight || 0);
+  if (!(imageWidth > 0 && imageHeight > 0)) {
+    imageWidth = Math.max(Number(sourceRect?.width || 0), 1);
+    imageHeight = Math.max(Number(sourceRect?.height || 0), 1);
+  }
+
+  const frameRatio = safeFrameWidth / safeFrameHeight;
+  const imageRatio = imageWidth / imageHeight;
+  if (!(imageRatio > 0)) {
+    return { baseWidth: safeFrameWidth, baseHeight: safeFrameHeight };
+  }
+
+  if (imageRatio > frameRatio) {
+    return {
+      baseWidth: safeFrameWidth,
+      baseHeight: safeFrameWidth / imageRatio,
+    };
+  }
+
+  return {
+    baseWidth: safeFrameHeight * imageRatio,
+    baseHeight: safeFrameHeight,
+  };
+}
+
 function ensureOpportunityZoomWindow() {
   const existingRoot = opportunityZoomWindowState.root;
   const existingImage = opportunityZoomWindowState.image;
@@ -3802,6 +4050,7 @@ function ensureOpportunityZoomWindow() {
   opportunityZoomWindowState.root = root;
   opportunityZoomWindowState.image =
     image instanceof HTMLImageElement ? image : null;
+  root.style.setProperty("--zoom-scale", String(OPPORTUNITY_ZOOM_SCALE));
   opportunityZoomWindowState.activeMedia = null;
   return opportunityZoomWindowState;
 }
@@ -3816,7 +4065,7 @@ function hideOpportunityZoomWindow() {
 }
 
 function positionOpportunityZoomWindow(media, clientX, clientY) {
-  const { root } = ensureOpportunityZoomWindow();
+  const { root, image } = ensureOpportunityZoomWindow();
   if (!(root instanceof HTMLElement) || !(media instanceof HTMLElement)) return;
 
   const sourceRect = media.getBoundingClientRect();
@@ -3824,9 +4073,9 @@ function positionOpportunityZoomWindow(media, clientX, clientY) {
 
   const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
   const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
-  const windowWidth = Number(root.offsetWidth || 248);
-  const windowHeight = Number(root.offsetHeight || 176);
-  const gap = 14;
+  const windowWidth = Number(root.offsetWidth || 340);
+  const windowHeight = Number(root.offsetHeight || 246);
+  const gap = 16;
   const edgePadding = 10;
 
   let left = sourceRect.right + gap;
@@ -3841,10 +4090,32 @@ function positionOpportunityZoomWindow(media, clientX, clientY) {
   root.style.left = `${left.toFixed(1)}px`;
   root.style.top = `${top.toFixed(1)}px`;
 
-  const relativeX = (clientX - sourceRect.left) / sourceRect.width - 0.5;
-  const relativeY = (clientY - sourceRect.top) / sourceRect.height - 0.5;
-  const zoomPanX = Math.max(Math.min(relativeX * -52, 26), -26);
-  const zoomPanY = Math.max(Math.min(relativeY * -46, 22), -22);
+  const pointerX = clampRange(
+    (clientX - sourceRect.left) / sourceRect.width,
+    0,
+    1,
+  );
+  const pointerY = clampRange(
+    (clientY - sourceRect.top) / sourceRect.height,
+    0,
+    1,
+  );
+  const zoomScale = Math.max(
+    Number.parseFloat(
+      window.getComputedStyle(root).getPropertyValue("--zoom-scale"),
+    ) || OPPORTUNITY_ZOOM_SCALE,
+    1.01,
+  );
+  const { baseWidth, baseHeight } = resolveZoomPreviewBaseSize(
+    windowWidth,
+    windowHeight,
+    image instanceof HTMLImageElement ? image : null,
+    sourceRect,
+  );
+  const maxPanX = Math.max((baseWidth * zoomScale - windowWidth) / 2, 0);
+  const maxPanY = Math.max((baseHeight * zoomScale - windowHeight) / 2, 0);
+  const zoomPanX = (0.5 - pointerX) * (maxPanX * 2);
+  const zoomPanY = (0.5 - pointerY) * (maxPanY * 2);
   root.style.setProperty("--zoom-pan-x", `${zoomPanX.toFixed(2)}px`);
   root.style.setProperty("--zoom-pan-y", `${zoomPanY.toFixed(2)}px`);
 }
@@ -3856,6 +4127,7 @@ function syncOpportunityZoomWindow(media, clientX, clientY) {
 
   const { root, image } = ensureOpportunityZoomWindow();
   if (!(root instanceof HTMLElement) || !(image instanceof HTMLImageElement)) return;
+  root.style.setProperty("--zoom-scale", String(OPPORTUNITY_ZOOM_SCALE));
 
   const sourceUrl = String(thumb.currentSrc || thumb.getAttribute("src") || "").trim();
   const fallbackUrl = String(thumb.getAttribute("data-fallback-src") || "").trim();
@@ -4235,12 +4507,6 @@ function onAppClick(event) {
   if (button?.matches("#account-copy-api-key-btn")) {
     event.preventDefault();
     runUiTask(() => copyAccountApiKeyToClipboard());
-    return;
-  }
-
-  if (button?.matches("#account-upgrade-plan-btn")) {
-    event.preventDefault();
-    runUiTask(() => upgradePlanFromAccount());
     return;
   }
 
@@ -4883,7 +5149,22 @@ function onAppChange(event) {
     return;
   }
 
+  if (target.matches('input[name="account-plan-switcher"]')) {
+    state.accountPage.planSwitcher.selected = normalizePlanTier(target.value);
+    render();
+    return;
+  }
+
   if (target.matches("#global-opportunities-show-risky")) {
+    const entitlements = getProfileEntitlements();
+    if (!entitlements.advancedFilters) {
+      if (target instanceof HTMLInputElement) {
+        target.checked = false;
+      }
+      state.globalOpportunities.showRisky = false;
+      notify("info", "Advanced scanner filters require Full Access.");
+      return;
+    }
     const checked =
       target instanceof HTMLInputElement ? Boolean(target.checked) : false;
     state.globalOpportunities.showRisky = checked;
@@ -4898,6 +5179,15 @@ function onAppChange(event) {
   }
 
   if (target.matches("#global-opportunities-show-older")) {
+    const entitlements = getProfileEntitlements();
+    if (!entitlements.advancedFilters) {
+      if (target instanceof HTMLInputElement) {
+        target.checked = false;
+      }
+      state.globalOpportunities.showOlder = false;
+      notify("info", "Advanced scanner filters require Full Access.");
+      return;
+    }
     const checked =
       target instanceof HTMLInputElement ? Boolean(target.checked) : false;
     state.globalOpportunities.showOlder = checked;
@@ -4912,6 +5202,15 @@ function onAppChange(event) {
   }
 
   if (target.matches("#global-opportunities-category")) {
+    const entitlements = getProfileEntitlements();
+    if (!entitlements.advancedFilters) {
+      state.globalOpportunities.category = "all";
+      if (target instanceof HTMLSelectElement) {
+        target.value = "all";
+      }
+      notify("info", "Category filter requires Full Access.");
+      return;
+    }
     const nextCategory = String(target.value || "all")
       .trim()
       .toLowerCase();
@@ -5049,6 +5348,12 @@ function onAppSubmit(event) {
   if (form.id === "account-api-key-form") {
     event.preventDefault();
     runUiTask(() => createAccountApiKey(event));
+    return;
+  }
+
+  if (form.id === "account-plan-switcher-form") {
+    event.preventDefault();
+    runUiTask(() => submitAccountPlanSwitcher(event));
   }
 }
 
@@ -5142,6 +5447,8 @@ async function logout() {
   state.emailOnboarding = createEmailOnboardingState();
   state.accountPage.activeSection = parseAccountSectionFromHash();
   state.accountPage.notifications = readAccountNotificationPrefs();
+  state.accountPage.planSwitcher.selected = "free";
+  state.accountPage.planSwitcher.saving = false;
   state.accountPage.apiKeys.items = [];
   state.accountPage.apiKeys.loading = false;
   state.accountPage.apiKeys.loaded = false;
@@ -5596,6 +5903,7 @@ async function refreshAuthBootstrap(options = {}) {
     state.authProfile = profile;
     state.authBootstrapReady = true;
     syncEmailOnboardingStateFromProfile();
+    syncPlanAwareUiState();
     persistAuthBootstrapCache(bootstrapPayload);
     return true;
   } catch (err) {
@@ -5957,14 +6265,6 @@ async function deleteMyAccount() {
   }
 }
 
-async function upgradePlanFromAccount() {
-  const planTier = String(state.authProfile?.planTier || "free")
-    .trim()
-    .toLowerCase();
-  const nextTier = planTier === "free" ? "pro" : planTier === "pro" ? "team" : "team";
-  await updatePlanTier(nextTier);
-}
-
 async function refreshSocialData(options = {}) {
   const { silent = false } = options;
   state.social.loading = true;
@@ -6219,26 +6519,74 @@ async function refreshTeamDashboard(options = {}) {
 
 async function updatePlanTier(planTier) {
   clearError();
+  const normalizedPlanTier = normalizePlanTier(planTier);
   try {
     await api("/monetization/plan", {
       method: "PATCH",
-      body: JSON.stringify({ planTier }),
+      body: JSON.stringify({ planTier: normalizedPlanTier }),
     });
+
     await Promise.all([
       refreshAuthBootstrap({ silent: true }),
       refreshPortfolio({ silent: true }),
     ]);
-    if (String(planTier || "").toLowerCase() === "team") {
-      await refreshTeamDashboard({ silent: true });
+
+    const followUpTasks = [];
+    if (state.marketTab.opportunities.loaded) {
+      followUpTasks.push(refreshMarketOpportunities({ silent: true }));
+    }
+    if (state.globalOpportunities.loaded) {
+      followUpTasks.push(
+        refreshGlobalOpportunities({
+          silent: true,
+          limit: 100,
+          force: false,
+        }),
+      );
+    }
+    if (canAccessTeamDashboard(state.authProfile)) {
+      followUpTasks.push(refreshTeamDashboard({ silent: true }));
     } else {
       state.teamDashboard.loading = false;
       state.teamDashboard.payload = null;
     }
-    state.accountNotice = `Plan updated to ${toTitle(planTier)}.`;
-    notify("success", `Plan updated to ${toTitle(planTier)}.`);
+    if (followUpTasks.length) {
+      await Promise.all(followUpTasks);
+    }
+
+    syncPlanAwareUiState();
+    const label = planTierToLabel(normalizedPlanTier);
+    state.accountNotice = `Access level updated to ${label}.`;
+    notify("success", `Access level updated to ${label}.`);
     render();
   } catch (err) {
     setError(err.message);
+  }
+}
+
+async function submitAccountPlanSwitcher(event) {
+  event.preventDefault();
+  if (state.accountPage.planSwitcher.saving) return;
+
+  const currentPlan = normalizePlanTier(state.authProfile?.planTier || "free");
+  const selectedFromDom =
+    document.querySelector('input[name="account-plan-switcher"]:checked')?.value || "";
+  const selectedPlan = normalizePlanTier(
+    state.accountPage.planSwitcher.selected || selectedFromDom || currentPlan,
+  );
+
+  if (selectedPlan === currentPlan) {
+    notify("info", `Already on ${planTierToLabel(currentPlan)}.`);
+    return;
+  }
+
+  state.accountPage.planSwitcher.saving = true;
+  render();
+  try {
+    await updatePlanTier(selectedPlan);
+  } finally {
+    state.accountPage.planSwitcher.saving = false;
+    render();
   }
 }
 
@@ -6440,6 +6788,9 @@ function readMarketOpportunitiesFiltersFromDom() {
 async function refreshMarketOpportunities(options = {}) {
   const { silent = false } = options;
   const scanner = state.marketTab.opportunities;
+  const entitlements = getProfileEntitlements();
+  const advancedFiltersEnabled = Boolean(entitlements.advancedFilters);
+  const visibleFeedLimit = Math.max(Number(entitlements.visibleFeedLimit || 250), 1);
   scanner.loading = true;
   scanner.error = "";
   if (!silent) {
@@ -6448,24 +6799,44 @@ async function refreshMarketOpportunities(options = {}) {
 
   try {
     const filters = scanner.filters || {};
-    const showRisky = String(filters.showRisky || "0") === "1";
-    const minScoreRaw = Number(filters.minScore || 0);
+    const effectiveFilters = advancedFiltersEnabled
+      ? filters
+      : {
+          ...filters,
+          minProfit: "0.5",
+          minSpread: "5",
+          minScore: "70",
+          market: "all",
+          liquidityMin: "0",
+          showRisky: "0",
+          sortBy: "score",
+        };
+    const showRisky = String(effectiveFilters.showRisky || "0") === "1";
+    const minScoreRaw = Number(effectiveFilters.minScore || 0);
     const minScoreQuery = showRisky && minScoreRaw >= 70 ? 50 : minScoreRaw;
+    const requestLimit = Math.min(
+      Math.max(Number(effectiveFilters.limit || 250), 1),
+      visibleFeedLimit,
+    );
     const query = buildQuery({
       currency: state.currency,
-      minProfit: Number(filters.minProfit || 0),
-      minSpread: Number(filters.minSpread || 5),
+      minProfit: Number(effectiveFilters.minProfit || 0),
+      minSpread: Number(effectiveFilters.minSpread || 5),
       minScore: minScoreQuery,
-      market: filters.market === "all" ? "" : filters.market,
-      liquidityMin: Number(filters.liquidityMin || 0),
+      market: effectiveFilters.market === "all" ? "" : effectiveFilters.market,
+      liquidityMin: Number(effectiveFilters.liquidityMin || 0),
       showRisky: showRisky ? "1" : "",
-      sortBy: String(filters.sortBy || "score"),
-      limit: Math.max(Number(filters.limit || 250), 1),
+      sortBy: String(effectiveFilters.sortBy || "score"),
+      limit: requestLimit,
     });
     const payload = await api(`/market/opportunities${query}`);
     scanner.items = Array.isArray(payload?.items) ? payload.items : [];
     scanner.summary = payload?.summary || null;
     scanner.generatedAt = payload?.generatedAt || null;
+    scanner.filters = {
+      ...scanner.filters,
+      limit: String(requestLimit),
+    };
     scanner.loaded = true;
   } catch (err) {
     scanner.error = err.message || "Failed to load opportunities.";
@@ -6491,15 +6862,24 @@ async function refreshGlobalOpportunities(options = {}) {
   } =
     options;
   const scanner = state.globalOpportunities || createGlobalOpportunitiesState();
+  const entitlements = getProfileEntitlements();
+  const advancedFiltersEnabled = Boolean(entitlements.advancedFilters);
+  const visibleFeedLimit = Math.max(Number(entitlements.visibleFeedLimit || 100), 1);
   state.globalOpportunities = scanner;
-  scanner.showRisky =
-    showRisky == null ? Boolean(scanner.showRisky) : Boolean(showRisky);
-  scanner.showOlder =
-    showOlder == null ? Boolean(scanner.showOlder) : Boolean(showOlder);
-  scanner.category =
-    category == null
-      ? String(scanner.category || "all")
-      : String(category || "all");
+  if (!advancedFiltersEnabled) {
+    scanner.showRisky = false;
+    scanner.showOlder = false;
+    scanner.category = "all";
+  } else {
+    scanner.showRisky =
+      showRisky == null ? Boolean(scanner.showRisky) : Boolean(showRisky);
+    scanner.showOlder =
+      showOlder == null ? Boolean(scanner.showOlder) : Boolean(showOlder);
+    scanner.category =
+      category == null
+        ? String(scanner.category || "all")
+        : String(category || "all");
+  }
   scanner.loading = true;
   if (!force) {
     scanner.error = "";
@@ -6545,7 +6925,7 @@ async function refreshGlobalOpportunities(options = {}) {
     }
 
     const feedQuery = buildQuery({
-      limit: Math.max(Number(limit || 100), 1),
+      limit: Math.min(Math.max(Number(limit || 100), 1), visibleFeedLimit),
       showRisky: scanner.showRisky ? "1" : "",
       includeOlder: scanner.showOlder ? "1" : "",
       category:
@@ -9990,14 +10370,15 @@ function renderManagementSummary() {
 
 function renderAdvancedAnalytics() {
   const profile = state.authProfile || {};
+  const entitlements = getProfileEntitlements(profile);
   const advanced = state.portfolio?.advancedAnalytics;
   if (!advanced) {
-    if (profile.planTier === "free") {
+    if (!entitlements.advancedAnalytics) {
       return `
         <section class="grid">
           <article class="panel wide">
-            <h2>Advanced Analytics (Pro)</h2>
-            <p class="muted">Upgrade to Pro to unlock VaR, tail risk, and deeper portfolio quality diagnostics.</p>
+            <h2>Advanced Analytics (Full Access)</h2>
+            <p class="muted">Upgrade to Full Access to unlock VaR, tail risk, and deeper portfolio quality diagnostics.</p>
           </article>
         </section>
       `;
@@ -10047,7 +10428,7 @@ function renderAdvancedAnalytics() {
 
 function renderBacktestPanel() {
   const profile = state.authProfile || {};
-  const entitlements = profile.entitlements || {};
+  const entitlements = getProfileEntitlements(profile);
   const canBacktest = Boolean(entitlements.backtesting);
   const result = state.backtest.result;
 
@@ -10055,8 +10436,8 @@ function renderBacktestPanel() {
     return `
       <section class="grid">
         <article class="panel wide">
-          <h2>Historical Backtesting (Pro)</h2>
-          <p class="muted">Upgrade to Pro to run historical portfolio backtests and risk metrics.</p>
+          <h2>Historical Backtesting (Full Access)</h2>
+          <p class="muted">Upgrade to Full Access to run historical portfolio backtests and risk metrics.</p>
         </article>
       </section>
     `;
@@ -10686,15 +11067,15 @@ function renderDashboardDeepAnalytics() {
 
 function renderTeamTab() {
   const profile = state.authProfile || {};
-  const isTeam = String(profile.planTier || "free") === "team";
+  const hasTeamDashboard = canAccessTeamDashboard(profile);
   const data = state.teamDashboard.payload;
 
-  if (!isTeam) {
+  if (!hasTeamDashboard) {
     return `
       <section class="grid">
         <article class="panel wide">
           <h2>Team / Creator Dashboard</h2>
-          <p class="muted">This dashboard is available on Team plan for larger inventories and creator operations.</p>
+          <p class="muted">This dashboard is available on Full Access plan and above for larger inventories and creator operations.</p>
         </article>
       </section>
     `;
@@ -10792,6 +11173,15 @@ function renderTabNav() {
 }
 
 function renderAlertsCenter() {
+  const profile = state.authProfile || {};
+  const planTier = normalizePlanTier(profile.planTier || profile.plan || "free");
+  const planLabel = planTierToLabel(planTier);
+  const entitlements = getProfileEntitlements({
+    ...profile,
+    planTier,
+    plan: planTier,
+  });
+  const alertsLimit = Math.max(Number(entitlements.maxAlerts || 0), 0);
   const holdings = getHoldingsList();
   const alertOptions = buildHoldingOptions(state.alertForm.skinId);
   const alertRows = Array.isArray(state.alertsFeed) ? state.alertsFeed : [];
@@ -10939,6 +11329,9 @@ function renderAlertsCenter() {
       <article class="panel wide">
         <h2>${isEditMode ? "Edit Alert" : "Create Alert"}</h2>
         <p class="helper-text">Target, trigger, and direction are evaluated against <strong>USD</strong> pricing. Use cooldown to prevent notification spam.</p>
+        <p class="helper-text"><strong>Current Plan: ${escapeHtml(planLabel)}</strong>. Alert limit: ${escapeHtml(
+          formatNumber(alertsLimit, 0),
+        )} active alert(s).</p>
         <form id="alert-form" class="alert-form-grid">
           <fieldset class="alert-fieldset">
             <legend>Target</legend>
@@ -11155,6 +11548,16 @@ function renderSocialTab() {
 }
 
 function renderMarketTab() {
+  const profile = state.authProfile || {};
+  const planTier = normalizePlanTier(profile.planTier || profile.plan || "free");
+  const planLabel = planTierToLabel(planTier);
+  const entitlements = getProfileEntitlements({
+    ...profile,
+    planTier,
+    plan: planTier,
+  });
+  const advancedFiltersEnabled = Boolean(entitlements.advancedFilters);
+  const visibleFeedLimit = Math.max(Number(entitlements.visibleFeedLimit || 250), 1);
   const holdings = getHoldingsList();
   const marketOptions = buildHoldingOptions(state.marketTab.skinId);
   const valuation = state.marketTab.inventoryValue;
@@ -11339,7 +11742,7 @@ function renderMarketTab() {
                 : rarityTheme.color;
               const mediaAccentRgb = toRgbTriplet(mediaAccentColor);
               const itemImage = String(
-                row?.itemImageUrl || getItemImageUrl(visualItem),
+                getOpportunityImageUrl(row, visualItem),
               ).trim();
               const updatedLabel = scanner.generatedAt
                 ? `Updated ${formatRelativeTime(scanner.generatedAt)}`
@@ -11494,6 +11897,7 @@ function renderMarketTab() {
               min="0"
               step="0.01"
               value="${escapeHtml(scanFilters.minProfit)}"
+              ${advancedFiltersEnabled ? "" : "disabled"}
             />
           </label>
           <label>Min Spread %
@@ -11503,6 +11907,7 @@ function renderMarketTab() {
               min="0"
               step="0.01"
               value="${escapeHtml(scanFilters.minSpread)}"
+              ${advancedFiltersEnabled ? "" : "disabled"}
             />
           </label>
           <label>Min Score
@@ -11513,10 +11918,11 @@ function renderMarketTab() {
               max="100"
               step="1"
               value="${escapeHtml(scanFilters.minScore)}"
+              ${advancedFiltersEnabled ? "" : "disabled"}
             />
           </label>
           <label>Market
-            <select id="market-opportunity-market">
+            <select id="market-opportunity-market" ${advancedFiltersEnabled ? "" : "disabled"}>
               <option value="all" ${scanFilters.market === "all" ? "selected" : ""}>All</option>
               <option value="steam" ${scanFilters.market === "steam" ? "selected" : ""}>Steam</option>
               <option value="skinport" ${scanFilters.market === "skinport" ? "selected" : ""}>Skinport</option>
@@ -11531,10 +11937,11 @@ function renderMarketTab() {
               min="0"
               step="1"
               value="${escapeHtml(scanFilters.liquidityMin)}"
+              ${advancedFiltersEnabled ? "" : "disabled"}
             />
           </label>
           <label>Sort
-            <select id="market-opportunity-sort-by">
+            <select id="market-opportunity-sort-by" ${advancedFiltersEnabled ? "" : "disabled"}>
               <option value="score" ${scanFilters.sortBy === "score" ? "selected" : ""}>Score</option>
               <option value="profit" ${scanFilters.sortBy === "profit" ? "selected" : ""}>Profit</option>
               <option value="spread" ${scanFilters.sortBy === "spread" ? "selected" : ""}>Spread</option>
@@ -11546,6 +11953,7 @@ function renderMarketTab() {
               id="market-opportunity-show-risky"
               type="checkbox"
               ${String(scanFilters.showRisky || "0") === "1" ? "checked" : ""}
+              ${advancedFiltersEnabled ? "" : "disabled"}
             />
           </label>
           <label>Limit
@@ -11553,7 +11961,7 @@ function renderMarketTab() {
               id="market-opportunity-limit"
               type="number"
               min="1"
-              max="1000"
+              max="${escapeHtml(String(visibleFeedLimit))}"
               step="1"
               value="${escapeHtml(scanFilters.limit)}"
             />
@@ -11562,6 +11970,11 @@ function renderMarketTab() {
             ${scanner.loading ? "Scanning..." : "Scan Opportunities"}
           </button>
         </form>
+        <p class="helper-text">
+          <strong>Current Plan: ${escapeHtml(planLabel)}</strong>.
+          ${advancedFiltersEnabled ? " Advanced filters enabled." : " Advanced filters are locked on Free."}
+          Feed limit: ${escapeHtml(formatNumber(visibleFeedLimit, 0))}.
+        </p>
         <p class="helper-text">
           ${
             scanner.summary
@@ -11715,6 +12128,15 @@ function renderGlobalOpportunitiesTableSkeleton(rowCount = 8) {
 
 function renderGlobalOpportunitiesTab() {
   const scanner = state.globalOpportunities || createGlobalOpportunitiesState();
+  const profile = state.authProfile || {};
+  const planTier = normalizePlanTier(profile.planTier || profile.plan || "free");
+  const planLabel = planTierToLabel(planTier);
+  const entitlements = getProfileEntitlements({
+    ...profile,
+    planTier,
+    plan: planTier,
+  });
+  const advancedFiltersEnabled = Boolean(entitlements.advancedFilters);
   const rows = Array.isArray(scanner.items) ? scanner.items : [];
   const currencyCode = scanner.currency || "USD";
   const holdings = getHoldingsList();
@@ -11888,7 +12310,7 @@ function renderGlobalOpportunitiesTab() {
                 : rarityTheme.color;
               const mediaAccentRgb = toRgbTriplet(mediaAccentColor);
               const itemImage = String(
-                row?.itemImageUrl || getItemImageUrl(visualItem),
+                getOpportunityImageUrl(row, visualItem),
               ).trim();
               const feedId = normalizeFeedId(row);
               const detectedAt = String(row?.detectedAt || "").trim();
@@ -12069,7 +12491,7 @@ function renderGlobalOpportunitiesTab() {
           id="global-opportunities-show-risky"
           type="checkbox"
           ${showRisky ? "checked" : ""}
-          ${scanner.loading ? "disabled" : ""}
+          ${scanner.loading || !advancedFiltersEnabled ? "disabled" : ""}
         />
         <span>Show risky opportunities</span>
       </label>
@@ -12081,7 +12503,7 @@ function renderGlobalOpportunitiesTab() {
           id="global-opportunities-show-older"
           type="checkbox"
           ${showOlder ? "checked" : ""}
-          ${scanner.loading ? "disabled" : ""}
+          ${scanner.loading || !advancedFiltersEnabled ? "disabled" : ""}
         />
         <span>Show older opportunities</span>
       </label>
@@ -12089,7 +12511,7 @@ function renderGlobalOpportunitiesTab() {
         <span>Category</span>
         <select
           id="global-opportunities-category"
-          ${scanner.loading ? "disabled" : ""}
+          ${scanner.loading || !advancedFiltersEnabled ? "disabled" : ""}
         >
           <option value="all" ${categoryFilter === "all" ? "selected" : ""}>All</option>
           <option value="skins" ${categoryFilter === "skins" ? "selected" : ""}>Skins</option>
@@ -12098,6 +12520,21 @@ function renderGlobalOpportunitiesTab() {
         </select>
       </label>
     </div>
+    <p class="helper-text">
+      <strong>Current Plan: ${escapeHtml(planLabel)}</strong>. Feed cap: ${escapeHtml(
+        formatNumber(entitlements.visibleFeedLimit || 0, 0),
+      )} items.
+      ${
+        advancedFiltersEnabled
+          ? " Advanced filters unlocked."
+          : " Advanced filters are locked on Free."
+      }
+      ${
+        entitlements.delayedSignals
+          ? ` Signals delayed by ${escapeHtml(formatNumber(entitlements.signalDelayMinutes || 0, 0))} minutes.`
+          : " Signals are real-time."
+      }
+    </p>
     <p class="helper-text">
       ${
         summary
@@ -12302,9 +12739,27 @@ function renderSettingsTab() {
   const emailVerified = profile.emailVerified !== false;
   const steamLinkUrl = buildSteamAuthStartUrl("link");
   const providerLabel = toTitle(profile.provider || "email");
-  const planTier = String(profile.planTier || "free").trim().toLowerCase();
+  const planTier = normalizePlanTier(profile.planTier || profile.plan || "free");
   const planLabel = planTierToLabel(planTier);
   const limits = getAccountPlanLimits(planTier);
+  const entitlements = getProfileEntitlements({
+    ...profile,
+    planTier,
+    plan: planTier,
+  });
+  const scannerRefreshMinutes = Math.max(
+    Number(entitlements.scannerRefreshIntervalMinutes || 0),
+    0,
+  );
+  const scannerRefreshHint =
+    scannerRefreshMinutes >= 60
+      ? `${Math.round(scannerRefreshMinutes / 60)} hour(s)`
+      : `${scannerRefreshMinutes} minute(s)`;
+  const canSwitchPlans = Boolean(profile.subscriptionSwitcherEnabled);
+  const selectedSwitcherPlan = normalizePlanTier(
+    state.accountPage.planSwitcher.selected || planTier,
+  );
+  const switcherSaving = Boolean(state.accountPage.planSwitcher.saving);
   const syncCooldownSeconds = getSyncCooldownSecondsRemaining();
   const syncDisabled = state.syncingInventory || syncCooldownSeconds > 0;
   const memberSince = formatDateTime(profile.createdAt || profile.planStartedAt);
@@ -12572,8 +13027,8 @@ function renderSettingsTab() {
 
   const subscriptionMarkup = `
     <article class="panel wide account-card">
-      <h2>Subscription</h2>
-      <p class="helper-text">Track your plan tier and feature limits before scaling usage.</p>
+      <h2>Subscription / Access Level</h2>
+      <p class="helper-text">Current plan controls backend limits instantly. Scanner refresh cadence for this plan: every ${escapeHtml(scannerRefreshHint)}. This temporary switcher is for internal testing only.</p>
       <div class="sub-kpi-grid">
         <article class="sub-kpi-card">
           <span>Current Plan</span>
@@ -12590,27 +13045,75 @@ function renderSettingsTab() {
       </div>
       <div class="account-feature-grid">
         <article class="account-feature-card">
-          <span>Portfolio size</span>
-          <strong>${escapeHtml(limits.portfolioSize)}</strong>
+          <span>Opportunities / day</span>
+          <strong>${escapeHtml(limits.opportunitiesDailyLimit)}</strong>
         </article>
         <article class="account-feature-card">
-          <span>Scanner refresh speed</span>
+          <span>Alerts limit</span>
+          <strong>${escapeHtml(limits.alertsLimit)}</strong>
+        </article>
+        <article class="account-feature-card">
+          <span>Scanner refresh</span>
           <strong>${escapeHtml(limits.scannerRefresh)}</strong>
         </article>
         <article class="account-feature-card">
-          <span>Signals access</span>
-          <strong>${escapeHtml(limits.signalsAccess)}</strong>
+          <span>History window</span>
+          <strong>${escapeHtml(limits.historyDaysLimit)}</strong>
+        </article>
+        <article class="account-feature-card">
+          <span>Feed visibility</span>
+          <strong>${escapeHtml(limits.visibleFeedLimit)}</strong>
+        </article>
+        <article class="account-feature-card">
+          <span>Filters / Signals</span>
+          <strong>${escapeHtml(`${limits.advancedFilters}. ${limits.delayedSignals}`)}</strong>
+        </article>
+        <article class="account-feature-card">
+          <span>Compare / Insights</span>
+          <strong>${escapeHtml(`${limits.compareView}. ${limits.portfolioInsights}`)}</strong>
+        </article>
+        <article class="account-feature-card">
+          <span>API / Advanced Flags</span>
+          <strong>${escapeHtml(limits.apiFlags)}</strong>
         </article>
       </div>
-      <div class="row">
-        <button
-          type="button"
-          id="account-upgrade-plan-btn"
-          ${planTier === "team" ? "disabled" : ""}
-        >
-          ${planTier === "team" ? "Premium Active" : "Upgrade Plan"}
-        </button>
-      </div>
+      ${
+        canSwitchPlans
+          ? `
+            <form id="account-plan-switcher-form" class="form account-plan-switcher-form">
+              <fieldset class="account-plan-switcher-group">
+                <legend>Choose Access Level</legend>
+                ${ACCOUNT_PLAN_SWITCH_OPTIONS.map(
+                  (option) => `
+                    <label class="account-plan-option ${selectedSwitcherPlan === option.value ? "active" : ""}">
+                      <input
+                        type="radio"
+                        name="account-plan-switcher"
+                        value="${escapeHtml(option.value)}"
+                        ${selectedSwitcherPlan === option.value ? "checked" : ""}
+                        ${switcherSaving ? "disabled" : ""}
+                      />
+                      <span>
+                        <strong>${escapeHtml(option.label)}</strong>
+                        <small>${escapeHtml(option.description)}</small>
+                      </span>
+                    </label>
+                  `,
+                ).join("")}
+              </fieldset>
+              <div class="row">
+                <button
+                  type="submit"
+                  ${switcherSaving || selectedSwitcherPlan === planTier ? "disabled" : ""}
+                >
+                  ${switcherSaving ? "Saving..." : "Save Access Level"}
+                </button>
+                <span class="muted">Enabled only when TEST_SUBSCRIPTION_SWITCHER=true.</span>
+              </div>
+            </form>
+          `
+          : '<p class="muted">Access-level switching is disabled in this environment. Set TEST_SUBSCRIPTION_SWITCHER=true to enable internal testing controls.</p>'
+      }
     </article>
   `;
 

@@ -55,6 +55,7 @@ function toFeedResponse(data = {}) {
 
 exports.getTopOpportunities = asyncHandler(async (req, res) => {
   const data = await scannerService.getTopOpportunities({
+    userId: req.userId,
     limit: req.validated?.limit,
     showRisky: req.query?.showRisky,
     forceRefresh: req.query?.force,
@@ -67,6 +68,7 @@ exports.getTopOpportunities = asyncHandler(async (req, res) => {
 
 exports.getFeed = asyncHandler(async (req, res) => {
   const data = await scannerService.getFeed({
+    userId: req.userId,
     limit: req.validated?.limit,
     showRisky: req.query?.showRisky,
     category: req.query?.category,
@@ -78,6 +80,7 @@ exports.getFeed = asyncHandler(async (req, res) => {
 
 exports.refreshFeed = asyncHandler(async (req, res) => {
   const result = await scannerService.triggerRefresh({
+    userId: req.userId,
     trigger: req.body?.trigger || "manual",
     forceRefresh: req.body?.forceRefresh
   })
