@@ -2,6 +2,57 @@ const { fetchJsonWithRetry, mapWithConcurrency } = require("../markets/marketHtt
 
 const STEAM_SEARCH_BASE_URL = "https://steamcommunity.com/market/search/render/";
 const STEAM_IMAGE_BASE_URL = "https://community.akamai.steamstatic.com/economy/image/";
+const DEFAULT_STEAM_SEARCH_COUNT = 50;
+const MAX_STEAM_SEARCH_COUNT = 100;
+
+const RARITY_COLORS = Object.freeze({
+  "Consumer Grade": "#b0c3d9",
+  "Industrial Grade": "#5e98d9",
+  "Mil-Spec Grade": "#4b69ff",
+  Restricted: "#8847ff",
+  Classified: "#d32ce6",
+  Covert: "#eb4b4b",
+  Contraband: "#e4ae39",
+  "Knife/Gloves": "#f7ca63",
+  Default: "#7f8ba5"
+});
+
+const RARITY_ALIASES = Object.freeze({
+  "base grade": "Consumer Grade",
+  "high grade": "Industrial Grade",
+  remarkable: "Restricted",
+  exotic: "Classified",
+  immortal: "Covert",
+  extraordinary: "Knife/Gloves",
+  "consumer grade": "Consumer Grade",
+  "industrial grade": "Industrial Grade",
+  "mil-spec grade": "Mil-Spec Grade",
+  "mil spec grade": "Mil-Spec Grade",
+  "mil-spec": "Mil-Spec Grade",
+  restricted: "Restricted",
+  classified: "Classified",
+  covert: "Covert",
+  contraband: "Contraband",
+  knife: "Knife/Gloves",
+  gloves: "Knife/Gloves"
+});
+
+const MARKET_NAME_STOP_WORDS = new Set([
+  "field",
+  "tested",
+  "factory",
+  "new",
+  "minimal",
+  "wear",
+  "battle",
+  "scarred",
+  "well",
+  "worn",
+  "stattrak",
+  "souvenir",
+  "the",
+  "and"
+]);
 
 function normalizeText(value) {
   return String(value || "").trim();
@@ -12,6 +63,88 @@ function normalizeNameKey(value) {
     .toLowerCase()
     .replace(/[\u2122\u00ae]/g, "")
     .replace(/\s+/g, " ");
+}
+
+function normalizeComparableName(value) {
+  return normalizeNameKey(value)
+    .replace(/\b(?:stattrak|souvenir)\b/g, " ")
+    .replace(/\((?:factory new|minimal wear|field-tested|well-worn|battle-scarred)\)/g, " ")
+    .replace(/[|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeHexColor(value) {
+  const raw = normalizeText(value).replace(/^#/, "");
+  if (!/^[\da-f]{6}$/i.test(raw)) return null;
+  return `#${raw.toLowerCase()}`;
+}
+
+function normalizeRarity(value, marketHashName = "") {
+  const raw = normalizeText(value);
+  if (!raw) return null;
+  const lowerRaw = raw.toLowerCase();
+  const alias = RARITY_ALIASES[lowerRaw];
+  if (alias) return alias;
+
+  if (RARITY_COLORS[raw]) return raw;
+
+  const source = `${lowerRaw} ${normalizeText(marketHashName).toLowerCase()}`;
+  if (/\b(?:knife|glove|gloves|wraps|bayonet|karambit|butterfly|talon)\b/.test(source)) {
+    return "Knife/Gloves";
+  }
+  if (/\bcovert\b/.test(source)) return "Covert";
+  if (/\bclassified\b/.test(source)) return "Classified";
+  if (/\brestricted\b/.test(source)) return "Restricted";
+  if (/\bmil[- ]?spec\b/.test(source)) return "Mil-Spec Grade";
+  if (/\bindustrial grade\b/.test(source)) return "Industrial Grade";
+  if (/\bconsumer grade\b/.test(source)) return "Consumer Grade";
+  if (/\bcontraband\b/.test(source)) return "Contraband";
+  return null;
+}
+
+function extractDistinctiveTokens(value) {
+  return Array.from(
+    new Set(
+      normalizeComparableName(value)
+        .split(/[^a-z0-9]+/)
+        .map((token) => token.trim())
+        .filter(
+          (token) =>
+            token &&
+            token.length >= 3 &&
+            !MARKET_NAME_STOP_WORDS.has(token)
+        )
+    )
+  );
+}
+
+function matchByDistinctiveTokens(candidateName, marketHashName) {
+  const targetTokens = extractDistinctiveTokens(marketHashName);
+  if (!targetTokens.length) return true;
+  const candidateTokens = new Set(extractDistinctiveTokens(candidateName));
+  return targetTokens.some((token) => candidateTokens.has(token));
+}
+
+function stripWearSuffix(value) {
+  return normalizeText(value).replace(
+    /\s*\((?:factory new|minimal wear|field-tested|well-worn|battle-scarred)\)\s*$/i,
+    ""
+  );
+}
+
+function stripSpecialPrefixes(value) {
+  return normalizeText(value).replace(/^(?:stattrak\u2122?|souvenir)\s+/i, "");
+}
+
+function buildSearchQueries(marketHashName) {
+  const raw = normalizeText(marketHashName);
+  const noPrefix = stripSpecialPrefixes(raw);
+  const noWear = stripWearSuffix(raw);
+  const noPrefixNoWear = stripWearSuffix(noPrefix);
+  return Array.from(
+    new Set([raw, noWear, noPrefix, noPrefixNoWear].map(normalizeText).filter(Boolean))
+  );
 }
 
 function toSafeHttpUrl(value) {
@@ -108,11 +241,15 @@ function pickImageFromMarketRow(row = {}) {
   return null;
 }
 
-function buildSteamSearchUrl(marketHashName) {
+function buildSteamSearchUrl(marketHashName, options = {}) {
+  const count = Math.min(
+    Math.max(Number(options.count || DEFAULT_STEAM_SEARCH_COUNT), 1),
+    MAX_STEAM_SEARCH_COUNT
+  );
   const params = new URLSearchParams();
   params.set("appid", "730");
   params.set("norender", "1");
-  params.set("count", "10");
+  params.set("count", String(count));
   params.set("start", "0");
   params.set("query", normalizeText(marketHashName));
   return `${STEAM_SEARCH_BASE_URL}?${params.toString()}`;
@@ -132,21 +269,59 @@ function pickSteamSearchResult(payload = {}, marketHashName = "") {
   });
   if (exact) return exact;
 
+  const comparableTarget = normalizeComparableName(marketHashName);
+  const comparableExact = rows.find((row) => {
+    const candidateName = normalizeText(
+      row?.hash_name || row?.market_hash_name || row?.name
+    );
+    return (
+      normalizeComparableName(candidateName) === comparableTarget &&
+      matchByDistinctiveTokens(candidateName, marketHashName)
+    );
+  });
+  if (comparableExact) return comparableExact;
+
   const relaxed = rows.find((row) => {
     const candidateName = normalizeText(
       row?.hash_name || row?.market_hash_name || row?.name
     );
-    const candidateKey = normalizeNameKey(candidateName);
-    return candidateKey && (candidateKey.includes(targetKey) || targetKey.includes(candidateKey));
+    const candidateKey = normalizeComparableName(candidateName);
+    return (
+      candidateKey &&
+      (candidateKey.includes(comparableTarget) || comparableTarget.includes(candidateKey)) &&
+      matchByDistinctiveTokens(candidateName, marketHashName)
+    );
   });
   return relaxed || null;
 }
 
-async function fetchSteamSearchImageByMarketHashName(marketHashName, options = {}) {
-  const normalizedName = normalizeText(marketHashName);
-  if (!normalizedName) return null;
-  const url = buildSteamSearchUrl(normalizedName);
-  const payload = await fetchJsonWithRetry(url, {
+function resolveRarityFromSearchResult(result = {}, marketHashName = "") {
+  const asset = result?.asset_description && typeof result.asset_description === "object"
+    ? result.asset_description
+    : {};
+  const tags = Array.isArray(asset?.tags) ? asset.tags : [];
+  const rarityTag = tags.find(
+    (tag) => String(tag?.category || "").trim().toLowerCase() === "rarity"
+  );
+  const rarityFromTag = normalizeRarity(
+    rarityTag?.localized_tag_name || rarityTag?.name || "",
+    marketHashName
+  );
+  const rarityFromType = normalizeRarity(
+    String(asset?.type || result?.type || "").trim(),
+    marketHashName
+  );
+  const rarity = rarityFromTag || rarityFromType || null;
+  const rarityColor =
+    normalizeHexColor(asset?.name_color) ||
+    normalizeHexColor(result?.name_color) ||
+    (rarity ? RARITY_COLORS[rarity] || null : null);
+  return { rarity, rarityColor };
+}
+
+async function fetchSteamSearchPayload(query, options = {}) {
+  const url = buildSteamSearchUrl(query, { count: options.count });
+  return fetchJsonWithRetry(url, {
     timeoutMs: options.timeoutMs,
     maxRetries: options.maxRetries,
     headers: {
@@ -154,21 +329,54 @@ async function fetchSteamSearchImageByMarketHashName(marketHashName, options = {
       "User-Agent": "cs2-portfolio-analyzer/1.0"
     }
   });
-  const picked = pickSteamSearchResult(payload, normalizedName);
-  if (!picked) return null;
+}
 
-  const image = resolveImageFromCandidate({
-    ...picked,
-    icon_url: picked?.asset_description?.icon_url || picked?.icon_url || null,
-    icon_url_large:
-      picked?.asset_description?.icon_url_large || picked?.icon_url_large || null
-  });
-  if (!image?.imageUrl && !image?.imageUrlLarge) return null;
+async function fetchSteamSearchMetadataByMarketHashName(marketHashName, options = {}) {
+  const normalizedName = normalizeText(marketHashName);
+  if (!normalizedName) return null;
 
+  const queries = buildSearchQueries(normalizedName);
+  for (const query of queries) {
+    let payload = null;
+    try {
+      payload = await fetchSteamSearchPayload(query, options);
+    } catch (_err) {
+      payload = null;
+    }
+    if (!payload) continue;
+
+    const picked = pickSteamSearchResult(payload, normalizedName);
+    if (!picked) continue;
+
+    const image = resolveImageFromCandidate({
+      ...picked,
+      icon_url: picked?.asset_description?.icon_url || picked?.icon_url || null,
+      icon_url_large:
+        picked?.asset_description?.icon_url_large || picked?.icon_url_large || null
+    });
+    const rarityMeta = resolveRarityFromSearchResult(picked, normalizedName);
+    if (!image?.imageUrl && !image?.imageUrlLarge && !rarityMeta.rarity) continue;
+
+    return {
+      marketHashName: normalizedName,
+      imageUrl: image?.imageUrl || null,
+      imageUrlLarge: image?.imageUrlLarge || image?.imageUrl || null,
+      rarity: rarityMeta.rarity || null,
+      rarityColor: rarityMeta.rarityColor || null
+    };
+  }
+
+  return null;
+}
+
+async function fetchSteamSearchImageByMarketHashName(marketHashName, options = {}) {
+  const metadata = await fetchSteamSearchMetadataByMarketHashName(marketHashName, options);
+  if (!metadata) return null;
+  if (!metadata.imageUrl && !metadata.imageUrlLarge) return null;
   return {
-    marketHashName: normalizedName,
-    imageUrl: image.imageUrl || null,
-    imageUrlLarge: image.imageUrlLarge || image.imageUrl || null
+    marketHashName: metadata.marketHashName,
+    imageUrl: metadata.imageUrl || null,
+    imageUrlLarge: metadata.imageUrlLarge || metadata.imageUrl || null
   };
 }
 
@@ -211,16 +419,72 @@ async function fetchSteamSearchImagesBatch(marketHashNames = [], options = {}) {
   return byName;
 }
 
+async function fetchSteamSearchMetadataBatch(marketHashNames = [], options = {}) {
+  const names = Array.from(
+    new Set((Array.isArray(marketHashNames) ? marketHashNames : []).map(normalizeText).filter(Boolean))
+  );
+  if (!names.length) {
+    return {};
+  }
+
+  const timeoutMs = Math.max(Number(options.timeoutMs || 9000), 1000);
+  const maxRetries = Math.max(Number(options.maxRetries || 2), 1);
+  const concurrency = Math.max(Number(options.concurrency || 2), 1);
+  const count = Math.min(
+    Math.max(Number(options.count || DEFAULT_STEAM_SEARCH_COUNT), 1),
+    MAX_STEAM_SEARCH_COUNT
+  );
+  const rows = await mapWithConcurrency(
+    names,
+    async (marketHashName) => {
+      try {
+        return await fetchSteamSearchMetadataByMarketHashName(marketHashName, {
+          timeoutMs,
+          maxRetries,
+          count
+        });
+      } catch (_err) {
+        return null;
+      }
+    },
+    concurrency
+  );
+
+  const byName = {};
+  for (const row of rows) {
+    const key = normalizeText(row?.marketHashName);
+    if (!key) continue;
+    if (!row?.imageUrl && !row?.imageUrlLarge && !row?.rarity) continue;
+    byName[key] = {
+      imageUrl: row.imageUrl || null,
+      imageUrlLarge: row.imageUrlLarge || row.imageUrl || null,
+      rarity: row.rarity || null,
+      rarityColor: normalizeHexColor(row.rarityColor) || null
+    };
+  }
+  return byName;
+}
+
 module.exports = {
   pickImageFromMarketRow,
   fetchSteamSearchImageByMarketHashName,
   fetchSteamSearchImagesBatch,
+  fetchSteamSearchMetadataByMarketHashName,
+  fetchSteamSearchMetadataBatch,
   __testables: {
     normalizeNameKey,
+    normalizeComparableName,
     toSafeHttpUrl,
+    normalizeHexColor,
+    normalizeRarity,
+    extractDistinctiveTokens,
+    matchByDistinctiveTokens,
+    stripWearSuffix,
+    stripSpecialPrefixes,
+    buildSearchQueries,
     buildSteamImageUrlFromIcon,
     resolveImageFromCandidate,
-    pickSteamSearchResult
+    pickSteamSearchResult,
+    resolveRarityFromSearchResult
   }
 };
-
