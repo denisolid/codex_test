@@ -271,7 +271,15 @@ exports.updateOnboardingById = async (id, updates = {}) => {
 exports.updatePlanById = async (id, updates = {}) => {
   const patch = {};
   if (hasOwn(updates, "planTier")) {
-    patch.plan_tier = String(updates.planTier || "").trim().toLowerCase() || "free";
+    const normalizedPlanTier = String(updates.planTier || "").trim().toLowerCase() || "free";
+    patch.plan_tier = normalizedPlanTier;
+    patch.plan = normalizedPlanTier;
+  }
+  if (hasOwn(updates, "plan")) {
+    patch.plan = String(updates.plan || "").trim().toLowerCase() || "free";
+  }
+  if (hasOwn(updates, "planStatus")) {
+    patch.plan_status = String(updates.planStatus || "").trim().toLowerCase() || "active";
   }
   if (hasOwn(updates, "billingStatus")) {
     patch.billing_status = String(updates.billingStatus || "").trim().toLowerCase() || "inactive";

@@ -6,15 +6,15 @@ const { traderModePriceUsd, traderModeMockCheckoutEnabled } = require("../config
 const PRICING = {
   free: {
     monthlyUsd: 0,
-    headline: "Core tracking and sync"
+    headline: "Limited access"
   },
-  pro: {
-    monthlyUsd: 12,
-    headline: "Power analytics and exports"
+  full_access: {
+    monthlyUsd: 29,
+    headline: "Unlock all current premium features"
   },
-  team: {
-    monthlyUsd: 49,
-    headline: "Creator/team operations"
+  api_advanced: {
+    monthlyUsd: 79,
+    headline: "Roadmap API/webhooks/automation (internal testing)"
   }
 };
 
@@ -26,12 +26,11 @@ const TRADER_MODE_PRODUCT = {
     "Unlock advanced analytics, CSV exports, and historical backtesting without a subscription."
 };
 
-const PLAN_TIERS = new Set(Object.keys(PRICING));
+const PLAN_TIERS = new Set(planService.PLAN_TIERS || Object.keys(PRICING));
 
 function normalizeBillingStatusForPlan(planTier) {
-  if (planTier === "free") {
-    return "inactive";
-  }
+  const tier = planService.normalizePlanTier(planTier);
+  if (!tier) return "active";
   return "active";
 }
 
@@ -66,9 +65,11 @@ exports.getMyPlan = async (userId) => {
 
   return {
     planTier,
+    plan: planTier,
     billingStatus: user.billing_status || "inactive",
     planSeats: Number(user.plan_seats || 1),
     planStartedAt: user.plan_started_at || null,
+    subscriptionSwitcherEnabled: planService.isTestSubscriptionSwitcherEnabled(),
     traderMode: {
       ...TRADER_MODE_PRODUCT,
       mockCheckoutEnabled: Boolean(traderModeMockCheckoutEnabled),
@@ -96,10 +97,12 @@ exports.getMyPlan = async (userId) => {
 };
 
 exports.updateMyPlan = async (userId, payload = {}) => {
+  planService.assertTestSubscriptionSwitcherEnabled();
+
   const requestedTierRaw = String(payload.planTier || "").trim().toLowerCase();
   if (!requestedTierRaw || !PLAN_TIERS.has(requestedTierRaw)) {
     throw new AppError(
-      'planTier must be one of: "free", "pro", "team"',
+      'planTier must be one of: "free", "full_access", "api_advanced"',
       400,
       "VALIDATION_ERROR"
     );
@@ -110,19 +113,17 @@ exports.updateMyPlan = async (userId, payload = {}) => {
     throw new AppError("User not found", 404, "USER_NOT_FOUND");
   }
 
-  const currentTier = planService.normalizePlanTier(current.plan_tier);
+  const currentTier = planService.normalizePlanTier(current.plan_tier || current.plan);
   if (requestedTier === currentTier) {
     return exports.getMyPlan(userId);
   }
 
   const billingStatus = normalizeBillingStatusForPlan(requestedTier);
-  const planSeats =
-    requestedTier === "team"
-      ? Math.max(Number(payload.planSeats) || Number(current.plan_seats) || 5, 1)
-      : 1;
+  const planSeats = Math.max(Number(payload.planSeats) || 1, 1);
 
   await userRepo.updatePlanById(userId, {
     planTier: requestedTier,
+    planStatus: "active",
     billingStatus,
     planSeats,
     planStartedAt: new Date().toISOString()
@@ -143,7 +144,7 @@ exports.getTraderMode = async (userId) => {
     throw new AppError("User not found", 404, "USER_NOT_FOUND");
   }
 
-  const planTier = planService.normalizePlanTier(user.plan_tier);
+  const planTier = planService.normalizePlanTier(user.plan_tier || user.plan);
   const traderModeUnlocked = Boolean(user.trader_mode_unlocked);
   const events = await userRepo.listTraderModeUnlockEventsByUser(userId, 20);
 

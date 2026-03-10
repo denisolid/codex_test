@@ -2,6 +2,7 @@ const asyncHandler = require("../utils/asyncHandler");
 const marketService = require("../services/marketService");
 const marketComparisonService = require("../services/marketComparisonService");
 const marketOpportunityService = require("../services/marketOpportunityService");
+const planService = require("../services/planService");
 const AppError = require("../utils/AppError");
 
 function parseItemsPayload(input) {
@@ -91,9 +92,12 @@ exports.updatePricePreferences = asyncHandler(async (req, res) => {
 });
 
 exports.compareItems = asyncHandler(async (req, res) => {
+  const { planTier, entitlements } = await planService.getUserPlanProfile(req.userId);
   const items = parseItemsPayload(req.body?.items || []);
   const data = await marketComparisonService.compareItems(items, {
     userId: req.userId,
+    planTier,
+    entitlements,
     pricingMode: req.body?.pricingMode,
     currency: req.query.currency || req.body?.currency,
     allowLiveFetch: req.body?.allowLiveFetch !== false,
@@ -103,9 +107,12 @@ exports.compareItems = asyncHandler(async (req, res) => {
 });
 
 exports.refreshComparisonCache = asyncHandler(async (req, res) => {
+  const { planTier, entitlements } = await planService.getUserPlanProfile(req.userId);
   const items = parseItemsPayload(req.body?.items || []);
   const data = await marketComparisonService.compareItems(items, {
     userId: req.userId,
+    planTier,
+    entitlements,
     pricingMode: req.body?.pricingMode,
     currency: req.query.currency || req.body?.currency,
     allowLiveFetch: true,

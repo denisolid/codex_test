@@ -251,16 +251,22 @@ exports.getFreeToPaidConversion = asyncHandler(async (req, res) => {
   const rows = data || [];
   const breakdown = rows.reduce(
     (acc, row) => {
-      const planTier = String(row.plan_tier || "free").trim().toLowerCase();
-      if (planTier === "pro") acc.pro += 1;
-      else if (planTier === "team") acc.team += 1;
-      else acc.free += 1;
+      const planTier = String(row.plan_tier || "free")
+        .trim()
+        .toLowerCase();
+      if (planTier === "full_access" || planTier === "pro" || planTier === "team") {
+        acc.full_access += 1;
+      } else if (planTier === "api_advanced") {
+        acc.api_advanced += 1;
+      } else {
+        acc.free += 1;
+      }
       return acc;
     },
-    { free: 0, pro: 0, team: 0 }
+    { free: 0, full_access: 0, api_advanced: 0 }
   );
 
-  const paidUsers = Number(breakdown.pro + breakdown.team);
+  const paidUsers = Number(breakdown.full_access + breakdown.api_advanced);
   const totalUsers = Number(rows.length);
   const conversionPercent = totalUsers
     ? Number(((paidUsers / totalUsers) * 100).toFixed(2))

@@ -476,7 +476,12 @@ exports.bootstrap = [
       displayName,
       avatarUrl
     } = await resolveAuthProfileContext(req);
-    const planTier = planService.normalizePlanTier(profileRow?.plan_tier);
+    const planTier = planService.normalizePlanTier(profileRow?.plan_tier || profileRow?.plan);
+    const traderModeUnlocked = Boolean(profileRow?.trader_mode_unlocked);
+    const entitlements = planService.getEntitlements(planTier, {
+      traderModeUnlocked
+    });
+    const subscriptionSwitcherEnabled = planService.isTestSubscriptionSwitcherEnabled();
 
     res.json({
       user: {
@@ -497,7 +502,7 @@ exports.bootstrap = [
         emailVerified: onboarding.emailVerified,
         onboardingCompleted: onboarding.onboardingCompleted,
         onboardingRequired: onboarding.onboardingRequired,
-        plan: onboarding.plan,
+        plan: planTier,
         planStatus: onboarding.planStatus
       },
       profile: {
@@ -514,8 +519,16 @@ exports.bootstrap = [
         publicPortfolioEnabled: profileRow?.public_portfolio_enabled !== false,
         ownershipAlertsEnabled: profileRow?.ownership_alerts_enabled !== false,
         planTier,
-        plan: onboarding.plan,
+        plan: planTier,
         planStatus: onboarding.planStatus,
+        billingStatus: profileRow?.billing_status || "inactive",
+        planSeats: Number(profileRow?.plan_seats || 1),
+        planStartedAt: profileRow?.plan_started_at || null,
+        traderModeUnlocked,
+        traderModeUnlockedAt: profileRow?.trader_mode_unlocked_at || null,
+        traderModeUnlockSource: profileRow?.trader_mode_unlock_source || null,
+        entitlements,
+        subscriptionSwitcherEnabled,
         provider
       }
     });
@@ -533,11 +546,12 @@ exports.me = [
       displayName,
       avatarUrl
     } = await resolveAuthProfileContext(req);
-    const planTier = planService.normalizePlanTier(profileRow?.plan_tier);
+    const planTier = planService.normalizePlanTier(profileRow?.plan_tier || profileRow?.plan);
     const traderModeUnlocked = Boolean(profileRow?.trader_mode_unlocked);
     const entitlements = planService.getEntitlements(planTier, {
       traderModeUnlocked
     });
+    const subscriptionSwitcherEnabled = planService.isTestSubscriptionSwitcherEnabled();
 
     res.json({
       user: req.authUser,
@@ -548,7 +562,7 @@ exports.me = [
         emailVerified: onboarding.emailVerified,
         onboardingCompleted: onboarding.onboardingCompleted,
         onboardingRequired: onboarding.onboardingRequired,
-        plan: onboarding.plan,
+        plan: planTier,
         planStatus: onboarding.planStatus
       },
       profile: {
@@ -564,7 +578,7 @@ exports.me = [
         publicPortfolioEnabled: profileRow?.public_portfolio_enabled !== false,
         ownershipAlertsEnabled: profileRow?.ownership_alerts_enabled !== false,
         planTier,
-        plan: onboarding.plan,
+        plan: planTier,
         planStatus: onboarding.planStatus,
         billingStatus: profileRow?.billing_status || "inactive",
         planSeats: Number(profileRow?.plan_seats || 1),
@@ -573,6 +587,7 @@ exports.me = [
         traderModeUnlockedAt: profileRow?.trader_mode_unlocked_at || null,
         traderModeUnlockSource: profileRow?.trader_mode_unlock_source || null,
         entitlements,
+        subscriptionSwitcherEnabled,
         provider
       }
     });

@@ -42,7 +42,7 @@ exports.exportPortfolioCsv = asyncHandler(async (req, res) => {
     req.userId,
     "csvExport",
     {
-      message: "CSV export is available on Pro plan and above."
+      message: "CSV export is available on Full Access plan and above."
     }
   );
 

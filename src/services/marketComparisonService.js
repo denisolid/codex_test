@@ -19,6 +19,7 @@ const {
   convertAmount,
   ensureFreshFxRates
 } = require("./currencyService");
+const planService = require("./planService");
 const arbitrageEngine = require("./arbitrageEngineService");
 const {
   marketCompareCacheTtlMinutes,
@@ -339,6 +340,29 @@ function buildFeeSummary() {
   };
 }
 
+async function resolvePlanContext(options = {}) {
+  if (options?.entitlements && typeof options.entitlements === "object") {
+    return {
+      planTier: planService.normalizePlanTier(
+        options.planTier || options.entitlements.planTier
+      ),
+      entitlements: options.entitlements
+    };
+  }
+
+  const userId = normalizeText(options?.userId);
+  if (userId) {
+    const { planTier, entitlements } = await planService.getUserPlanProfile(userId);
+    return { planTier, entitlements };
+  }
+
+  const planTier = planService.normalizePlanTier(options.planTier || "full_access");
+  return {
+    planTier,
+    entitlements: planService.getEntitlements(planTier)
+  };
+}
+
 async function fetchLiveMarketData(itemsBySource = {}, displayCurrency, options = {}) {
   const result = {};
   const diagnosticsBySource = {};
@@ -513,7 +537,15 @@ exports.updateUserPricePreference = async (userId, updates = {}) => {
 
 exports.compareItems = async (items = [], options = {}) => {
   await ensureFreshFxRates();
-  const normalizedItems = normalizeItems(items);
+  const planContext = await resolvePlanContext(options);
+  const entitlements =
+    planContext?.entitlements || planService.getEntitlements(planContext?.planTier);
+  const compareViewMaxItems = Math.max(Number(entitlements?.compareViewMaxItems || 200), 1);
+  const normalizedItemsAll = normalizeItems(items);
+  const normalizedItems = normalizedItemsAll.slice(0, compareViewMaxItems);
+  const comparedItemsRequested = normalizedItemsAll.length;
+  const comparedItemsProcessed = normalizedItems.length;
+  const truncatedByPlan = Math.max(comparedItemsRequested - comparedItemsProcessed, 0);
   const displayCurrency = resolveCurrency(options.currency || "USD");
   const modeResolution = await resolvePricingMode(
     options.userId,
@@ -531,6 +563,14 @@ exports.compareItems = async (items = [], options = {}) => {
       ttlMinutes: CACHE_TTL_MINUTES,
       opportunities: [],
       items: [],
+      plan: {
+        planTier: planContext?.planTier || "free",
+        compareView: String(entitlements?.compareView || "full"),
+        compareViewMaxItems,
+        comparedItemsRequested,
+        comparedItemsProcessed,
+        truncatedByPlan
+      },
       summary: {
         totalValueSelected: 0,
         totalValueSteam: 0,
@@ -738,6 +778,14 @@ exports.compareItems = async (items = [], options = {}) => {
     ttlMinutes: options.ttlMinutes || CACHE_TTL_MINUTES,
     opportunities: rankedOpportunities,
     items: enrichedItems,
+    plan: {
+      planTier: planContext?.planTier || "free",
+      compareView: String(entitlements?.compareView || "full"),
+      compareViewMaxItems,
+      comparedItemsRequested,
+      comparedItemsProcessed,
+      truncatedByPlan
+    },
     summary: {
       ...summary,
       totalValueSelected: round2(summary.totalValueSelected),

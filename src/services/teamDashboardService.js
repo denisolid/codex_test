@@ -10,7 +10,7 @@ function round2(n) {
 
 exports.getDashboard = async (userId, options = {}) => {
   const { user, planTier } = await planService.requireFeature(userId, "teamDashboard", {
-    message: "Team dashboard is available on Team plan."
+    message: "Team dashboard is available on Full Access plan."
   });
 
   const [portfolio, history, followersRows, viewStatsByOwner, ownershipEvents] =

@@ -331,6 +331,23 @@ test("feed mapper keeps scanner row core fields", () => {
   assert.equal(Array.isArray(apiRow.badges), true);
 });
 
+test("feed mapper drops known broken item image hosts", () => {
+  const apiRow = mapFeedRowToApiRow({
+    id: "33333333-3333-3333-3333-333333333333",
+    item_name: "AK-47 | Redline (Field-Tested)",
+    category: "weapon_skin",
+    buy_market: "steam",
+    sell_market: "skinport",
+    opportunity_score: 80,
+    execution_confidence: "medium",
+    metadata: {
+      item_image_url: "https://example.com/ak-redline.png"
+    }
+  });
+
+  assert.equal(apiRow.itemImageUrl, null);
+});
+
 test("material dedupe detection uses profit and score thresholds", () => {
   assert.equal(
     isMateriallyNewOpportunity(
