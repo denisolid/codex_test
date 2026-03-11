@@ -292,7 +292,8 @@ exports.getPortfolio = async (userId, options = {}) => {
         userId,
         pricingMode: options.pricingMode,
         currency: displayCurrency,
-        allowLiveFetch: false
+        allowLiveFetch: false,
+        failWhenAllBlocked: false
       }
     );
   } catch (_err) {

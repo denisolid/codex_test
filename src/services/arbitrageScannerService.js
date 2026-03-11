@@ -33,6 +33,7 @@ const marketService = require("./marketService")
 const marketSourceCatalogService = require("./marketSourceCatalogService")
 const marketImageService = require("./marketImageService")
 const planService = require("./planService")
+const premiumCategoryAccessService = require("./premiumCategoryAccessService")
 const AppError = require("../utils/AppError")
 
 const SCANNER_TYPE = "global_arbitrage"
@@ -3385,9 +3386,14 @@ function applyFeedPlanRestrictions(rows = [], entitlements = {}) {
           if (detectedAtTs == null) return true
           return detectedAtTs <= cutoffTs
         })
+  const premiumPreviewResult = premiumCategoryAccessService.applyPremiumPreviewLock(
+    delayFilteredRows,
+    entitlements
+  )
+  const premiumCategoryAccess = premiumCategoryAccessService.hasPremiumCategoryAccess(entitlements)
 
   return {
-    rows: delayFilteredRows,
+    rows: premiumPreviewResult.rows,
     planLimits: {
       visibleFeedLimit,
       delayedSignals,
@@ -3395,8 +3401,12 @@ function applyFeedPlanRestrictions(rows = [], entitlements = {}) {
       advancedFilters: Boolean(entitlements?.advancedFilters),
       fullGlobalScanner: Boolean(entitlements?.fullGlobalScanner),
       fullOpportunitiesFeed: Boolean(entitlements?.fullOpportunitiesFeed),
+      premiumCategoryAccess,
+      knivesGlovesAccess: premiumCategoryAccess,
+      lockedPremiumPreviewRows: Number(premiumPreviewResult.lockedCount || 0),
       feedTruncatedByLimit: Math.max(safeRows.length - limitedRows.length, 0),
-      feedTruncatedByDelay: Math.max(limitedRows.length - delayFilteredRows.length, 0)
+      feedTruncatedByDelay: Math.max(limitedRows.length - delayFilteredRows.length, 0),
+      feedTruncatedByPremiumLock: 0
     }
   }
 }

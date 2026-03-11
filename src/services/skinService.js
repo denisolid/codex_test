@@ -3,6 +3,7 @@ const skinRepo = require("../repositories/skinRepository");
 const priceRepo = require("../repositories/priceHistoryRepository");
 const inventoryRepo = require("../repositories/inventoryRepository");
 const priceProviderService = require("./priceProviderService");
+const premiumCategoryAccessService = require("./premiumCategoryAccessService");
 const { derivePriceStatus } = require("../utils/priceStatus");
 const { buildDailyCarryForwardSeries } = require("../utils/historySeries");
 const {
@@ -55,6 +56,12 @@ exports.getSkinDetails = async (skinId, options = {}) => {
   if (!skin) {
     throw new AppError("Item not found", 404);
   }
+  premiumCategoryAccessService.assertPremiumCategoryAccess({
+    entitlements: options?.entitlements,
+    marketHashName: skin.market_hash_name,
+    message:
+      "Unlock knife and glove opportunities with Full Access to inspect premium market categories."
+  });
 
   let latestPrice = await priceRepo.getLatestPriceBySkinId(skinId);
   if (isMockPriceSource(latestPrice?.source)) {

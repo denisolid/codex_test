@@ -21,6 +21,7 @@ const {
 } = require("./currencyService");
 const planService = require("./planService");
 const arbitrageEngine = require("./arbitrageEngineService");
+const premiumCategoryAccessService = require("./premiumCategoryAccessService");
 const {
   marketCompareCacheTtlMinutes,
   marketCompareConcurrency,
@@ -146,7 +147,10 @@ function normalizeItems(items = []) {
     normalized.push({
       skinId: Number(item?.skinId || item?.skin_id || 0) || null,
       marketHashName,
-      itemCategory: String(item?.itemCategory || item?.category || "").trim() || null,
+      itemCategory: premiumCategoryAccessService.normalizeItemCategory(
+        item?.itemCategory || item?.category,
+        marketHashName
+      ),
       itemSubcategory: String(item?.itemSubcategory || item?.subcategory || "").trim() || null,
       quantity,
       steamPrice: Number(item?.steamPrice || item?.currentPrice || 0),
@@ -540,12 +544,28 @@ exports.compareItems = async (items = [], options = {}) => {
   const planContext = await resolvePlanContext(options);
   const entitlements =
     planContext?.entitlements || planService.getEntitlements(planContext?.planTier);
+  const premiumCategoryAccess = premiumCategoryAccessService.hasPremiumCategoryAccess(
+    entitlements
+  );
   const compareViewMaxItems = Math.max(Number(entitlements?.compareViewMaxItems || 200), 1);
   const normalizedItemsAll = normalizeItems(items);
-  const normalizedItems = normalizedItemsAll.slice(0, compareViewMaxItems);
-  const comparedItemsRequested = normalizedItemsAll.length;
+  const comparedItemsSubmitted = normalizedItemsAll.length;
+  const blockedPremiumItemNames = [];
+  const normalizedEligibleItems = normalizedItemsAll.filter((item) => {
+    const category = premiumCategoryAccessService.normalizeItemCategory(
+      item?.itemCategory,
+      item?.marketHashName
+    );
+    if (!premiumCategoryAccessService.isPremiumCategory(category)) return true;
+    if (premiumCategoryAccess) return true;
+    blockedPremiumItemNames.push(String(item?.marketHashName || "").trim() || "Premium item");
+    return false;
+  });
+  const normalizedItems = normalizedEligibleItems.slice(0, compareViewMaxItems);
+  const comparedItemsRequested = normalizedEligibleItems.length;
   const comparedItemsProcessed = normalizedItems.length;
   const truncatedByPlan = Math.max(comparedItemsRequested - comparedItemsProcessed, 0);
+  const blockedPremiumItems = blockedPremiumItemNames.length;
   const displayCurrency = resolveCurrency(options.currency || "USD");
   const modeResolution = await resolvePricingMode(
     options.userId,
@@ -553,6 +573,18 @@ exports.compareItems = async (items = [], options = {}) => {
     displayCurrency
   );
   const pricingMode = modeResolution.pricingMode;
+
+  if (
+    !normalizedItems.length &&
+    blockedPremiumItems > 0 &&
+    options.failWhenAllBlocked !== false
+  ) {
+    throw new AppError(
+      "Unlock knife and glove opportunities with Full Access to compare premium high-value market categories.",
+      402,
+      "PLAN_UPGRADE_REQUIRED"
+    );
+  }
 
   if (!normalizedItems.length) {
     return {
@@ -567,9 +599,12 @@ exports.compareItems = async (items = [], options = {}) => {
         planTier: planContext?.planTier || "free",
         compareView: String(entitlements?.compareView || "full"),
         compareViewMaxItems,
+        premiumCategoryAccess,
+        comparedItemsSubmitted,
         comparedItemsRequested,
         comparedItemsProcessed,
-        truncatedByPlan
+        truncatedByPlan,
+        blockedPremiumItems
       },
       summary: {
         totalValueSelected: 0,
@@ -578,6 +613,7 @@ exports.compareItems = async (items = [], options = {}) => {
         totalValueLowestBuy: 0,
         pricedItemsCount: 0,
         unavailableItemsCount: 0,
+        blockedPremiumItems,
         arbitrageCandidatesCount: 0,
         arbitrageOpportunitiesCount: 0
       }
@@ -782,12 +818,16 @@ exports.compareItems = async (items = [], options = {}) => {
       planTier: planContext?.planTier || "free",
       compareView: String(entitlements?.compareView || "full"),
       compareViewMaxItems,
+      premiumCategoryAccess,
+      comparedItemsSubmitted,
       comparedItemsRequested,
       comparedItemsProcessed,
-      truncatedByPlan
+      truncatedByPlan,
+      blockedPremiumItems
     },
     summary: {
       ...summary,
+      blockedPremiumItems,
       totalValueSelected: round2(summary.totalValueSelected),
       totalValueSteam: round2(summary.totalValueSteam),
       totalValueBestSellNet: round2(summary.totalValueBestSellNet),

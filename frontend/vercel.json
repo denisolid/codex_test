@@ -19,6 +19,14 @@
     {
       "source": "/opportunities/(.*)",
       "destination": "/index.html"
+    },
+    {
+      "source": "/pricing",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/pricing/(.*)",
+      "destination": "/index.html"
     }
   ]
 }
