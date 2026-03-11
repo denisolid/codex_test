@@ -3,7 +3,8 @@ const AppError = require("../utils/AppError")
 
 const TABLE = "market_source_catalog"
 const INSERT_BATCH_SIZE = 200
-const MAX_LIMIT = 5000
+const MAX_LIMIT = 12000
+const SELECT_PAGE_SIZE = 1000
 const CATEGORY_SET = new Set(["weapon_skin", "case", "sticker_capsule", "knife", "glove"])
 
 function normalizeText(value) {
@@ -33,6 +34,16 @@ function toIntegerOrDefault(value, defaultValue = 0, min = 0) {
 function normalizeCategory(value) {
   const text = normalizeText(value).toLowerCase()
   return CATEGORY_SET.has(text) ? text : "weapon_skin"
+}
+
+function normalizeCategories(values = []) {
+  return Array.from(
+    new Set(
+      (Array.isArray(values) ? values : [])
+        .map((value) => normalizeText(value).toLowerCase())
+        .filter((value) => CATEGORY_SET.has(value))
+    )
+  )
 }
 
 function normalizeLimit(value, fallback = 1000) {
@@ -135,60 +146,111 @@ async function upsertInChunks(rows = []) {
   return total
 }
 
+async function selectWithPagination(buildQuery, options = {}) {
+  const limit = normalizeLimit(options.limit, 1000)
+  const fallbackMessage = normalizeText(options.fallbackMessage) || "market_source_catalog_select_failed"
+  const rows = []
+  let offset = 0
+
+  while (rows.length < limit) {
+    const remaining = limit - rows.length
+    const pageSize = Math.min(SELECT_PAGE_SIZE, remaining)
+    const from = offset
+    const to = offset + pageSize - 1
+
+    const { data, error } = await buildQuery().range(from, to)
+    if (error) {
+      throw new AppError(formatSupabaseError(error, fallbackMessage), 500)
+    }
+
+    const chunk = Array.isArray(data) ? data : []
+    if (!chunk.length) break
+
+    rows.push(...chunk)
+    if (chunk.length < pageSize) break
+    offset += chunk.length
+  }
+
+  return rows
+}
+
 exports.upsertRows = async (rows = []) => upsertInChunks(rows)
 
 exports.listActiveTradable = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 1500)
-  const { data, error } = await supabaseAdmin
-    .from(TABLE)
-    .select(
-      "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,invalid_reason,source_tag,is_active,last_enriched_at"
-    )
-    .eq("is_active", true)
-    .eq("tradable", true)
-    .order("liquidity_rank", { ascending: false, nullsFirst: false })
-    .limit(limit)
+  const categories = normalizeCategories(options.categories)
+  return selectWithPagination(
+    () => {
+      let query = supabaseAdmin
+        .from(TABLE)
+        .select(
+          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,invalid_reason,source_tag,is_active,last_enriched_at"
+        )
+        .eq("is_active", true)
+        .eq("tradable", true)
+        .order("liquidity_rank", { ascending: false, nullsFirst: false })
 
-  if (error) {
-    throw new AppError(formatSupabaseError(error, "market_source_catalog_list_active_failed"), 500)
-  }
-  return data || []
+      if (categories.length) {
+        query = query.in("category", categories)
+      }
+      return query
+    },
+    {
+      limit,
+      fallbackMessage: "market_source_catalog_list_active_failed"
+    }
+  )
 }
 
 exports.listScanEligible = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 2000)
-  const { data, error } = await supabaseAdmin
-    .from(TABLE)
-    .select(
-      "market_hash_name,item_name,category,subcategory,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at"
-    )
-    .eq("is_active", true)
-    .eq("tradable", true)
-    .eq("scan_eligible", true)
-    .order("liquidity_rank", { ascending: false, nullsFirst: false })
-    .limit(limit)
+  const categories = normalizeCategories(options.categories)
+  return selectWithPagination(
+    () => {
+      let query = supabaseAdmin
+        .from(TABLE)
+        .select(
+          "market_hash_name,item_name,category,subcategory,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at"
+        )
+        .eq("is_active", true)
+        .eq("tradable", true)
+        .eq("scan_eligible", true)
+        .order("liquidity_rank", { ascending: false, nullsFirst: false })
 
-  if (error) {
-    throw new AppError(formatSupabaseError(error, "market_source_catalog_list_eligible_failed"), 500)
-  }
-  return data || []
+      if (categories.length) {
+        query = query.in("category", categories)
+      }
+      return query
+    },
+    {
+      limit,
+      fallbackMessage: "market_source_catalog_list_eligible_failed"
+    }
+  )
 }
 
 exports.listCoverageSummary = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 3000)
-  const { data, error } = await supabaseAdmin
-    .from(TABLE)
-    .select(
-      "category,tradable,scan_eligible,is_active,reference_price,volume_7d,market_coverage_count,snapshot_stale,invalid_reason"
-    )
-    .eq("is_active", true)
-    .limit(limit)
+  const categories = normalizeCategories(options.categories)
+  return selectWithPagination(
+    () => {
+      let query = supabaseAdmin
+        .from(TABLE)
+        .select(
+          "category,tradable,scan_eligible,is_active,reference_price,volume_7d,market_coverage_count,snapshot_stale,invalid_reason"
+        )
+        .eq("is_active", true)
 
-  if (error) {
-    throw new AppError(formatSupabaseError(error, "market_source_catalog_coverage_failed"), 500)
-  }
-
-  return data || []
+      if (categories.length) {
+        query = query.in("category", categories)
+      }
+      return query
+    },
+    {
+      limit,
+      fallbackMessage: "market_source_catalog_coverage_failed"
+    }
+  )
 }
 
 exports.__testables = {

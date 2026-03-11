@@ -129,8 +129,22 @@ const ITEM_CATEGORIES = Object.freeze({
   KNIFE: "knife",
   GLOVE: "glove"
 })
+const SCANNER_AUDIT_CATEGORIES = Object.freeze([
+  ITEM_CATEGORIES.WEAPON_SKIN,
+  ITEM_CATEGORIES.CASE,
+  ITEM_CATEGORIES.STICKER_CAPSULE
+])
+const PERFORMANCE_STAGE_KEYS = Object.freeze([
+  "sourceCatalogPreparationMs",
+  "inputHydrationMs",
+  "quoteFetchingMs",
+  "normalizationMs",
+  "opportunityComputationMs",
+  "dbWritesMs",
+  "diagnosticsAggregationMs"
+])
 const FALLBACK_UNIVERSE = Object.freeze(normalizeUniverseEntries(marketUniverseTop100))
-const DEFAULT_UNIVERSE_LIMIT_BASELINE = 1000
+const DEFAULT_UNIVERSE_LIMIT_BASELINE = 3000
 const DEFAULT_UNIVERSE_LIMIT = Math.max(
   Number(arbitrageDefaultUniverseLimit || DEFAULT_UNIVERSE_LIMIT_BASELINE),
   100
@@ -1343,7 +1357,12 @@ async function loadCuratedUniverseSeeds() {
   let curatedRows = []
   try {
     curatedRows = await marketUniverseRepo.listActiveByLiquidityRank({
-      limit: UNIVERSE_DB_LIMIT
+      limit: UNIVERSE_DB_LIMIT,
+      categories: [
+        ITEM_CATEGORIES.WEAPON_SKIN,
+        ITEM_CATEGORIES.CASE,
+        ITEM_CATEGORIES.STICKER_CAPSULE
+      ]
     })
   } catch (err) {
     console.error("[arbitrage-scanner] Failed to load curated market universe", err.message)
@@ -3536,9 +3555,460 @@ function buildScanProgressStats({
   }
 }
 
+function toAuditDurationMs(value) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(Math.round(parsed), 0)
+}
+
+function buildScannerAuditCategoryCounter(initialValue = 0) {
+  const initial = Math.max(Number(initialValue || 0), 0)
+  return Object.fromEntries(SCANNER_AUDIT_CATEGORIES.map((category) => [category, initial]))
+}
+
+function toScannerAuditCategoryCounts(counter = {}, nestedField = "") {
+  const counts = buildScannerAuditCategoryCounter(0)
+  const source = counter && typeof counter === "object" ? counter : {}
+  for (const category of SCANNER_AUDIT_CATEGORIES) {
+    const value = source?.[category]
+    if (nestedField && value && typeof value === "object") {
+      counts[category] = Math.max(Number(value?.[nestedField] || 0), 0)
+      continue
+    }
+    counts[category] = Math.max(Number(value || 0), 0)
+  }
+  return counts
+}
+
+function resolveSourceCatalogTotalRows(sourceCatalogDiagnostics = {}) {
+  const sourceCatalog =
+    sourceCatalogDiagnostics?.sourceCatalog && typeof sourceCatalogDiagnostics.sourceCatalog === "object"
+      ? sourceCatalogDiagnostics.sourceCatalog
+      : {}
+  const totalRows = Number(sourceCatalog?.totalRows || 0)
+  if (totalRows > 0) return totalRows
+  return Math.max(Number(sourceCatalog?.activeCatalogRows || 0), 0)
+}
+
+function resolveSourceCatalogEligibleByCategory(sourceCatalogDiagnostics = {}) {
+  const sourceCatalog =
+    sourceCatalogDiagnostics?.sourceCatalog && typeof sourceCatalogDiagnostics.sourceCatalog === "object"
+      ? sourceCatalogDiagnostics.sourceCatalog
+      : {}
+  const direct = sourceCatalog?.eligibleRowsByCategory
+  if (direct && typeof direct === "object") {
+    const directCounts = toScannerAuditCategoryCounts(direct)
+    const hasDirect = Object.values(directCounts).some((value) => Number(value || 0) > 0)
+    if (hasDirect) return directCounts
+  }
+
+  return toScannerAuditCategoryCounts(sourceCatalog?.byCategory || {}, "eligible")
+}
+
+function buildTopReasonSummary(reasonCounter = {}, limit = 8) {
+  return Object.entries(reasonCounter || {})
+    .filter(([, count]) => Number(count || 0) > 0)
+    .map(([reason, count]) => ({
+      reason: String(reason || "").trim() || "unknown",
+      count: Number(count || 0)
+    }))
+    .sort((a, b) => Number(b.count || 0) - Number(a.count || 0))
+    .slice(0, Math.max(Number(limit || 0), 0))
+}
+
+function buildTopReasonSummaryByCategory(reasonsByCategory = {}, limit = 5) {
+  const output = {}
+  const source = reasonsByCategory && typeof reasonsByCategory === "object" ? reasonsByCategory : {}
+  for (const category of SCANNER_AUDIT_CATEGORIES) {
+    output[category] = buildTopReasonSummary(source?.[category]?.reasons || source?.[category] || {}, limit)
+  }
+  return output
+}
+
+function buildOpportunitiesByConfidenceTier(rows = []) {
+  const counts = {
+    high: 0,
+    medium: 0,
+    low: 0,
+    total: 0,
+    highConfidenceEligible: 0,
+    riskyEligible: 0
+  }
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const confidence = normalizeConfidence(row?.executionConfidence)
+    if (confidence === "High") counts.high += 1
+    else if (confidence === "Medium") counts.medium += 1
+    else counts.low += 1
+
+    if (Boolean(row?.isHighConfidenceEligible)) counts.highConfidenceEligible += 1
+    if (Boolean(row?.isRiskyEligible)) counts.riskyEligible += 1
+    counts.total += 1
+  }
+  return counts
+}
+
+function buildQuoteCoverageByMarket(comparisonItems = [], universeSize = 0) {
+  const byMarket = Object.fromEntries(
+    SOURCE_ORDER.map((source) => [
+      source,
+      {
+        itemsSeen: 0,
+        itemsWithAvailableQuote: 0,
+        availableQuoteRows: 0,
+        unavailableQuoteRows: 0,
+        coveragePct: 0
+      }
+    ])
+  )
+
+  for (const item of Array.isArray(comparisonItems) ? comparisonItems : []) {
+    const seenInItem = {}
+    const availableInItem = {}
+    for (const quote of Array.isArray(item?.perMarket) ? item.perMarket : []) {
+      const source = normalizeMarketLabel(quote?.source || quote?.market)
+      if (!source || !SOURCE_ORDER.includes(source)) continue
+      seenInItem[source] = true
+      if (hasUsableQuotePrice(quote)) {
+        availableInItem[source] = true
+        byMarket[source].availableQuoteRows += 1
+      } else {
+        byMarket[source].unavailableQuoteRows += 1
+      }
+    }
+
+    for (const source of Object.keys(seenInItem)) {
+      byMarket[source].itemsSeen += 1
+      if (availableInItem[source]) {
+        byMarket[source].itemsWithAvailableQuote += 1
+      }
+    }
+  }
+
+  const safeUniverseSize = Math.max(Number(universeSize || 0), 0)
+  for (const source of SOURCE_ORDER) {
+    const coverageBase = Math.max(safeUniverseSize, 1)
+    byMarket[source].coveragePct =
+      safeUniverseSize > 0
+        ? round2((Number(byMarket[source].itemsWithAvailableQuote || 0) / coverageBase) * 100)
+        : 0
+  }
+
+  return {
+    totalUniverseItems: safeUniverseSize,
+    byMarket
+  }
+}
+
+function buildDefaultPerformanceStageDurations() {
+  return {
+    sourceCatalogPreparationMs: 0,
+    inputHydrationMs: 0,
+    quoteFetchingMs: 0,
+    normalizationMs: 0,
+    opportunityComputationMs: 0,
+    dbWritesMs: 0,
+    diagnosticsAggregationMs: 0
+  }
+}
+
+function normalizePerformanceStageDurations(stageDurations = {}) {
+  const defaults = buildDefaultPerformanceStageDurations()
+  const normalized = {}
+  for (const key of PERFORMANCE_STAGE_KEYS) {
+    normalized[key] = toAuditDurationMs(stageDurations?.[key] ?? defaults[key])
+  }
+  return normalized
+}
+
+function toPerformanceStageSharePercent(stageDurations = {}, totalDurationMs = 0) {
+  const total = Math.max(Number(totalDurationMs || 0), 0)
+  const denominator =
+    total > 0
+      ? total
+      : Math.max(
+          Object.values(stageDurations || {}).reduce((sum, value) => sum + Number(value || 0), 0),
+          1
+        )
+  const share = {}
+  for (const [stage, duration] of Object.entries(stageDurations || {})) {
+    share[stage] = round2((Math.max(Number(duration || 0), 0) / denominator) * 100)
+  }
+  return share
+}
+
+function resolveSlowestPerformanceStage(stageDurations = {}) {
+  const entries = Object.entries(stageDurations || {}).sort(
+    (a, b) => Number(b[1] || 0) - Number(a[1] || 0)
+  )
+  const [stage, durationMs] = entries[0] || ["", 0]
+  return {
+    stage: String(stage || "").trim(),
+    durationMs: toAuditDurationMs(durationMs)
+  }
+}
+
+function evaluateScannerPerformanceSafety({
+  scanDurationMs = 0,
+  stageDurationsMs = {},
+  batching = {}
+} = {}) {
+  const totalDurationMs = toAuditDurationMs(scanDurationMs)
+  const stageDurations = normalizePerformanceStageDurations(stageDurationsMs)
+  const refresh = batching?.quoteRefresh || {}
+  const compute = batching?.computeFromSavedQuotes || {}
+
+  const maxTotalDurationMs = Math.max(Math.round(SCANNER_INTERVAL_MS * 0.85), 120000)
+  const maxQuoteFetchingMs = Math.max(Math.round(maxTotalDurationMs * 0.75), 90000)
+  const maxNormalizationMs = Math.max(Math.round(maxTotalDurationMs * 0.18), 15000)
+  const maxOpportunityComputationMs = Math.max(Math.round(maxTotalDurationMs * 0.24), 25000)
+  const maxDbWritesMs = Math.max(Math.round(maxTotalDurationMs * 0.1), 15000)
+  const maxDiagnosticsAggregationMs = 12000
+  const maxAverageBatchMs = Math.max(Math.round(SCAN_TIMEOUT_PER_BATCH * 0.8), 1500)
+
+  const checks = [
+    {
+      name: "scan_duration",
+      withinBound: totalDurationMs <= maxTotalDurationMs,
+      actual: totalDurationMs,
+      bound: maxTotalDurationMs,
+      unit: "ms"
+    },
+    {
+      name: "quote_fetching_stage",
+      withinBound: Number(stageDurations.quoteFetchingMs || 0) <= maxQuoteFetchingMs,
+      actual: Number(stageDurations.quoteFetchingMs || 0),
+      bound: maxQuoteFetchingMs,
+      unit: "ms"
+    },
+    {
+      name: "normalization_stage",
+      withinBound: Number(stageDurations.normalizationMs || 0) <= maxNormalizationMs,
+      actual: Number(stageDurations.normalizationMs || 0),
+      bound: maxNormalizationMs,
+      unit: "ms"
+    },
+    {
+      name: "opportunity_computation_stage",
+      withinBound:
+        Number(stageDurations.opportunityComputationMs || 0) <= maxOpportunityComputationMs,
+      actual: Number(stageDurations.opportunityComputationMs || 0),
+      bound: maxOpportunityComputationMs,
+      unit: "ms"
+    },
+    {
+      name: "db_writes_stage",
+      withinBound: Number(stageDurations.dbWritesMs || 0) <= maxDbWritesMs,
+      actual: Number(stageDurations.dbWritesMs || 0),
+      bound: maxDbWritesMs,
+      unit: "ms"
+    },
+    {
+      name: "diagnostics_aggregation_stage",
+      withinBound:
+        Number(stageDurations.diagnosticsAggregationMs || 0) <= maxDiagnosticsAggregationMs,
+      actual: Number(stageDurations.diagnosticsAggregationMs || 0),
+      bound: maxDiagnosticsAggregationMs,
+      unit: "ms"
+    },
+    {
+      name: "quote_refresh_batch_timeout",
+      withinBound: Number(refresh?.timedOutBatches || 0) === 0,
+      actual: Number(refresh?.timedOutBatches || 0),
+      bound: 0,
+      unit: "count"
+    },
+    {
+      name: "saved_quote_compute_batch_timeout",
+      withinBound: Number(compute?.timedOutBatches || 0) === 0,
+      actual: Number(compute?.timedOutBatches || 0),
+      bound: 0,
+      unit: "count"
+    },
+    {
+      name: "quote_refresh_average_batch_ms",
+      withinBound:
+        Number(refresh?.totalBatches || 0) === 0 ||
+        Number(refresh?.averageBatchMs || 0) <= maxAverageBatchMs,
+      actual: Number(refresh?.averageBatchMs || 0),
+      bound: maxAverageBatchMs,
+      unit: "ms"
+    },
+    {
+      name: "saved_quote_compute_average_batch_ms",
+      withinBound:
+        Number(compute?.totalBatches || 0) === 0 ||
+        Number(compute?.averageBatchMs || 0) <= maxAverageBatchMs,
+      actual: Number(compute?.averageBatchMs || 0),
+      bound: maxAverageBatchMs,
+      unit: "ms"
+    }
+  ]
+
+  const breachedChecks = checks.filter((check) => !check.withinBound)
+  return {
+    withinSafeBounds: !breachedChecks.length,
+    breachedChecks,
+    checks,
+    bounds: {
+      maxTotalDurationMs,
+      maxQuoteFetchingMs,
+      maxNormalizationMs,
+      maxOpportunityComputationMs,
+      maxDbWritesMs,
+      maxDiagnosticsAggregationMs,
+      maxAverageBatchMs,
+      maxTimedOutBatches: 0
+    }
+  }
+}
+
+function buildScannerPerformanceAudit({
+  sourceCatalogDiagnostics = {},
+  selectedUniverseByCategory = {},
+  staleDiagnostics = {},
+  discardedReasons = {},
+  discardedReasonsByCategory = {},
+  sortedRows = [],
+  selectedUniverseRows = [],
+  quoteRefreshSummary = {},
+  computeFromSavedSummary = {},
+  stageDurationsMs = {},
+  scanDurationMs = 0
+} = {}) {
+  const stageDurations = normalizePerformanceStageDurations(stageDurationsMs)
+  const safeScanDurationMs = toAuditDurationMs(scanDurationMs)
+  const sourceCatalogTotalRows = resolveSourceCatalogTotalRows(sourceCatalogDiagnostics)
+  const sourceCatalogEligibleByCategory = resolveSourceCatalogEligibleByCategory(sourceCatalogDiagnostics)
+  const activeUniverseByCategory = toScannerAuditCategoryCounts(selectedUniverseByCategory)
+  const staleDataByCategory = toScannerAuditCategoryCounts(staleDiagnostics?.staleByCategory || {}, "")
+  const opportunitiesByConfidenceTier = buildOpportunitiesByConfidenceTier(sortedRows)
+  const quoteCoverageByMarket = buildQuoteCoverageByMarket(
+    selectedUniverseRows.map((row) => row?.comparisonItem || null).filter(Boolean),
+    selectedUniverseRows.length
+  )
+  const topRejectedReasons = buildTopReasonSummary(discardedReasons, 10)
+  const topRejectedReasonsByCategory = buildTopReasonSummaryByCategory(
+    discardedReasonsByCategory,
+    5
+  )
+
+  const refreshBatches = Number(quoteRefreshSummary?.totalBatches || 0)
+  const computeBatches = Number(computeFromSavedSummary?.totalBatches || 0)
+  const totalBatches = refreshBatches + computeBatches
+  const weightedAverageBatchMs =
+    totalBatches > 0
+      ? round2(
+          ((Number(quoteRefreshSummary?.averageBatchMs || 0) * refreshBatches +
+            Number(computeFromSavedSummary?.averageBatchMs || 0) * computeBatches) /
+            totalBatches)
+        )
+      : 0
+  const batching = {
+    totalBatches,
+    completedBatches:
+      Number(quoteRefreshSummary?.completedBatches || 0) +
+      Number(computeFromSavedSummary?.completedBatches || 0),
+    failedBatches:
+      Number(quoteRefreshSummary?.failedBatches || 0) +
+      Number(computeFromSavedSummary?.failedBatches || 0),
+    timedOutBatches:
+      Number(quoteRefreshSummary?.timedOutBatches || 0) +
+      Number(computeFromSavedSummary?.timedOutBatches || 0),
+    slowestBatchMs: Math.max(
+      Number(quoteRefreshSummary?.slowestBatchMs || 0),
+      Number(computeFromSavedSummary?.slowestBatchMs || 0)
+    ),
+    averageBatchMs: weightedAverageBatchMs,
+    quoteRefresh: quoteRefreshSummary || {},
+    computeFromSavedQuotes: computeFromSavedSummary || {}
+  }
+  const stageSharePercent = toPerformanceStageSharePercent(stageDurations, safeScanDurationMs)
+  const slowestStage = resolveSlowestPerformanceStage(stageDurations)
+  const safeBounds = evaluateScannerPerformanceSafety({
+    scanDurationMs: safeScanDurationMs,
+    stageDurationsMs: stageDurations,
+    batching
+  })
+
+  return {
+    categories: SCANNER_AUDIT_CATEGORIES,
+    sourceCatalog: {
+      totalRows: sourceCatalogTotalRows,
+      eligibleRowsByCategory: sourceCatalogEligibleByCategory
+    },
+    activeUniverse: {
+      totalRows: Number(selectedUniverseRows.length || 0),
+      byCategory: activeUniverseByCategory
+    },
+    scanDurationMs: {
+      core: safeScanDurationMs,
+      endToEnd: safeScanDurationMs
+    },
+    stageDurationsMs: stageDurations,
+    stageSharePercent,
+    slowestStage,
+    batching,
+    staleDataByCategory,
+    topRejectedReasons,
+    topRejectedReasonsByCategory,
+    opportunitiesByConfidenceTier,
+    quoteCoverageByMarket,
+    safeBounds
+  }
+}
+
+function extendPerformanceAudit(
+  performanceAudit = {},
+  options = {}
+) {
+  if (!performanceAudit || typeof performanceAudit !== "object") {
+    return performanceAudit
+  }
+  const additionalDbWriteDurationMs = toAuditDurationMs(options?.additionalDbWriteDurationMs)
+  const additionalDiagnosticsAggregationMs = toAuditDurationMs(
+    options?.additionalDiagnosticsAggregationMs
+  )
+  const endToEndScanDurationMs = options?.endToEndScanDurationMs
+
+  const stageDurations = normalizePerformanceStageDurations(performanceAudit?.stageDurationsMs || {})
+  stageDurations.dbWritesMs += additionalDbWriteDurationMs
+  stageDurations.diagnosticsAggregationMs += additionalDiagnosticsAggregationMs
+
+  const coreDurationMs = toAuditDurationMs(performanceAudit?.scanDurationMs?.core)
+  const endToEndDurationMs = toAuditDurationMs(
+    endToEndScanDurationMs == null
+      ? performanceAudit?.scanDurationMs?.endToEnd ?? coreDurationMs
+      : endToEndScanDurationMs
+  )
+  const totalDurationMs = Math.max(endToEndDurationMs, coreDurationMs)
+  const stageSharePercent = toPerformanceStageSharePercent(stageDurations, totalDurationMs)
+  const slowestStage = resolveSlowestPerformanceStage(stageDurations)
+  const batching = performanceAudit?.batching || {}
+  const safeBounds = evaluateScannerPerformanceSafety({
+    scanDurationMs: totalDurationMs,
+    stageDurationsMs: stageDurations,
+    batching
+  })
+
+  return {
+    ...performanceAudit,
+    scanDurationMs: {
+      core: coreDurationMs,
+      endToEnd: totalDurationMs
+    },
+    stageDurationsMs: stageDurations,
+    stageSharePercent,
+    slowestStage,
+    safeBounds
+  }
+}
+
 async function runScanInternal(options = {}) {
   const forceRefresh = Boolean(options.forceRefresh)
+  const scanStartedAt = Date.now()
+  const stageDurationsMs = buildDefaultPerformanceStageDurations()
   let imageEnrichmentSummary = buildDefaultImageEnrichmentSummary()
+  const sourceCatalogStartedAt = Date.now()
   const sourceCatalogDiagnostics = await marketSourceCatalogService
     .prepareSourceCatalog({
       targetUniverseSize: UNIVERSE_TARGET_SIZE,
@@ -3551,17 +4021,24 @@ async function runScanInternal(options = {}) {
         error: String(err?.message || "source_catalog_refresh_failed")
       }
     })
+  stageDurationsMs.sourceCatalogPreparationMs = Date.now() - sourceCatalogStartedAt
   const discardStats = {}
   const rejectedByItem = {}
   const staleDiagnosticsAccumulator = buildStaleDiagnosticsAccumulator()
+  const inputHydrationStartedAt = Date.now()
   const scannerInputs = await loadScannerInputs(discardStats, rejectedByItem)
+  stageDurationsMs.inputHydrationMs = Date.now() - inputHydrationStartedAt
   const universeSeeds = Array.isArray(scannerInputs?.seeds) ? scannerInputs.seeds : []
   const snapshotWarmupSummary = scannerInputs?.snapshotWarmup || toSnapshotWarmupSummary()
   if (!universeSeeds.length) {
+    const diagnosticsAggregationStartedAt = Date.now()
     const generatedTs = Date.now()
     const emptyByCategory = Object.fromEntries(
       Object.values(ITEM_CATEGORIES).map((category) => [category, 0])
     )
+    const discardedReasons = normalizeDiscardStats(discardStats)
+    const discardedReasonsByCategory = normalizeDiscardStatsByCategory(discardStats)
+    const staleDiagnostics = toStaleDiagnosticsSummary(staleDiagnosticsAccumulator)
     const emptyPayload = {
       generatedAt: new Date(generatedTs).toISOString(),
       expiresAt: generatedTs + CACHE_TTL_MS,
@@ -3574,14 +4051,14 @@ async function runScanInternal(options = {}) {
         universeSize: 0,
         universeTarget: UNIVERSE_TARGET_SIZE,
         candidateItems: 0,
-        discardedReasons: normalizeDiscardStats(discardStats),
-        discardedReasonsByCategory: normalizeDiscardStatsByCategory(discardStats),
+        discardedReasons,
+        discardedReasonsByCategory,
         rejectedByCategory: { ...emptyByCategory },
         topRejectedItems: toTopRejectedItems(rejectedByItem),
         rejectionReasonsByItem: toRejectionReasonsByItem(rejectedByItem),
         selectedUniverseByCategory: { ...emptyByCategory },
         opportunitiesByCategory: { ...emptyByCategory },
-        staleDiagnostics: toStaleDiagnosticsSummary(staleDiagnosticsAccumulator),
+        staleDiagnostics,
         knifeGloveRejections: toKnifeGloveRejectionSummary({}),
         riskyProfileDiagnostics: buildRiskyProfileDiagnostics(),
         snapshotWarmup: snapshotWarmupSummary,
@@ -3656,10 +4133,35 @@ async function runScanInternal(options = {}) {
         sourceCatalog: sourceCatalogDiagnostics
       }
     }
+
+    stageDurationsMs.diagnosticsAggregationMs = Date.now() - diagnosticsAggregationStartedAt
+    const auditBuildStartedAt = Date.now()
+    let performanceAudit = buildScannerPerformanceAudit({
+      sourceCatalogDiagnostics,
+      selectedUniverseByCategory: emptyByCategory,
+      staleDiagnostics,
+      discardedReasons,
+      discardedReasonsByCategory,
+      sortedRows: [],
+      selectedUniverseRows: [],
+      quoteRefreshSummary: emptyPayload.pipeline.quoteRefresh,
+      computeFromSavedSummary: emptyPayload.pipeline.computeFromSavedQuotes,
+      stageDurationsMs,
+      scanDurationMs: Date.now() - scanStartedAt
+    })
+    const auditBuildDurationMs = Date.now() - auditBuildStartedAt
+    performanceAudit = extendPerformanceAudit(performanceAudit, {
+      additionalDiagnosticsAggregationMs: auditBuildDurationMs,
+      endToEndScanDurationMs: Date.now() - scanStartedAt
+    })
+    emptyPayload.summary.performanceAudit = performanceAudit
+    emptyPayload.pipeline.performanceAudit = performanceAudit
+
     scannerState.latest = emptyPayload
     return emptyPayload
   }
 
+  const normalizationStartedAt = Date.now()
   const comparisonInputItems = universeSeeds.map((row) => buildInputItemForComparison(row))
   const inputByName = toByNameMap(
     universeSeeds.map((row) => ({
@@ -3668,14 +4170,24 @@ async function runScanInternal(options = {}) {
     })),
     "marketHashName"
   )
+  stageDurationsMs.normalizationMs += Date.now() - normalizationStartedAt
 
+  const quoteFetchingStartedAt = Date.now()
   const quoteRefreshSummary = await refreshQuotesInBatches(comparisonInputItems, {
     forceRefresh
   })
   const comparisonFromSaved = await compareFromSavedQuotes(comparisonInputItems)
-  imageEnrichmentSummary = await hydrateUniverseImages(inputByName, comparisonFromSaved.items)
-  const quoteSnapshotSummary = await persistQuoteSnapshot(comparisonFromSaved.items, inputByName)
+  stageDurationsMs.quoteFetchingMs = Date.now() - quoteFetchingStartedAt
 
+  const normalizationEnrichmentStartedAt = Date.now()
+  imageEnrichmentSummary = await hydrateUniverseImages(inputByName, comparisonFromSaved.items)
+  stageDurationsMs.normalizationMs += Date.now() - normalizationEnrichmentStartedAt
+
+  const quoteSnapshotWriteStartedAt = Date.now()
+  const quoteSnapshotSummary = await persistQuoteSnapshot(comparisonFromSaved.items, inputByName)
+  stageDurationsMs.dbWritesMs += Date.now() - quoteSnapshotWriteStartedAt
+
+  const opportunityComputationStartedAt = Date.now()
   const selectedUniverse = selectTopUniverseItems(
     comparisonFromSaved?.items,
     inputByName,
@@ -3820,6 +4332,8 @@ async function runScanInternal(options = {}) {
   }
 
   const sortedRows = sortOpportunities(rows)
+  stageDurationsMs.opportunityComputationMs = Date.now() - opportunityComputationStartedAt
+  const diagnosticsAggregationStartedAt = Date.now()
   const highConfidenceCount = sortedRows.filter(
     (row) =>
       Boolean(row?.isHighConfidenceEligible) &&
@@ -3910,6 +4424,29 @@ async function runScanInternal(options = {}) {
     }
   }
 
+  stageDurationsMs.diagnosticsAggregationMs = Date.now() - diagnosticsAggregationStartedAt
+  const auditBuildStartedAt = Date.now()
+  let performanceAudit = buildScannerPerformanceAudit({
+    sourceCatalogDiagnostics,
+    selectedUniverseByCategory,
+    staleDiagnostics,
+    discardedReasons,
+    discardedReasonsByCategory,
+    sortedRows,
+    selectedUniverseRows: selectedUniverse,
+    quoteRefreshSummary,
+    computeFromSavedSummary: comparisonFromSaved?.diagnostics || {},
+    stageDurationsMs,
+    scanDurationMs: Date.now() - scanStartedAt
+  })
+  const auditBuildDurationMs = Date.now() - auditBuildStartedAt
+  performanceAudit = extendPerformanceAudit(performanceAudit, {
+    additionalDiagnosticsAggregationMs: auditBuildDurationMs,
+    endToEndScanDurationMs: Date.now() - scanStartedAt
+  })
+  payload.summary.performanceAudit = performanceAudit
+  payload.pipeline.performanceAudit = performanceAudit
+
   scannerState.latest = payload
   scannerState.lastError = null
   return payload
@@ -3956,6 +4493,8 @@ function toScanDiagnosticsSummary(scanPayload = {}, persistSummary = {}, trigger
     sourceCatalog:
       scanPayload?.summary?.sourceCatalog || scanPayload?.pipeline?.sourceCatalog || {},
     scanProgress: scanPayload?.summary?.scanProgress || {},
+    performanceAudit:
+      scanPayload?.summary?.performanceAudit || scanPayload?.pipeline?.performanceAudit || {},
     highConfidence: Number(scanPayload?.summary?.highConfidence || 0),
     riskyEligible: Number(scanPayload?.summary?.riskyEligible || 0),
     pipeline: scanPayload?.pipeline || {},
@@ -4068,10 +4607,40 @@ async function appendOpportunitiesToFeed(rows = [], scanRunId = "") {
 async function runScanWithRunRecord(runRecord = {}, options = {}) {
   const trigger = String(options.trigger || "manual")
   const forceRefresh = Boolean(options.forceRefresh)
+  const runStartedAt = Date.now()
   try {
     const scanPayload = await runScanInternal({ forceRefresh })
+    const feedPersistStartedAt = Date.now()
     const persistSummary = await appendOpportunitiesToFeed(scanPayload?.opportunities || [], runRecord?.id)
+    const feedPersistDurationMs = Date.now() - feedPersistStartedAt
+    const performanceAuditBeforePersist =
+      scanPayload?.summary?.performanceAudit || scanPayload?.pipeline?.performanceAudit || null
+    if (performanceAuditBeforePersist && typeof performanceAuditBeforePersist === "object") {
+      const extendedPerformanceAudit = extendPerformanceAudit(performanceAuditBeforePersist, {
+        additionalDbWriteDurationMs: feedPersistDurationMs,
+        endToEndScanDurationMs: Date.now() - runStartedAt
+      })
+      scanPayload.summary.performanceAudit = extendedPerformanceAudit
+      if (scanPayload.pipeline && typeof scanPayload.pipeline === "object") {
+        scanPayload.pipeline.performanceAudit = extendedPerformanceAudit
+      }
+    }
+
+    const diagnosticsAggregationStartedAt = Date.now()
     const diagnosticsSummary = toScanDiagnosticsSummary(scanPayload, persistSummary, trigger)
+    const diagnosticsAggregationDurationMs = Date.now() - diagnosticsAggregationStartedAt
+    if (scanPayload?.summary?.performanceAudit && typeof scanPayload.summary.performanceAudit === "object") {
+      const extendedPerformanceAudit = extendPerformanceAudit(scanPayload.summary.performanceAudit, {
+        additionalDiagnosticsAggregationMs: diagnosticsAggregationDurationMs,
+        endToEndScanDurationMs: Date.now() - runStartedAt
+      })
+      scanPayload.summary.performanceAudit = extendedPerformanceAudit
+      if (scanPayload.pipeline && typeof scanPayload.pipeline === "object") {
+        scanPayload.pipeline.performanceAudit = extendedPerformanceAudit
+      }
+      diagnosticsSummary.performanceAudit = extendedPerformanceAudit
+    }
+
     const completedRun = await scannerRunRepo.markCompleted(runRecord?.id, {
       itemsScanned: Number(scanPayload?.summary?.scannedItems || 0),
       opportunitiesFound: Number(scanPayload?.opportunities?.length || 0),
@@ -4485,6 +5054,8 @@ exports.getFeed = async (options = {}) => {
     sourceCatalog:
       diagnosticsSummary?.sourceCatalog || diagnosticsSummary?.pipeline?.sourceCatalog || {},
     scanProgress: diagnosticsSummary?.scanProgress || {},
+    performanceAudit:
+      diagnosticsSummary?.performanceAudit || diagnosticsSummary?.pipeline?.performanceAudit || {},
     highConfidence: Number(diagnosticsSummary?.highConfidence || 0),
     riskyEligible: Number(diagnosticsSummary?.riskyEligible || 0),
     newOpportunitiesAdded:
