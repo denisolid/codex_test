@@ -201,3 +201,31 @@ test("evaluateItemOpportunity replaces outlier buy_top1 with buy_top2", () => {
   assert.ok(Array.isArray(result.depthFlags));
   assert.ok(result.depthFlags.includes("BUY_OUTLIER_ADJUSTED"));
 });
+
+test("evaluateItemOpportunity applies stricter reference deviation checks for knives", () => {
+  const result = evaluateItemOpportunity({
+    skinId: 9991,
+    marketHashName: "★ Karambit | Doppler (Factory New)",
+    itemCategory: "knife",
+    referencePrice: 100,
+    perMarket: [
+      {
+        source: "steam",
+        available: true,
+        grossPrice: 40,
+        netPriceAfterFees: 34.8,
+        volume7d: 130
+      },
+      {
+        source: "skinport",
+        available: true,
+        grossPrice: 41,
+        netPriceAfterFees: 62,
+        volume7d: 130
+      }
+    ]
+  });
+
+  assert.equal(result.isOpportunity, false);
+  assert.ok(result?.antiFake?.reasons?.includes("ignored_reference_deviation"));
+});

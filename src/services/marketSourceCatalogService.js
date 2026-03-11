@@ -15,11 +15,18 @@ const skinRepo = require("../repositories/skinRepository")
 const ITEM_CATEGORIES = Object.freeze({
   WEAPON_SKIN: "weapon_skin",
   CASE: "case",
-  STICKER_CAPSULE: "sticker_capsule"
+  STICKER_CAPSULE: "sticker_capsule",
+  KNIFE: "knife",
+  GLOVE: "glove"
 })
 
+const DEFAULT_UNIVERSE_LIMIT = 1000
 const DEFAULT_UNIVERSE_TARGET = Math.max(
-  Number(arbitrageScannerUniverseTargetSize || arbitrageDefaultUniverseLimit || 500),
+  Number(
+    arbitrageScannerUniverseTargetSize ||
+      arbitrageDefaultUniverseLimit ||
+      DEFAULT_UNIVERSE_LIMIT
+  ),
   100
 )
 const SOURCE_CATALOG_LIMIT = Math.max(Number(arbitrageSourceCatalogLimit || 1000), 600)
@@ -42,23 +49,61 @@ const SOURCE_QUALITY_RULES = Object.freeze({
     minReferencePrice: 1,
     minVolume7d: 35,
     minMarketCoverage: 2
+  }),
+  [ITEM_CATEGORIES.KNIFE]: Object.freeze({
+    minReferencePrice: 20,
+    minVolume7d: 18,
+    minMarketCoverage: 2
+  }),
+  [ITEM_CATEGORIES.GLOVE]: Object.freeze({
+    minReferencePrice: 20,
+    minVolume7d: 16,
+    minMarketCoverage: 2
   })
 })
 
-const CATEGORY_QUOTA_TARGETS = Object.freeze({
-  [ITEM_CATEGORIES.WEAPON_SKIN]: 320,
-  [ITEM_CATEGORIES.CASE]: 120,
-  [ITEM_CATEGORIES.STICKER_CAPSULE]: 60
+const CATEGORY_QUOTA_RULES = Object.freeze({
+  [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({
+    min: 550,
+    target: 580,
+    max: 600
+  }),
+  [ITEM_CATEGORIES.CASE]: Object.freeze({
+    min: 180,
+    target: 200,
+    max: 220
+  }),
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
+    min: 100,
+    target: 110,
+    max: 120
+  }),
+  [ITEM_CATEGORIES.KNIFE]: Object.freeze({
+    min: 50,
+    target: 65,
+    max: 70
+  }),
+  [ITEM_CATEGORIES.GLOVE]: Object.freeze({
+    min: 30,
+    target: 45,
+    max: 50
+  })
 })
 
 const CATEGORY_PRIORITY = Object.freeze([
   ITEM_CATEGORIES.WEAPON_SKIN,
   ITEM_CATEGORIES.CASE,
-  ITEM_CATEGORIES.STICKER_CAPSULE
+  ITEM_CATEGORIES.STICKER_CAPSULE,
+  ITEM_CATEGORIES.KNIFE,
+  ITEM_CATEGORIES.GLOVE
 ])
 
-const CATEGORY_QUOTA_BASE_TOTAL = Object.values(CATEGORY_QUOTA_TARGETS).reduce(
-  (sum, value) => sum + Number(value || 0),
+const CATEGORY_QUOTA_BASE_TOTAL = Object.values(CATEGORY_QUOTA_RULES).reduce(
+  (sum, value) => sum + Number(value?.target || 0),
+  0
+)
+const CATEGORY_QUOTA_BASE_TARGET_TOTAL = Object.values(CATEGORY_QUOTA_RULES).reduce(
+  (sum, value) => sum + Number(value?.target || 0),
   0
 )
 
@@ -86,13 +131,21 @@ function toPositiveOrNull(value) {
 
 function normalizeCategory(value, marketHashName = "") {
   const text = normalizeText(value).toLowerCase()
-  if (text === ITEM_CATEGORIES.WEAPON_SKIN || text === ITEM_CATEGORIES.CASE || text === ITEM_CATEGORIES.STICKER_CAPSULE) {
+  if (
+    text === ITEM_CATEGORIES.WEAPON_SKIN ||
+    text === ITEM_CATEGORIES.CASE ||
+    text === ITEM_CATEGORIES.STICKER_CAPSULE ||
+    text === ITEM_CATEGORIES.KNIFE ||
+    text === ITEM_CATEGORIES.GLOVE
+  ) {
     return text
   }
 
   const name = normalizeText(marketHashName).toLowerCase()
   if (name.endsWith(" case")) return ITEM_CATEGORIES.CASE
   if (name.includes("sticker capsule")) return ITEM_CATEGORIES.STICKER_CAPSULE
+  if (/\b(gloves|glove|hand wraps)\b/i.test(name)) return ITEM_CATEGORIES.GLOVE
+  if (/\b(knife|bayonet|karambit|daggers)\b/i.test(name)) return ITEM_CATEGORIES.KNIFE
   return ITEM_CATEGORIES.WEAPON_SKIN
 }
 
@@ -125,62 +178,97 @@ function computeSourceLiquidityScore({
   return Number(score.toFixed(2))
 }
 
+function scaleQuotaValue(baseValue, targetSize) {
+  if (!CATEGORY_QUOTA_BASE_TOTAL) return 0
+  return Math.max(Math.round((Number(baseValue || 0) * Number(targetSize || 0)) / CATEGORY_QUOTA_BASE_TOTAL), 0)
+}
+
+function allocateCategorySlots(quotas = {}, remaining = 0, buckets = [], field = "targetScaled") {
+  let slots = Math.max(Number(remaining || 0), 0)
+  while (slots > 0) {
+    const candidates = buckets
+      .filter((bucket) => Number(quotas[bucket.category] || 0) < Number(bucket[field] || 0))
+      .sort(
+        (a, b) =>
+          Number(b[field] || 0) - Number(quotas[b.category] || 0) -
+            (Number(a[field] || 0) - Number(quotas[a.category] || 0)) ||
+          Number(b.targetScaled || 0) - Number(a.targetScaled || 0)
+      )
+    if (!candidates.length) break
+    quotas[candidates[0].category] += 1
+    slots -= 1
+  }
+  return slots
+}
+
 function buildCategoryQuotas(targetSize) {
   const safeTarget = Math.max(Math.round(Number(targetSize || DEFAULT_UNIVERSE_TARGET)), 1)
-  const quotas = {
-    [ITEM_CATEGORIES.WEAPON_SKIN]: 0,
-    [ITEM_CATEGORIES.CASE]: 0,
-    [ITEM_CATEGORIES.STICKER_CAPSULE]: 0
-  }
-
-  if (!CATEGORY_QUOTA_BASE_TOTAL) {
+  const quotas = Object.fromEntries(CATEGORY_PRIORITY.map((category) => [category, 0]))
+  if (!CATEGORY_QUOTA_BASE_TOTAL || !CATEGORY_QUOTA_BASE_TARGET_TOTAL) {
     quotas[ITEM_CATEGORIES.WEAPON_SKIN] = safeTarget
     return quotas
   }
 
-  const bucketStats = CATEGORY_PRIORITY.map((category) => {
-    const baseTarget = Number(CATEGORY_QUOTA_TARGETS[category] || 0)
-    const exact = (baseTarget * safeTarget) / CATEGORY_QUOTA_BASE_TOTAL
-    const floor = Math.max(Math.floor(exact), 0)
-    quotas[category] = floor
+  const bucketPlan = CATEGORY_PRIORITY.map((category) => {
+    const rule = CATEGORY_QUOTA_RULES[category] || {}
+    const minScaled = scaleQuotaValue(rule.min, safeTarget)
+    const targetScaled = scaleQuotaValue(rule.target, safeTarget)
+    const maxScaled = Math.max(scaleQuotaValue(rule.max, safeTarget), minScaled)
     return {
       category,
-      baseTarget,
-      remainder: exact - floor
+      minScaled,
+      targetScaled: Math.max(targetScaled, minScaled),
+      maxScaled
     }
   })
 
-  let remainderSlots = safeTarget - Object.values(quotas).reduce((sum, value) => sum + value, 0)
-  if (remainderSlots > 0) {
-    const byRemainder = bucketStats
-      .slice()
-      .sort((a, b) => b.remainder - a.remainder || b.baseTarget - a.baseTarget)
+  const minTotal = bucketPlan.reduce((sum, bucket) => sum + Number(bucket.minScaled || 0), 0)
+  if (minTotal > safeTarget) {
+    const targetBuckets = bucketPlan
+      .map((bucket) => ({
+        ...bucket,
+        exactShare:
+          (Number(bucket.targetScaled || 0) / Math.max(
+            bucketPlan.reduce((sum, row) => sum + Number(row.targetScaled || 0), 0),
+            1
+          )) * safeTarget
+      }))
+      .sort((a, b) => Number(b.exactShare || 0) - Number(a.exactShare || 0))
+
+    for (const bucket of targetBuckets) {
+      quotas[bucket.category] = Math.floor(Number(bucket.exactShare || 0))
+    }
+    let remainder = safeTarget - Object.values(quotas).reduce((sum, value) => sum + Number(value || 0), 0)
     let index = 0
-    while (remainderSlots > 0) {
-      const bucket = byRemainder[index % byRemainder.length]
-      quotas[bucket.category] += 1
-      remainderSlots -= 1
+    while (remainder > 0 && targetBuckets.length) {
+      quotas[targetBuckets[index % targetBuckets.length].category] += 1
+      remainder -= 1
+      index += 1
+    }
+    return quotas
+  }
+
+  for (const bucket of bucketPlan) {
+    quotas[bucket.category] = Number(bucket.minScaled || 0)
+  }
+
+  let remaining = safeTarget - minTotal
+  remaining = allocateCategorySlots(quotas, remaining, bucketPlan, "targetScaled")
+  remaining = allocateCategorySlots(quotas, remaining, bucketPlan, "maxScaled")
+
+  if (remaining > 0) {
+    const byPriority = bucketPlan.slice().sort(
+      (a, b) => Number(b.targetScaled || 0) - Number(a.targetScaled || 0)
+    )
+    let index = 0
+    while (remaining > 0 && byPriority.length) {
+      quotas[byPriority[index % byPriority.length].category] += 1
+      remaining -= 1
       index += 1
     }
   }
 
-  if (safeTarget >= CATEGORY_PRIORITY.length) {
-    for (const category of CATEGORY_PRIORITY) {
-      if (quotas[category] > 0) continue
-      const donor = CATEGORY_PRIORITY.slice()
-        .sort((a, b) => quotas[b] - quotas[a])
-        .find((candidate) => quotas[candidate] > 1)
-      if (!donor) break
-      quotas[donor] -= 1
-      quotas[category] += 1
-    }
-  }
-
-  return {
-    [ITEM_CATEGORIES.WEAPON_SKIN]: Number(quotas[ITEM_CATEGORIES.WEAPON_SKIN] || 0),
-    [ITEM_CATEGORIES.CASE]: Number(quotas[ITEM_CATEGORIES.CASE] || 0),
-    [ITEM_CATEGORIES.STICKER_CAPSULE]: Number(quotas[ITEM_CATEGORIES.STICKER_CAPSULE] || 0)
-  }
+  return quotas
 }
 
 function buildBaseDiagnostics() {
@@ -207,6 +295,8 @@ function buildBaseDiagnostics() {
       selectedByCategory: {},
       selectedByCategoryQuotaStage: {},
       quotaShortfallByCategory: {},
+      quotaOverflowByCategory: {},
+      quotaReallocationByCategory: {},
       reallocatedSlots: 0,
       eligibleRows: 0,
       fallbackToMaxEligible: true
@@ -476,24 +566,19 @@ async function enrichSourceCatalog() {
 }
 
 function takeTopByCategory(rows = [], quotas = {}) {
-  const byCategory = {
-    [ITEM_CATEGORIES.WEAPON_SKIN]: [],
-    [ITEM_CATEGORIES.CASE]: [],
-    [ITEM_CATEGORIES.STICKER_CAPSULE]: []
-  }
+  const byCategory = Object.fromEntries(CATEGORY_PRIORITY.map((category) => [category, []]))
 
   for (const row of Array.isArray(rows) ? rows : []) {
     const category = normalizeCategory(row?.category, row?.market_hash_name)
+    if (!byCategory[category]) {
+      byCategory[category] = []
+    }
     byCategory[category].push(row)
   }
 
   const selected = []
   const used = new Set()
-  const selectedByCategory = {
-    [ITEM_CATEGORIES.WEAPON_SKIN]: 0,
-    [ITEM_CATEGORIES.CASE]: 0,
-    [ITEM_CATEGORIES.STICKER_CAPSULE]: 0
-  }
+  const selectedByCategory = Object.fromEntries(CATEGORY_PRIORITY.map((category) => [category, 0]))
 
   for (const category of CATEGORY_PRIORITY) {
     const bucket = byCategory[category]
@@ -585,11 +670,9 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
 
   const quotas = buildCategoryQuotas(safeTarget)
   const { selected, leftovers, selectedByCategory } = takeTopByCategory(rankedRows, quotas)
-  const selectedByCategoryQuotaStage = {
-    [ITEM_CATEGORIES.WEAPON_SKIN]: Number(selectedByCategory[ITEM_CATEGORIES.WEAPON_SKIN] || 0),
-    [ITEM_CATEGORIES.CASE]: Number(selectedByCategory[ITEM_CATEGORIES.CASE] || 0),
-    [ITEM_CATEGORIES.STICKER_CAPSULE]: Number(selectedByCategory[ITEM_CATEGORIES.STICKER_CAPSULE] || 0)
-  }
+  const selectedByCategoryQuotaStage = Object.fromEntries(
+    CATEGORY_PRIORITY.map((category) => [category, Number(selectedByCategory[category] || 0)])
+  )
 
   const finalRows = [...selected]
   for (const row of leftovers) {
@@ -605,26 +688,24 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
   const normalizedUniverseRows = finalRows.slice(0, safeTarget).map((row, index) => ({
     marketHashName: row.market_hash_name,
     itemName: row.item_name || row.market_hash_name,
+    category: normalizeCategory(row?.category, row?.market_hash_name),
+    subcategory: normalizeText(row?.subcategory) || null,
     liquidityRank: index + 1
   }))
 
   const persist = await marketUniverseRepo.replaceActiveUniverse(normalizedUniverseRows)
-  const quotaShortfallByCategory = {
-    [ITEM_CATEGORIES.WEAPON_SKIN]: Math.max(
-      Number(quotas[ITEM_CATEGORIES.WEAPON_SKIN] || 0) -
-        Number(selectedByCategoryQuotaStage[ITEM_CATEGORIES.WEAPON_SKIN] || 0),
-      0
-    ),
-    [ITEM_CATEGORIES.CASE]: Math.max(
-      Number(quotas[ITEM_CATEGORIES.CASE] || 0) -
-        Number(selectedByCategoryQuotaStage[ITEM_CATEGORIES.CASE] || 0),
-      0
-    ),
-    [ITEM_CATEGORIES.STICKER_CAPSULE]: Math.max(
-      Number(quotas[ITEM_CATEGORIES.STICKER_CAPSULE] || 0) -
-        Number(selectedByCategoryQuotaStage[ITEM_CATEGORIES.STICKER_CAPSULE] || 0),
-      0
-    )
+  const quotaShortfallByCategory = {}
+  const quotaOverflowByCategory = {}
+  const quotaReallocationByCategory = {}
+  for (const category of CATEGORY_PRIORITY) {
+    const quota = Number(quotas[category] || 0)
+    const selectedQuotaStage = Number(selectedByCategoryQuotaStage[category] || 0)
+    const selectedFinal = Number(selectedByCategory[category] || 0)
+    const shortfall = Math.max(quota - selectedQuotaStage, 0)
+    const overflow = Math.max(selectedFinal - quota, 0)
+    quotaShortfallByCategory[category] = shortfall
+    quotaOverflowByCategory[category] = overflow
+    quotaReallocationByCategory[category] = selectedFinal - quota
   }
 
   return {
@@ -640,6 +721,8 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
     selectedByCategory,
     selectedByCategoryQuotaStage,
     quotaShortfallByCategory,
+    quotaOverflowByCategory,
+    quotaReallocationByCategory,
     reallocatedSlots: Math.max(finalRows.length - selected.length, 0),
     quotas,
     fallbackToMaxEligible: true,

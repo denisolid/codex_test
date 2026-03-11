@@ -12,12 +12,20 @@ function normalizeText(value) {
 function normalizeCategory(value) {
   const raw = normalizeText(value).toLowerCase()
   if (!raw) return ""
-  if (raw === "weapon_skin" || raw === "case" || raw === "sticker_capsule") {
+  if (
+    raw === "weapon_skin" ||
+    raw === "case" ||
+    raw === "sticker_capsule" ||
+    raw === "knife" ||
+    raw === "glove"
+  ) {
     return raw
   }
   if (raw === "skin" || raw === "skins") return "weapon_skin"
   if (raw === "cases") return "case"
   if (raw === "capsule" || raw === "capsules") return "sticker_capsule"
+  if (raw === "knives") return "knife"
+  if (raw === "gloves") return "glove"
   return ""
 }
 

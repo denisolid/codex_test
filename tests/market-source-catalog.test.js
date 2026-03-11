@@ -19,6 +19,8 @@ test("source catalog seed expands beyond scanner target with curated categories"
   assert.equal(categories.has("weapon_skin"), true)
   assert.equal(categories.has("case"), true)
   assert.equal(categories.has("sticker_capsule"), true)
+  assert.equal(categories.has("knife"), true)
+  assert.equal(categories.has("glove"), true)
 })
 
 test("source catalog seed excludes obvious junk prefixes", () => {
@@ -28,25 +30,31 @@ test("source catalog seed excludes obvious junk prefixes", () => {
   assert.equal(names.some((name) => name.startsWith("sealed graffiti |")), false)
 })
 
-test("source catalog seed includes curated cases, capsules, and skin wear variants", () => {
+test("source catalog seed includes curated cases/capsules and premium knife/glove entries", () => {
   const names = new Set(sourceSeed.map((row) => String(row?.marketHashName || "").trim()))
   assert.equal(names.has("Revolution Case"), true)
   assert.equal(names.has("Copenhagen 2024 Legends Sticker Capsule"), true)
   assert.equal(names.has("AK-47 | Redline (Field-Tested)"), true)
+  assert.equal(names.has("★ Karambit | Doppler (Factory New)"), true)
+  assert.equal(names.has("★ Sport Gloves | Vice (Field-Tested)"), true)
 })
 
 test("source catalog category quotas preserve mixed category support", () => {
-  const quotas = buildCategoryQuotas(500)
+  const quotas = buildCategoryQuotas(1000)
   const total = Object.values(quotas).reduce((sum, value) => sum + Number(value || 0), 0)
-  assert.equal(total, 500)
-  assert.equal(Number(quotas.weapon_skin || 0), 320)
-  assert.equal(Number(quotas.case || 0), 120)
-  assert.equal(Number(quotas.sticker_capsule || 0), 60)
+  assert.equal(total, 1000)
+  assert.equal(Number(quotas.weapon_skin || 0), 580)
+  assert.equal(Number(quotas.case || 0), 200)
+  assert.equal(Number(quotas.sticker_capsule || 0), 110)
+  assert.equal(Number(quotas.knife || 0), 65)
+  assert.equal(Number(quotas.glove || 0), 45)
 
-  const scaled = buildCategoryQuotas(250)
-  assert.equal(Number(scaled.weapon_skin || 0), 160)
-  assert.equal(Number(scaled.case || 0), 60)
-  assert.equal(Number(scaled.sticker_capsule || 0), 30)
+  const scaled = buildCategoryQuotas(500)
+  assert.equal(Number(scaled.weapon_skin || 0), 290)
+  assert.equal(Number(scaled.case || 0), 100)
+  assert.equal(Number(scaled.sticker_capsule || 0), 55)
+  assert.equal(Number(scaled.knife || 0), 33)
+  assert.equal(Number(scaled.glove || 0), 22)
 })
 
 test("source eligibility rejects weak liquidity and coverage before universe build", () => {
@@ -69,4 +77,7 @@ test("source eligibility rejects weak liquidity and coverage before universe bui
     snapshotStale: false
   })
   assert.equal(good.eligible, true)
+
+  assert.equal(normalizeCategory("", "★ Karambit | Doppler (Factory New)"), "knife")
+  assert.equal(normalizeCategory("", "★ Sport Gloves | Vice (Field-Tested)"), "glove")
 })

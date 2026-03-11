@@ -56,6 +56,8 @@ test("category normalization supports skins/cases/capsules aliases", () => {
   assert.equal(normalizeItemCategory("case", "Revolution Case"), "case");
   assert.equal(normalizeItemCategory("weapon_skin", "AK-47 | Redline"), "weapon_skin");
   assert.equal(normalizeItemCategory("", "Fracture Case"), "case");
+  assert.equal(normalizeItemCategory("knife", "★ Karambit | Doppler"), "knife");
+  assert.equal(normalizeItemCategory("", "★ Sport Gloves | Vice"), "glove");
   assert.equal(
     normalizeItemCategory("sticker_capsule", "Paris 2023 Legends Sticker Capsule"),
     "sticker_capsule",
@@ -68,6 +70,8 @@ test("category normalization supports skins/cases/capsules aliases", () => {
   assert.equal(normalizeCategoryFilter("skins"), "weapon_skin");
   assert.equal(normalizeCategoryFilter("cases"), "case");
   assert.equal(normalizeCategoryFilter("capsules"), "sticker_capsule");
+  assert.equal(normalizeCategoryFilter("knives"), "knife");
+  assert.equal(normalizeCategoryFilter("gloves"), "glove");
 });
 
 test("snapshot-driven liquidity helpers produce bounded values", () => {
@@ -185,6 +189,35 @@ test("scanner guards enforce spread/profit/liquidity thresholds", () => {
     ),
     false
   );
+
+  const knifeLiquidity = resolveLiquidityMetrics(
+    {
+      depthFlags: ["MISSING_DEPTH"],
+      antiFake: {
+        liquidity: {
+          signalType: "volume_7d",
+          signalValue: 40
+        }
+      }
+    },
+    { marketVolume7d: 40, liquidityScore: 55 }
+  );
+
+  assert.equal(
+    passesScannerGuards(
+      {
+        isOpportunity: true,
+        itemCategory: "knife",
+        itemName: "★ Karambit | Doppler (Factory New)",
+        profit: 20,
+        spreadPercent: 6,
+        buyPrice: 45,
+        marketCoverage: 2
+      },
+      knifeLiquidity
+    ),
+    false
+  );
 });
 
 test("universe seed filter rejects items without snapshot liquidity context", () => {
@@ -241,6 +274,24 @@ test("universe seed filter rejects stale snapshot seeds", () => {
 
   assert.equal(allowed, false);
   assert.equal(Number(discardStats.ignored_stale_data || 0) > 0, true);
+});
+
+test("universe seed filter applies premium price floor for knives", () => {
+  const discardStats = {};
+  const allowed = passesUniverseSeedFilters(
+    {
+      marketHashName: "★ Karambit | Doppler (Factory New)",
+      itemCategory: "knife",
+      hasSnapshotData: true,
+      snapshotStale: false,
+      referencePrice: 19.5,
+      marketVolume7d: 55
+    },
+    discardStats
+  );
+
+  assert.equal(allowed, false);
+  assert.equal(Number(discardStats.ignored_low_value_universe || 0) > 0, true);
 });
 
 test("api row keeps required shape with clamped score", () => {
@@ -402,7 +453,8 @@ test("scanner overdue watchdog respects running state and stale timestamps", () 
   assert.equal(isScannerRunOverdue({}, now), true);
 });
 
-test("scanner defaults are configured for 500-scale batching", () => {
+test("scanner defaults are configured for 1000-scale batching", () => {
+  // Runtime env can override this lower in tests; service fallback baseline is 1000.
   assert.equal(DEFAULT_UNIVERSE_LIMIT >= 500, true);
   assert.equal(SCAN_BATCH_SIZE >= 25 && SCAN_BATCH_SIZE <= 50, true);
   assert.equal(MAX_CONCURRENT_MARKET_REQUESTS >= 1, true);

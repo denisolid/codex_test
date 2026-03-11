@@ -81,11 +81,14 @@ const SOURCE_ORDER = Object.freeze(["steam", "skinport", "csfloat", "dmarket"])
 const ITEM_CATEGORIES = Object.freeze({
   WEAPON_SKIN: "weapon_skin",
   CASE: "case",
-  STICKER_CAPSULE: "sticker_capsule"
+  STICKER_CAPSULE: "sticker_capsule",
+  KNIFE: "knife",
+  GLOVE: "glove"
 })
 const FALLBACK_UNIVERSE = Object.freeze(normalizeUniverseEntries(marketUniverseTop100))
+const DEFAULT_UNIVERSE_LIMIT_BASELINE = 1000
 const DEFAULT_UNIVERSE_LIMIT = Math.max(
-  Number(arbitrageDefaultUniverseLimit || 500),
+  Number(arbitrageDefaultUniverseLimit || DEFAULT_UNIVERSE_LIMIT_BASELINE),
   100
 )
 const UNIVERSE_TARGET_SIZE = Math.max(
@@ -143,12 +146,16 @@ const STRICT_SEED_COVERAGE_RATIO_TARGET = 0.6
 const UNIVERSE_MIN_PRICE_FLOOR_BY_CATEGORY = Object.freeze({
   [ITEM_CATEGORIES.WEAPON_SKIN]: 2,
   [ITEM_CATEGORIES.CASE]: 1,
-  [ITEM_CATEGORIES.STICKER_CAPSULE]: 1
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: 1,
+  [ITEM_CATEGORIES.KNIFE]: 20,
+  [ITEM_CATEGORIES.GLOVE]: 20
 })
 const UNIVERSE_MIN_VOLUME_7D_BY_CATEGORY = Object.freeze({
   [ITEM_CATEGORIES.WEAPON_SKIN]: 20,
   [ITEM_CATEGORIES.CASE]: 20,
-  [ITEM_CATEGORIES.STICKER_CAPSULE]: 20
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: 20,
+  [ITEM_CATEGORIES.KNIFE]: 14,
+  [ITEM_CATEGORIES.GLOVE]: 12
 })
 const LOW_VALUE_NAME_PATTERNS = Object.freeze([
   /^sticker\s*\|/i,
@@ -168,6 +175,7 @@ const DIAGNOSTIC_REASON_KEYS = Object.freeze([
   "ignored_reference_deviation",
   "ignored_missing_markets",
   "ignored_missing_liquidity_data",
+  "ignored_missing_depth",
   "ignored_low_score",
   "ignored_stale_data"
 ])
@@ -256,8 +264,44 @@ const CATEGORY_SCAN_RULES = Object.freeze({
       minVolume7d: RISKY_MIN_VOLUME_7D,
       minMarketCoverage: MIN_MARKET_COVERAGE
     })
+  }),
+  [ITEM_CATEGORIES.KNIFE]: Object.freeze({
+    strict: Object.freeze({
+      minPriceUsd: 35,
+      minSpreadPercent: 3,
+      maxSpreadPercent: 120,
+      minVolume7d: 25,
+      minMarketCoverage: MIN_MARKET_COVERAGE
+    }),
+    risky: Object.freeze({
+      minPriceUsd: 20,
+      minSpreadPercent: 3,
+      maxSpreadPercent: 120,
+      minVolume7d: 14,
+      minMarketCoverage: MIN_MARKET_COVERAGE
+    })
+  }),
+  [ITEM_CATEGORIES.GLOVE]: Object.freeze({
+    strict: Object.freeze({
+      minPriceUsd: 35,
+      minSpreadPercent: 3,
+      maxSpreadPercent: 120,
+      minVolume7d: 22,
+      minMarketCoverage: MIN_MARKET_COVERAGE
+    }),
+    risky: Object.freeze({
+      minPriceUsd: 20,
+      minSpreadPercent: 3,
+      maxSpreadPercent: 120,
+      minVolume7d: 12,
+      minMarketCoverage: MIN_MARKET_COVERAGE
+    })
   })
 })
+
+const PREMIUM_ITEM_CATEGORIES = Object.freeze(
+  new Set([ITEM_CATEGORIES.KNIFE, ITEM_CATEGORIES.GLOVE])
+)
 
 function normalizeMarketHashName(value) {
   return String(value || "").trim()
@@ -282,6 +326,12 @@ function normalizeItemCategory(value, marketHashName = "") {
   const raw = String(value || "")
     .trim()
     .toLowerCase()
+  if (raw === ITEM_CATEGORIES.KNIFE || raw === "knives") {
+    return ITEM_CATEGORIES.KNIFE
+  }
+  if (raw === ITEM_CATEGORIES.GLOVE || raw === "gloves") {
+    return ITEM_CATEGORIES.GLOVE
+  }
   if (
     raw === ITEM_CATEGORIES.STICKER_CAPSULE ||
     raw === "sticker capsule" ||
@@ -297,6 +347,12 @@ function normalizeItemCategory(value, marketHashName = "") {
   }
   if (/case$/i.test(String(marketHashName || "").trim())) {
     return ITEM_CATEGORIES.CASE
+  }
+  if (/\b(gloves|glove|hand wraps)\b/i.test(String(marketHashName || "").trim())) {
+    return ITEM_CATEGORIES.GLOVE
+  }
+  if (/\b(knife|bayonet|karambit|daggers)\b/i.test(String(marketHashName || "").trim())) {
+    return ITEM_CATEGORIES.KNIFE
   }
   return ITEM_CATEGORIES.WEAPON_SKIN
 }
@@ -381,6 +437,12 @@ function normalizeCategoryFilter(value) {
   }
   if (raw === "case" || raw === "cases") {
     return ITEM_CATEGORIES.CASE
+  }
+  if (raw === "knife" || raw === "knives") {
+    return ITEM_CATEGORIES.KNIFE
+  }
+  if (raw === "glove" || raw === "gloves") {
+    return ITEM_CATEGORIES.GLOVE
   }
   if (
     raw === "capsule" ||
@@ -583,9 +645,17 @@ function isLowValueJunkName(marketHashName = "") {
   return LOW_VALUE_NAME_PATTERNS.some((pattern) => pattern.test(name))
 }
 
-function computeVolumeScore(volume7d) {
+function computeVolumeScore(volume7d, itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
+  const normalizedCategory = normalizeItemCategory(itemCategory)
   const volume = toFiniteOrNull(volume7d)
   if (volume == null || volume <= 0) return 0
+  if (PREMIUM_ITEM_CATEGORIES.has(normalizedCategory)) {
+    if (volume >= 150) return 100
+    if (volume >= 90) return 90
+    if (volume >= 40) return 78
+    if (volume >= 20) return 62
+    return 40
+  }
   if (volume >= 1000) return 100
   if (volume >= 500) return 92
   if (volume >= 200) return 80
@@ -615,6 +685,13 @@ function computePriceStabilityScore(sevenDayChangePercent) {
 function computeReferencePriceScore(referencePrice, itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
   const normalizedCategory = normalizeItemCategory(itemCategory)
   const price = toFiniteOrNull(referencePrice)
+  if (PREMIUM_ITEM_CATEGORIES.has(normalizedCategory)) {
+    if (price == null || price < 20) return 0
+    if (price >= 250) return 100
+    if (price >= 120) return 92
+    if (price >= 60) return 82
+    return 68
+  }
   if (normalizedCategory === ITEM_CATEGORIES.STICKER_CAPSULE) {
     if (price == null || price < 0.75) return 0
     if (price >= 8) return 100
@@ -640,7 +717,7 @@ function computeLiquidityRank({
   referencePrice = null,
   itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
 } = {}) {
-  const volumeScore = computeVolumeScore(volume7d)
+  const volumeScore = computeVolumeScore(volume7d, itemCategory)
   const marketCoverageScore = computeMarketCoverageScore(marketCoverage)
   const priceStabilityScore = computePriceStabilityScore(sevenDayChangePercent)
   const referencePriceScore = computeReferencePriceScore(referencePrice, itemCategory)
@@ -907,6 +984,8 @@ async function loadCuratedUniverseSeeds() {
       if (!marketHashName) return null
       return {
         marketHashName,
+        category: normalizeItemCategory(row?.category, marketHashName),
+        subcategory: String(row?.subcategory || "").trim() || null,
         liquidityRank: toFiniteOrNull(row?.liquidity_rank || row?.liquidityRank)
       }
     })
@@ -941,7 +1020,8 @@ async function loadCuratedUniverseSeeds() {
             ? snapshotsBySkinId[Number(skinsByName[row.marketHashName].id)] || null
             : null,
         marketHashName: row.marketHashName,
-        category: normalizeItemCategory("", row.marketHashName),
+        category: row.category,
+        subcategory: row.subcategory,
         universeSource: "curated_db",
         liquidityRank: row.liquidityRank
       })
@@ -1066,6 +1146,10 @@ function resolveLiquidityMetrics(opportunity = {}, inputItem = {}) {
   const liquiditySignal = opportunity?.antiFake?.liquidity || {}
   let volume7d = toFiniteOrNull(inputItem?.marketVolume7d)
   let liquidityScore = toFiniteOrNull(inputItem?.liquidityScore)
+  const depthFlags = Array.isArray(opportunity?.depthFlags) ? opportunity.depthFlags : []
+  const outlier = opportunity?.antiFake?.outlier && typeof opportunity.antiFake.outlier === "object"
+    ? opportunity.antiFake.outlier
+    : {}
 
   if (liquiditySignal?.signalType === "volume_7d") {
     volume7d = toFiniteOrNull(liquiditySignal?.signalValue)
@@ -1076,23 +1160,43 @@ function resolveLiquidityMetrics(opportunity = {}, inputItem = {}) {
 
   return {
     volume7d,
-    liquidityScore
+    liquidityScore,
+    hasMissingDepth: depthFlags.includes("MISSING_DEPTH"),
+    hasOutlierAdjusted: depthFlags.some(
+      (flag) => flag === "BUY_OUTLIER_ADJUSTED" || flag === "SELL_OUTLIER_ADJUSTED"
+    ),
+    buyDepthMissing: Boolean(outlier?.buyDepthMissing),
+    sellDepthMissing: Boolean(outlier?.sellDepthMissing)
   }
 }
 
 function passesScannerGuards(opportunity = {}, liquidity = {}) {
+  const itemCategory = normalizeItemCategory(
+    opportunity?.itemCategory || opportunity?.category,
+    opportunity?.itemName || opportunity?.marketHashName
+  )
+  const rules = getCategoryScanRules(itemCategory, "strict")
   const profit = toFiniteOrNull(opportunity?.profit)
   const spread = toFiniteOrNull(opportunity?.spreadPercent ?? opportunity?.spread_pct)
   const volume7d = toFiniteOrNull(liquidity?.volume7d)
   const buyPrice = toFiniteOrNull(opportunity?.buyPrice)
   const marketCoverage = Number(opportunity?.marketCoverage || 0)
+  const hasMissingDepth = Boolean(liquidity?.hasMissingDepth)
+  const hasBothDepthMissing = Boolean(liquidity?.buyDepthMissing) && Boolean(liquidity?.sellDepthMissing)
 
   if (!opportunity?.isOpportunity) return false
   if (profit == null || profit <= 0) return false
-  if (buyPrice == null || buyPrice < MIN_EXECUTION_PRICE_USD) return false
-  if (spread == null || spread < MIN_SPREAD_PERCENT || spread > MAX_SPREAD_PERCENT) return false
-  if (volume7d == null || volume7d < MIN_VOLUME_7D) return false
-  if (marketCoverage < MIN_MARKET_COVERAGE) return false
+  if (buyPrice == null || buyPrice < Number(rules.minPriceUsd || MIN_EXECUTION_PRICE_USD)) return false
+  if (
+    spread == null ||
+    spread < Number(rules.minSpreadPercent || MIN_SPREAD_PERCENT) ||
+    spread > Number(rules.maxSpreadPercent || MAX_SPREAD_PERCENT)
+  ) {
+    return false
+  }
+  if (volume7d == null || volume7d < Number(rules.minVolume7d || MIN_VOLUME_7D)) return false
+  if (marketCoverage < Number(rules.minMarketCoverage || MIN_MARKET_COVERAGE)) return false
+  if (PREMIUM_ITEM_CATEGORIES.has(itemCategory) && (hasBothDepthMissing || hasMissingDepth)) return false
 
   return true
 }
@@ -1114,6 +1218,27 @@ function getCategoryScanRules(itemCategory, profileName = "strict") {
   return categoryRules.strict
 }
 
+function resolveDepthSignals(opportunity = {}, liquidity = {}) {
+  const depthFlags = Array.isArray(opportunity?.depthFlags) ? opportunity.depthFlags : []
+  const outlier = opportunity?.antiFake?.outlier && typeof opportunity.antiFake.outlier === "object"
+    ? opportunity.antiFake.outlier
+    : {}
+  const buyDepthMissing = Boolean(liquidity?.buyDepthMissing ?? outlier?.buyDepthMissing)
+  const sellDepthMissing = Boolean(liquidity?.sellDepthMissing ?? outlier?.sellDepthMissing)
+  const hasMissingDepth = Boolean(liquidity?.hasMissingDepth) || depthFlags.includes("MISSING_DEPTH")
+  const hasOutlierAdjusted =
+    Boolean(liquidity?.hasOutlierAdjusted) ||
+    depthFlags.some((flag) => flag === "BUY_OUTLIER_ADJUSTED" || flag === "SELL_OUTLIER_ADJUSTED")
+
+  return {
+    buyDepthMissing,
+    sellDepthMissing,
+    hasMissingDepth,
+    hasOutlierAdjusted,
+    hasBothDepthMissing: buyDepthMissing && sellDepthMissing
+  }
+}
+
 function computeRiskAdjustments({
   opportunity = {},
   liquidity = {},
@@ -1133,6 +1258,8 @@ function computeRiskAdjustments({
   const marketCoverage = Number(opportunity?.marketCoverage || 0)
   const staleMinutes = toFiniteOrNull(stale?.maxAgeMinutes)
   const hasSnapshotStale = Boolean(inputItem?.snapshotStale)
+  const isPremiumCategory = PREMIUM_ITEM_CATEGORIES.has(itemCategory)
+  const depthSignals = resolveDepthSignals(opportunity, liquidity)
 
   if (profit == null || profit <= 0) {
     return { passed: false, primaryReason: "non_positive_profit", penalty: 0 }
@@ -1166,6 +1293,10 @@ function computeRiskAdjustments({
     return { passed: false, primaryReason: "ignored_low_liquidity", penalty: 0 }
   }
 
+  if (isPremiumCategory && depthSignals.hasBothDepthMissing) {
+    return { passed: false, primaryReason: "ignored_missing_depth", penalty: 0 }
+  }
+
   if (profile.requireFreshData) {
     if (hasSnapshotStale) {
       return { passed: false, primaryReason: "ignored_stale_data", penalty: 0 }
@@ -1173,6 +1304,15 @@ function computeRiskAdjustments({
     if (staleMinutes != null && staleMinutes >= Number(profile.maxQuoteAgeMinutes || 0)) {
       return { passed: false, primaryReason: "ignored_stale_data", penalty: 0 }
     }
+  }
+
+  if (
+    isPremiumCategory &&
+    profile.name === "risky" &&
+    staleMinutes != null &&
+    staleMinutes >= 180
+  ) {
+    return { passed: false, primaryReason: "ignored_stale_data", penalty: 0 }
   }
 
   let penalty = 0
@@ -1195,6 +1335,20 @@ function computeRiskAdjustments({
     penalty += 18
   } else if (staleMinutes != null && staleMinutes >= 60) {
     penalty += 10
+  }
+  if (isPremiumCategory && depthSignals.hasMissingDepth) {
+    penalty += 24
+  }
+  if (isPremiumCategory && depthSignals.hasOutlierAdjusted) {
+    penalty += 14
+  }
+  if (isPremiumCategory && hasSnapshotStale) {
+    penalty += 10
+  }
+  if (isPremiumCategory && staleMinutes != null && staleMinutes >= 120) {
+    penalty += 10
+  } else if (isPremiumCategory && staleMinutes != null && staleMinutes >= 45) {
+    penalty += 6
   }
 
   return {
@@ -1738,10 +1892,13 @@ function applyGuardFallbackReason(
   itemName = "",
   itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
 ) {
+  const rules = getCategoryScanRules(itemCategory, "risky")
   const buyPrice = toFiniteOrNull(opportunity?.buyPrice)
   const spread = toFiniteOrNull(opportunity?.spreadPercent ?? opportunity?.spread_pct)
   const volume7d = toFiniteOrNull(liquidity?.volume7d)
   const marketCoverage = Number(opportunity?.marketCoverage || 0)
+  const hasMissingDepth = Boolean(liquidity?.hasMissingDepth)
+  const hasBothDepthMissing = Boolean(liquidity?.buyDepthMissing) && Boolean(liquidity?.sellDepthMissing)
   const targetItemName = itemName || opportunity?.itemName
   const record = (reason) => {
     incrementReasonCounter(discardStats, reason, itemCategory)
@@ -1749,17 +1906,20 @@ function applyGuardFallbackReason(
       incrementItemReasonCounter(rejectedByItem, targetItemName, reason, itemCategory)
     }
   }
-  if (buyPrice != null && buyPrice < MIN_EXECUTION_PRICE_USD) {
+  if (buyPrice != null && buyPrice < Number(rules.minPriceUsd || MIN_EXECUTION_PRICE_USD)) {
     record("ignored_execution_floor")
   }
-  if (volume7d == null || volume7d < MIN_VOLUME_7D) {
+  if (volume7d == null || volume7d < Number(rules.minVolume7d || MIN_VOLUME_7D)) {
     record("ignored_low_liquidity")
   }
-  if (spread != null && spread > MAX_SPREAD_PERCENT) {
+  if (spread != null && spread > Number(rules.maxSpreadPercent || MAX_SPREAD_PERCENT)) {
     record("ignored_extreme_spread")
   }
-  if (marketCoverage < MIN_MARKET_COVERAGE) {
+  if (marketCoverage < Number(rules.minMarketCoverage || MIN_MARKET_COVERAGE)) {
     record("ignored_missing_markets")
+  }
+  if (PREMIUM_ITEM_CATEGORIES.has(normalizeItemCategory(itemCategory)) && (hasBothDepthMissing || hasMissingDepth)) {
+    record("ignored_missing_depth")
   }
 }
 
@@ -2523,12 +2683,44 @@ function selectTopUniverseItems(
 }
 
 function countRowsByCategory(rows = []) {
-  const counts = {}
+  const counts = Object.fromEntries(
+    Object.values(ITEM_CATEGORIES).map((category) => [category, 0])
+  )
   for (const row of Array.isArray(rows) ? rows : []) {
     const category = normalizeItemCategory(row?.itemCategory, row?.itemName)
     counts[category] = Number(counts[category] || 0) + 1
   }
   return counts
+}
+
+function toRejectedCountByCategory(discardedReasonsByCategory = {}) {
+  const counts = Object.fromEntries(
+    Object.values(ITEM_CATEGORIES).map((category) => [category, 0])
+  )
+  for (const [category, payload] of Object.entries(discardedReasonsByCategory || {})) {
+    const normalizedCategory = normalizeItemCategory(category)
+    counts[normalizedCategory] = Number(payload?.totalRejected || 0)
+  }
+  return counts
+}
+
+function toKnifeGloveRejectionSummary(discardedReasonsByCategory = {}) {
+  const reasonMapByCategory = {
+    [ITEM_CATEGORIES.KNIFE]: discardedReasonsByCategory?.[ITEM_CATEGORIES.KNIFE]?.reasons || {},
+    [ITEM_CATEGORIES.GLOVE]: discardedReasonsByCategory?.[ITEM_CATEGORIES.GLOVE]?.reasons || {}
+  }
+
+  const result = {}
+  for (const [category, reasons] of Object.entries(reasonMapByCategory)) {
+    result[category] = {
+      low_liquidity: Number(reasons.ignored_low_liquidity || 0),
+      extreme_spread: Number(reasons.ignored_extreme_spread || 0),
+      stale_market_data: Number(reasons.ignored_stale_data || 0),
+      missing_depth: Number(reasons.ignored_missing_depth || 0),
+      reference_deviation: Number(reasons.ignored_reference_deviation || 0)
+    }
+  }
+  return result
 }
 
 function buildScanProgressStats({
@@ -2589,6 +2781,9 @@ async function runScanInternal(options = {}) {
   const snapshotWarmupSummary = scannerInputs?.snapshotWarmup || toSnapshotWarmupSummary()
   if (!universeSeeds.length) {
     const generatedTs = Date.now()
+    const emptyByCategory = Object.fromEntries(
+      Object.values(ITEM_CATEGORIES).map((category) => [category, 0])
+    )
     const emptyPayload = {
       generatedAt: new Date(generatedTs).toISOString(),
       expiresAt: generatedTs + CACHE_TTL_MS,
@@ -2603,9 +2798,12 @@ async function runScanInternal(options = {}) {
         candidateItems: 0,
         discardedReasons: normalizeDiscardStats(discardStats),
         discardedReasonsByCategory: normalizeDiscardStatsByCategory(discardStats),
+        rejectedByCategory: { ...emptyByCategory },
         topRejectedItems: toTopRejectedItems(rejectedByItem),
         rejectionReasonsByItem: toRejectionReasonsByItem(rejectedByItem),
-        opportunitiesByCategory: {},
+        selectedUniverseByCategory: { ...emptyByCategory },
+        opportunitiesByCategory: { ...emptyByCategory },
+        knifeGloveRejections: toKnifeGloveRejectionSummary({}),
         snapshotWarmup: snapshotWarmupSummary,
         imageEnrichment: imageEnrichmentSummary,
         sourceCatalog: sourceCatalogDiagnostics,
@@ -2800,9 +2998,17 @@ async function runScanInternal(options = {}) {
         .toLowerCase() !== "low"
   ).length
   const riskyEligibleCount = sortedRows.filter((row) => Boolean(row?.isRiskyEligible)).length
+  const selectedUniverseByCategory = countRowsByCategory(
+    selectedUniverse.map((row) => ({
+      itemCategory: row?.inputItem?.itemCategory,
+      itemName: row?.inputItem?.marketHashName
+    }))
+  )
   const opportunitiesByCategory = countRowsByCategory(sortedRows)
   const discardedReasons = normalizeDiscardStats(discardStats)
   const discardedReasonsByCategory = normalizeDiscardStatsByCategory(discardStats)
+  const rejectedByCategory = toRejectedCountByCategory(discardedReasonsByCategory)
+  const knifeGloveRejections = toKnifeGloveRejectionSummary(discardedReasonsByCategory)
   const scanProgress = buildScanProgressStats({
     universeTarget: UNIVERSE_TARGET_SIZE,
     candidateItems: universeSeeds.length,
@@ -2827,9 +3033,12 @@ async function runScanInternal(options = {}) {
       candidateItems: universeSeeds.length,
       discardedReasons,
       discardedReasonsByCategory,
+      rejectedByCategory,
       topRejectedItems: toTopRejectedItems(rejectedByItem),
       rejectionReasonsByItem: toRejectionReasonsByItem(rejectedByItem),
+      selectedUniverseByCategory,
       opportunitiesByCategory,
+      knifeGloveRejections,
       snapshotWarmup: snapshotWarmupSummary,
       imageEnrichment: imageEnrichmentSummary,
       sourceCatalog: sourceCatalogDiagnostics,
@@ -2891,9 +3100,12 @@ function toScanDiagnosticsSummary(scanPayload = {}, persistSummary = {}, trigger
     candidateItems: Number(scanPayload?.summary?.candidateItems || 0),
     discardedReasons: scanPayload?.summary?.discardedReasons || {},
     discardedReasonsByCategory: scanPayload?.summary?.discardedReasonsByCategory || {},
+    rejectedByCategory: scanPayload?.summary?.rejectedByCategory || {},
     topRejectedItems: scanPayload?.summary?.topRejectedItems || [],
     rejectionReasonsByItem: scanPayload?.summary?.rejectionReasonsByItem || [],
+    selectedUniverseByCategory: scanPayload?.summary?.selectedUniverseByCategory || {},
     opportunitiesByCategory: scanPayload?.summary?.opportunitiesByCategory || {},
+    knifeGloveRejections: scanPayload?.summary?.knifeGloveRejections || {},
     snapshotWarmup:
       scanPayload?.summary?.snapshotWarmup || scanPayload?.pipeline?.snapshotWarmup || {},
     imageEnrichment:
@@ -3303,6 +3515,7 @@ function resolveNoOpportunitiesReason(summary = {}, status = {}, opportunities =
     ignored_reference_deviation: "Most candidates failed reference deviation checks.",
     ignored_missing_markets: "Most candidates were missing enough market coverage.",
     ignored_missing_liquidity_data: "Most candidates were missing liquidity data.",
+    ignored_missing_depth: "Most candidates were rejected due to missing orderbook depth.",
     ignored_low_score: "Most candidates scored below profile thresholds.",
     ignored_stale_data: "Most candidates were rejected due to stale data."
   }
@@ -3379,9 +3592,12 @@ exports.getFeed = async (options = {}) => {
     candidateItems: Number(diagnosticsSummary?.candidateItems || 0),
     discardedReasons: diagnosticsSummary?.discardedReasons || {},
     discardedReasonsByCategory: diagnosticsSummary?.discardedReasonsByCategory || {},
+    rejectedByCategory: diagnosticsSummary?.rejectedByCategory || {},
     topRejectedItems: diagnosticsSummary?.topRejectedItems || [],
     rejectionReasonsByItem: diagnosticsSummary?.rejectionReasonsByItem || [],
+    selectedUniverseByCategory: diagnosticsSummary?.selectedUniverseByCategory || {},
     opportunitiesByCategory: diagnosticsSummary?.opportunitiesByCategory || {},
+    knifeGloveRejections: diagnosticsSummary?.knifeGloveRejections || {},
     snapshotWarmup:
       diagnosticsSummary?.snapshotWarmup || diagnosticsSummary?.pipeline?.snapshotWarmup || {},
     imageEnrichment:

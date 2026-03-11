@@ -4,7 +4,7 @@ const AppError = require("../utils/AppError")
 const TABLE = "market_source_catalog"
 const INSERT_BATCH_SIZE = 200
 const MAX_LIMIT = 5000
-const CATEGORY_SET = new Set(["weapon_skin", "case", "sticker_capsule"])
+const CATEGORY_SET = new Set(["weapon_skin", "case", "sticker_capsule", "knife", "glove"])
 
 function normalizeText(value) {
   return String(value || "").trim()

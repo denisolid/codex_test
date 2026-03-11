@@ -1,6 +1,24 @@
 const { supabaseAdmin } = require("../config/supabase");
 const AppError = require("../utils/AppError");
 
+const PLAN_SCHEMA_MIGRATION_FILE = "2026-03-10-temporary-subscription-plan-switcher.sql";
+const LEGACY_PLAN_TIER_BY_NEW_TIER = Object.freeze({
+  free: "free",
+  full_access: "pro"
+});
+const USER_PLAN_CONSTRAINT_NAMES = Object.freeze([
+  "users_plan_tier_check",
+  "plan_tier_check",
+  "users_plan_check",
+  "plan_check"
+]);
+const PLAN_CHANGE_EVENT_CONSTRAINT_NAMES = Object.freeze([
+  "plan_change_events_old_plan_tier_check",
+  "plan_change_events_new_plan_tier_check",
+  "old_plan_tier_check",
+  "new_plan_tier_check"
+]);
+
 function hasOwn(obj, key) {
   return Object.prototype.hasOwnProperty.call(obj || {}, key);
 }
@@ -26,6 +44,42 @@ function isForeignKeyViolation(errorLike) {
     /foreign key/.test(message) ||
     /users_id_fkey/.test(message)
   );
+}
+
+function isCheckConstraintViolation(errorLike, constraintNames = []) {
+  const code = String(errorLike?.code || "").trim().toLowerCase();
+  const message = String(errorLike?.message || "").trim().toLowerCase();
+  const details = String(errorLike?.details || "").trim().toLowerCase();
+  const hint = String(errorLike?.hint || "").trim().toLowerCase();
+  const combined = `${message} ${details} ${hint}`;
+  const looksLikeCheckViolation =
+    code === "23514" || combined.includes("violates check constraint");
+
+  if (!looksLikeCheckViolation) {
+    return false;
+  }
+
+  if (!Array.isArray(constraintNames) || !constraintNames.length) {
+    return true;
+  }
+
+  return constraintNames.some((name) =>
+    combined.includes(String(name || "").trim().toLowerCase())
+  );
+}
+
+function toLegacyPlanTier(planTier) {
+  const safeTier = String(planTier || "").trim().toLowerCase();
+  return LEGACY_PLAN_TIER_BY_NEW_TIER[safeTier] || null;
+}
+
+function buildPlanSchemaOutdatedError(planTier) {
+  const safeTier = String(planTier || "").trim().toLowerCase() || "unknown";
+  const message =
+    safeTier === "api_advanced"
+      ? `Database plan constraints are outdated and do not support "${safeTier}". Apply migration ${PLAN_SCHEMA_MIGRATION_FILE}.`
+      : `Database plan constraints are outdated. Apply migration ${PLAN_SCHEMA_MIGRATION_FILE}.`;
+  return new AppError(message, 409, "PLAN_SCHEMA_OUTDATED");
 }
 
 async function hasAuthUser(id) {
@@ -295,12 +349,41 @@ exports.updatePlanById = async (id, updates = {}) => {
     return exports.getById(id);
   }
 
-  const { data, error } = await supabaseAdmin
-    .from("users")
-    .update(patch)
-    .eq("id", id)
-    .select("*")
-    .single();
+  const runUpdate = async (patchToApply) =>
+    supabaseAdmin
+      .from("users")
+      .update(patchToApply)
+      .eq("id", id)
+      .select("*")
+      .single();
+
+  let { data, error } = await runUpdate(patch);
+
+  if (
+    error &&
+    (hasOwn(updates, "planTier") || hasOwn(updates, "plan")) &&
+    isCheckConstraintViolation(error, USER_PLAN_CONSTRAINT_NAMES)
+  ) {
+    const requestedPlanTier = String(patch.plan_tier || patch.plan || "")
+      .trim()
+      .toLowerCase();
+    const legacyPlanTier = toLegacyPlanTier(requestedPlanTier);
+
+    if (!legacyPlanTier) {
+      throw buildPlanSchemaOutdatedError(requestedPlanTier);
+    }
+
+    const legacyPatch = {
+      ...patch,
+      plan_tier: legacyPlanTier,
+      plan: legacyPlanTier
+    };
+    ({ data, error } = await runUpdate(legacyPatch));
+
+    if (error && isCheckConstraintViolation(error, USER_PLAN_CONSTRAINT_NAMES)) {
+      throw buildPlanSchemaOutdatedError(requestedPlanTier);
+    }
+  }
 
   if (error) {
     throw new AppError(error.message, 500);
@@ -348,7 +431,29 @@ exports.insertPlanChangeEvent = async (payload = {}) => {
     changed_by: payload.changedBy || "self_service"
   };
 
-  const { error } = await supabaseAdmin.from("plan_change_events").insert(row);
+  const insertRow = async (rowToInsert) =>
+    supabaseAdmin.from("plan_change_events").insert(rowToInsert);
+
+  let { error } = await insertRow(row);
+  if (error && isCheckConstraintViolation(error, PLAN_CHANGE_EVENT_CONSTRAINT_NAMES)) {
+    const legacyOldPlanTier = toLegacyPlanTier(row.old_plan_tier);
+    const legacyNewPlanTier = toLegacyPlanTier(row.new_plan_tier);
+
+    if (!legacyOldPlanTier || !legacyNewPlanTier) {
+      throw buildPlanSchemaOutdatedError(row.new_plan_tier || row.old_plan_tier);
+    }
+
+    ({ error } = await insertRow({
+      ...row,
+      old_plan_tier: legacyOldPlanTier,
+      new_plan_tier: legacyNewPlanTier
+    }));
+
+    if (error && isCheckConstraintViolation(error, PLAN_CHANGE_EVENT_CONSTRAINT_NAMES)) {
+      throw buildPlanSchemaOutdatedError(row.new_plan_tier || row.old_plan_tier);
+    }
+  }
+
   if (error) {
     throw new AppError(error.message, 500);
   }
