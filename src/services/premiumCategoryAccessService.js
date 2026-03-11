@@ -1,5 +1,6 @@
 const AppError = require("../utils/AppError")
 const skinRepo = require("../repositories/skinRepository")
+const planService = require("./planService")
 
 const ITEM_CATEGORIES = Object.freeze({
   WEAPON_SKIN: "weapon_skin",
@@ -74,11 +75,7 @@ function isPremiumCategory(value) {
 }
 
 function hasPremiumCategoryAccess(entitlements = {}) {
-  return Boolean(
-    entitlements?.premiumCategoryAccess ||
-      entitlements?.knivesGlovesAccess ||
-      entitlements?.fullOpportunitiesFeed
-  )
+  return planService.canAccessKnivesAndGloves(entitlements)
 }
 
 function inferPremiumCategoryLabel(value) {
@@ -196,7 +193,12 @@ function assertPremiumCategoryAccess(input = {}) {
   const entitlements = input?.entitlements || {}
   const itemCategory = normalizeItemCategory(input?.itemCategory, input?.marketHashName)
   if (!PREMIUM_CATEGORIES.has(itemCategory)) return itemCategory
-  if (hasPremiumCategoryAccess(entitlements)) return itemCategory
+  if (
+    planService.canAccessCategory(entitlements, itemCategory) ||
+    hasPremiumCategoryAccess(entitlements)
+  ) {
+    return itemCategory
+  }
   throw new AppError(
     input?.message ||
       "Unlock knife and glove opportunities with Full Access to inspect and compare premium categories.",

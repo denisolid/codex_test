@@ -19,6 +19,7 @@ const REFERENCE_DEVIATION_RATIO_MAX = Number(
 )
 const MIN_MARKET_COVERAGE = Number(arbitrageRules.MIN_MARKET_COVERAGE || 2)
 const LIQUIDITY_VOLUME_PASS = Number(arbitrageRules.LIQUIDITY_VOLUME_PASS || 100)
+const LIQUIDITY_VOLUME_MEDIUM = Number(arbitrageRules.LIQUIDITY_VOLUME_MEDIUM || 50)
 const LIQUIDITY_VOLUME_HIGH = Number(arbitrageRules.LIQUIDITY_VOLUME_HIGH || 200)
 const DEFAULT_SCORE_CUTOFF = Number(arbitrageRules.DEFAULT_SCORE_CUTOFF || 75)
 const RISKY_SCORE_CUTOFF = Number(arbitrageRules.RISKY_SCORE_CUTOFF || 60)
@@ -27,6 +28,18 @@ const DEFAULT_MIN_PROFIT_BUY_PERCENT = Number(
   arbitrageRules.DEFAULT_MIN_PROFIT_BUY_PERCENT || 2
 )
 const ORDERBOOK_OUTLIER_RATIO = Number(arbitrageRules.ORDERBOOK_OUTLIER_RATIO || 3)
+const PREMIUM_MIN_EXECUTION_PRICE_USD = 20
+const PREMIUM_MIN_SPREAD_PERCENT = 3
+const PREMIUM_SPREAD_HEAVY_PENALTY_THRESHOLD = 150
+const PREMIUM_SPREAD_SANITY_MAX_PERCENT = 250
+const PREMIUM_LIQUIDITY_LOW_MIN = 5
+const PREMIUM_LIQUIDITY_MEDIUM_MIN = 10
+const PREMIUM_LIQUIDITY_HIGH_MIN = 20
+const PREMIUM_UNKNOWN_VOLUME_MIN_MARKETS = 3
+const PREMIUM_REFERENCE_DEVIATION_PENALTY_RATIO = 1.8
+const PREMIUM_REFERENCE_DEVIATION_REJECT_RATIO = 2.5
+const PREMIUM_DEPTH_GAP_SUSPICIOUS_RATIO = 1.7
+const PREMIUM_DEPTH_GAP_EXTREME_RATIO = 2.4
 
 const ITEM_CATEGORIES = Object.freeze({
   WEAPON_SKIN: "weapon_skin",
@@ -39,23 +52,32 @@ const ITEM_CATEGORIES = Object.freeze({
 const CATEGORY_LIQUIDITY_RULES = Object.freeze({
   [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({
     pass: LIQUIDITY_VOLUME_PASS,
+    medium: LIQUIDITY_VOLUME_MEDIUM,
     high: LIQUIDITY_VOLUME_HIGH
   }),
   [ITEM_CATEGORIES.CASE]: Object.freeze({
     pass: LIQUIDITY_VOLUME_PASS,
+    medium: LIQUIDITY_VOLUME_MEDIUM,
     high: LIQUIDITY_VOLUME_HIGH
   }),
   [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
     pass: LIQUIDITY_VOLUME_PASS,
+    medium: LIQUIDITY_VOLUME_MEDIUM,
     high: LIQUIDITY_VOLUME_HIGH
   }),
   [ITEM_CATEGORIES.KNIFE]: Object.freeze({
-    pass: 30,
-    high: 90
+    pass: PREMIUM_LIQUIDITY_LOW_MIN,
+    medium: PREMIUM_LIQUIDITY_MEDIUM_MIN,
+    high: PREMIUM_LIQUIDITY_HIGH_MIN,
+    allowMissing: true,
+    unknownMinMarkets: PREMIUM_UNKNOWN_VOLUME_MIN_MARKETS
   }),
   [ITEM_CATEGORIES.GLOVE]: Object.freeze({
-    pass: 24,
-    high: 80
+    pass: PREMIUM_LIQUIDITY_LOW_MIN,
+    medium: PREMIUM_LIQUIDITY_MEDIUM_MIN,
+    high: PREMIUM_LIQUIDITY_HIGH_MIN,
+    allowMissing: true,
+    unknownMinMarkets: PREMIUM_UNKNOWN_VOLUME_MIN_MARKETS
   })
 })
 
@@ -63,8 +85,82 @@ const REFERENCE_DEVIATION_RATIO_MAX_BY_CATEGORY = Object.freeze({
   [ITEM_CATEGORIES.WEAPON_SKIN]: REFERENCE_DEVIATION_RATIO_MAX,
   [ITEM_CATEGORIES.CASE]: REFERENCE_DEVIATION_RATIO_MAX,
   [ITEM_CATEGORIES.STICKER_CAPSULE]: REFERENCE_DEVIATION_RATIO_MAX,
-  [ITEM_CATEGORIES.KNIFE]: Math.min(REFERENCE_DEVIATION_RATIO_MAX, 1.9),
-  [ITEM_CATEGORIES.GLOVE]: Math.min(REFERENCE_DEVIATION_RATIO_MAX, 1.9)
+  [ITEM_CATEGORIES.KNIFE]: PREMIUM_REFERENCE_DEVIATION_REJECT_RATIO,
+  [ITEM_CATEGORIES.GLOVE]: PREMIUM_REFERENCE_DEVIATION_REJECT_RATIO
+})
+
+const CATEGORY_MIN_EXECUTION_PRICE = Object.freeze({
+  [ITEM_CATEGORIES.WEAPON_SKIN]: MIN_EXECUTION_PRICE_USD,
+  [ITEM_CATEGORIES.CASE]: MIN_EXECUTION_PRICE_USD,
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: MIN_EXECUTION_PRICE_USD,
+  [ITEM_CATEGORIES.KNIFE]: PREMIUM_MIN_EXECUTION_PRICE_USD,
+  [ITEM_CATEGORIES.GLOVE]: PREMIUM_MIN_EXECUTION_PRICE_USD
+})
+
+const CATEGORY_SPREAD_RULES = Object.freeze({
+  [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({
+    min: MIN_SPREAD_PERCENT,
+    suspiciousPenaltyThreshold: SPREAD_SUSPICIOUS_PENALTY_THRESHOLD,
+    max: SPREAD_SANITY_MAX_PERCENT
+  }),
+  [ITEM_CATEGORIES.CASE]: Object.freeze({
+    min: MIN_SPREAD_PERCENT,
+    suspiciousPenaltyThreshold: SPREAD_SUSPICIOUS_PENALTY_THRESHOLD,
+    max: SPREAD_SANITY_MAX_PERCENT
+  }),
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
+    min: MIN_SPREAD_PERCENT,
+    suspiciousPenaltyThreshold: SPREAD_SUSPICIOUS_PENALTY_THRESHOLD,
+    max: SPREAD_SANITY_MAX_PERCENT
+  }),
+  [ITEM_CATEGORIES.KNIFE]: Object.freeze({
+    min: PREMIUM_MIN_SPREAD_PERCENT,
+    suspiciousPenaltyThreshold: PREMIUM_SPREAD_HEAVY_PENALTY_THRESHOLD,
+    max: PREMIUM_SPREAD_SANITY_MAX_PERCENT
+  }),
+  [ITEM_CATEGORIES.GLOVE]: Object.freeze({
+    min: PREMIUM_MIN_SPREAD_PERCENT,
+    suspiciousPenaltyThreshold: PREMIUM_SPREAD_HEAVY_PENALTY_THRESHOLD,
+    max: PREMIUM_SPREAD_SANITY_MAX_PERCENT
+  })
+})
+
+const CATEGORY_SCORE_WEIGHTS = Object.freeze({
+  [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({
+    spread: 0.25,
+    liquidity: 0.3,
+    stability: 0.15,
+    market: 0.15,
+    depth: 0.15
+  }),
+  [ITEM_CATEGORIES.CASE]: Object.freeze({
+    spread: 0.25,
+    liquidity: 0.3,
+    stability: 0.15,
+    market: 0.15,
+    depth: 0.15
+  }),
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
+    spread: 0.25,
+    liquidity: 0.3,
+    stability: 0.15,
+    market: 0.15,
+    depth: 0.15
+  }),
+  [ITEM_CATEGORIES.KNIFE]: Object.freeze({
+    spread: 0.2,
+    liquidity: 0.2,
+    stability: 0.15,
+    market: 0.15,
+    depth: 0.3
+  }),
+  [ITEM_CATEGORIES.GLOVE]: Object.freeze({
+    spread: 0.2,
+    liquidity: 0.2,
+    stability: 0.15,
+    market: 0.15,
+    depth: 0.3
+  })
 })
 
 const MARKET_RELIABILITY = Object.freeze({
@@ -82,7 +178,8 @@ const FILTER_REASON_LABELS = Object.freeze({
   ignored_low_liquidity: "Low liquidity",
   ignored_extreme_spread: "Extreme spread suggests stale/fake pricing",
   ignored_reference_deviation: "Price deviates too far from reference",
-  ignored_missing_markets: "Missing market coverage"
+  ignored_missing_markets: "Missing market coverage",
+  ignored_missing_depth: "Insufficient depth confidence"
 })
 
 function normalizeItemCategory(value, itemName = "") {
@@ -110,6 +207,26 @@ function normalizeItemCategory(value, itemName = "") {
 function getCategoryLiquidityRules(itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
   const normalized = normalizeItemCategory(itemCategory)
   return CATEGORY_LIQUIDITY_RULES[normalized] || CATEGORY_LIQUIDITY_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
+}
+
+function isPremiumCategory(itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
+  const normalized = normalizeItemCategory(itemCategory)
+  return normalized === ITEM_CATEGORIES.KNIFE || normalized === ITEM_CATEGORIES.GLOVE
+}
+
+function getCategorySpreadRules(itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
+  const normalized = normalizeItemCategory(itemCategory)
+  return CATEGORY_SPREAD_RULES[normalized] || CATEGORY_SPREAD_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
+}
+
+function getCategoryMinExecutionPrice(itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
+  const normalized = normalizeItemCategory(itemCategory)
+  return CATEGORY_MIN_EXECUTION_PRICE[normalized] || CATEGORY_MIN_EXECUTION_PRICE[ITEM_CATEGORIES.WEAPON_SKIN]
+}
+
+function getCategoryScoreWeights(itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
+  const normalized = normalizeItemCategory(itemCategory)
+  return CATEGORY_SCORE_WEIGHTS[normalized] || CATEGORY_SCORE_WEIGHTS[ITEM_CATEGORIES.WEAPON_SKIN]
 }
 
 function getReferenceDeviationRatioMax(itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
@@ -157,10 +274,19 @@ function resolveSevenDayChange(item = {}) {
   return resolveSevenDayChangePercent(item)
 }
 
-function getSpreadScore(spreadPercent) {
+function getSpreadScore(spreadPercent, itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
   const spread = toFiniteOrNull(spreadPercent)
+  const spreadRules = getCategorySpreadRules(itemCategory)
   if (spread == null) return 30
-  if (spread < MIN_SPREAD_PERCENT) return 20
+  if (spread < Number(spreadRules.min || MIN_SPREAD_PERCENT)) return 20
+  if (isPremiumCategory(itemCategory)) {
+    if (spread < 10) return 62
+    if (spread < 20) return 80
+    if (spread <= 40) return 90
+    if (spread <= PREMIUM_SPREAD_HEAVY_PENALTY_THRESHOLD) return 78
+    if (spread <= Number(spreadRules.max || PREMIUM_SPREAD_SANITY_MAX_PERCENT)) return 42
+    return 10
+  }
   if (spread < 10) return 60
   if (spread < 20) return 80
   if (spread <= 40) return 90
@@ -351,6 +477,17 @@ function evaluateLiquidityFilter({
   ].find((value) => value != null && value >= 0)
 
   if (volume7d == null) {
+    if (isPremiumCategory(itemCategory) && Boolean(rules.allowMissing)) {
+      return {
+        passed: true,
+        medium: false,
+        high: false,
+        unknown: true,
+        signalType: "volume_7d",
+        signalValue: null,
+        band: "Unknown"
+      }
+    }
     return {
       passed: false,
       medium: false,
@@ -362,7 +499,7 @@ function evaluateLiquidityFilter({
     }
   }
 
-  if (volume7d > Number(rules.high || LIQUIDITY_VOLUME_HIGH)) {
+  if (volume7d >= Number(rules.high || LIQUIDITY_VOLUME_HIGH)) {
     return {
       passed: true,
       medium: false,
@@ -374,7 +511,7 @@ function evaluateLiquidityFilter({
     }
   }
 
-  if (volume7d >= Number(rules.pass || LIQUIDITY_VOLUME_PASS)) {
+  if (volume7d >= Number(rules.medium || rules.pass || LIQUIDITY_VOLUME_PASS)) {
     return {
       passed: true,
       medium: true,
@@ -383,6 +520,18 @@ function evaluateLiquidityFilter({
       signalType: "volume_7d",
       signalValue: volume7d,
       band: "Medium"
+    }
+  }
+
+  if (volume7d >= Number(rules.pass || LIQUIDITY_VOLUME_PASS)) {
+    return {
+      passed: true,
+      medium: false,
+      high: false,
+      unknown: false,
+      signalType: "volume_7d",
+      signalValue: volume7d,
+      band: "Low"
     }
   }
 
@@ -397,9 +546,42 @@ function evaluateLiquidityFilter({
   }
 }
 
-function computeLiquidityScoreForRanking(liquidityFilter = {}) {
+function computeLiquidityScoreForRanking(
+  liquidityFilter = {},
+  itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
+) {
   if (liquidityFilter.signalType === "volume_7d") {
     const value = toFiniteOrNull(liquidityFilter.signalValue)
+    if (isPremiumCategory(itemCategory)) {
+      if (value == null) {
+        return {
+          score: 42,
+          penalty: 22
+        }
+      }
+      if (value >= PREMIUM_LIQUIDITY_HIGH_MIN) {
+        return {
+          score: 92,
+          penalty: 0
+        }
+      }
+      if (value >= PREMIUM_LIQUIDITY_MEDIUM_MIN) {
+        return {
+          score: 74,
+          penalty: 6
+        }
+      }
+      if (value >= PREMIUM_LIQUIDITY_LOW_MIN) {
+        return {
+          score: 56,
+          penalty: 14
+        }
+      }
+      return {
+        score: 20,
+        penalty: 26
+      }
+    }
     return {
       score: getLiquidityScore(value),
       penalty: value == null ? 20 : 0
@@ -466,11 +648,47 @@ function resolveReferencePrice(item = {}, quotes = [], buyPrice = null, sellNet 
   return mid != null ? roundPrice(mid) : null
 }
 
-function isReferenceDeviation(price, referencePrice, itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
+function resolveReferenceDeviationRatio(price, referencePrice) {
   const candidate = toPositiveOrNull(price)
   const reference = toPositiveOrNull(referencePrice)
-  if (candidate == null || reference == null) return false
-  const ratio = Math.max(candidate / reference, reference / candidate)
+  if (candidate == null || reference == null) return null
+  return round2(Math.max(candidate / reference, reference / candidate))
+}
+
+function resolveReferenceDeviationSignal({
+  buyPrice = null,
+  sellNet = null,
+  referencePrice = null,
+  itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
+} = {}) {
+  const buyRatio = resolveReferenceDeviationRatio(buyPrice, referencePrice)
+  const sellRatio = resolveReferenceDeviationRatio(sellNet, referencePrice)
+  const maxRatio = [buyRatio, sellRatio].filter((value) => value != null).sort((a, b) => b - a)[0] ?? null
+
+  if (!isPremiumCategory(itemCategory)) {
+    return {
+      buyRatio,
+      sellRatio,
+      maxRatio,
+      strong: false,
+      extreme: maxRatio != null && maxRatio > getReferenceDeviationRatioMax(itemCategory)
+    }
+  }
+
+  const strong = maxRatio != null && maxRatio > PREMIUM_REFERENCE_DEVIATION_PENALTY_RATIO
+  const extreme = maxRatio != null && maxRatio > PREMIUM_REFERENCE_DEVIATION_REJECT_RATIO
+  return {
+    buyRatio,
+    sellRatio,
+    maxRatio,
+    strong,
+    extreme
+  }
+}
+
+function isReferenceDeviation(price, referencePrice, itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
+  const ratio = resolveReferenceDeviationRatio(price, referencePrice)
+  if (ratio == null) return false
   return ratio > getReferenceDeviationRatioMax(itemCategory)
 }
 
@@ -478,23 +696,74 @@ function getDepthConfidenceScore({
   buyOutlierAdjusted = false,
   sellOutlierAdjusted = false,
   buyDepthMissing = false,
-  sellDepthMissing = false
+  sellDepthMissing = false,
+  buyDepthGapSuspicious = false,
+  sellDepthGapSuspicious = false,
+  buyDepthGapExtreme = false,
+  sellDepthGapExtreme = false,
+  itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
 } = {}) {
+  if (isPremiumCategory(itemCategory)) {
+    if (buyDepthGapExtreme || sellDepthGapExtreme) return 15
+    if (buyDepthMissing || sellDepthMissing) return 30
+    if (buyOutlierAdjusted || sellOutlierAdjusted) return 42
+    if (buyDepthGapSuspicious || sellDepthGapSuspicious) return 48
+    return 100
+  }
   if (buyOutlierAdjusted || sellOutlierAdjusted) return 40
   if (buyDepthMissing || sellDepthMissing) return 60
   return 100
+}
+
+function resolveDepthGapSignals({
+  buyOutlierRatio = null,
+  sellOutlierRatio = null,
+  itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
+} = {}) {
+  if (!isPremiumCategory(itemCategory)) {
+    return {
+      buyDepthGapSuspicious: false,
+      sellDepthGapSuspicious: false,
+      buyDepthGapExtreme: false,
+      sellDepthGapExtreme: false
+    }
+  }
+
+  const buyRatio = toFiniteOrNull(buyOutlierRatio)
+  const sellRatio = toFiniteOrNull(sellOutlierRatio)
+  const buyDepthGapExtreme = buyRatio != null && buyRatio >= PREMIUM_DEPTH_GAP_EXTREME_RATIO
+  const sellDepthGapExtreme = sellRatio != null && sellRatio >= PREMIUM_DEPTH_GAP_EXTREME_RATIO
+  const buyDepthGapSuspicious =
+    !buyDepthGapExtreme && buyRatio != null && buyRatio >= PREMIUM_DEPTH_GAP_SUSPICIOUS_RATIO
+  const sellDepthGapSuspicious =
+    !sellDepthGapExtreme && sellRatio != null && sellRatio >= PREMIUM_DEPTH_GAP_SUSPICIOUS_RATIO
+
+  return {
+    buyDepthGapSuspicious,
+    sellDepthGapSuspicious,
+    buyDepthGapExtreme,
+    sellDepthGapExtreme
+  }
 }
 
 function resolveDepthFlags({
   buyOutlierAdjusted = false,
   sellOutlierAdjusted = false,
   buyDepthMissing = false,
-  sellDepthMissing = false
+  sellDepthMissing = false,
+  buyDepthGapSuspicious = false,
+  sellDepthGapSuspicious = false,
+  buyDepthGapExtreme = false,
+  sellDepthGapExtreme = false
 } = {}) {
   const flags = []
   if (buyOutlierAdjusted) flags.push("BUY_OUTLIER_ADJUSTED")
   if (sellOutlierAdjusted) flags.push("SELL_OUTLIER_ADJUSTED")
   if (buyDepthMissing || sellDepthMissing) flags.push("MISSING_DEPTH")
+  if (buyDepthGapSuspicious) flags.push("BUY_DEPTH_GAP_SUSPICIOUS")
+  if (sellDepthGapSuspicious) flags.push("SELL_DEPTH_GAP_SUSPICIOUS")
+  if (buyDepthGapExtreme) flags.push("BUY_DEPTH_GAP_EXTREME")
+  if (sellDepthGapExtreme) flags.push("SELL_DEPTH_GAP_EXTREME")
   return flags
 }
 
@@ -502,12 +771,15 @@ function resolveExecutionConfidence({
   volume7d = null,
   spreadPercent = null,
   marketScore = 0,
+  marketCoverage = 0,
   depthFlags = [],
   quoteAgeMinutes = null,
   snapshotStale = false,
-  itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
+  itemCategory = ITEM_CATEGORIES.WEAPON_SKIN,
+  referenceDeviation = {}
 } = {}) {
   const liquidityRules = getCategoryLiquidityRules(itemCategory)
+  const spreadRules = getCategorySpreadRules(itemCategory)
   const volume = toFiniteOrNull(volume7d)
   const spread = toFiniteOrNull(spreadPercent)
   const hasOutlierFlag = Array.isArray(depthFlags)
@@ -516,7 +788,65 @@ function resolveExecutionConfidence({
   const missingDepth = Array.isArray(depthFlags)
     ? depthFlags.includes("MISSING_DEPTH")
     : false
+  const hasDepthGapSuspicious = Array.isArray(depthFlags)
+    ? depthFlags.some(
+        (flag) => flag === "BUY_DEPTH_GAP_SUSPICIOUS" || flag === "SELL_DEPTH_GAP_SUSPICIOUS"
+      )
+    : false
+  const hasDepthGapExtreme = Array.isArray(depthFlags)
+    ? depthFlags.some((flag) => flag === "BUY_DEPTH_GAP_EXTREME" || flag === "SELL_DEPTH_GAP_EXTREME")
+    : false
+  const hasStrongReferenceDeviation = Boolean(referenceDeviation?.strong)
+  const hasExtremeReferenceDeviation = Boolean(referenceDeviation?.extreme)
   const stale = (toFiniteOrNull(quoteAgeMinutes) ?? 0) >= 60 || Boolean(snapshotStale)
+
+  if (isPremiumCategory(itemCategory)) {
+    if (
+      volume != null &&
+      volume < Number(liquidityRules.pass || PREMIUM_LIQUIDITY_LOW_MIN)
+    ) {
+      return "Low"
+    }
+    if (
+      Number(marketCoverage || 0) < Number(MIN_MARKET_COVERAGE || 2) ||
+      hasDepthGapExtreme ||
+      hasExtremeReferenceDeviation
+    ) {
+      return "Low"
+    }
+
+    const uncertaintyFlags = [
+      missingDepth,
+      hasOutlierFlag || hasDepthGapSuspicious,
+      stale,
+      hasStrongReferenceDeviation,
+      marketScore < 75,
+      spread == null || spread > Number(spreadRules.max || PREMIUM_SPREAD_SANITY_MAX_PERCENT)
+    ].filter(Boolean).length
+
+    const depthGood = !missingDepth && !hasOutlierFlag && !hasDepthGapSuspicious && !hasDepthGapExtreme
+    if (
+      volume != null &&
+      volume >= Number(liquidityRules.high || PREMIUM_LIQUIDITY_HIGH_MIN) &&
+      Number(marketCoverage || 0) >= 2 &&
+      depthGood &&
+      !stale &&
+      !hasStrongReferenceDeviation &&
+      uncertaintyFlags === 0
+    ) {
+      return "High"
+    }
+    if (
+      volume != null &&
+      volume >= Number(liquidityRules.medium || PREMIUM_LIQUIDITY_MEDIUM_MIN) &&
+      !hasDepthGapExtreme &&
+      !hasExtremeReferenceDeviation &&
+      uncertaintyFlags <= 1
+    ) {
+      return "Medium"
+    }
+    return "Low"
+  }
 
   if (
     volume != null &&
@@ -535,7 +865,9 @@ function resolveExecutionConfidence({
   if (hasOutlierFlag) uncertainty += 1
   if (missingDepth) uncertainty += 1
   if (stale) uncertainty += 1
-  if (spread == null || spread > 80 || spread < MIN_SPREAD_PERCENT) uncertainty += 1
+  if (spread == null || spread > 80 || spread < Number(spreadRules.min || MIN_SPREAD_PERCENT)) {
+    uncertainty += 1
+  }
   if (marketScore < 75) uncertainty += 1
 
   if (volume != null && volume >= Number(liquidityRules.pass || LIQUIDITY_VOLUME_PASS) && uncertainty <= 1) {
@@ -554,9 +886,20 @@ function buildReasonBadges({
   const badges = []
   if (liquidityBand === "High") badges.push("High liquidity")
   else if (liquidityBand === "Medium") badges.push("Medium liquidity")
+  else if (liquidityBand === "Unknown") badges.push("Liquidity uncertain")
 
   if (Array.isArray(depthFlags) && depthFlags.includes("MISSING_DEPTH")) {
     badges.push("Missing depth")
+  } else if (
+    Array.isArray(depthFlags) &&
+    (depthFlags.includes("BUY_DEPTH_GAP_EXTREME") || depthFlags.includes("SELL_DEPTH_GAP_EXTREME"))
+  ) {
+    badges.push("Depth anomaly")
+  } else if (
+    Array.isArray(depthFlags) &&
+    (depthFlags.includes("BUY_DEPTH_GAP_SUSPICIOUS") || depthFlags.includes("SELL_DEPTH_GAP_SUSPICIOUS"))
+  ) {
+    badges.push("Depth gap flagged")
   } else if (
     Array.isArray(depthFlags) &&
     (depthFlags.includes("BUY_OUTLIER_ADJUSTED") ||
@@ -573,13 +916,16 @@ function buildReasonBadges({
 }
 
 function evaluateItemOpportunity(item = {}, options = {}) {
-  const minSpreadPercent =
-    toFiniteOrNull(options.minSpreadPercent) != null
-      ? Number(options.minSpreadPercent)
-      : MIN_SPREAD_PERCENT
   const itemId = Number(item?.skinId || item?.itemId || 0) || null
   const itemName = String(item?.marketHashName || item?.itemName || "Tracked Item").trim()
   const itemCategory = normalizeItemCategory(item?.itemCategory || item?.category, itemName)
+  const spreadRules = getCategorySpreadRules(itemCategory)
+  const minSpreadPercent =
+    toFiniteOrNull(options.minSpreadPercent) != null
+      ? Number(options.minSpreadPercent)
+      : Number(spreadRules.min || MIN_SPREAD_PERCENT)
+  const minExecutionPriceUsd = Number(getCategoryMinExecutionPrice(itemCategory) || MIN_EXECUTION_PRICE_USD)
+  const premiumCategory = isPremiumCategory(itemCategory)
   const normalizedQuotes = normalizeMarketQuotes(item)
   const quotes = Array.isArray(normalizedQuotes?.quotes) ? normalizedQuotes.quotes : []
   const sevenDayChangePercent = resolveSevenDayChange(item)
@@ -615,82 +961,159 @@ function evaluateItemOpportunity(item = {}, options = {}) {
     itemCategory
   })
   const liquiditySample = resolveLiquiditySample(item, quotes)
-
-  const reasons = []
-  if (!buyCandidate || !sellCandidate || buyPrice == null || sellNet == null) {
-    reasons.push("insufficient_market_data")
-  }
-  if (marketCoverage < MIN_MARKET_COVERAGE) {
-    reasons.push("ignored_missing_markets")
-  }
-  if (buyPrice != null && Number(buyPrice) < MIN_EXECUTION_PRICE_USD) {
-    reasons.push("ignored_low_price")
-  }
-  if (profit == null || Number(profit) <= 0) {
-    reasons.push("non_positive_profit")
-  }
-  if (spreadPercent == null || Number(spreadPercent) < Number(minSpreadPercent)) {
-    reasons.push("spread_below_min")
-  }
-  if (spreadPercent != null && Number(spreadPercent) > SPREAD_SANITY_MAX_PERCENT) {
-    reasons.push("ignored_extreme_spread")
-  }
-  if (!liquidityFilter.passed) {
-    reasons.push("ignored_low_liquidity")
-  }
-  if (
-    isReferenceDeviation(buyPrice, referencePrice, itemCategory) ||
-    isReferenceDeviation(sellNet, referencePrice, itemCategory)
-  ) {
-    reasons.push("ignored_reference_deviation")
-  }
+  const depthGapSignals = resolveDepthGapSignals({
+    buyOutlierRatio: buyCandidate?.buyOutlierRatio,
+    sellOutlierRatio: sellCandidate?.sellOutlierRatio,
+    itemCategory
+  })
+  const referenceDeviation = resolveReferenceDeviationSignal({
+    buyPrice,
+    sellNet,
+    referencePrice,
+    itemCategory
+  })
 
   const depthFlags = resolveDepthFlags({
     buyOutlierAdjusted: Boolean(buyCandidate?.buyOutlierAdjusted),
     sellOutlierAdjusted: Boolean(sellCandidate?.sellOutlierAdjusted),
     buyDepthMissing: Boolean(buyCandidate?.buyDepthMissing),
-    sellDepthMissing: Boolean(sellCandidate?.sellDepthMissing)
+    sellDepthMissing: Boolean(sellCandidate?.sellDepthMissing),
+    buyDepthGapSuspicious: depthGapSignals.buyDepthGapSuspicious,
+    sellDepthGapSuspicious: depthGapSignals.sellDepthGapSuspicious,
+    buyDepthGapExtreme: depthGapSignals.buyDepthGapExtreme,
+    sellDepthGapExtreme: depthGapSignals.sellDepthGapExtreme
   })
   const depthConfidenceScore = getDepthConfidenceScore({
     buyOutlierAdjusted: Boolean(buyCandidate?.buyOutlierAdjusted),
     sellOutlierAdjusted: Boolean(sellCandidate?.sellOutlierAdjusted),
     buyDepthMissing: Boolean(buyCandidate?.buyDepthMissing),
-    sellDepthMissing: Boolean(sellCandidate?.sellDepthMissing)
+    sellDepthMissing: Boolean(sellCandidate?.sellDepthMissing),
+    buyDepthGapSuspicious: depthGapSignals.buyDepthGapSuspicious,
+    sellDepthGapSuspicious: depthGapSignals.sellDepthGapSuspicious,
+    buyDepthGapExtreme: depthGapSignals.buyDepthGapExtreme,
+    sellDepthGapExtreme: depthGapSignals.sellDepthGapExtreme,
+    itemCategory
   })
+  const reasons = new Set()
+  if (!buyCandidate || !sellCandidate || buyPrice == null || sellNet == null) {
+    reasons.add("insufficient_market_data")
+  }
+  if (marketCoverage < MIN_MARKET_COVERAGE) {
+    reasons.add("ignored_missing_markets")
+  }
+  if (buyPrice != null && Number(buyPrice) < minExecutionPriceUsd) {
+    reasons.add("ignored_low_price")
+  }
+  if (profit == null || Number(profit) <= 0) {
+    reasons.add("non_positive_profit")
+  }
+  if (spreadPercent == null || Number(spreadPercent) < Number(minSpreadPercent)) {
+    reasons.add("spread_below_min")
+  }
+  if (spreadPercent != null && Number(spreadPercent) > Number(spreadRules.max || SPREAD_SANITY_MAX_PERCENT)) {
+    reasons.add("ignored_extreme_spread")
+  }
+  if (!liquidityFilter.passed) {
+    reasons.add("ignored_low_liquidity")
+  }
+  if (premiumCategory) {
+    if (depthGapSignals.buyDepthGapExtreme || depthGapSignals.sellDepthGapExtreme) {
+      reasons.add("ignored_missing_depth")
+    }
+    if (referenceDeviation.extreme) {
+      reasons.add("ignored_reference_deviation")
+    }
+    if (liquidityFilter.unknown) {
+      const liquidityRules = getCategoryLiquidityRules(itemCategory)
+      if (marketCoverage < Number(liquidityRules.unknownMinMarkets || PREMIUM_UNKNOWN_VOLUME_MIN_MARKETS)) {
+        reasons.add("ignored_missing_markets")
+      }
+      const weakDepthSupport =
+        Boolean(buyCandidate?.buyDepthMissing) ||
+        Boolean(sellCandidate?.sellDepthMissing) ||
+        Boolean(buyCandidate?.buyOutlierAdjusted) ||
+        Boolean(sellCandidate?.sellOutlierAdjusted) ||
+        Boolean(depthGapSignals.buyDepthGapSuspicious) ||
+        Boolean(depthGapSignals.sellDepthGapSuspicious)
+      if (weakDepthSupport) {
+        reasons.add("ignored_missing_depth")
+      }
+      if (referenceDeviation.strong) {
+        reasons.add("ignored_reference_deviation")
+      }
+    }
+  } else if (
+    isReferenceDeviation(buyPrice, referencePrice, itemCategory) ||
+    isReferenceDeviation(sellNet, referencePrice, itemCategory)
+  ) {
+    reasons.add("ignored_reference_deviation")
+  }
 
-  const spreadScore = getSpreadScore(spreadPercent)
-  const liquidityScoreBundle = computeLiquidityScoreForRanking(liquidityFilter)
+  const spreadScore = getSpreadScore(spreadPercent, itemCategory)
+  const liquidityScoreBundle = computeLiquidityScoreForRanking(liquidityFilter, itemCategory)
   const liquidityScore = Number(liquidityScoreBundle.score || 0)
   const stabilityScore = getStabilityScore(sevenDayChangePercent)
   const marketScore = getMarketScore(buyQuote?.market, sellQuote?.market)
+  const scoreWeights = getCategoryScoreWeights(itemCategory)
   const weightedScore = round2(
-    spreadScore * 0.25 +
-      liquidityScore * 0.3 +
-      stabilityScore * 0.15 +
-      marketScore * 0.15 +
-      depthConfidenceScore * 0.15
+    spreadScore * Number(scoreWeights.spread || 0) +
+      liquidityScore * Number(scoreWeights.liquidity || 0) +
+      stabilityScore * Number(scoreWeights.stability || 0) +
+      marketScore * Number(scoreWeights.market || 0) +
+      depthConfidenceScore * Number(scoreWeights.depth || 0)
   )
   const suspiciousSpreadPenalty =
     spreadPercent != null &&
-    spreadPercent > SPREAD_SUSPICIOUS_PENALTY_THRESHOLD &&
-    spreadPercent <= SPREAD_SANITY_MAX_PERCENT
-      ? 18
+    spreadPercent > Number(spreadRules.suspiciousPenaltyThreshold || SPREAD_SUSPICIOUS_PENALTY_THRESHOLD) &&
+    spreadPercent <= Number(spreadRules.max || SPREAD_SANITY_MAX_PERCENT)
+      ? premiumCategory
+        ? 22
+        : 18
       : 0
+  const premiumReferencePenalty =
+    premiumCategory && referenceDeviation.strong && !referenceDeviation.extreme ? 18 : 0
+  const premiumDepthPenalty =
+    premiumCategory &&
+    (
+      depthGapSignals.buyDepthGapExtreme ||
+      depthGapSignals.sellDepthGapExtreme ||
+      buyCandidate?.buyDepthMissing ||
+      sellCandidate?.sellDepthMissing ||
+      buyCandidate?.buyOutlierAdjusted ||
+      sellCandidate?.sellOutlierAdjusted ||
+      depthGapSignals.buyDepthGapSuspicious ||
+      depthGapSignals.sellDepthGapSuspicious
+    )
+      ? (
+          depthGapSignals.buyDepthGapExtreme || depthGapSignals.sellDepthGapExtreme
+            ? 30
+            : buyCandidate?.buyDepthMissing || sellCandidate?.sellDepthMissing
+              ? 26
+              : 14
+        )
+      : 0
+  const premiumUnknownLiquidityPenalty = premiumCategory && liquidityFilter.unknown ? 18 : 0
   const opportunityScore = clampScore(
     weightedScore -
       Number(liquidityScoreBundle.penalty || 0) -
-      Number(suspiciousSpreadPenalty || 0)
+      Number(suspiciousSpreadPenalty || 0) -
+      Number(premiumReferencePenalty || 0) -
+      Number(premiumDepthPenalty || 0) -
+      Number(premiumUnknownLiquidityPenalty || 0)
   )
   const scoreCategory = categorizeOpportunityScore(opportunityScore)
-  const isOpportunity = !reasons.length
+  const reasonList = Array.from(reasons)
+  const isOpportunity = !reasonList.length
   const executionConfidence = resolveExecutionConfidence({
     volume7d: liquidityFilter.signalValue,
     spreadPercent,
     marketScore,
+    marketCoverage,
     depthFlags,
     quoteAgeMinutes,
     snapshotStale: Boolean(item?.snapshotStale),
-    itemCategory
+    itemCategory,
+    referenceDeviation
   })
   const reasonBadges = buildReasonBadges({
     liquidityBand: liquidityFilter.band,
@@ -738,17 +1161,26 @@ function evaluateItemOpportunity(item = {}, options = {}) {
     antiFake: {
       passed: isOpportunity,
       filteredOut: !isOpportunity,
-      reasons,
-      reasonLabels: formatFilterReasons(reasons),
+      reasons: reasonList,
+      reasonLabels: formatFilterReasons(reasonList),
       debugReasons: debugFlags,
       liquidity: liquidityFilter,
+      referenceDeviation,
       filters: {
-        minExecutionPriceUsd: MIN_EXECUTION_PRICE_USD,
+        minExecutionPriceUsd,
         minSpreadPercent,
-        spreadSuspiciousPenaltyThreshold: SPREAD_SUSPICIOUS_PENALTY_THRESHOLD,
-        spreadSanityMaxPercent: SPREAD_SANITY_MAX_PERCENT,
+        spreadSuspiciousPenaltyThreshold: Number(
+          spreadRules.suspiciousPenaltyThreshold || SPREAD_SUSPICIOUS_PENALTY_THRESHOLD
+        ),
+        spreadSanityMaxPercent: Number(spreadRules.max || SPREAD_SANITY_MAX_PERCENT),
         minMarketCoverage: MIN_MARKET_COVERAGE,
         referenceDeviationRatioMax: getReferenceDeviationRatioMax(itemCategory)
+      },
+      depthQuality: {
+        buyDepthGapSuspicious: depthGapSignals.buyDepthGapSuspicious,
+        sellDepthGapSuspicious: depthGapSignals.sellDepthGapSuspicious,
+        buyDepthGapExtreme: depthGapSignals.buyDepthGapExtreme,
+        sellDepthGapExtreme: depthGapSignals.sellDepthGapExtreme
       },
       outlier: {
         buyAdjusted: Boolean(buyCandidate?.buyOutlierAdjusted),
@@ -766,7 +1198,11 @@ function evaluateItemOpportunity(item = {}, options = {}) {
       marketScore,
       depthConfidenceScore,
       liquidityPenalty: Number(liquidityScoreBundle.penalty || 0),
-      suspiciousSpreadPenalty
+      suspiciousSpreadPenalty,
+      referenceDeviationPenalty: premiumReferencePenalty,
+      depthPenalty: premiumDepthPenalty,
+      unknownLiquidityPenalty: premiumUnknownLiquidityPenalty,
+      scoreWeights
     },
     debug: {
       rawQuotesByMarket: normalizedQuotes?.byMarket || {}

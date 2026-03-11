@@ -51,6 +51,16 @@ const RISKY_MIN_SPREAD_PERCENT = 3
 const RISKY_MAX_SPREAD_PERCENT = 250
 const RISKY_MIN_VOLUME_7D = 20
 const RISKY_MIN_SCORE = 45
+const PREMIUM_MIN_PRICE_USD = 20
+const PREMIUM_MIN_SPREAD_PERCENT = 3
+const PREMIUM_SPREAD_HEAVY_PENALTY_PERCENT = 150
+const PREMIUM_MAX_SPREAD_PERCENT = 250
+const PREMIUM_MIN_VOLUME_REJECT = 5
+const PREMIUM_MIN_VOLUME_MEDIUM = 10
+const PREMIUM_MIN_VOLUME_HIGH = 20
+const PREMIUM_UNKNOWN_VOLUME_MIN_MARKET_COVERAGE = 3
+const PREMIUM_REFERENCE_PENALTY_RATIO = 1.8
+const PREMIUM_REFERENCE_REJECT_RATIO = 2.5
 const MIN_SPREAD_PERCENT = HIGH_CONFIDENCE_MIN_SPREAD_PERCENT
 const MAX_SPREAD_PERCENT = RISKY_MAX_SPREAD_PERCENT
 const MIN_VOLUME_7D = HIGH_CONFIDENCE_MIN_VOLUME_7D
@@ -155,8 +165,8 @@ const UNIVERSE_MIN_VOLUME_7D_BY_CATEGORY = Object.freeze({
   [ITEM_CATEGORIES.WEAPON_SKIN]: 20,
   [ITEM_CATEGORIES.CASE]: 20,
   [ITEM_CATEGORIES.STICKER_CAPSULE]: 20,
-  [ITEM_CATEGORIES.KNIFE]: 14,
-  [ITEM_CATEGORIES.GLOVE]: 12
+  [ITEM_CATEGORIES.KNIFE]: PREMIUM_MIN_VOLUME_REJECT,
+  [ITEM_CATEGORIES.GLOVE]: PREMIUM_MIN_VOLUME_REJECT
 })
 const LOW_VALUE_NAME_PATTERNS = Object.freeze([
   /^sticker\s*\|/i,
@@ -268,33 +278,33 @@ const CATEGORY_SCAN_RULES = Object.freeze({
   }),
   [ITEM_CATEGORIES.KNIFE]: Object.freeze({
     strict: Object.freeze({
-      minPriceUsd: 35,
-      minSpreadPercent: 3,
-      maxSpreadPercent: 120,
-      minVolume7d: 25,
+      minPriceUsd: PREMIUM_MIN_PRICE_USD,
+      minSpreadPercent: PREMIUM_MIN_SPREAD_PERCENT,
+      maxSpreadPercent: PREMIUM_MAX_SPREAD_PERCENT,
+      minVolume7d: PREMIUM_MIN_VOLUME_MEDIUM,
       minMarketCoverage: MIN_MARKET_COVERAGE
     }),
     risky: Object.freeze({
-      minPriceUsd: 20,
-      minSpreadPercent: 3,
-      maxSpreadPercent: 120,
-      minVolume7d: 14,
+      minPriceUsd: PREMIUM_MIN_PRICE_USD,
+      minSpreadPercent: PREMIUM_MIN_SPREAD_PERCENT,
+      maxSpreadPercent: PREMIUM_MAX_SPREAD_PERCENT,
+      minVolume7d: PREMIUM_MIN_VOLUME_REJECT,
       minMarketCoverage: MIN_MARKET_COVERAGE
     })
   }),
   [ITEM_CATEGORIES.GLOVE]: Object.freeze({
     strict: Object.freeze({
-      minPriceUsd: 35,
-      minSpreadPercent: 3,
-      maxSpreadPercent: 120,
-      minVolume7d: 22,
+      minPriceUsd: PREMIUM_MIN_PRICE_USD,
+      minSpreadPercent: PREMIUM_MIN_SPREAD_PERCENT,
+      maxSpreadPercent: PREMIUM_MAX_SPREAD_PERCENT,
+      minVolume7d: PREMIUM_MIN_VOLUME_MEDIUM,
       minMarketCoverage: MIN_MARKET_COVERAGE
     }),
     risky: Object.freeze({
-      minPriceUsd: 20,
-      minSpreadPercent: 3,
-      maxSpreadPercent: 120,
-      minVolume7d: 12,
+      minPriceUsd: PREMIUM_MIN_PRICE_USD,
+      minSpreadPercent: PREMIUM_MIN_SPREAD_PERCENT,
+      maxSpreadPercent: PREMIUM_MAX_SPREAD_PERCENT,
+      minVolume7d: PREMIUM_MIN_VOLUME_REJECT,
       minMarketCoverage: MIN_MARKET_COVERAGE
     })
   })
@@ -651,11 +661,12 @@ function computeVolumeScore(volume7d, itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
   const volume = toFiniteOrNull(volume7d)
   if (volume == null || volume <= 0) return 0
   if (PREMIUM_ITEM_CATEGORIES.has(normalizedCategory)) {
-    if (volume >= 150) return 100
-    if (volume >= 90) return 90
-    if (volume >= 40) return 78
-    if (volume >= 20) return 62
-    return 40
+    if (volume >= 80) return 100
+    if (volume >= 40) return 90
+    if (volume >= PREMIUM_MIN_VOLUME_HIGH) return 82
+    if (volume >= PREMIUM_MIN_VOLUME_MEDIUM) return 70
+    if (volume >= PREMIUM_MIN_VOLUME_REJECT) return 56
+    return 20
   }
   if (volume >= 1000) return 100
   if (volume >= 500) return 92
@@ -1151,6 +1162,10 @@ function resolveLiquidityMetrics(opportunity = {}, inputItem = {}) {
   const outlier = opportunity?.antiFake?.outlier && typeof opportunity.antiFake.outlier === "object"
     ? opportunity.antiFake.outlier
     : {}
+  const referenceDeviation =
+    opportunity?.antiFake?.referenceDeviation && typeof opportunity.antiFake.referenceDeviation === "object"
+      ? opportunity.antiFake.referenceDeviation
+      : {}
 
   if (liquiditySignal?.signalType === "volume_7d") {
     volume7d = toFiniteOrNull(liquiditySignal?.signalValue)
@@ -1166,8 +1181,21 @@ function resolveLiquidityMetrics(opportunity = {}, inputItem = {}) {
     hasOutlierAdjusted: depthFlags.some(
       (flag) => flag === "BUY_OUTLIER_ADJUSTED" || flag === "SELL_OUTLIER_ADJUSTED"
     ),
+    hasSuspiciousDepthGap: depthFlags.some(
+      (flag) => flag === "BUY_DEPTH_GAP_SUSPICIOUS" || flag === "SELL_DEPTH_GAP_SUSPICIOUS"
+    ),
+    hasExtremeDepthGap: depthFlags.some(
+      (flag) => flag === "BUY_DEPTH_GAP_EXTREME" || flag === "SELL_DEPTH_GAP_EXTREME"
+    ),
     buyDepthMissing: Boolean(outlier?.buyDepthMissing),
-    sellDepthMissing: Boolean(outlier?.sellDepthMissing)
+    sellDepthMissing: Boolean(outlier?.sellDepthMissing),
+    referenceDeviationRatio: toFiniteOrNull(referenceDeviation?.maxRatio),
+    hasStrongReferenceDeviation:
+      Boolean(referenceDeviation?.strong) ||
+      (toFiniteOrNull(referenceDeviation?.maxRatio) ?? 0) > PREMIUM_REFERENCE_PENALTY_RATIO,
+    hasExtremeReferenceDeviation:
+      Boolean(referenceDeviation?.extreme) ||
+      (toFiniteOrNull(referenceDeviation?.maxRatio) ?? 0) > PREMIUM_REFERENCE_REJECT_RATIO
   }
 }
 
@@ -1184,6 +1212,10 @@ function passesScannerGuards(opportunity = {}, liquidity = {}) {
   const marketCoverage = Number(opportunity?.marketCoverage || 0)
   const hasMissingDepth = Boolean(liquidity?.hasMissingDepth)
   const hasBothDepthMissing = Boolean(liquidity?.buyDepthMissing) && Boolean(liquidity?.sellDepthMissing)
+  const hasSuspiciousDepthGap = Boolean(liquidity?.hasSuspiciousDepthGap)
+  const hasExtremeDepthGap = Boolean(liquidity?.hasExtremeDepthGap)
+  const referenceSignals = resolveReferenceSignals(opportunity, liquidity)
+  const isPremiumCategory = PREMIUM_ITEM_CATEGORIES.has(itemCategory)
 
   if (!opportunity?.isOpportunity) return false
   if (profit == null || profit <= 0) return false
@@ -1195,9 +1227,17 @@ function passesScannerGuards(opportunity = {}, liquidity = {}) {
   ) {
     return false
   }
-  if (volume7d == null || volume7d < Number(rules.minVolume7d || MIN_VOLUME_7D)) return false
+  if (!isPremiumCategory && (volume7d == null || volume7d < Number(rules.minVolume7d || MIN_VOLUME_7D))) {
+    return false
+  }
+  if (isPremiumCategory) {
+    if (volume7d != null && volume7d < PREMIUM_MIN_VOLUME_REJECT) return false
+    if (volume7d == null && marketCoverage < PREMIUM_UNKNOWN_VOLUME_MIN_MARKET_COVERAGE) return false
+    if (referenceSignals.hasExtremeReferenceDeviation) return false
+    if (hasExtremeDepthGap) return false
+  }
   if (marketCoverage < Number(rules.minMarketCoverage || MIN_MARKET_COVERAGE)) return false
-  if (PREMIUM_ITEM_CATEGORIES.has(itemCategory) && (hasBothDepthMissing || hasMissingDepth)) return false
+  if (isPremiumCategory && (hasBothDepthMissing || hasMissingDepth || hasSuspiciousDepthGap)) return false
 
   return true
 }
@@ -1224,19 +1264,59 @@ function resolveDepthSignals(opportunity = {}, liquidity = {}) {
   const outlier = opportunity?.antiFake?.outlier && typeof opportunity.antiFake.outlier === "object"
     ? opportunity.antiFake.outlier
     : {}
+  const depthQuality =
+    opportunity?.antiFake?.depthQuality && typeof opportunity.antiFake.depthQuality === "object"
+      ? opportunity.antiFake.depthQuality
+      : {}
   const buyDepthMissing = Boolean(liquidity?.buyDepthMissing ?? outlier?.buyDepthMissing)
   const sellDepthMissing = Boolean(liquidity?.sellDepthMissing ?? outlier?.sellDepthMissing)
   const hasMissingDepth = Boolean(liquidity?.hasMissingDepth) || depthFlags.includes("MISSING_DEPTH")
   const hasOutlierAdjusted =
     Boolean(liquidity?.hasOutlierAdjusted) ||
     depthFlags.some((flag) => flag === "BUY_OUTLIER_ADJUSTED" || flag === "SELL_OUTLIER_ADJUSTED")
+  const hasSuspiciousDepthGap =
+    Boolean(liquidity?.hasSuspiciousDepthGap) ||
+    Boolean(depthQuality?.buyDepthGapSuspicious) ||
+    Boolean(depthQuality?.sellDepthGapSuspicious) ||
+    depthFlags.some((flag) => flag === "BUY_DEPTH_GAP_SUSPICIOUS" || flag === "SELL_DEPTH_GAP_SUSPICIOUS")
+  const hasExtremeDepthGap =
+    Boolean(liquidity?.hasExtremeDepthGap) ||
+    Boolean(depthQuality?.buyDepthGapExtreme) ||
+    Boolean(depthQuality?.sellDepthGapExtreme) ||
+    depthFlags.some((flag) => flag === "BUY_DEPTH_GAP_EXTREME" || flag === "SELL_DEPTH_GAP_EXTREME")
 
   return {
     buyDepthMissing,
     sellDepthMissing,
     hasMissingDepth,
     hasOutlierAdjusted,
+    hasSuspiciousDepthGap,
+    hasExtremeDepthGap,
     hasBothDepthMissing: buyDepthMissing && sellDepthMissing
+  }
+}
+
+function resolveReferenceSignals(opportunity = {}, liquidity = {}) {
+  const referenceDeviation =
+    opportunity?.antiFake?.referenceDeviation && typeof opportunity.antiFake.referenceDeviation === "object"
+      ? opportunity.antiFake.referenceDeviation
+      : {}
+  const maxRatio =
+    toFiniteOrNull(liquidity?.referenceDeviationRatio) ??
+    toFiniteOrNull(referenceDeviation?.maxRatio)
+  const hasStrongReferenceDeviation =
+    Boolean(liquidity?.hasStrongReferenceDeviation) ||
+    Boolean(referenceDeviation?.strong) ||
+    (maxRatio ?? 0) > PREMIUM_REFERENCE_PENALTY_RATIO
+  const hasExtremeReferenceDeviation =
+    Boolean(liquidity?.hasExtremeReferenceDeviation) ||
+    Boolean(referenceDeviation?.extreme) ||
+    (maxRatio ?? 0) > PREMIUM_REFERENCE_REJECT_RATIO
+
+  return {
+    ratio: maxRatio,
+    hasStrongReferenceDeviation,
+    hasExtremeReferenceDeviation
   }
 }
 
@@ -1261,6 +1341,7 @@ function computeRiskAdjustments({
   const hasSnapshotStale = Boolean(inputItem?.snapshotStale)
   const isPremiumCategory = PREMIUM_ITEM_CATEGORIES.has(itemCategory)
   const depthSignals = resolveDepthSignals(opportunity, liquidity)
+  const referenceSignals = resolveReferenceSignals(opportunity, liquidity)
 
   if (profit == null || profit <= 0) {
     return { passed: false, primaryReason: "non_positive_profit", penalty: 0 }
@@ -1286,7 +1367,37 @@ function computeRiskAdjustments({
     return { passed: false, primaryReason: "ignored_missing_markets", penalty: 0 }
   }
 
-  if (volume7d == null) {
+  if (isPremiumCategory) {
+    if (referenceSignals.hasExtremeReferenceDeviation) {
+      return { passed: false, primaryReason: "ignored_reference_deviation", penalty: 0 }
+    }
+    if (depthSignals.hasExtremeDepthGap) {
+      return { passed: false, primaryReason: "ignored_missing_depth", penalty: 0 }
+    }
+    if (volume7d != null && volume7d < PREMIUM_MIN_VOLUME_REJECT) {
+      return { passed: false, primaryReason: "ignored_low_liquidity", penalty: 0 }
+    }
+    if (volume7d == null) {
+      if (profile.name === "strict") {
+        return { passed: false, primaryReason: "ignored_missing_liquidity_data", penalty: 0 }
+      }
+      if (marketCoverage < PREMIUM_UNKNOWN_VOLUME_MIN_MARKET_COVERAGE) {
+        return { passed: false, primaryReason: "ignored_missing_markets", penalty: 0 }
+      }
+      if (
+        depthSignals.hasMissingDepth ||
+        depthSignals.hasOutlierAdjusted ||
+        depthSignals.hasSuspiciousDepthGap
+      ) {
+        return { passed: false, primaryReason: "ignored_missing_depth", penalty: 0 }
+      }
+      if (referenceSignals.hasStrongReferenceDeviation) {
+        return { passed: false, primaryReason: "ignored_reference_deviation", penalty: 0 }
+      }
+    } else if (volume7d < Number(rules.minVolume7d || profile.minVolume7d || PREMIUM_MIN_VOLUME_REJECT)) {
+      return { passed: false, primaryReason: "ignored_low_liquidity", penalty: 0 }
+    }
+  } else if (volume7d == null) {
     if (!profile.allowMissingLiquidity) {
       return { passed: false, primaryReason: "ignored_missing_liquidity_data", penalty: 0 }
     }
@@ -1294,7 +1405,7 @@ function computeRiskAdjustments({
     return { passed: false, primaryReason: "ignored_low_liquidity", penalty: 0 }
   }
 
-  if (isPremiumCategory && depthSignals.hasBothDepthMissing) {
+  if (isPremiumCategory && (depthSignals.hasBothDepthMissing || depthSignals.hasMissingDepth)) {
     return { passed: false, primaryReason: "ignored_missing_depth", penalty: 0 }
   }
 
@@ -1317,39 +1428,62 @@ function computeRiskAdjustments({
   }
 
   let penalty = 0
-  if (volume7d == null) {
-    penalty += profile.allowMissingLiquidity ? 16 : 0
-  } else if (volume7d < Number(rules.minVolume7d || MIN_VOLUME_7D)) {
-    penalty += volume7d < 60 ? 14 : 8
-  }
+  if (isPremiumCategory) {
+    if (volume7d == null) {
+      penalty += 18
+      if (marketCoverage === PREMIUM_UNKNOWN_VOLUME_MIN_MARKET_COVERAGE) {
+        penalty += 8
+      }
+    } else if (volume7d < PREMIUM_MIN_VOLUME_MEDIUM) {
+      penalty += 14
+    } else if (volume7d < PREMIUM_MIN_VOLUME_HIGH) {
+      penalty += 7
+    }
 
-  if (buyPrice < Number(rules.minPriceUsd || MIN_EXECUTION_PRICE_USD)) {
-    penalty += 7
-  }
-  if (spread < Number(rules.minSpreadPercent || MIN_SPREAD_PERCENT)) {
-    penalty += 10
-  }
-  if (hasSnapshotStale) {
-    penalty += 12
-  }
-  if (staleMinutes != null && staleMinutes >= 180) {
-    penalty += 18
-  } else if (staleMinutes != null && staleMinutes >= 60) {
-    penalty += 10
-  }
-  if (isPremiumCategory && depthSignals.hasMissingDepth) {
-    penalty += 24
-  }
-  if (isPremiumCategory && depthSignals.hasOutlierAdjusted) {
-    penalty += 14
-  }
-  if (isPremiumCategory && hasSnapshotStale) {
-    penalty += 10
-  }
-  if (isPremiumCategory && staleMinutes != null && staleMinutes >= 120) {
-    penalty += 10
-  } else if (isPremiumCategory && staleMinutes != null && staleMinutes >= 45) {
-    penalty += 6
+    if (spread != null && spread > PREMIUM_SPREAD_HEAVY_PENALTY_PERCENT) {
+      penalty += 22
+    }
+    if (depthSignals.hasMissingDepth || depthSignals.hasBothDepthMissing) {
+      penalty += 26
+    } else if (depthSignals.hasOutlierAdjusted || depthSignals.hasSuspiciousDepthGap) {
+      penalty += 16
+    }
+    if (referenceSignals.hasStrongReferenceDeviation) {
+      penalty += 18
+    }
+    if (hasSnapshotStale) {
+      penalty += 14
+    }
+    if (staleMinutes != null && staleMinutes >= 180) {
+      penalty += 24
+    } else if (staleMinutes != null && staleMinutes >= 120) {
+      penalty += 18
+    } else if (staleMinutes != null && staleMinutes >= 60) {
+      penalty += 12
+    } else if (staleMinutes != null && staleMinutes >= 30) {
+      penalty += 6
+    }
+  } else {
+    if (volume7d == null) {
+      penalty += profile.allowMissingLiquidity ? 16 : 0
+    } else if (volume7d < Number(rules.minVolume7d || MIN_VOLUME_7D)) {
+      penalty += volume7d < 60 ? 14 : 8
+    }
+
+    if (buyPrice < Number(rules.minPriceUsd || MIN_EXECUTION_PRICE_USD)) {
+      penalty += 7
+    }
+    if (spread < Number(rules.minSpreadPercent || MIN_SPREAD_PERCENT)) {
+      penalty += 10
+    }
+    if (hasSnapshotStale) {
+      penalty += 12
+    }
+    if (staleMinutes != null && staleMinutes >= 180) {
+      penalty += 18
+    } else if (staleMinutes != null && staleMinutes >= 60) {
+      penalty += 10
+    }
   }
 
   return {
@@ -1410,6 +1544,12 @@ function buildApiOpportunityRow({
     (flag) => flag === "BUY_OUTLIER_ADJUSTED" || flag === "SELL_OUTLIER_ADJUSTED"
   )
   const hasMissingDepth = depthFlags.includes("MISSING_DEPTH")
+  const hasDepthGapSuspicious = depthFlags.some(
+    (flag) => flag === "BUY_DEPTH_GAP_SUSPICIOUS" || flag === "SELL_DEPTH_GAP_SUSPICIOUS"
+  )
+  const hasDepthGapExtreme = depthFlags.some(
+    (flag) => flag === "BUY_DEPTH_GAP_EXTREME" || flag === "SELL_DEPTH_GAP_EXTREME"
+  )
   const snapshotStale = Boolean(inputItem?.snapshotStale)
   const executionConfidence = downgradeConfidenceForStale(
     opportunity?.executionConfidence,
@@ -1420,8 +1560,13 @@ function buildApiOpportunityRow({
   const badges = normalizeBadges([
     ...(Array.isArray(opportunity?.reasonBadges) ? opportunity.reasonBadges : []),
     ...(toFiniteOrNull(stale?.maxAgeMinutes) ?? 0) >= 60 ? ["Stale market data"] : [],
+    hasDepthGapExtreme ? ["Depth anomaly"] : [],
+    !hasDepthGapExtreme && hasDepthGapSuspicious ? ["Depth gap flagged"] : [],
+    !hasDepthGapExtreme && !hasDepthGapSuspicious && hasMissingDepth ? ["Missing depth"] : [],
     hasOutlierAdjusted ? ["Outlier adjusted"] : [],
-    !hasOutlierAdjusted && !hasMissingDepth ? ["Good depth"] : []
+    !hasOutlierAdjusted && !hasMissingDepth && !hasDepthGapSuspicious && !hasDepthGapExtreme
+      ? ["Good depth"]
+      : []
   ])
 
   return {
@@ -1900,6 +2045,10 @@ function applyGuardFallbackReason(
   const marketCoverage = Number(opportunity?.marketCoverage || 0)
   const hasMissingDepth = Boolean(liquidity?.hasMissingDepth)
   const hasBothDepthMissing = Boolean(liquidity?.buyDepthMissing) && Boolean(liquidity?.sellDepthMissing)
+  const hasSuspiciousDepthGap = Boolean(liquidity?.hasSuspiciousDepthGap)
+  const hasExtremeDepthGap = Boolean(liquidity?.hasExtremeDepthGap)
+  const referenceSignals = resolveReferenceSignals(opportunity, liquidity)
+  const isPremiumCategory = PREMIUM_ITEM_CATEGORIES.has(normalizeItemCategory(itemCategory))
   const targetItemName = itemName || opportunity?.itemName
   const record = (reason) => {
     incrementReasonCounter(discardStats, reason, itemCategory)
@@ -1910,8 +2059,14 @@ function applyGuardFallbackReason(
   if (buyPrice != null && buyPrice < Number(rules.minPriceUsd || MIN_EXECUTION_PRICE_USD)) {
     record("ignored_execution_floor")
   }
-  if (volume7d == null || volume7d < Number(rules.minVolume7d || MIN_VOLUME_7D)) {
+  if (
+    (!isPremiumCategory && (volume7d == null || volume7d < Number(rules.minVolume7d || MIN_VOLUME_7D))) ||
+    (isPremiumCategory && volume7d != null && volume7d < PREMIUM_MIN_VOLUME_REJECT)
+  ) {
     record("ignored_low_liquidity")
+  }
+  if (isPremiumCategory && volume7d == null && marketCoverage < PREMIUM_UNKNOWN_VOLUME_MIN_MARKET_COVERAGE) {
+    record("ignored_missing_markets")
   }
   if (spread != null && spread > Number(rules.maxSpreadPercent || MAX_SPREAD_PERCENT)) {
     record("ignored_extreme_spread")
@@ -1919,7 +2074,13 @@ function applyGuardFallbackReason(
   if (marketCoverage < Number(rules.minMarketCoverage || MIN_MARKET_COVERAGE)) {
     record("ignored_missing_markets")
   }
-  if (PREMIUM_ITEM_CATEGORIES.has(normalizeItemCategory(itemCategory)) && (hasBothDepthMissing || hasMissingDepth)) {
+  if (isPremiumCategory && referenceSignals.hasExtremeReferenceDeviation) {
+    record("ignored_reference_deviation")
+  }
+  if (
+    isPremiumCategory &&
+    (hasBothDepthMissing || hasMissingDepth || hasSuspiciousDepthGap || hasExtremeDepthGap)
+  ) {
     record("ignored_missing_depth")
   }
 }
@@ -2718,7 +2879,8 @@ function toKnifeGloveRejectionSummary(discardedReasonsByCategory = {}) {
       extreme_spread: Number(reasons.ignored_extreme_spread || 0),
       stale_market_data: Number(reasons.ignored_stale_data || 0),
       missing_depth: Number(reasons.ignored_missing_depth || 0),
-      reference_deviation: Number(reasons.ignored_reference_deviation || 0)
+      reference_deviation: Number(reasons.ignored_reference_deviation || 0),
+      weak_market_coverage: Number(reasons.ignored_missing_markets || 0)
     }
   }
   return result
@@ -3370,12 +3532,21 @@ async function resolvePlanContext(options = {}) {
 
 function applyFeedPlanRestrictions(rows = [], entitlements = {}) {
   const safeRows = Array.isArray(rows) ? rows : []
-  const visibleFeedLimit = Math.max(Number(entitlements?.visibleFeedLimit || MAX_FEED_LIMIT), 1)
-  const limitedRows = safeRows.slice(0, visibleFeedLimit)
+  const planConfig = planService.getPlanConfig(entitlements?.planTier || entitlements)
+  const visibleFeedLimit = Math.max(Number(planConfig?.visibleFeedLimit || MAX_FEED_LIMIT), 1)
+  const limitedRows = safeRows.filter((row, index) =>
+    Boolean(
+      planService.canViewOpportunity(
+        planConfig,
+        { position: index },
+        row?.itemCategory || "weapon_skin"
+      )?.visibleAllowed
+    )
+  )
 
-  const delayedSignals = Boolean(entitlements?.delayedSignals)
+  const delayedSignals = planService.hasFeatureAccess(planConfig, "delayed_signals")
   const signalDelayMinutes = delayedSignals
-    ? Math.max(Number(entitlements?.signalDelayMinutes || 0), 0)
+    ? Math.max(Number(planConfig?.signalDelayMinutes || 0), 0)
     : 0
   const cutoffTs = signalDelayMinutes > 0 ? Date.now() - signalDelayMinutes * 60 * 1000 : null
   const delayFilteredRows =
@@ -3398,9 +3569,12 @@ function applyFeedPlanRestrictions(rows = [], entitlements = {}) {
       visibleFeedLimit,
       delayedSignals,
       signalDelayMinutes,
-      advancedFilters: Boolean(entitlements?.advancedFilters),
-      fullGlobalScanner: Boolean(entitlements?.fullGlobalScanner),
-      fullOpportunitiesFeed: Boolean(entitlements?.fullOpportunitiesFeed),
+      advancedFilters: planService.canUseAdvancedFilters(planConfig),
+      fullGlobalScanner: planService.hasFeatureAccess(planConfig, "full_global_scanner"),
+      fullOpportunitiesFeed: planService.hasFeatureAccess(
+        planConfig,
+        "full_opportunities_feed"
+      ),
       premiumCategoryAccess,
       knivesGlovesAccess: premiumCategoryAccess,
       lockedPremiumPreviewRows: Number(premiumPreviewResult.lockedCount || 0),
@@ -3440,16 +3614,15 @@ function enforceManualRefreshCooldown(userId, entitlements = {}, nowMs = Date.no
   const safeUserId = String(userId || "").trim()
   if (!safeUserId) return
 
-  const intervalMinutes = Math.max(
-    Number(entitlements?.scannerRefreshIntervalMinutes || SCANNER_INTERVAL_MINUTES),
-    1
-  )
-  const cooldownMs = intervalMinutes * 60 * 1000
   const previous = manualRefreshTracker.get(safeUserId)
   const lastTriggeredAtMs = Number(previous?.lastTriggeredAtMs || 0)
+  const refreshPolicy = planService.canRefreshScanner(entitlements, lastTriggeredAtMs, {
+    nowMs
+  })
+  const intervalMinutes = Math.max(Number(refreshPolicy?.intervalMinutes || SCANNER_INTERVAL_MINUTES), 1)
 
-  if (lastTriggeredAtMs > 0 && nowMs - lastTriggeredAtMs < cooldownMs) {
-    const retryAfterMs = cooldownMs - (nowMs - lastTriggeredAtMs)
+  if (!refreshPolicy.allowed) {
+    const retryAfterMs = Math.max(Number(refreshPolicy?.retryAfterMs || 0), 0)
     const err = new AppError(
       `Manual scanner refresh is available every ${intervalMinutes} minute(s) on your plan. Try again in ${formatRetryWindow(
         retryAfterMs
@@ -3539,10 +3712,12 @@ function resolveNoOpportunitiesReason(summary = {}, status = {}, opportunities =
 
 exports.getFeed = async (options = {}) => {
   const planContext = await resolvePlanContext(options)
-  const entitlements = planContext?.entitlements || planService.getEntitlements(planContext?.planTier)
-  const advancedFiltersEnabled = Boolean(entitlements?.advancedFilters)
+  const entitlements =
+    planContext?.entitlements || planService.getEntitlements(planContext?.planTier)
+  const planConfig = planService.getPlanConfig(planContext?.planTier || entitlements?.planTier || "free")
+  const advancedFiltersEnabled = planService.canUseAdvancedFilters(entitlements)
   const requestedLimit = normalizeLimit(options.limit, DEFAULT_API_LIMIT, MAX_FEED_LIMIT)
-  const planVisibleLimit = Math.max(Number(entitlements?.visibleFeedLimit || MAX_FEED_LIMIT), 1)
+  const planVisibleLimit = Math.max(Number(planConfig?.visibleFeedLimit || MAX_FEED_LIMIT), 1)
   const limit = Math.min(requestedLimit, planVisibleLimit)
   const requestedShowRisky = normalizeBoolean(options.showRisky)
   const requestedIncludeOlder = normalizeBoolean(options.includeOlder || options.showOlder)
@@ -3681,8 +3856,9 @@ exports.triggerRefresh = async (options = {}) => {
     plan: {
       planTier: planContext?.planTier || "free",
       scannerRefreshIntervalMinutes: Number(
-        planContext?.entitlements?.scannerRefreshIntervalMinutes || SCANNER_INTERVAL_MINUTES
-      )
+        planService.getPlanConfig(planContext?.entitlements || planContext?.planTier)
+          .scannerRefreshIntervalMinutes || SCANNER_INTERVAL_MINUTES
+      ),
     }
   }
 }

@@ -168,7 +168,7 @@ module.exports = {
     process.env.PRICE_UPDATER_RATE_LIMIT_PER_SECOND || 5
   ),
   arbitrageScannerIntervalMinutes: Number(
-    process.env.ARBITRAGE_SCANNER_INTERVAL_MINUTES || 5
+    process.env.ARBITRAGE_SCANNER_INTERVAL_MINUTES || 10
   ),
   arbitrageDefaultUniverseLimit: Number(
     process.env.ARBITRAGE_DEFAULT_UNIVERSE_LIMIT || 1000

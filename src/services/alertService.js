@@ -126,17 +126,20 @@ exports.createAlert = async (userId, payload) => {
   validateAlertPayload(payload, false);
   const { planTier, entitlements } = await planService.getUserPlanProfile(userId);
   const currentAlertsCount = await alertRepo.countByUser(userId);
-  if (currentAlertsCount >= Number(entitlements.maxAlerts || 0)) {
+  const createPermission = planService.canCreateAlert(entitlements, currentAlertsCount, {
+    cooldownMinutes: payload.cooldownMinutes,
+  });
+  if (createPermission.limitBlocked) {
     throw new AppError(
-      `Alert limit reached for ${planTier} plan (${entitlements.maxAlerts}). Upgrade to unlock more alerts.`,
+      `Alert limit reached for ${planTier} plan (${createPermission.alertsLimit}). Upgrade to unlock more alerts.`,
       402,
       "PLAN_UPGRADE_REQUIRED"
     );
   }
 
-  if (planTier === "free" && payload.cooldownMinutes != null && payload.cooldownMinutes < 30) {
+  if (createPermission.cooldownBlocked) {
     throw new AppError(
-      "Free plan minimum cooldown is 30 minutes. Upgrade for tighter alert cadence.",
+      `Minimum cooldown for ${planTier} is ${createPermission.minimumCooldownMinutes} minutes. Upgrade for tighter alert cadence.`,
       402,
       "PLAN_UPGRADE_REQUIRED"
     );
@@ -195,14 +198,17 @@ exports.updateAlert = async (userId, id, payload) => {
     throw new AppError("Alert not found", 404);
   }
 
-  const { planTier } = await planService.getUserPlanProfile(userId);
+  const { planTier, entitlements } = await planService.getUserPlanProfile(userId);
   const nextCooldownMinutes =
     payload.cooldownMinutes !== undefined
       ? Number(payload.cooldownMinutes)
       : Number(existing.cooldown_minutes || 0);
-  if (planTier === "free" && nextCooldownMinutes < 30) {
+  const updatePermission = planService.canCreateAlert(entitlements, Number.MAX_SAFE_INTEGER, {
+    cooldownMinutes: nextCooldownMinutes,
+  });
+  if (updatePermission.cooldownBlocked) {
     throw new AppError(
-      "Free plan minimum cooldown is 30 minutes. Upgrade for tighter alert cadence.",
+      `Minimum cooldown for ${planTier} is ${updatePermission.minimumCooldownMinutes} minutes. Upgrade for tighter alert cadence.`,
       402,
       "PLAN_UPGRADE_REQUIRED"
     );
