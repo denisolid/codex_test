@@ -181,8 +181,8 @@ const PRICING_DISPLAY_PLANS = Object.freeze([
     badge: "Starter",
     price: "$0",
     cadence: "Forever",
-    tagline: "Useful daily essentials for new traders.",
-    positioning: "Get started with scanner basics and core portfolio visibility.",
+    tagline: "Starter access",
+    positioning: "Core dashboard, basic scanners, and limited compare depth.",
   },
   {
     planTier: "full_access",
@@ -190,8 +190,8 @@ const PRICING_DISPLAY_PLANS = Object.freeze([
     badge: "Most Popular",
     price: "$29",
     cadence: "Per month",
-    tagline: "Built for active traders",
-    positioning: "Full scanner depth, live signals, and premium workflow speed.",
+    tagline: "For active traders",
+    positioning: "Live signals, full compare drawer, and deeper portfolio insights.",
     recommended: true,
   },
   {
@@ -200,17 +200,17 @@ const PRICING_DISPLAY_PLANS = Object.freeze([
     badge: "Coming Soon",
     price: "Coming Soon",
     cadence: "Roadmap tier",
-    tagline: "Built for advanced traders",
-    positioning: "Rare-item intelligence, automation, and high-end trader tooling.",
+    tagline: "Future power tier",
+    positioning: "Rare-item intelligence, automation, and API-first trader workflows.",
     comingSoon: true,
   },
 ]);
 const PRICING_COMPARISON_GROUPS = Object.freeze([
   {
-    label: "Access & Core",
+    label: "Core Access",
     rows: [
       {
-        feature: "Email verified access",
+        feature: "Verified email",
         values: {
           free: { label: "Included", tone: "included" },
           full_access: { label: "Included", tone: "included" },
@@ -218,7 +218,7 @@ const PRICING_COMPARISON_GROUPS = Object.freeze([
         },
       },
       {
-        feature: "Dashboard access",
+        feature: "Dashboard",
         values: {
           free: { label: "Included", tone: "included" },
           full_access: { label: "Included", tone: "included" },
@@ -250,7 +250,7 @@ const PRICING_COMPARISON_GROUPS = Object.freeze([
         },
       },
       {
-        feature: "Knives & gloves access",
+        feature: "Knives & gloves",
         values: {
           free: { label: "Locked preview", tone: "locked" },
           full_access: { label: "Included", tone: "included" },
@@ -260,10 +260,10 @@ const PRICING_COMPARISON_GROUPS = Object.freeze([
     ],
   },
   {
-    label: "Scanner / Opportunities",
+    label: "Scanner",
     rows: [
       {
-        feature: "Opportunities per day",
+        feature: "Opportunities/day",
         values: {
           free: { label: "3", tone: "limited" },
           full_access: { label: "Unlimited", tone: "included" },
@@ -271,7 +271,7 @@ const PRICING_COMPARISON_GROUPS = Object.freeze([
         },
       },
       {
-        feature: "Refresh speed",
+        feature: "Refresh",
         values: {
           free: { label: "Every 12 hours", tone: "limited" },
           full_access: { label: "Every 30 minutes", tone: "included" },
@@ -279,7 +279,7 @@ const PRICING_COMPARISON_GROUPS = Object.freeze([
         },
       },
       {
-        feature: "Feed access",
+        feature: "Opportunity feed",
         values: {
           free: { label: "Limited", tone: "limited" },
           full_access: { label: "Full", tone: "included" },
@@ -295,7 +295,7 @@ const PRICING_COMPARISON_GROUPS = Object.freeze([
         },
       },
       {
-        feature: "Compare drawer depth",
+        feature: "Compare drawer",
         values: {
           free: { label: "Limited", tone: "limited" },
           full_access: { label: "Full", tone: "included" },
@@ -324,7 +324,7 @@ const PRICING_COMPARISON_GROUPS = Object.freeze([
         },
       },
       {
-        feature: "Alerts count",
+        feature: "Alerts",
         values: {
           free: { label: "3", tone: "limited" },
           full_access: { label: "25", tone: "included" },
@@ -342,10 +342,10 @@ const PRICING_COMPARISON_GROUPS = Object.freeze([
     ],
   },
   {
-    label: "Advanced / Future",
+    label: "Alpha Roadmap",
     rows: [
       {
-        feature: "Premium rare-item intelligence",
+        feature: "Rare-item intelligence",
         values: {
           free: { label: "No", tone: "no" },
           full_access: { label: "No", tone: "no" },
@@ -502,16 +502,34 @@ function getPricingDisplayPlan(planTier) {
   );
 }
 
+function normalizePricingValueLabel(label, tone) {
+  const raw = String(label || "").trim();
+  const normalized = raw.toLowerCase();
+  const safeTone = String(tone || "").trim().toLowerCase();
+  if (!raw) return "-";
+  if (safeTone === "included" && (normalized === "yes" || normalized === "included")) {
+    return "Included";
+  }
+  if (safeTone === "no" && normalized === "no") {
+    return "Not included";
+  }
+  if (safeTone === "locked" && normalized.startsWith("locked")) {
+    return "Locked";
+  }
+  return raw;
+}
+
 function renderPricingValueChip(value) {
   const payload = value && typeof value === "object" ? value : { label: value, tone: "neutral" };
   const label = String(payload.label || "-").trim() || "-";
   const tone = String(payload.tone || "neutral")
     .trim()
     .toLowerCase();
+  const displayLabel = normalizePricingValueLabel(label, tone);
   return `
     <span class="pricing-value-chip tone-${escapeHtml(tone)}">
       <span class="pricing-value-icon" aria-hidden="true"></span>
-      <span>${escapeHtml(label)}</span>
+      <span class="pricing-value-label">${escapeHtml(displayLabel)}</span>
     </span>
   `;
 }
@@ -537,15 +555,15 @@ function renderPricingPlanCards(options = {}) {
         if (plan.comingSoon) {
           ctaMarkup = `
             <button type="button" class="ghost-btn pricing-plan-cta pricing-plan-cta-waitlist" data-alpha-waitlist="1">
-              Join waitlist
+              Notify me
             </button>
           `;
         } else if (context === "account") {
           const label = isCurrent
             ? "Current plan"
             : plan.planTier === preferredUpgradeTarget
-              ? "Primary upgrade path"
-              : "Available now";
+              ? "Upgrade path"
+              : "Available";
           ctaMarkup = `
             <button type="button" class="ghost-btn pricing-plan-cta" disabled>
               ${escapeHtml(label)}
@@ -553,7 +571,7 @@ function renderPricingPlanCards(options = {}) {
           `;
         } else {
           const targetPath = signedIn ? "/account#subscription" : "/register.html";
-          const label = plan.planTier === "free" ? "Start free" : "Get full access";
+          const label = plan.planTier === "free" ? "Start Free" : "Upgrade to Full Access";
           ctaMarkup = `
             <a class="link-btn ${plan.recommended ? "btn-primary" : "ghost"} pricing-plan-cta" href="${escapeHtml(targetPath)}">
               ${escapeHtml(label)}
@@ -563,20 +581,60 @@ function renderPricingPlanCards(options = {}) {
 
         return `
           <article class="pricing-plan-card ${toneClass} ${isCurrent ? "is-current" : ""}">
-            <header class="pricing-plan-head">
+            <header class="pricing-plan-head" role="presentation">
               <span class="pricing-plan-badge">${escapeHtml(badgeLabel)}</span>
               <h3>${escapeHtml(plan.label)}</h3>
-              <p>${escapeHtml(plan.tagline)}</p>
+              <p class="pricing-plan-subtitle">${escapeHtml(plan.tagline)}</p>
             </header>
             <div class="pricing-plan-price">
               <strong>${escapeHtml(plan.price)}</strong>
               <small>${escapeHtml(plan.cadence)}</small>
             </div>
             <p class="pricing-plan-positioning">${escapeHtml(plan.positioning)}</p>
-            ${ctaMarkup}
+            <div class="pricing-plan-actions">${ctaMarkup}</div>
           </article>
         `;
       }).join("")}
+    </div>
+  `;
+}
+
+function renderPricingComparisonMobile() {
+  return `
+    <div class="pricing-mobile-compare">
+      ${PRICING_COMPARISON_GROUPS.map(
+        (group) => `
+          <section class="pricing-mobile-group">
+            <h3>${escapeHtml(group.label)}</h3>
+            ${group.rows
+              .map((row) => {
+                const freeCell = row.values?.free || { label: "-", tone: "neutral" };
+                const fullCell = row.values?.full_access || { label: "-", tone: "neutral" };
+                const alphaCell = row.values?.alpha_access || { label: "-", tone: "neutral" };
+                return `
+                  <article class="pricing-mobile-row">
+                    <p class="pricing-mobile-feature">${escapeHtml(row.feature)}</p>
+                    <div class="pricing-mobile-values">
+                      <div class="pricing-mobile-cell">
+                        <span class="pricing-mobile-plan">Free</span>
+                        ${renderPricingValueChip(freeCell)}
+                      </div>
+                      <div class="pricing-mobile-cell is-recommended">
+                        <span class="pricing-mobile-plan">Full Access</span>
+                        ${renderPricingValueChip(fullCell)}
+                      </div>
+                      <div class="pricing-mobile-cell is-coming-soon">
+                        <span class="pricing-mobile-plan">Alpha Access</span>
+                        ${renderPricingValueChip(alphaCell)}
+                      </div>
+                    </div>
+                  </article>
+                `;
+              })
+              .join("")}
+          </section>
+        `,
+      ).join("")}
     </div>
   `;
 }
@@ -597,7 +655,13 @@ function renderPricingComparisonTable() {
               return `
                 <th scope="col" class="${toneClass}">
                   <span class="pricing-head-plan">${escapeHtml(plan.label)}</span>
-                  <small>${escapeHtml(plan.badge)}</small>
+                  ${
+                    plan.recommended
+                      ? '<small class="pricing-head-status is-recommended">Most Popular</small>'
+                      : plan.comingSoon
+                        ? '<small class="pricing-head-status is-coming-soon">Coming Soon</small>'
+                        : ""
+                  }
                 </th>
               `;
             }).join("")}
@@ -615,7 +679,7 @@ function renderPricingComparisonTable() {
                   const fullCell = row.values?.full_access || { label: "-", tone: "neutral" };
                   const alphaCell = row.values?.alpha_access || { label: "-", tone: "neutral" };
                   return `
-                    <tr>
+                    <tr class="pricing-feature-row">
                       <th scope="row">${escapeHtml(row.feature)}</th>
                       <td>${renderPricingValueChip(freeCell)}</td>
                       <td>${renderPricingValueChip(fullCell)}</td>
@@ -643,11 +707,11 @@ function renderPricingComparisonSection(options = {}) {
   const heading =
     context === "account"
       ? "Plan Comparison & Roadmap"
-      : "Pricing Comparison";
+      : "Pricing";
   const helperText =
     context === "account"
-      ? "Current plan and upgrade path are active today. Alpha Access is visible as roadmap-only and not purchasable yet."
-      : "Free and Full Access are available now. Alpha Access is a premium roadmap tier for advanced traders.";
+      ? "Free and Full Access are active now. Alpha Access is visible as roadmap-only."
+      : "Compare active plans now, then review the Alpha Access roadmap tier.";
   const currentPlanLabel = planTierToLabel(safeCurrentPlan);
   const currentPlanMeta = getPricingDisplayPlan(safeCurrentPlan);
 
@@ -661,20 +725,33 @@ function renderPricingComparisonSection(options = {}) {
           context === "account"
             ? `
               <p class="muted">
-                Current plan: <strong>${escapeHtml(currentPlanLabel)}</strong>.
-                Recommended upgrade path: <strong>${escapeHtml(upgradeTargetLabel)}</strong>.
-                Alpha status: <strong>Coming Soon</strong>.
+                Current: <strong>${escapeHtml(currentPlanLabel)}</strong> |
+                Upgrade path: <strong>${escapeHtml(upgradeTargetLabel)}</strong> |
+                Alpha: <strong>Coming Soon</strong>
               </p>
             `
             : `
               <p class="muted">
-                Full Access is the main upgrade path today. Alpha Access is for rare-item intelligence, automation, and advanced trader tooling.
+                Full Access is the primary upgrade path. Alpha Access is roadmap-only for advanced trader tooling.
               </p>
             `
         }
       </div>
-      ${renderPricingPlanCards({ context, currentPlanTier: currentPlanMeta.planTier, signedIn })}
-      ${renderPricingComparisonTable()}
+      <div class="pricing-section-block pricing-cards-block">
+        <div class="pricing-block-head">
+          <p class="eyebrow">Plans</p>
+          <h3>Choose your access tier</h3>
+        </div>
+        ${renderPricingPlanCards({ context, currentPlanTier: currentPlanMeta.planTier, signedIn })}
+      </div>
+      <div class="pricing-section-block pricing-matrix-block">
+        <div class="pricing-block-head">
+          <p class="eyebrow">Compare</p>
+          <h3>Feature matrix</h3>
+        </div>
+        ${renderPricingComparisonTable()}
+        ${renderPricingComparisonMobile()}
+      </div>
     </section>
   `;
 }

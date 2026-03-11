@@ -171,12 +171,12 @@ module.exports = {
     process.env.ARBITRAGE_SCANNER_INTERVAL_MINUTES || 10
   ),
   arbitrageDefaultUniverseLimit: Number(
-    process.env.ARBITRAGE_DEFAULT_UNIVERSE_LIMIT || 1000
+    process.env.ARBITRAGE_DEFAULT_UNIVERSE_LIMIT || 3000
   ),
   arbitrageScannerUniverseTargetSize: Number(
     process.env.ARBITRAGE_SCANNER_UNIVERSE_TARGET_SIZE ||
       process.env.ARBITRAGE_DEFAULT_UNIVERSE_LIMIT ||
-      1000
+      3000
   ),
   arbitrageScanBatchSize: Number(
     process.env.ARBITRAGE_SCAN_BATCH_SIZE ||
@@ -207,10 +207,10 @@ module.exports = {
     process.env.ARBITRAGE_QUOTE_COMPUTE_BATCH_SIZE || 80
   ),
   arbitrageUniverseDbLimit: Number(
-    process.env.ARBITRAGE_UNIVERSE_DB_LIMIT || 800
+    process.env.ARBITRAGE_UNIVERSE_DB_LIMIT || 6000
   ),
   arbitrageSourceCatalogLimit: Number(
-    process.env.ARBITRAGE_SOURCE_CATALOG_LIMIT || 1000
+    process.env.ARBITRAGE_SOURCE_CATALOG_LIMIT || 5000
   ),
   arbitrageSourceCatalogRefreshMinutes: Number(
     process.env.ARBITRAGE_SOURCE_CATALOG_REFRESH_MINUTES || 60

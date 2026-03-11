@@ -266,6 +266,7 @@ test("universe seed filter rejects stale snapshot seeds", () => {
       marketHashName: "AK-47 | Redline (Field-Tested)",
       hasSnapshotData: true,
       snapshotStale: true,
+      snapshotCapturedAt: new Date(Date.now() - 30 * 60 * 60 * 1000).toISOString(),
       referencePrice: 15,
       marketVolume7d: 300
     },
@@ -453,9 +454,9 @@ test("scanner overdue watchdog respects running state and stale timestamps", () 
   assert.equal(isScannerRunOverdue({}, now), true);
 });
 
-test("scanner defaults are configured for 1000-scale batching", () => {
-  // Runtime env can override this lower in tests; service fallback baseline is 1000.
-  assert.equal(DEFAULT_UNIVERSE_LIMIT >= 500, true);
+test("scanner defaults are configured for 3k-scale batching", () => {
+  // Runtime env can override this lower in tests; service fallback baseline is 3000.
+  assert.equal(DEFAULT_UNIVERSE_LIMIT >= 1000, true);
   assert.equal(SCAN_BATCH_SIZE >= 25 && SCAN_BATCH_SIZE <= 50, true);
   assert.equal(MAX_CONCURRENT_MARKET_REQUESTS >= 1, true);
   assert.equal(SCAN_TIMEOUT_PER_BATCH >= 1000, true);

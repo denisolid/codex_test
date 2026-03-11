@@ -411,17 +411,13 @@ const CURATED_GLOVE_SEEDS = Object.freeze([
 const CATEGORY_ORDER = Object.freeze([
   "weapon_skin",
   "case",
-  "sticker_capsule",
-  "knife",
-  "glove"
+  "sticker_capsule"
 ])
 
 const CATEGORY_SEED_TARGETS = Object.freeze({
-  weapon_skin: 580,
-  case: 200,
-  sticker_capsule: 110,
-  knife: 65,
-  glove: 45
+  weapon_skin: 4400,
+  case: 350,
+  sticker_capsule: 250
 })
 
 const CATEGORY_SEED_BASE_TOTAL = Object.values(CATEGORY_SEED_TARGETS).reduce(
@@ -438,8 +434,6 @@ function inferCategory(value) {
   if (!name) return "weapon_skin"
   if (name.endsWith(" case")) return "case"
   if (name.includes("sticker capsule")) return "sticker_capsule"
-  if (/\b(gloves|glove|hand wraps)\b/i.test(name)) return "glove"
-  if (/\b(knife|bayonet|karambit|daggers)\b/i.test(name)) return "knife"
   return "weapon_skin"
 }
 
@@ -514,9 +508,13 @@ function buildWeaponSkinRows() {
   for (const base of CURATED_WEAPON_SKIN_BASES) {
     const name = normalizeText(base)
     if (!name) continue
-    const wears = name.includes("| ") ? CORE_WEAR_STATES : WEAR_STATES
+    const wears = name.includes("| ") ? WEAR_STATES : CORE_WEAR_STATES
     for (const wear of wears) {
       rows.push(toCatalogRow(`${name} (${wear})`, "weapon_skin"))
+      rows.push(toCatalogRow(`StatTrak\u2122 ${name} (${wear})`, "weapon_skin"))
+    }
+    for (const wear of ["Minimal Wear", "Field-Tested", "Well-Worn"]) {
+      rows.push(toCatalogRow(`Souvenir ${name} (${wear})`, "weapon_skin"))
     }
   }
   return rows.filter(Boolean)
@@ -563,14 +561,12 @@ function buildGloveRows() {
   ).filter(Boolean)
 }
 
-function buildCategorySeedQuotas(limit = 1000) {
+function buildCategorySeedQuotas(limit = 5000) {
   const targetLimit = Math.max(Math.round(Number(limit || 0)), 1)
   const quotas = {
     weapon_skin: 0,
     case: 0,
-    sticker_capsule: 0,
-    knife: 0,
-    glove: 0
+    sticker_capsule: 0
   }
 
   if (!CATEGORY_SEED_BASE_TOTAL) {
@@ -607,14 +603,12 @@ function buildCategorySeedQuotas(limit = 1000) {
   return quotas
 }
 
-function buildSourceCatalogSeed(limit = 1000) {
+function buildSourceCatalogSeed(limit = 5000) {
   const targetLimit = Math.max(Math.round(Number(limit || 0)), 1)
   const byCategory = {
     weapon_skin: buildWeaponSkinRows(),
     case: buildCaseRows(),
-    sticker_capsule: buildCapsuleRows(),
-    knife: buildKnifeRows(),
-    glove: buildGloveRows()
+    sticker_capsule: buildCapsuleRows()
   }
   const quotas = buildCategorySeedQuotas(targetLimit)
   const selected = []
@@ -650,9 +644,9 @@ function buildSourceCatalogSeed(limit = 1000) {
   return selected
 }
 
-const defaultSeed = buildSourceCatalogSeed(1000)
+const defaultSeed = buildSourceCatalogSeed(5000)
 
-module.exports = Object.freeze(defaultSeed)
+module.exports = defaultSeed
 module.exports.buildSourceCatalogSeed = buildSourceCatalogSeed
 module.exports.__testables = {
   inferCategory,

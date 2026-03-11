@@ -2,7 +2,8 @@ const { supabaseAdmin } = require("../config/supabase")
 const AppError = require("../utils/AppError")
 
 const TABLE = "market_universe"
-const MAX_LIMIT = 2000
+const MAX_LIMIT = 10000
+const SELECT_PAGE_SIZE = 1000
 const INSERT_BATCH_SIZE = 400
 const CATEGORY_SET = new Set(["weapon_skin", "case", "sticker_capsule", "knife", "glove"])
 
@@ -19,20 +20,62 @@ function normalizeCategory(value) {
   return CATEGORY_SET.has(normalized) ? normalized : "weapon_skin"
 }
 
-exports.listActiveByLiquidityRank = async (options = {}) => {
-  const limit = normalizeLimit(options.limit, 300)
-  const { data, error } = await supabaseAdmin
-    .from(TABLE)
-    .select("market_hash_name, item_name, category, subcategory, liquidity_rank, is_active, updated_at")
-    .eq("is_active", true)
-    .order("liquidity_rank", { ascending: true })
-    .limit(limit)
+function normalizeCategories(values = []) {
+  return Array.from(
+    new Set(
+      (Array.isArray(values) ? values : [])
+        .map((value) => normalizeCategory(value))
+        .filter((value) => CATEGORY_SET.has(value))
+    )
+  )
+}
 
-  if (error) {
-    throw new AppError(error.message, 500)
+async function selectWithPagination(buildQuery, limit, errorMessage = "market_universe_list_failed") {
+  const safeLimit = normalizeLimit(limit, 300)
+  const rows = []
+  let offset = 0
+
+  while (rows.length < safeLimit) {
+    const remaining = safeLimit - rows.length
+    const pageSize = Math.min(SELECT_PAGE_SIZE, remaining)
+    const from = offset
+    const to = offset + pageSize - 1
+
+    const { data, error } = await buildQuery().range(from, to)
+    if (error) {
+      throw new AppError(error.message || errorMessage, 500)
+    }
+
+    const chunk = Array.isArray(data) ? data : []
+    if (!chunk.length) break
+
+    rows.push(...chunk)
+    if (chunk.length < pageSize) break
+    offset += chunk.length
   }
 
-  return data || []
+  return rows
+}
+
+exports.listActiveByLiquidityRank = async (options = {}) => {
+  const limit = normalizeLimit(options.limit, 300)
+  const categories = normalizeCategories(options.categories)
+  return selectWithPagination(
+    () => {
+      let query = supabaseAdmin
+        .from(TABLE)
+        .select("market_hash_name, item_name, category, subcategory, liquidity_rank, is_active, updated_at")
+        .eq("is_active", true)
+        .order("liquidity_rank", { ascending: true })
+
+      if (categories.length) {
+        query = query.in("category", categories)
+      }
+      return query
+    },
+    limit,
+    "market_universe_list_failed"
+  )
 }
 
 exports.replaceActiveUniverse = async (rows = []) => {
