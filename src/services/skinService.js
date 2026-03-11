@@ -4,6 +4,7 @@ const priceRepo = require("../repositories/priceHistoryRepository");
 const inventoryRepo = require("../repositories/inventoryRepository");
 const priceProviderService = require("./priceProviderService");
 const premiumCategoryAccessService = require("./premiumCategoryAccessService");
+const planService = require("./planService");
 const { derivePriceStatus } = require("../utils/priceStatus");
 const { buildDailyCarryForwardSeries } = require("../utils/historySeries");
 const {
@@ -52,6 +53,11 @@ async function refreshSkinPrice(skin) {
 exports.getSkinDetails = async (skinId, options = {}) => {
   await ensureFreshFxRates();
   const displayCurrency = resolveCurrency(options.currency);
+  const planConfig = planService.getPlanConfig(options?.entitlements || "free");
+  const historyDaysLimit = Math.max(
+    Number(planConfig?.historyDaysLimit || planConfig?.maxHistoryDays || 7),
+    1
+  );
   const skin = await skinRepo.getById(skinId);
   if (!skin) {
     throw new AppError("Item not found", 404);
@@ -91,23 +97,23 @@ exports.getSkinDetails = async (skinId, options = {}) => {
     : null;
 
   const rangeEnd = new Date();
-  const sixMonthsAgo = new Date(rangeEnd);
-  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+  const historyWindowStart = new Date(rangeEnd);
+  historyWindowStart.setDate(historyWindowStart.getDate() - (historyDaysLimit - 1));
 
   const historyRaw = await priceRepo.getHistoryBySkinIdSince(
     skinId,
-    sixMonthsAgo,
+    historyWindowStart,
     20000,
     { excludeMock: true }
   );
 
   const history = buildDailyCarryForwardSeries(historyRaw, {
-    startDate: sixMonthsAgo,
+    startDate: historyWindowStart,
     endDate: rangeEnd,
     backfillFromFirstObserved: false,
     descending: true
   })
-    .slice(0, 185)
+    .slice(0, historyDaysLimit)
     .map((row) => ({
       ...row,
       price: convertUsdAmount(Number(row.price || 0), displayCurrency),
@@ -119,6 +125,10 @@ exports.getSkinDetails = async (skinId, options = {}) => {
     ...skin,
     latestPrice: latestPriceConverted,
     currency: displayCurrency,
+    inspectLimits: {
+      historyDaysLimit,
+      portfolioInsights: String(planConfig?.portfolioInsights || "basic")
+    },
     priceHistory: history
   };
 };

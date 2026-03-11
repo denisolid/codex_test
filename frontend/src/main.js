@@ -3697,6 +3697,7 @@ function buildCompareDrawerSnapshotFromHolding(holding, options = {}) {
     ).trim(),
     lineValue: Number(holding.lineValue || 0),
     marketComparison: comparison,
+    plan: options.plan || null,
     fees: options.fees || state.portfolio?.pricing?.fees || null,
     generatedAt: options.generatedAt || null,
   };
@@ -3762,6 +3763,7 @@ function buildCompareDrawerSnapshotFromComparisonItem(
       bestSellNet: comparisonItem.bestSellNet || null,
       arbitrage: comparisonItem.arbitrage || null,
     },
+    plan: options.plan || null,
     fees: options.fees || state.portfolio?.pricing?.fees || null,
     generatedAt: options.generatedAt || null,
   };
@@ -3940,6 +3942,7 @@ async function refreshCompareDrawerDataForItemSeed(itemSeed = {}) {
         itemCategory: itemSeed.itemCategory || "",
         imageUrl: itemSeed.imageUrl || "",
         currency: comparisonPayload?.currency || seedSteamCurrency,
+        plan: comparisonPayload?.plan || null,
         fees: comparisonPayload?.fees || state.portfolio?.pricing?.fees || null,
         generatedAt: comparisonPayload?.generatedAt || null,
       },
@@ -4036,6 +4039,7 @@ async function refreshCompareDrawerData(options = {}) {
     const snapshot = buildCompareDrawerSnapshotFromHolding(
       updatedHolding || holding,
       {
+        plan: comparisonPayload?.plan || null,
         fees: comparisonPayload?.fees || state.portfolio?.pricing?.fees || null,
         generatedAt: comparisonPayload?.generatedAt || null,
       },
@@ -6257,6 +6261,7 @@ async function refreshPortfolio(options = {}) {
         state.compareDrawer.payload = buildCompareDrawerSnapshotFromHolding(
           liveHolding,
           {
+            plan: state.compareDrawer.payload?.plan || null,
             fees:
               state.compareDrawer.payload?.fees ||
               state.portfolio?.pricing?.fees ||
@@ -7089,16 +7094,26 @@ async function fetchInspectionBundleBySteamItemId(rawId) {
   const holding = (state.portfolio?.items || []).find(
     (item) => Number(item.skinId) === Number(skin.id),
   );
+  const entitlements = getProfileEntitlements();
+  const portfolioInsightsLevel = String(
+    entitlements?.portfolioInsights || "basic",
+  )
+    .trim()
+    .toLowerCase();
+  const allowAdvancedInspectInsights =
+    portfolioInsightsLevel !== "basic";
 
   let marketInsight = null;
-  try {
-    const [sellSuggestion, liquidity] = await Promise.all([
-      api(withCurrency(`/market/items/${skin.id}/sell-suggestion`)),
-      api(withCurrency(`/market/items/${skin.id}/liquidity`)),
-    ]);
-    marketInsight = { sellSuggestion, liquidity };
-  } catch (_err) {
-    marketInsight = null;
+  if (allowAdvancedInspectInsights) {
+    try {
+      const [sellSuggestion, liquidity] = await Promise.all([
+        api(withCurrency(`/market/items/${skin.id}/sell-suggestion`)),
+        api(withCurrency(`/market/items/${skin.id}/liquidity`)),
+      ]);
+      marketInsight = { sellSuggestion, liquidity };
+    } catch (_err) {
+      marketInsight = null;
+    }
   }
 
   return {
@@ -8713,8 +8728,25 @@ function renderCompareDrawerBody() {
     );
   }
 
+  const entitlements = getProfileEntitlements();
+  const compareView = String(
+    payload?.plan?.compareView || entitlements?.compareView || "limited",
+  )
+    .trim()
+    .toLowerCase();
+  const compareViewLimited = compareView === "limited";
+  const compareTopListDepth = compareViewLimited ? 1 : 3;
+  const compareMarketDepth = compareViewLimited ? 2 : Number.MAX_SAFE_INTEGER;
   const insights = getCompareDrawerInsights(payload);
-  const rows = Array.isArray(insights?.rows) ? insights.rows : [];
+  const rows = Array.isArray(insights?.rows)
+    ? insights.rows.slice(0, compareMarketDepth)
+    : [];
+  const topBuyMarkets = Array.isArray(insights?.topBuyMarkets)
+    ? insights.topBuyMarkets.slice(0, compareTopListDepth)
+    : [];
+  const topSellMarkets = Array.isArray(insights?.topSellMarkets)
+    ? insights.topSellMarkets.slice(0, compareTopListDepth)
+    : [];
   const pricingMode = normalizePricingMode(
     state.portfolio?.pricing?.mode || state.pricingMode,
   );
@@ -8983,7 +9015,11 @@ function renderCompareDrawerBody() {
               : ""
           }
         </div>
-        <small class="muted compare-drawer-item-note">Multi-market pricing and fee-adjusted sell opportunities</small>
+        <small class="muted compare-drawer-item-note">${
+          compareViewLimited
+            ? "Free preview: limited compare depth. Upgrade to Full Access for full market-by-market and arbitrage diagnostics."
+            : "Multi-market pricing and fee-adjusted sell opportunities"
+        }</small>
       </div>
     </div>
     <section class="compare-drawer-arb-card">
@@ -9040,11 +9076,15 @@ function renderCompareDrawerBody() {
         <div class="compare-drawer-arb-score ${escapeHtml(arbitrageScoreTone)}">
           <span>Opportunity Score</span>
           <strong>${
-            arbitrageScore == null
+            compareViewLimited || arbitrageScore == null
               ? "N/A"
               : `${formatNumber(arbitrageScore, 0)} / 100`
           }</strong>
-          <small>${escapeHtml(arbitrageScoreLabel)}</small>
+          <small>${
+            compareViewLimited
+              ? "Full Access required for full score diagnostics"
+              : escapeHtml(arbitrageScoreLabel)
+          }</small>
         </div>
       `
           : shouldShowUnrealisticNotice
@@ -9069,11 +9109,11 @@ function renderCompareDrawerBody() {
     <div class="compare-drawer-insights-grid">
       <section class="compare-drawer-insight-card">
         <h4>Best Buy</h4>
-        ${renderQuickList(insights?.topBuyMarkets || [], "buyValue", "No buy prices")}
+        ${renderQuickList(topBuyMarkets, "buyValue", "No buy prices")}
       </section>
       <section class="compare-drawer-insight-card">
         <h4>Best Sell</h4>
-        ${renderQuickList(insights?.topSellMarkets || [], "sellValue", "No sell prices")}
+        ${renderQuickList(topSellMarkets, "sellValue", "No sell prices")}
       </section>
     </div>
     <div class="compare-drawer-context">
@@ -9086,8 +9126,12 @@ function renderCompareDrawerBody() {
       }
     </div>
     <div class="compare-drawer-market-section-head">
-      <h4>All Markets</h4>
-      <small class="muted">Profit/loss is based on lowest buy price</small>
+      <h4>${compareViewLimited ? "Market Preview" : "All Markets"}</h4>
+      <small class="muted">${
+        compareViewLimited
+          ? "Free plan shows a limited market preview."
+          : "Profit/loss is based on lowest buy price"
+      }</small>
     </div>
     <div class="compare-drawer-market-grid">${marketRows}</div>
     ${
@@ -10519,6 +10563,18 @@ function renderSkinDetails(context = "inline") {
   const inspectExitWhatIf = isModal
     ? state.inspectModal.exitWhatIf
     : state.exitWhatIf;
+  const entitlements = getProfileEntitlements();
+  const portfolioInsightsLevel = String(
+    entitlements?.portfolioInsights || "basic",
+  )
+    .trim()
+    .toLowerCase();
+  const showAdvancedInspectInsights = portfolioInsightsLevel !== "basic";
+  const historyDaysLimit = Math.max(
+    Number(entitlements?.historyDaysLimit || entitlements?.maxHistoryDays || 7),
+    1,
+  );
+  const timelineRowsLimit = showAdvancedInspectInsights ? 12 : 5;
 
   if (!inspectSkin) {
     return isModal
@@ -10531,6 +10587,7 @@ function renderSkinDetails(context = "inline") {
   const history = Array.isArray(inspectSkin.priceHistory)
     ? inspectSkin.priceHistory
     : [];
+  const visibleHistory = history.slice(0, historyDaysLimit);
   const tradeStats = computeItemTradeStats(skinId);
   const holding = (state.portfolio?.items || []).find(
     (item) => Number(item.skinId) === Number(skinId),
@@ -10561,10 +10618,10 @@ function renderSkinDetails(context = "inline") {
   const inspectImageUrl =
     getItemImageUrl(inspectVisualItem) || inspectFallbackImage;
   const managementClue = holding?.managementClue || null;
-  const graphMarkup = renderSkinValueGraph(history);
+  const graphMarkup = renderSkinValueGraph(visibleHistory);
   const timelineMarkup = tradeStats.timeline.length
     ? `<ul class="sync-list">${tradeStats.timeline
-        .slice(0, 12)
+        .slice(0, timelineRowsLimit)
         .map(
           (tx) =>
             `<li>${escapeHtml(tx.date)} | <strong>${escapeHtml(toTitle(tx.type))}</strong> ${tx.quantity} @ ${formatMoney(
@@ -10575,7 +10632,8 @@ function renderSkinDetails(context = "inline") {
         .join("")}</ul>`
     : '<p class="muted">No transactions for this item yet.</p>';
 
-  const marketInsightMarkup = inspectMarketInsight?.sellSuggestion
+  const marketInsightMarkup =
+    showAdvancedInspectInsights && inspectMarketInsight?.sellSuggestion
     ? `
       <div class="sync-summary">
         <p><strong>Quick Sell Tiers (${escapeHtml(inspectMarketInsight.sellSuggestion.currency || state.currency)}):</strong></p>
@@ -10607,7 +10665,7 @@ function renderSkinDetails(context = "inline") {
     : "";
 
   const exitResult = inspectExitWhatIf.result;
-  const exitResultMarkup = exitResult
+  const exitResultMarkup = showAdvancedInspectInsights && exitResult
     ? `
       <div class="calc-result">
         <p><span>Reference Buy Price</span><strong>${formatMoney(
@@ -10627,8 +10685,8 @@ function renderSkinDetails(context = "inline") {
     `
     : "";
 
-  const historyMarkup = history.length
-    ? `<ul class="sync-list daily-points-list">${history
+  const historyMarkup = visibleHistory.length
+    ? `<ul class="sync-list daily-points-list">${visibleHistory
         .map(
           (row) =>
             `<li>${escapeHtml(String(row.recorded_at || "").slice(0, 10))}: <strong>${formatMoney(
@@ -10706,6 +10764,11 @@ function renderSkinDetails(context = "inline") {
       <p>Price Status: ${latest ? formatPriceStatusBadge(latest.status) : "-"}</p>
       <p>Confidence: <strong>${latest ? escapeHtml(formatConfidence(latest)) : "-"}</strong></p>
       ${
+        showAdvancedInspectInsights
+          ? ""
+          : '<p class="muted">Free inspect mode: basic view only. Upgrade to Full Access for quick-sell tiers, liquidity diagnostics, and full what-if tools.</p>'
+      }
+      ${
         latest && latest.stale
           ? `<p class="muted">Live refresh failed, showing last known price: ${escapeHtml(latest.staleReason || "unknown reason")}</p>`
           : ""
@@ -10733,11 +10796,14 @@ function renderSkinDetails(context = "inline") {
           <strong>${formatMoney(tradeStats.realizedPnl, "USD")}</strong>
         </article>
       </div>
-      <p class="muted">Transaction timeline (latest 12):</p>
+      <p class="muted">Transaction timeline (latest ${timelineRowsLimit}):</p>
       ${timelineMarkup}
+      ${
+        showAdvancedInspectInsights
+          ? `
       <form id="${formId}" class="trade-calc-grid inspect-exit-whatif-form" data-inspect-context="${escapeHtml(
-        context,
-      )}">
+            context,
+          )}">
         <label>Exit Quantity
           <input data-exit-field="quantity" type="number" step="1" min="1" value="${escapeHtml(
             inspectExitWhatIf.quantity,
@@ -10757,8 +10823,11 @@ function renderSkinDetails(context = "inline") {
           ${inspectExitWhatIf.loading ? "Calculating..." : "What-if Exit"}
         </button>
       </form>
+      `
+          : ""
+      }
       ${exitResultMarkup}
-      <p class="muted">Recent daily points (6 months):</p>
+      <p class="muted">Recent daily points (last ${historyDaysLimit} day${historyDaysLimit === 1 ? "" : "s"}):</p>
       ${historyMarkup}
     </div>
   `;
