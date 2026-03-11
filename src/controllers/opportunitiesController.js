@@ -36,7 +36,19 @@ function toOpportunityRow(row = {}) {
     isRiskyEligible: Boolean(row?.isRiskyEligible),
     itemId: row?.itemId || null,
     buyUrl: row?.buyUrl || null,
-    sellUrl: row?.sellUrl || null
+    sellUrl: row?.sellUrl || null,
+    isLockedPreview: Boolean(row?.isLockedPreview),
+    premiumCategory: row?.premiumCategory || null,
+    premiumCategoryLabel: row?.premiumCategoryLabel || null,
+    lockReason: row?.lockReason || null,
+    lockMessage: row?.lockMessage || null,
+    lockHint: row?.lockHint || null,
+    previewSummary: row?.previewSummary || null,
+    previewBuyPrice: row?.previewBuyPrice ?? null,
+    previewSellNet: row?.previewSellNet ?? null,
+    previewProfit: row?.previewProfit ?? null,
+    previewSpread: row?.previewSpread ?? null,
+    previewScoreBand: row?.previewScoreBand || null
   }
 }
 

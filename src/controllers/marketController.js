@@ -3,6 +3,7 @@ const marketService = require("../services/marketService");
 const marketComparisonService = require("../services/marketComparisonService");
 const marketOpportunityService = require("../services/marketOpportunityService");
 const planService = require("../services/planService");
+const premiumCategoryAccessService = require("../services/premiumCategoryAccessService");
 const AppError = require("../utils/AppError");
 
 function parseItemsPayload(input) {
@@ -63,6 +64,11 @@ exports.getInventoryValue = asyncHandler(async (req, res) => {
 
 exports.getQuickSellSuggestion = asyncHandler(async (req, res) => {
   const skinId = Number(req.validated?.skinId || req.params.skinId);
+  const { entitlements } = await planService.getUserPlanProfile(req.userId);
+  await premiumCategoryAccessService.assertPremiumCategoryAccessForSkinId(skinId, entitlements, {
+    message:
+      "Unlock knife and glove opportunities with Full Access to inspect premium market categories."
+  });
   const data = await marketService.getQuickSellSuggestion(skinId, {
     commissionPercent: req.validated?.commissionPercent,
     currency: req.query.currency
@@ -72,6 +78,11 @@ exports.getQuickSellSuggestion = asyncHandler(async (req, res) => {
 
 exports.getLiquidityScore = asyncHandler(async (req, res) => {
   const skinId = Number(req.validated?.skinId || req.params.skinId);
+  const { entitlements } = await planService.getUserPlanProfile(req.userId);
+  await premiumCategoryAccessService.assertPremiumCategoryAccessForSkinId(skinId, entitlements, {
+    message:
+      "Unlock knife and glove opportunities with Full Access to inspect premium market categories."
+  });
   const data = await marketService.getLiquidityScore(skinId);
   res.json(data);
 });

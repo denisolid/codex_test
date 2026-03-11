@@ -7,13 +7,12 @@ const PLAN_ALIASES = Object.freeze({
   pro: "full_access",
   team: "full_access",
   full_access: "full_access",
-  api_advanced: "api_advanced"
+  api_advanced: "full_access"
 });
 
 const PLAN_ORDER = Object.freeze({
   free: 0,
-  full_access: 1,
-  api_advanced: 2
+  full_access: 1
 });
 
 const PLAN_ENTITLEMENTS = Object.freeze({
@@ -40,6 +39,10 @@ const PLAN_ENTITLEMENTS = Object.freeze({
     teamDashboard: false,
     fullGlobalScanner: false,
     fullOpportunitiesFeed: false,
+    premiumCategoryAccess: false,
+    knivesGlovesAccess: false,
+    scannerCategories: Object.freeze(["weapon_skin", "case", "sticker_capsule"]),
+    scannerCategoryAccessNote: "Knives and gloves are preview-only on Free.",
     exportApiReady: false,
     webhooksReady: false,
     automationReady: false
@@ -67,36 +70,19 @@ const PLAN_ENTITLEMENTS = Object.freeze({
     teamDashboard: true,
     fullGlobalScanner: true,
     fullOpportunitiesFeed: true,
+    premiumCategoryAccess: true,
+    knivesGlovesAccess: true,
+    scannerCategories: Object.freeze([
+      "weapon_skin",
+      "case",
+      "sticker_capsule",
+      "knife",
+      "glove"
+    ]),
+    scannerCategoryAccessNote: "All scanner categories unlocked, including knives and gloves.",
     exportApiReady: false,
     webhooksReady: false,
     automationReady: false
-  }),
-  api_advanced: Object.freeze({
-    planTier: "api_advanced",
-    opportunitiesDailyLimit: 500,
-    alertsLimit: 25,
-    maxAlerts: 25,
-    scannerRefreshIntervalMinutes: 30,
-    historyDaysLimit: 90,
-    maxHistoryDays: 90,
-    visibleFeedLimit: 500,
-    advancedFilters: true,
-    delayedSignals: false,
-    signalDelayMinutes: 0,
-    compareView: "full",
-    compareViewMaxItems: 200,
-    portfolioInsights: "full",
-    advancedAnalytics: true,
-    csvExport: true,
-    maxCsvRows: 100000,
-    backtesting: true,
-    maxBacktestDays: 90,
-    teamDashboard: true,
-    fullGlobalScanner: true,
-    fullOpportunitiesFeed: true,
-    exportApiReady: true,
-    webhooksReady: true,
-    automationReady: true
   })
 });
 

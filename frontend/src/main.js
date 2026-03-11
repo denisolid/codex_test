@@ -67,6 +67,7 @@ const ACCOUNT_DEFAULT_NOTIFICATION_PREFS = Object.freeze({
 const PLAN_TIER_ALIASES = Object.freeze({
   pro: "full_access",
   team: "full_access",
+  api_advanced: "full_access",
 });
 const ACCOUNT_PLAN_SWITCH_OPTIONS = Object.freeze([
   {
@@ -77,12 +78,7 @@ const ACCOUNT_PLAN_SWITCH_OPTIONS = Object.freeze([
   {
     value: "full_access",
     label: "Full Access",
-    description: "Full Access - unlock all current premium features",
-  },
-  {
-    value: "api_advanced",
-    label: "API / Advanced",
-    description: "API / Advanced - future roadmap and internal testing only",
+    description: "Full Access - unlock all scanner categories and premium workflows",
   },
 ]);
 const ACCOUNT_PLAN_LIMITS = Object.freeze({
@@ -96,7 +92,8 @@ const ACCOUNT_PLAN_LIMITS = Object.freeze({
     delayedSignals: "Signals delayed by 15 minutes",
     compareView: "Compare view limited",
     portfolioInsights: "Portfolio insights: basic",
-    apiFlags: "API automation flags unavailable",
+    scannerCategories: "Skins, Cases, Capsules",
+    knivesGloves: "Locked preview rows only",
   },
   full_access: {
     opportunitiesDailyLimit: "High/unlimited opportunities",
@@ -108,19 +105,8 @@ const ACCOUNT_PLAN_LIMITS = Object.freeze({
     delayedSignals: "Real-time signals (no delay)",
     compareView: "Compare view full",
     portfolioInsights: "Portfolio insights: full",
-    apiFlags: "API automation flags pending API plan",
-  },
-  api_advanced: {
-    opportunitiesDailyLimit: "High/unlimited opportunities",
-    alertsLimit: "25 active alerts",
-    scannerRefresh: "Refresh every 30 minutes",
-    historyDaysLimit: "90 days history",
-    visibleFeedLimit: "Full opportunities feed",
-    advancedFilters: "Advanced filters enabled",
-    delayedSignals: "Real-time signals (no delay)",
-    compareView: "Compare view full",
-    portfolioInsights: "Portfolio insights: full",
-    apiFlags: "API export + webhooks + automation flags enabled",
+    scannerCategories: "All categories unlocked",
+    knivesGloves: "Unlocked (full feed + compare + inspect)",
   },
 });
 const ACCOUNT_PLAN_ENTITLEMENT_FALLBACKS = Object.freeze({
@@ -137,6 +123,10 @@ const ACCOUNT_PLAN_ENTITLEMENT_FALLBACKS = Object.freeze({
     portfolioInsights: "basic",
     fullGlobalScanner: false,
     fullOpportunitiesFeed: false,
+    premiumCategoryAccess: false,
+    knivesGlovesAccess: false,
+    scannerCategories: ["weapon_skin", "case", "sticker_capsule"],
+    scannerCategoryAccessNote: "Knives and gloves are preview-only on Free.",
     teamDashboard: false,
     exportApiReady: false,
     webhooksReady: false,
@@ -155,30 +145,229 @@ const ACCOUNT_PLAN_ENTITLEMENT_FALLBACKS = Object.freeze({
     portfolioInsights: "full",
     fullGlobalScanner: true,
     fullOpportunitiesFeed: true,
+    premiumCategoryAccess: true,
+    knivesGlovesAccess: true,
+    scannerCategories: ["weapon_skin", "case", "sticker_capsule", "knife", "glove"],
+    scannerCategoryAccessNote:
+      "All scanner categories unlocked, including knives and gloves.",
     teamDashboard: true,
     exportApiReady: false,
     webhooksReady: false,
     automationReady: false,
   },
-  api_advanced: {
-    opportunitiesDailyLimit: 500,
-    maxAlerts: 25,
-    scannerRefreshIntervalMinutes: 30,
-    maxHistoryDays: 90,
-    visibleFeedLimit: 500,
-    advancedFilters: true,
-    delayedSignals: false,
-    signalDelayMinutes: 0,
-    compareView: "full",
-    portfolioInsights: "full",
-    fullGlobalScanner: true,
-    fullOpportunitiesFeed: true,
-    teamDashboard: true,
-    exportApiReady: true,
-    webhooksReady: true,
-    automationReady: true,
-  },
 });
+const UNIVERSE_CATEGORY_DIAGNOSTIC_ORDER = Object.freeze([
+  { key: "weapon_skin", label: "skins" },
+  { key: "case", label: "cases" },
+  { key: "sticker_capsule", label: "capsules" },
+  { key: "knife", label: "knives" },
+  { key: "glove", label: "gloves" },
+]);
+const PRICING_DISPLAY_PLANS = Object.freeze([
+  {
+    planTier: "free",
+    label: "Free",
+    badge: "Starter",
+    price: "$0",
+    cadence: "Forever",
+    tagline: "Useful daily essentials for new traders.",
+    positioning: "Get started with scanner basics and core portfolio visibility.",
+  },
+  {
+    planTier: "full_access",
+    label: "Full Access",
+    badge: "Most Popular",
+    price: "$29",
+    cadence: "Per month",
+    tagline: "Built for active traders",
+    positioning: "Full scanner depth, live signals, and premium workflow speed.",
+    recommended: true,
+  },
+  {
+    planTier: "alpha_access",
+    label: "Alpha Access",
+    badge: "Coming Soon",
+    price: "Coming Soon",
+    cadence: "Roadmap tier",
+    tagline: "Built for advanced traders",
+    positioning: "Rare-item intelligence, automation, and high-end trader tooling.",
+    comingSoon: true,
+  },
+]);
+const PRICING_COMPARISON_GROUPS = Object.freeze([
+  {
+    label: "Access & Core",
+    rows: [
+      {
+        feature: "Email verified access",
+        values: {
+          free: { label: "Included", tone: "included" },
+          full_access: { label: "Included", tone: "included" },
+          alpha_access: { label: "Included", tone: "included" },
+        },
+      },
+      {
+        feature: "Dashboard access",
+        values: {
+          free: { label: "Included", tone: "included" },
+          full_access: { label: "Included", tone: "included" },
+          alpha_access: { label: "Included", tone: "included" },
+        },
+      },
+      {
+        feature: "Portfolio scanner",
+        values: {
+          free: { label: "Included", tone: "included" },
+          full_access: { label: "Included", tone: "included" },
+          alpha_access: { label: "Included", tone: "included" },
+        },
+      },
+      {
+        feature: "Global scanner",
+        values: {
+          free: { label: "Limited", tone: "limited" },
+          full_access: { label: "Full", tone: "included" },
+          alpha_access: { label: "Full", tone: "included" },
+        },
+      },
+      {
+        feature: "Scanner categories",
+        values: {
+          free: { label: "Basic only", tone: "limited" },
+          full_access: { label: "All current categories", tone: "included" },
+          alpha_access: { label: "All + high-value logic", tone: "premium" },
+        },
+      },
+      {
+        feature: "Knives & gloves access",
+        values: {
+          free: { label: "Locked preview", tone: "locked" },
+          full_access: { label: "Included", tone: "included" },
+          alpha_access: { label: "Advanced intelligence", tone: "premium" },
+        },
+      },
+    ],
+  },
+  {
+    label: "Scanner / Opportunities",
+    rows: [
+      {
+        feature: "Opportunities per day",
+        values: {
+          free: { label: "3", tone: "limited" },
+          full_access: { label: "Unlimited", tone: "included" },
+          alpha_access: { label: "Premium", tone: "premium" },
+        },
+      },
+      {
+        feature: "Refresh speed",
+        values: {
+          free: { label: "Every 12 hours", tone: "limited" },
+          full_access: { label: "Every 30 minutes", tone: "included" },
+          alpha_access: { label: "Priority", tone: "premium" },
+        },
+      },
+      {
+        feature: "Feed access",
+        values: {
+          free: { label: "Limited", tone: "limited" },
+          full_access: { label: "Full", tone: "included" },
+          alpha_access: { label: "Full", tone: "included" },
+        },
+      },
+      {
+        feature: "Advanced filters",
+        values: {
+          free: { label: "No", tone: "no" },
+          full_access: { label: "Yes", tone: "included" },
+          alpha_access: { label: "Advanced", tone: "premium" },
+        },
+      },
+      {
+        feature: "Compare drawer depth",
+        values: {
+          free: { label: "Limited", tone: "limited" },
+          full_access: { label: "Full", tone: "included" },
+          alpha_access: { label: "Advanced", tone: "premium" },
+        },
+      },
+      {
+        feature: "Market signals",
+        values: {
+          free: { label: "Delayed", tone: "limited" },
+          full_access: { label: "Live", tone: "included" },
+          alpha_access: { label: "Advanced", tone: "premium" },
+        },
+      },
+    ],
+  },
+  {
+    label: "Portfolio / Alerts",
+    rows: [
+      {
+        feature: "Portfolio insights",
+        values: {
+          free: { label: "Basic", tone: "limited" },
+          full_access: { label: "Full", tone: "included" },
+          alpha_access: { label: "Premium", tone: "premium" },
+        },
+      },
+      {
+        feature: "Alerts count",
+        values: {
+          free: { label: "3", tone: "limited" },
+          full_access: { label: "25", tone: "included" },
+          alpha_access: { label: "Premium", tone: "premium" },
+        },
+      },
+      {
+        feature: "History depth",
+        values: {
+          free: { label: "7 days", tone: "limited" },
+          full_access: { label: "90 days", tone: "included" },
+          alpha_access: { label: "Premium", tone: "premium" },
+        },
+      },
+    ],
+  },
+  {
+    label: "Advanced / Future",
+    rows: [
+      {
+        feature: "Premium rare-item intelligence",
+        values: {
+          free: { label: "No", tone: "no" },
+          full_access: { label: "No", tone: "no" },
+          alpha_access: { label: "Yes", tone: "premium" },
+        },
+      },
+      {
+        feature: "Automation",
+        values: {
+          free: { label: "No", tone: "no" },
+          full_access: { label: "No", tone: "no" },
+          alpha_access: { label: "Yes", tone: "premium" },
+        },
+      },
+      {
+        feature: "API / Export",
+        values: {
+          free: { label: "No", tone: "no" },
+          full_access: { label: "No", tone: "no" },
+          alpha_access: { label: "Yes", tone: "premium" },
+        },
+      },
+      {
+        feature: "Webhooks",
+        values: {
+          free: { label: "No", tone: "no" },
+          full_access: { label: "No", tone: "no" },
+          alpha_access: { label: "Yes", tone: "premium" },
+        },
+      },
+    ],
+  },
+]);
 
 function normalizePlanTier(value) {
   const raw = String(value || "")
@@ -282,6 +471,10 @@ function isOpportunitiesPath(pathname = safePathname()) {
   return /^\/opportunities\/?$/i.test(safePathname(pathname));
 }
 
+function isPricingPath(pathname = safePathname()) {
+  return /^\/pricing\/?$/i.test(safePathname(pathname));
+}
+
 function getPathForTab(tabId) {
   const safeTab = String(tabId || "").trim();
   if (safeTab === "settings") return "/account";
@@ -292,7 +485,6 @@ function getPathForTab(tabId) {
 function planTierToLabel(planTier) {
   const tier = normalizePlanTier(planTier);
   if (tier === "full_access") return "Full Access";
-  if (tier === "api_advanced") return "API / Advanced";
   return "Free";
 }
 
@@ -312,6 +504,186 @@ function getProfileEntitlements(profile = state.authProfile || {}) {
     ...fallback,
     ...fromProfile,
   };
+}
+
+function getPricingDisplayPlan(planTier) {
+  return (
+    PRICING_DISPLAY_PLANS.find((row) => row.planTier === planTier) ||
+    PRICING_DISPLAY_PLANS[0]
+  );
+}
+
+function renderPricingValueChip(value) {
+  const payload = value && typeof value === "object" ? value : { label: value, tone: "neutral" };
+  const label = String(payload.label || "-").trim() || "-";
+  const tone = String(payload.tone || "neutral")
+    .trim()
+    .toLowerCase();
+  return `
+    <span class="pricing-value-chip tone-${escapeHtml(tone)}">
+      <span class="pricing-value-icon" aria-hidden="true"></span>
+      <span>${escapeHtml(label)}</span>
+    </span>
+  `;
+}
+
+function renderPricingPlanCards(options = {}) {
+  const context = String(options.context || "public").trim().toLowerCase() || "public";
+  const safeCurrentPlan = normalizePlanTier(options.currentPlanTier || "free");
+  const signedIn =
+    typeof options.signedIn === "boolean" ? options.signedIn : Boolean(state.authenticated);
+
+  return `
+    <div class="pricing-plan-grid">
+      ${PRICING_DISPLAY_PLANS.map((plan) => {
+        const isCurrent = plan.planTier === safeCurrentPlan;
+        const toneClass = plan.recommended
+          ? "is-recommended"
+          : plan.comingSoon
+            ? "is-coming-soon"
+            : "is-standard";
+        let ctaMarkup = "";
+        if (plan.comingSoon) {
+          ctaMarkup = `
+            <button type="button" class="ghost-btn pricing-plan-cta pricing-plan-cta-waitlist" data-alpha-waitlist="1">
+              Join waitlist
+            </button>
+          `;
+        } else if (context === "account") {
+          const label = isCurrent
+            ? "Current plan"
+            : plan.planTier === "full_access"
+              ? "Primary upgrade path"
+              : "Available now";
+          ctaMarkup = `
+            <button type="button" class="ghost-btn pricing-plan-cta" disabled>
+              ${escapeHtml(label)}
+            </button>
+          `;
+        } else {
+          const targetPath = signedIn ? "/account#subscription" : "/register.html";
+          const label = plan.planTier === "free" ? "Start free" : "Get full access";
+          ctaMarkup = `
+            <a class="link-btn ${plan.recommended ? "btn-primary" : "ghost"} pricing-plan-cta" href="${escapeHtml(targetPath)}">
+              ${escapeHtml(label)}
+            </a>
+          `;
+        }
+
+        return `
+          <article class="pricing-plan-card ${toneClass} ${isCurrent ? "is-current" : ""}">
+            <header class="pricing-plan-head">
+              <span class="pricing-plan-badge">${escapeHtml(plan.badge)}</span>
+              <h3>${escapeHtml(plan.label)}</h3>
+              <p>${escapeHtml(plan.tagline)}</p>
+            </header>
+            <div class="pricing-plan-price">
+              <strong>${escapeHtml(plan.price)}</strong>
+              <small>${escapeHtml(plan.cadence)}</small>
+            </div>
+            <p class="pricing-plan-positioning">${escapeHtml(plan.positioning)}</p>
+            ${ctaMarkup}
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderPricingComparisonTable() {
+  return `
+    <div class="pricing-table-wrap">
+      <table class="pricing-comparison-table">
+        <thead>
+          <tr>
+            <th scope="col">Feature</th>
+            ${PRICING_DISPLAY_PLANS.map((plan) => {
+              const toneClass = plan.recommended
+                ? "is-recommended"
+                : plan.comingSoon
+                  ? "is-coming-soon"
+                  : "is-standard";
+              return `
+                <th scope="col" class="${toneClass}">
+                  <span class="pricing-head-plan">${escapeHtml(plan.label)}</span>
+                  <small>${escapeHtml(plan.badge)}</small>
+                </th>
+              `;
+            }).join("")}
+          </tr>
+        </thead>
+        <tbody>
+          ${PRICING_COMPARISON_GROUPS.map(
+            (group) => `
+              <tr class="pricing-group-row">
+                <th scope="colgroup" colspan="4">${escapeHtml(group.label)}</th>
+              </tr>
+              ${group.rows
+                .map((row) => {
+                  const freeCell = row.values?.free || { label: "-", tone: "neutral" };
+                  const fullCell = row.values?.full_access || { label: "-", tone: "neutral" };
+                  const alphaCell = row.values?.alpha_access || { label: "-", tone: "neutral" };
+                  return `
+                    <tr>
+                      <th scope="row">${escapeHtml(row.feature)}</th>
+                      <td>${renderPricingValueChip(freeCell)}</td>
+                      <td>${renderPricingValueChip(fullCell)}</td>
+                      <td>${renderPricingValueChip(alphaCell)}</td>
+                    </tr>
+                  `;
+                })
+                .join("")}
+            `,
+          ).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderPricingComparisonSection(options = {}) {
+  const context = String(options.context || "public").trim().toLowerCase() || "public";
+  const safeCurrentPlan = normalizePlanTier(options.currentPlanTier || "free");
+  const signedIn =
+    typeof options.signedIn === "boolean" ? options.signedIn : Boolean(state.authenticated);
+  const sectionId = context === "public" ? 'id="pricing"' : "";
+  const heading =
+    context === "account"
+      ? "Plan Comparison & Roadmap"
+      : "Pricing Comparison";
+  const helperText =
+    context === "account"
+      ? "Current plan and upgrade path are active today. Alpha Access is visible as roadmap-only and not purchasable yet."
+      : "Free and Full Access are available now. Alpha Access is a premium roadmap tier for advanced traders.";
+  const currentPlanLabel = planTierToLabel(safeCurrentPlan);
+  const currentPlanMeta = getPricingDisplayPlan(safeCurrentPlan);
+
+  return `
+    <section class="pricing-comparison-shell ${context === "account" ? "is-account" : "is-public"}" ${sectionId}>
+      <div class="pricing-comparison-head">
+        <p class="eyebrow">Plans</p>
+        <h2>${escapeHtml(heading)}</h2>
+        <p class="helper-text">${escapeHtml(helperText)}</p>
+        ${
+          context === "account"
+            ? `
+              <p class="muted">
+                Current plan: <strong>${escapeHtml(currentPlanLabel)}</strong>.
+                Recommended upgrade path: <strong>Full Access</strong>.
+                Alpha status: <strong>Coming Soon</strong>.
+              </p>
+            `
+            : `
+              <p class="muted">
+                Full Access is the main upgrade path today. Alpha Access is for rare-item intelligence, automation, and advanced trader tooling.
+              </p>
+            `
+        }
+      </div>
+      ${renderPricingPlanCards({ context, currentPlanTier: currentPlanMeta.planTier, signedIn })}
+      ${renderPricingComparisonTable()}
+    </section>
+  `;
 }
 
 function canAccessTeamDashboard(profile = state.authProfile || {}) {
@@ -3450,6 +3822,20 @@ function closeCompareDrawer(options = {}) {
   compareDrawerLastTriggerElement = null;
 }
 
+function openPremiumUpgradePanel(
+  message = "Unlock knife and glove opportunities with Full Access",
+) {
+  setActiveAccountSection("subscription", { updateHash: true });
+  notify("info", message);
+  if (state.activeTab === "settings") {
+    render();
+    return;
+  }
+  handleTabSwitch("settings").catch((err) =>
+    setError(err?.message || "Failed to open subscription panel."),
+  );
+}
+
 function openCompareDrawerMarketTarget(
   rawUrl,
   rawSkinId = state.compareDrawer.skinId,
@@ -3577,6 +3963,9 @@ async function refreshCompareDrawerDataForItemSeed(itemSeed = {}) {
     if (ticket !== compareDrawerRequestTicket) return;
     state.compareDrawer.error =
       err.message || "Failed to load comparison data.";
+    if (String(err?.code || "").trim() === "PLAN_UPGRADE_REQUIRED" || Number(err?.status || 0) === 402) {
+      openPremiumUpgradePanel(state.compareDrawer.error);
+    }
     notify("error", state.compareDrawer.error, {
       details: String(err?.stack || "").trim(),
     });
@@ -3668,6 +4057,9 @@ async function refreshCompareDrawerData(options = {}) {
     if (ticket !== compareDrawerRequestTicket) return;
     state.compareDrawer.error =
       err.message || "Failed to load comparison data.";
+    if (String(err?.code || "").trim() === "PLAN_UPGRADE_REQUIRED" || Number(err?.status || 0) === 402) {
+      openPremiumUpgradePanel(state.compareDrawer.error);
+    }
     notify("error", state.compareDrawer.error, {
       details: String(err?.stack || "").trim(),
     });
@@ -3682,6 +4074,12 @@ async function refreshCompareDrawerData(options = {}) {
 function openCompareDrawerByOpportunity(opportunity, triggerElement = null) {
   const row = opportunity && typeof opportunity === "object" ? opportunity : null;
   if (!row) return;
+  if (isLockedPremiumPreview(row)) {
+    openPremiumUpgradePanel(
+      String(row?.lockMessage || "Unlock knife and glove opportunities with Full Access"),
+    );
+    return;
+  }
 
   const rawSkinId = Number(row?.itemId || row?.skinId || 0);
   if (
@@ -4640,8 +5038,25 @@ function onAppClick(event) {
     return;
   }
 
+  if (button?.matches(".opportunity-upgrade-btn")) {
+    event.preventDefault();
+    openPremiumUpgradePanel(
+      button.getAttribute("data-lock-message") ||
+        "Unlock knife and glove opportunities with Full Access",
+    );
+    return;
+  }
+
   if (button?.matches(".opportunity-inspect-btn")) {
     event.preventDefault();
+    const lockedPreview = button.getAttribute("data-locked-preview") === "1";
+    if (lockedPreview) {
+      openPremiumUpgradePanel(
+        button.getAttribute("data-lock-message") ||
+          "Unlock knife and glove opportunities with Full Access",
+      );
+      return;
+    }
     const skinId = Number(button.getAttribute("data-skin-id") || 0);
     const inspectUrl = button.getAttribute("data-inspect-url");
     if (Number.isInteger(skinId) && skinId > 0) {
@@ -4657,6 +5072,14 @@ function onAppClick(event) {
 
   if (button?.matches(".opportunity-compare-btn")) {
     event.preventDefault();
+    const lockedPreview = button.getAttribute("data-locked-preview") === "1";
+    if (lockedPreview) {
+      openPremiumUpgradePanel(
+        button.getAttribute("data-lock-message") ||
+          "Unlock knife and glove opportunities with Full Access",
+      );
+      return;
+    }
     const opportunityIndexRaw = button.getAttribute("data-opportunity-index");
     const opportunityIndex =
       opportunityIndexRaw == null || !String(opportunityIndexRaw).trim()
@@ -4830,6 +5253,15 @@ function onAppClick(event) {
     const planTier = String(button.getAttribute("data-plan-tier") || "").trim();
     if (!planTier) return;
     runUiTask(() => updatePlanTier(planTier));
+    return;
+  }
+
+  if (button?.matches("[data-alpha-waitlist]")) {
+    event.preventDefault();
+    notify(
+      "info",
+      "Alpha Access waitlist opens soon. We will announce availability in-product.",
+    );
     return;
   }
 
@@ -5218,6 +5650,10 @@ function onAppChange(event) {
       state.globalOpportunities.category = "capsules";
     } else if (nextCategory === "cases" || nextCategory === "case") {
       state.globalOpportunities.category = "cases";
+    } else if (nextCategory === "knives" || nextCategory === "knife") {
+      state.globalOpportunities.category = "knives";
+    } else if (nextCategory === "gloves" || nextCategory === "glove") {
+      state.globalOpportunities.category = "gloves";
     } else if (nextCategory === "skins" || nextCategory === "skin") {
       state.globalOpportunities.category = "skins";
     } else {
@@ -6935,6 +7371,10 @@ async function refreshGlobalOpportunities(options = {}) {
             ? "case"
             : scanner.category === "capsules"
               ? "sticker_capsule"
+              : scanner.category === "knives"
+                ? "knife"
+                : scanner.category === "gloves"
+                  ? "glove"
             : "",
     });
     const [feedPayload, statusPayload] = await Promise.all([
@@ -7040,6 +7480,9 @@ async function analyzeMarketItemBySkinId(rawSkinId) {
     ]);
     state.marketTab.insight = { sellSuggestion, liquidity, skinId };
   } catch (err) {
+    if (String(err?.code || "").trim() === "PLAN_UPGRADE_REQUIRED" || Number(err?.status || 0) === 402) {
+      openPremiumUpgradePanel(err.message || "Unlock premium categories with Full Access.");
+    }
     setError(err.message);
   } finally {
     state.marketTab.loading = false;
@@ -7819,6 +8262,12 @@ function normalizeOpportunityCategory(value, marketHashName = "") {
   const raw = String(value || "")
     .trim()
     .toLowerCase();
+  if (raw === "knife" || raw === "knives") {
+    return "knife";
+  }
+  if (raw === "glove" || raw === "gloves") {
+    return "glove";
+  }
   if (
     raw === "sticker_capsule" ||
     raw === "sticker capsule" ||
@@ -7830,6 +8279,8 @@ function normalizeOpportunityCategory(value, marketHashName = "") {
   if (raw === "case") return "case";
   if (raw === "weapon_skin") return "weapon_skin";
   const normalizedName = String(marketHashName || "").trim();
+  if (/\b(gloves|glove|hand wraps)\b/i.test(normalizedName)) return "glove";
+  if (/\b(knife|bayonet|karambit|daggers)\b/i.test(normalizedName)) return "knife";
   if (/sticker capsule$/i.test(normalizedName)) return "sticker_capsule";
   const fallbackItem = { marketHashName: normalizedName };
   return isCaseLikeItem(fallbackItem) ? "case" : "weapon_skin";
@@ -7837,14 +8288,46 @@ function normalizeOpportunityCategory(value, marketHashName = "") {
 
 function formatOpportunityCategoryLabel(value, marketHashName = "") {
   const category = normalizeOpportunityCategory(value, marketHashName);
+  if (category === "knife") return "Knife";
+  if (category === "glove") return "Glove";
   if (category === "sticker_capsule") return "Capsule";
   return category === "case" ? "Case" : "Skin";
 }
 
 function getOpportunityCategoryTone(value, marketHashName = "") {
   const category = normalizeOpportunityCategory(value, marketHashName);
+  if (category === "knife") return "knife";
+  if (category === "glove") return "glove";
   if (category === "sticker_capsule") return "capsule";
   return category === "case" ? "case" : "skin";
+}
+
+function isLockedPremiumPreview(row = {}) {
+  return Boolean(row?.isLockedPreview);
+}
+
+function formatUniverseQuotaActualByCategory(universeBuild = {}) {
+  const selectedByCategory =
+    universeBuild?.selectedByCategory && typeof universeBuild.selectedByCategory === "object"
+      ? universeBuild.selectedByCategory
+      : {};
+  const quotaByCategory =
+    universeBuild?.quotaTargetByCategory && typeof universeBuild.quotaTargetByCategory === "object"
+      ? universeBuild.quotaTargetByCategory
+      : universeBuild?.quotas && typeof universeBuild.quotas === "object"
+        ? universeBuild.quotas
+        : {};
+
+  const parts = UNIVERSE_CATEGORY_DIAGNOSTIC_ORDER
+    .map((entry) => {
+      const actual = Number(selectedByCategory?.[entry.key] || 0);
+      const quota = Number(quotaByCategory?.[entry.key] || 0);
+      if (actual <= 0 && quota <= 0) return "";
+      return `${entry.label} ${formatNumber(actual, 0)}/${formatNumber(quota, 0)}`;
+    })
+    .filter(Boolean);
+
+  return parts.join(", ");
 }
 
 function formatScanRunLabel(value) {
@@ -11718,6 +12201,10 @@ function renderMarketTab() {
                   ? "#ffbf57"
                   : itemCategory === "sticker_capsule"
                     ? "#7ee7cb"
+                    : itemCategory === "knife"
+                      ? "#ffc56b"
+                      : itemCategory === "glove"
+                        ? "#f596c2"
                     : "#5aaeff";
               const explicitRarityColor = String(
                 row?.rarityColor ||
@@ -12226,22 +12713,31 @@ function renderGlobalOpportunitiesTab() {
         <tbody>
           ${rows
             .map((row, index) => {
-              const score = Number(row?.score || 0);
-              const scoreTone = getOpportunityScoreTone(score);
-              const scoreLabel = formatOpportunityLabel(
-                row?.scoreCategory,
-                score,
-              );
-              const executionConfidence = String(
-                row?.executionConfidence || "Low",
-              ).trim();
-              const confidenceTone = getExecutionConfidenceTone(
-                executionConfidence,
-              );
-              const liquidityLabel = formatLiquidityBandLabel(
-                row?.liquidityBand,
-                row?.volume7d ?? row?.liquidity,
-              );
+              const lockedPreview = isLockedPremiumPreview(row);
+              const score = lockedPreview ? null : Number(row?.score || 0);
+              const scoreTone = lockedPreview
+                ? "warning"
+                : getOpportunityScoreTone(score);
+              const scoreLabel = lockedPreview
+                ? String(row?.previewScoreBand || "Locked")
+                : formatOpportunityLabel(
+                    row?.scoreCategory,
+                    score,
+                  );
+              const executionConfidence = lockedPreview
+                ? "Locked"
+                : String(row?.executionConfidence || "Low").trim();
+              const confidenceTone = lockedPreview
+                ? "warning"
+                : getExecutionConfidenceTone(
+                    executionConfidence,
+                  );
+              const liquidityLabel = lockedPreview
+                ? "Premium preview"
+                : formatLiquidityBandLabel(
+                    row?.liquidityBand,
+                    row?.volume7d ?? row?.liquidity,
+                  );
               const baseBadges = buildOpportunityBadges(row, { max: 5 });
               const itemId = Number(row?.itemId || 0);
               const marketHashName = String(row?.itemName || "").trim();
@@ -12286,6 +12782,10 @@ function renderGlobalOpportunitiesTab() {
                   ? "#ffbf57"
                   : itemCategory === "sticker_capsule"
                     ? "#7ee7cb"
+                    : itemCategory === "knife"
+                      ? "#ffc56b"
+                      : itemCategory === "glove"
+                        ? "#f596c2"
                     : "#5aaeff";
               const explicitRarityColor = String(
                 row?.rarityColor ||
@@ -12323,6 +12823,7 @@ function renderGlobalOpportunitiesTab() {
               const badges = [
                 ...(row?.isNew ? ["NEW"] : []),
                 ...baseBadges,
+                ...(lockedPreview ? ["LOCKED", "FULL ACCESS"] : []),
               ];
               const fallbackImage =
                 itemCategory === "case" ? defaultCaseImage : defaultSkinImage;
@@ -12338,9 +12839,51 @@ function renderGlobalOpportunitiesTab() {
               const hasCompareTarget = Boolean(
                 itemId > 0 || compareUrl || marketHashName,
               );
+              const hiddenValueMarkup =
+                '<span class="premium-value-blur" aria-hidden="true">••••</span>';
+              const buyMarketLabel = lockedPreview
+                ? "Locked"
+                : formatMarketSourceLabel(row?.buyMarket);
+              const buyPriceLabel = lockedPreview
+                ? hiddenValueMarkup
+                : formatMoney(row?.buyPrice, currencyCode);
+              const sellMarketLabel = lockedPreview
+                ? "Locked"
+                : formatMarketSourceLabel(row?.sellMarket);
+              const sellNetLabel = lockedPreview
+                ? hiddenValueMarkup
+                : formatMoney(row?.sellNet, currencyCode);
+              const profitLabel = lockedPreview
+                ? hiddenValueMarkup
+                : formatSignedMoney(
+                    row?.profit,
+                    currencyCode,
+                  );
+              const spreadLabel = lockedPreview
+                ? hiddenValueMarkup
+                : formatPercent(
+                    row?.spread,
+                  );
+              const scoreValueLabel = lockedPreview
+                ? hiddenValueMarkup
+                : `${formatNumber(score, 0)}/100`;
+              const scoreValueMarkup = lockedPreview
+                ? scoreValueLabel
+                : escapeHtml(scoreValueLabel);
+              const liquiditySubline = lockedPreview
+                ? escapeHtml(String(row?.lockHint || "Premium high-value market category"))
+                : escapeHtml(
+                    `Coverage ${formatNumber(row?.marketCoverage || 0, 0)} market(s)`,
+                  );
+              const lockedMessage = String(
+                row?.lockMessage || "Unlock knife and glove opportunities with Full Access",
+              ).trim();
+              const sublineText = lockedPreview
+                ? `${row?.lockHint || "Premium high-value market category"}${scanLabel ? ` • ${scanLabel}` : ""}`
+                : `${detectedLabel}${scanLabel ? ` • ${scanLabel}` : ""}`;
 
               return `
-                <tr class="opportunity-table-row ${row?.isNew ? "opportunity-row-new" : ""}" data-feed-id="${escapeHtml(feedId)}">
+                <tr class="opportunity-table-row ${row?.isNew ? "opportunity-row-new" : ""} ${lockedPreview ? "opportunity-row-locked" : ""}" data-feed-id="${escapeHtml(feedId)}">
                   <td>
                     <div class="opportunity-item-cell" style="--rarity-color: ${escapeHtml(mediaAccentColor)}; --rarity-rgb: ${escapeHtml(mediaAccentRgb)};">
                       <div class="opportunity-item-media">
@@ -12363,44 +12906,42 @@ function renderGlobalOpportunitiesTab() {
                           <span class="opportunity-category-badge ${escapeHtml(
                             categoryTone,
                           )}">${escapeHtml(categoryLabel)}</span>
+                          ${
+                            lockedPreview
+                              ? '<span class="opportunity-category-badge locked">Locked</span>'
+                              : ""
+                          }
                         </div>
                         <small class="opportunity-item-subline">${escapeHtml(
-                          `${detectedLabel}${scanLabel ? ` \u2022 ${scanLabel}` : ""}`,
+                          sublineText,
                         )}</small>
                       </div>
                     </div>
                   </td>
                   <td class="opportunity-metric-cell">
                     <strong class="opportunity-metric-value">${escapeHtml(
-                      formatMarketSourceLabel(row?.buyMarket),
+                      buyMarketLabel,
                     )}</strong>
-                    <small>${formatMoney(row?.buyPrice, currencyCode)}</small>
+                    <small>${buyPriceLabel}</small>
                   </td>
                   <td class="opportunity-metric-cell">
                     <strong class="opportunity-metric-value">${escapeHtml(
-                      formatMarketSourceLabel(row?.sellMarket),
+                      sellMarketLabel,
                     )}</strong>
-                    <small>${formatMoney(row?.sellNet, currencyCode)}</small>
+                    <small>${sellNetLabel}</small>
                   </td>
                   <td class="opportunity-metric-cell opportunity-metric-profit-cell">
-                    <strong class="opportunity-metric-value opportunity-profit-value positive">${formatSignedMoney(
-                      row?.profit,
-                      currencyCode,
-                    )}</strong>
+                    <strong class="opportunity-metric-value opportunity-profit-value ${lockedPreview ? "warning" : "positive"}">${profitLabel}</strong>
                     <small>Net profit</small>
                   </td>
                   <td class="opportunity-metric-cell">
-                    <strong class="opportunity-metric-value opportunity-spread-value">${formatPercent(
-                      row?.spread,
-                    )}</strong>
+                    <strong class="opportunity-metric-value opportunity-spread-value">${spreadLabel}</strong>
                     <small>Price spread</small>
                   </td>
                   <td class="opportunity-metric-cell opportunity-score-cell">
                     <strong class="opportunity-metric-value opportunity-score-value ${escapeHtml(
                       scoreTone,
-                    )}">${escapeHtml(
-                      `${formatNumber(score, 0)}/100`,
-                    )}</strong>
+                    )}">${scoreValueMarkup}</strong>
                     <small>${escapeHtml(`${scoreLabel} quality`)}</small>
                   </td>
                   <td class="opportunity-metric-cell opportunity-confidence-cell">
@@ -12413,9 +12954,7 @@ function renderGlobalOpportunitiesTab() {
                     <strong class="opportunity-metric-value">${escapeHtml(
                       liquidityLabel,
                     )}</strong>
-                    <small>${escapeHtml(
-                      `Coverage ${formatNumber(row?.marketCoverage || 0, 0)} market(s)`,
-                    )}</small>
+                    <small>${liquiditySubline}</small>
                   </td>
                   <td class="opportunity-badges-cell">
                     ${
@@ -12436,25 +12975,39 @@ function renderGlobalOpportunitiesTab() {
                     }
                   </td>
                   <td class="actions-cell">
-                    <button
-                      type="button"
-                      class="ghost-btn opportunity-inspect-btn"
-                      data-skin-id="${escapeHtml(String(itemId || ""))}"
-                      data-inspect-url="${escapeHtml(inspectUrl)}"
-                      ${hasInspectTarget ? "" : "disabled"}
-                    >
-                      Inspect
-                    </button>
-                    <button
-                      type="button"
-                      class="ghost-btn opportunity-compare-btn"
-                      data-opportunity-index="${escapeHtml(String(index))}"
-                      data-skin-id="${escapeHtml(String(itemId || ""))}"
-                      data-compare-url="${escapeHtml(compareUrl)}"
-                      ${hasCompareTarget ? "" : "disabled"}
-                    >
-                      Compare
-                    </button>
+                    ${
+                      lockedPreview
+                        ? `
+                          <button
+                            type="button"
+                            class="btn-primary opportunity-upgrade-btn"
+                            data-lock-message="${escapeHtml(lockedMessage)}"
+                          >
+                            Unlock Full Access
+                          </button>
+                        `
+                        : `
+                          <button
+                            type="button"
+                            class="ghost-btn opportunity-inspect-btn"
+                            data-skin-id="${escapeHtml(String(itemId || ""))}"
+                            data-inspect-url="${escapeHtml(inspectUrl)}"
+                            ${hasInspectTarget ? "" : "disabled"}
+                          >
+                            Inspect
+                          </button>
+                          <button
+                            type="button"
+                            class="ghost-btn opportunity-compare-btn"
+                            data-opportunity-index="${escapeHtml(String(index))}"
+                            data-skin-id="${escapeHtml(String(itemId || ""))}"
+                            data-compare-url="${escapeHtml(compareUrl)}"
+                            ${hasCompareTarget ? "" : "disabled"}
+                          >
+                            Compare
+                          </button>
+                        `
+                    }
                   </td>
                 </tr>
               `;
@@ -12517,6 +13070,8 @@ function renderGlobalOpportunitiesTab() {
           <option value="skins" ${categoryFilter === "skins" ? "selected" : ""}>Skins</option>
           <option value="cases" ${categoryFilter === "cases" ? "selected" : ""}>Cases</option>
           <option value="capsules" ${categoryFilter === "capsules" ? "selected" : ""}>Capsules</option>
+          <option value="knives" ${categoryFilter === "knives" ? "selected" : ""}>Knives</option>
+          <option value="gloves" ${categoryFilter === "gloves" ? "selected" : ""}>Gloves</option>
         </select>
       </label>
     </div>
@@ -12559,6 +13114,13 @@ function renderGlobalOpportunitiesTab() {
         : ""
     }
     ${
+      Number(summary?.plan?.lockedPremiumPreviewRows || 0) > 0
+        ? `<p class="helper-text">${escapeHtml(
+            `Locked premium previews: ${formatNumber(summary.plan.lockedPremiumPreviewRows, 0)} knife/glove row(s). Unlock Full Access for full inspect and compare.`,
+          )}</p>`
+        : ""
+    }
+    ${
       summary?.snapshotWarmup?.triggered
         ? `<p class="helper-text">Snapshot warmup: refreshed ${escapeHtml(
             formatNumber(summary.snapshotWarmup.refreshedItems || 0, 0),
@@ -12593,30 +13155,8 @@ function renderGlobalOpportunitiesTab() {
     ${
       summary?.sourceCatalog?.universeBuild?.selectedByCategory
         ? `<p class="helper-text">${escapeHtml(
-            `Universe quota/actual by category: skins ${formatNumber(
-              summary?.sourceCatalog?.universeBuild?.selectedByCategory?.weapon_skin || 0,
-              0,
-            )}/${formatNumber(
-              summary?.sourceCatalog?.universeBuild?.quotaTargetByCategory?.weapon_skin ??
-                summary?.sourceCatalog?.universeBuild?.quotas?.weapon_skin ??
-                0,
-              0,
-            )}, cases ${formatNumber(
-              summary?.sourceCatalog?.universeBuild?.selectedByCategory?.case || 0,
-              0,
-            )}/${formatNumber(
-              summary?.sourceCatalog?.universeBuild?.quotaTargetByCategory?.case ??
-                summary?.sourceCatalog?.universeBuild?.quotas?.case ??
-                0,
-              0,
-            )}, capsules ${formatNumber(
-              summary?.sourceCatalog?.universeBuild?.selectedByCategory?.sticker_capsule || 0,
-              0,
-            )}/${formatNumber(
-              summary?.sourceCatalog?.universeBuild?.quotaTargetByCategory?.sticker_capsule ??
-                summary?.sourceCatalog?.universeBuild?.quotas?.sticker_capsule ??
-                0,
-              0,
+            `Universe quota/actual by category: ${formatUniverseQuotaActualByCategory(
+              summary?.sourceCatalog?.universeBuild || {},
             )}.`,
           )}</p>`
         : ""
@@ -12705,7 +13245,7 @@ function renderGlobalOpportunitiesTab() {
         className: "wide dashboard-arbitrage-panel dashboard-arbitrage-panel-live",
         title: "Top Arbitrage Opportunities",
         subtitle:
-          `Top ${formatNumber(summary?.universeTarget || 100, 0)} universe across skins, cases, and capsules. Default view shows only high-quality execution setups.`,
+          `Top ${formatNumber(summary?.universeTarget || 100, 0)} universe across skins, cases, capsules, knives, and gloves. Default view shows only high-quality execution setups.`,
         body,
       })}
     </section>
@@ -13028,7 +13568,7 @@ function renderSettingsTab() {
   const subscriptionMarkup = `
     <article class="panel wide account-card">
       <h2>Subscription / Access Level</h2>
-      <p class="helper-text">Current plan controls backend limits instantly. Scanner refresh cadence for this plan: every ${escapeHtml(scannerRefreshHint)}. This temporary switcher is for internal testing only.</p>
+      <p class="helper-text">Current plan controls backend limits instantly. Scanner refresh cadence for this plan: every ${escapeHtml(scannerRefreshHint)}. Alpha Access is listed below as roadmap-only and cannot be purchased yet.</p>
       <div class="sub-kpi-grid">
         <article class="sub-kpi-card">
           <span>Current Plan</span>
@@ -13041,6 +13581,10 @@ function renderSettingsTab() {
         <article class="sub-kpi-card">
           <span>Seats</span>
           <strong>${escapeHtml(formatNumber(profile.planSeats || 1, 0))}</strong>
+        </article>
+        <article class="sub-kpi-card">
+          <span>Roadmap Tier</span>
+          <strong>Alpha Access (Coming Soon)</strong>
         </article>
       </div>
       <div class="account-feature-grid">
@@ -13073,16 +13617,29 @@ function renderSettingsTab() {
           <strong>${escapeHtml(`${limits.compareView}. ${limits.portfolioInsights}`)}</strong>
         </article>
         <article class="account-feature-card">
-          <span>API / Advanced Flags</span>
-          <strong>${escapeHtml(limits.apiFlags)}</strong>
+          <span>Scanner Categories</span>
+          <strong>${escapeHtml(limits.scannerCategories)}</strong>
+        </article>
+        <article class="account-feature-card">
+          <span>Knives & Gloves</span>
+          <strong>${escapeHtml(limits.knivesGloves)}</strong>
+        </article>
+        <article class="account-feature-card">
+          <span>Upgrade Target</span>
+          <strong>Full Access (Most Popular)</strong>
         </article>
       </div>
+      ${renderPricingComparisonSection({
+        context: "account",
+        currentPlanTier: planTier,
+        signedIn: true,
+      })}
       ${
         canSwitchPlans
           ? `
             <form id="account-plan-switcher-form" class="form account-plan-switcher-form">
               <fieldset class="account-plan-switcher-group">
-                <legend>Choose Access Level</legend>
+                <legend>Choose Active Access Level</legend>
                 ${ACCOUNT_PLAN_SWITCH_OPTIONS.map(
                   (option) => `
                     <label class="account-plan-option ${selectedSwitcherPlan === option.value ? "active" : ""}">
@@ -13108,11 +13665,11 @@ function renderSettingsTab() {
                 >
                   ${switcherSaving ? "Saving..." : "Save Access Level"}
                 </button>
-                <span class="muted">Enabled only when TEST_SUBSCRIPTION_SWITCHER=true.</span>
+                <span class="muted">Switcher controls only active plans (Free / Full Access). Alpha Access remains roadmap-only.</span>
               </div>
             </form>
           `
-          : '<p class="muted">Access-level switching is disabled in this environment. Set TEST_SUBSCRIPTION_SWITCHER=true to enable internal testing controls.</p>'
+          : '<p class="muted">Access-level switching is disabled in this environment. Set TEST_SUBSCRIPTION_SWITCHER=true to enable internal testing controls for active plans only.</p>'
       }
     </article>
   `;
@@ -13336,11 +13893,27 @@ function renderPublicPortfolioPage() {
   `;
 }
 
-function renderPublicHome() {
+function renderPublicHome(options = {}) {
+  const pricingView = Boolean(options.pricingView);
   const steamStartUrl = buildSteamAuthStartUrl("login");
   const isSignedIn = Boolean(state.authenticated);
   const userEmailTitle = String(state.authProfile?.email || "").trim();
   const userEmailLabel = getHeaderEmailLabel();
+  const profilePlanTier = normalizePlanTier(
+    state.authProfile?.planTier || state.authProfile?.plan || "free",
+  );
+  const heroEyebrow = pricingView
+    ? "Pricing"
+    : "SaaS for CS2 traders and collectors";
+  const heroTitle = pricingView
+    ? "Choose the plan that matches your trading edge."
+    : "Trade your CS2 inventory with portfolio-grade clarity.";
+  const heroCopy = pricingView
+    ? "Compare Free, Full Access, and the roadmap Alpha Access tier. Full Access is the primary upgrade path today, while Alpha Access is listed as Coming Soon."
+    : "Connect Steam once, sync instantly, and monitor value, liquidity, and execution signals in a single command surface.";
+  const tertiaryCta = pricingView
+    ? '<a class="link-btn ghost btn-tertiary" href="/">Back to home</a>'
+    : '<a class="link-btn ghost btn-tertiary" href="/pricing">View pricing</a>';
 
   app.innerHTML = `
     <main class="layout landing-shell">
@@ -13353,9 +13926,11 @@ function renderPublicHome() {
                 <span class="user-chip" title="${escapeHtml(userEmailTitle)}">${escapeHtml(
                   userEmailLabel,
                 )}</span>
+                <a class="link-btn ghost" href="/pricing">Pricing</a>
                 <a class="link-btn ghost" href="/">Back to Dashboard</a>
               `
               : `
+                <a class="link-btn ghost" href="${pricingView ? "/" : "/pricing"}">${pricingView ? "Home" : "Pricing"}</a>
                 <a class="link-btn ghost" href="/login.html">Login</a>
                 <a class="link-btn btn-primary" href="/register.html">Start Free</a>
               `
@@ -13365,15 +13940,15 @@ function renderPublicHome() {
 
       <section class="hero-block landing-hero">
         <div class="landing-hero-copy">
-          <p class="eyebrow">SaaS for CS2 traders and collectors</p>
-          <h1>Trade your CS2 inventory with portfolio-grade clarity.</h1>
+          <p class="eyebrow">${escapeHtml(heroEyebrow)}</p>
+          <h1>${escapeHtml(heroTitle)}</h1>
           <p class="hero-copy">
-            Connect Steam once, sync instantly, and monitor value, liquidity, and execution signals in a single command surface.
+            ${escapeHtml(heroCopy)}
           </p>
           <div class="hero-actions">
             <a class="link-btn btn-primary landing-primary-cta" href="/register.html">Start Free</a>
             <a class="link-btn ghost btn-secondary" href="${escapeHtml(steamStartUrl)}">Continue with Steam</a>
-            <a class="link-btn ghost btn-tertiary" href="/login.html">I already have an account</a>
+            ${tertiaryCta}
           </div>
           <div class="landing-trust-grid">
             <article class="landing-trust-item">
@@ -13399,6 +13974,16 @@ function renderPublicHome() {
             <li>Fast workflows tuned for trading sessions</li>
           </ul>
         </div>
+      </section>
+
+      <section class="grid landing-pricing-grid">
+        <article class="panel wide landing-pricing-panel">
+          ${renderPricingComparisonSection({
+            context: "public",
+            currentPlanTier: profilePlanTier,
+            signedIn: isSignedIn,
+          })}
+        </article>
       </section>
 
       <section class="grid landing-feature-grid">
@@ -13936,7 +14521,7 @@ function render() {
       executedAt: "",
       submitting: false,
     };
-    renderPublicHome();
+    renderPublicHome({ pricingView: isPricingPath() });
     ensureAppEventDelegation();
     applyImageFallbacks(app);
     syncBodyUiLocks();
@@ -14038,6 +14623,11 @@ function hydrateAppNoticesFromUrl() {
     return;
   }
 
+  if (isPricingPath()) {
+    window.history.replaceState({}, "", "/pricing");
+    return;
+  }
+
   window.history.replaceState({}, "", "/");
 }
 
@@ -14066,6 +14656,11 @@ function handleWindowNavigationChange() {
     }
   } else if (isOpportunitiesPath()) {
     state.activeTab = "opportunities";
+  } else if (isPricingPath()) {
+    if (state.authenticated) {
+      state.activeTab = "settings";
+      setActiveAccountSection("subscription", { updateHash: false });
+    }
   } else if (
     state.activeTab === "settings" ||
     state.activeTab === "opportunities"
@@ -14084,6 +14679,9 @@ async function bootstrapSession() {
       state.accountPage.activeSection = parseAccountSectionFromHash();
     } else if (isOpportunitiesPath()) {
       state.activeTab = "opportunities";
+    } else if (isPricingPath()) {
+      state.activeTab = "settings";
+      state.accountPage.activeSection = "subscription";
     }
   }
   hydrateAppNoticesFromUrl();
