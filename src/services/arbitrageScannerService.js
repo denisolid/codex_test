@@ -46,11 +46,11 @@ const HIGH_CONFIDENCE_MIN_SPREAD_PERCENT = 5
 const HIGH_CONFIDENCE_MAX_SPREAD_PERCENT = 120
 const HIGH_CONFIDENCE_MIN_VOLUME_7D = 100
 const HIGH_CONFIDENCE_MIN_SCORE = 75
-const RISKY_MIN_PRICE_USD = 2
+const RISKY_MIN_PRICE_USD = 3
 const RISKY_MIN_SPREAD_PERCENT = 3
 const RISKY_MAX_SPREAD_PERCENT = 250
 const RISKY_MIN_VOLUME_7D = 20
-const RISKY_MIN_SCORE = 45
+const RISKY_MIN_SCORE = 50
 const PREMIUM_MIN_PRICE_USD = 20
 const PREMIUM_MIN_SPREAD_PERCENT = 3
 const PREMIUM_SPREAD_HEAVY_PENALTY_PERCENT = 150
@@ -68,7 +68,7 @@ const MIN_EXECUTION_PRICE_USD = HIGH_CONFIDENCE_MIN_PRICE_USD
 const MIN_MARKET_COVERAGE = 2
 const DEFAULT_SCORE_CUTOFF = HIGH_CONFIDENCE_MIN_SCORE
 const RISKY_SCORE_CUTOFF = RISKY_MIN_SCORE
-const FEED_RISKY_MIN_SCORE = RISKY_MIN_SCORE
+const FEED_RISKY_MIN_SCORE = 48
 const MAX_API_LIMIT = 200
 const DEFAULT_API_LIMIT = 100
 const MAX_FEED_LIMIT = 500
@@ -180,6 +180,11 @@ const DIAGNOSTIC_REASON_KEYS = Object.freeze([
   "ignored_execution_floor",
   "ignored_low_value_universe",
   "ignored_low_liquidity",
+  "risky_low_price",
+  "risky_low_profit",
+  "risky_low_score",
+  "risky_low_confidence",
+  "risky_missing_depth",
   "spread_below_min",
   "non_positive_profit",
   "ignored_extreme_spread",
@@ -237,11 +242,13 @@ const CATEGORY_SCAN_RULES = Object.freeze({
       minMarketCoverage: MIN_MARKET_COVERAGE
     }),
     risky: Object.freeze({
-      minPriceUsd: RISKY_MIN_PRICE_USD,
-      minSpreadPercent: RISKY_MIN_SPREAD_PERCENT,
+      minPriceUsd: 3,
+      minProfitUsd: 0.75,
+      minSpreadPercent: 4,
       maxSpreadPercent: RISKY_MAX_SPREAD_PERCENT,
-      minVolume7d: RISKY_MIN_VOLUME_7D,
-      minMarketCoverage: MIN_MARKET_COVERAGE
+      minVolume7d: 40,
+      minMarketCoverage: MIN_MARKET_COVERAGE,
+      minScore: 55
     })
   }),
   [ITEM_CATEGORIES.CASE]: Object.freeze({
@@ -253,11 +260,13 @@ const CATEGORY_SCAN_RULES = Object.freeze({
       minMarketCoverage: MIN_MARKET_COVERAGE
     }),
     risky: Object.freeze({
-      minPriceUsd: RISKY_MIN_PRICE_USD,
+      minPriceUsd: 1,
+      minProfitUsd: 0.4,
       minSpreadPercent: RISKY_MIN_SPREAD_PERCENT,
       maxSpreadPercent: RISKY_MAX_SPREAD_PERCENT,
       minVolume7d: RISKY_MIN_VOLUME_7D,
-      minMarketCoverage: MIN_MARKET_COVERAGE
+      minMarketCoverage: MIN_MARKET_COVERAGE,
+      minScore: 50
     })
   }),
   [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
@@ -269,11 +278,13 @@ const CATEGORY_SCAN_RULES = Object.freeze({
       minMarketCoverage: MIN_MARKET_COVERAGE
     }),
     risky: Object.freeze({
-      minPriceUsd: RISKY_MIN_PRICE_USD,
+      minPriceUsd: 1,
+      minProfitUsd: 0.5,
       minSpreadPercent: RISKY_MIN_SPREAD_PERCENT,
       maxSpreadPercent: RISKY_MAX_SPREAD_PERCENT,
       minVolume7d: RISKY_MIN_VOLUME_7D,
-      minMarketCoverage: MIN_MARKET_COVERAGE
+      minMarketCoverage: MIN_MARKET_COVERAGE,
+      minScore: 50
     })
   }),
   [ITEM_CATEGORIES.KNIFE]: Object.freeze({
@@ -285,11 +296,14 @@ const CATEGORY_SCAN_RULES = Object.freeze({
       minMarketCoverage: MIN_MARKET_COVERAGE
     }),
     risky: Object.freeze({
-      minPriceUsd: PREMIUM_MIN_PRICE_USD,
-      minSpreadPercent: PREMIUM_MIN_SPREAD_PERCENT,
+      minPriceUsd: 40,
+      minProfitUsd: 3,
+      minSpreadPercent: 2.5,
       maxSpreadPercent: PREMIUM_MAX_SPREAD_PERCENT,
       minVolume7d: PREMIUM_MIN_VOLUME_REJECT,
-      minMarketCoverage: MIN_MARKET_COVERAGE
+      minMarketCoverage: MIN_MARKET_COVERAGE,
+      minScore: 48,
+      allowMissingDepthWithPenalty: true
     })
   }),
   [ITEM_CATEGORIES.GLOVE]: Object.freeze({
@@ -301,11 +315,14 @@ const CATEGORY_SCAN_RULES = Object.freeze({
       minMarketCoverage: MIN_MARKET_COVERAGE
     }),
     risky: Object.freeze({
-      minPriceUsd: PREMIUM_MIN_PRICE_USD,
-      minSpreadPercent: PREMIUM_MIN_SPREAD_PERCENT,
+      minPriceUsd: 40,
+      minProfitUsd: 3,
+      minSpreadPercent: 2.5,
       maxSpreadPercent: PREMIUM_MAX_SPREAD_PERCENT,
       minVolume7d: PREMIUM_MIN_VOLUME_REJECT,
-      minMarketCoverage: MIN_MARKET_COVERAGE
+      minMarketCoverage: MIN_MARKET_COVERAGE,
+      minScore: 48,
+      allowMissingDepthWithPenalty: true
     })
   })
 })
@@ -313,6 +330,87 @@ const CATEGORY_SCAN_RULES = Object.freeze({
 const PREMIUM_ITEM_CATEGORIES = Object.freeze(
   new Set([ITEM_CATEGORIES.KNIFE, ITEM_CATEGORIES.GLOVE])
 )
+
+const CATEGORY_RISKY_MODE_PROFILES = Object.freeze({
+  [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({
+    name: "risky_weapon_skin",
+    minPriceUsd: 3,
+    minProfitUsd: 0.75,
+    minSpreadPercent: 4,
+    maxSpreadPercent: RISKY_MAX_SPREAD_PERCENT,
+    minVolume7d: 40,
+    minMarketCoverage: MIN_MARKET_COVERAGE,
+    minScore: 55,
+    allowMissingLiquidity: false,
+    allowMissingDepthWithPenalty: false,
+    requireFreshData: false,
+    maxQuoteAgeMinutes: Infinity
+  }),
+  [ITEM_CATEGORIES.CASE]: Object.freeze({
+    name: "risky_case",
+    minPriceUsd: 1,
+    minProfitUsd: 0.4,
+    minSpreadPercent: 3,
+    maxSpreadPercent: RISKY_MAX_SPREAD_PERCENT,
+    minVolume7d: 20,
+    minMarketCoverage: MIN_MARKET_COVERAGE,
+    minScore: 50,
+    allowMissingLiquidity: true,
+    allowMissingDepthWithPenalty: false,
+    requireFreshData: false,
+    maxQuoteAgeMinutes: Infinity
+  }),
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
+    name: "risky_sticker_capsule",
+    minPriceUsd: 1,
+    minProfitUsd: 0.5,
+    minSpreadPercent: 3,
+    maxSpreadPercent: RISKY_MAX_SPREAD_PERCENT,
+    minVolume7d: 20,
+    minMarketCoverage: MIN_MARKET_COVERAGE,
+    minScore: 50,
+    allowMissingLiquidity: true,
+    allowMissingDepthWithPenalty: false,
+    requireFreshData: false,
+    maxQuoteAgeMinutes: Infinity
+  }),
+  [ITEM_CATEGORIES.KNIFE]: Object.freeze({
+    name: "risky_knife",
+    minPriceUsd: 40,
+    minProfitUsd: 3,
+    minSpreadPercent: 2.5,
+    maxSpreadPercent: PREMIUM_MAX_SPREAD_PERCENT,
+    minVolume7d: PREMIUM_MIN_VOLUME_REJECT,
+    minMarketCoverage: MIN_MARKET_COVERAGE,
+    minScore: 48,
+    allowMissingLiquidity: true,
+    allowMissingDepthWithPenalty: true,
+    requireFreshData: false,
+    maxQuoteAgeMinutes: Infinity
+  }),
+  [ITEM_CATEGORIES.GLOVE]: Object.freeze({
+    name: "risky_glove",
+    minPriceUsd: 40,
+    minProfitUsd: 3,
+    minSpreadPercent: 2.5,
+    maxSpreadPercent: PREMIUM_MAX_SPREAD_PERCENT,
+    minVolume7d: PREMIUM_MIN_VOLUME_REJECT,
+    minMarketCoverage: MIN_MARKET_COVERAGE,
+    minScore: 48,
+    allowMissingLiquidity: true,
+    allowMissingDepthWithPenalty: true,
+    requireFreshData: false,
+    maxQuoteAgeMinutes: Infinity
+  })
+})
+
+const RISKY_QUALITY_FLOOR_BY_CATEGORY = Object.freeze({
+  [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({ minScore: 55, minProfitUsd: 0.75 }),
+  [ITEM_CATEGORIES.CASE]: Object.freeze({ minScore: 50, minProfitUsd: 0.4 }),
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({ minScore: 50, minProfitUsd: 0.5 }),
+  [ITEM_CATEGORIES.KNIFE]: Object.freeze({ minScore: 48, minProfitUsd: 3 }),
+  [ITEM_CATEGORIES.GLOVE]: Object.freeze({ minScore: 48, minProfitUsd: 3 })
+})
 
 function normalizeMarketHashName(value) {
   return String(value || "").trim()
@@ -1259,6 +1357,22 @@ function getCategoryScanRules(itemCategory, profileName = "strict") {
   return categoryRules.strict
 }
 
+function getCategoryRiskyProfile(itemCategory) {
+  const category = normalizeItemCategory(itemCategory)
+  return (
+    CATEGORY_RISKY_MODE_PROFILES[category] ||
+    CATEGORY_RISKY_MODE_PROFILES[ITEM_CATEGORIES.WEAPON_SKIN]
+  )
+}
+
+function getRiskyQualityFloor(itemCategory) {
+  const category = normalizeItemCategory(itemCategory)
+  return (
+    RISKY_QUALITY_FLOOR_BY_CATEGORY[category] ||
+    RISKY_QUALITY_FLOOR_BY_CATEGORY[ITEM_CATEGORIES.WEAPON_SKIN]
+  )
+}
+
 function resolveDepthSignals(opportunity = {}, liquidity = {}) {
   const depthFlags = Array.isArray(opportunity?.depthFlags) ? opportunity.depthFlags : []
   const outlier = opportunity?.antiFake?.outlier && typeof opportunity.antiFake.outlier === "object"
@@ -1340,14 +1454,26 @@ function computeRiskAdjustments({
   const staleMinutes = toFiniteOrNull(stale?.maxAgeMinutes)
   const hasSnapshotStale = Boolean(inputItem?.snapshotStale)
   const isPremiumCategory = PREMIUM_ITEM_CATEGORIES.has(itemCategory)
+  const isRiskyProfile = String(profile?.name || "").trim().toLowerCase().startsWith("risky")
+  const minProfitUsd = Number(rules.minProfitUsd ?? profile?.minProfitUsd ?? 0)
+  const allowMissingDepthWithPenalty = Boolean(
+    rules.allowMissingDepthWithPenalty ?? profile?.allowMissingDepthWithPenalty
+  )
   const depthSignals = resolveDepthSignals(opportunity, liquidity)
   const referenceSignals = resolveReferenceSignals(opportunity, liquidity)
 
   if (profit == null || profit <= 0) {
     return { passed: false, primaryReason: "non_positive_profit", penalty: 0 }
   }
+  if (isRiskyProfile && profit < minProfitUsd) {
+    return { passed: false, primaryReason: "risky_low_profit", penalty: 0 }
+  }
   if (buyPrice == null || buyPrice < Number(rules.minPriceUsd || profile.minPriceUsd || 0)) {
-    return { passed: false, primaryReason: "ignored_execution_floor", penalty: 0 }
+    return {
+      passed: false,
+      primaryReason: isRiskyProfile ? "risky_low_price" : "ignored_execution_floor",
+      penalty: 0
+    }
   }
   if (
     spread == null ||
@@ -1378,7 +1504,7 @@ function computeRiskAdjustments({
       return { passed: false, primaryReason: "ignored_low_liquidity", penalty: 0 }
     }
     if (volume7d == null) {
-      if (profile.name === "strict") {
+      if (profile.name === "strict" || !profile.allowMissingLiquidity) {
         return { passed: false, primaryReason: "ignored_missing_liquidity_data", penalty: 0 }
       }
       if (marketCoverage < PREMIUM_UNKNOWN_VOLUME_MIN_MARKET_COVERAGE) {
@@ -1389,7 +1515,11 @@ function computeRiskAdjustments({
         depthSignals.hasOutlierAdjusted ||
         depthSignals.hasSuspiciousDepthGap
       ) {
-        return { passed: false, primaryReason: "ignored_missing_depth", penalty: 0 }
+        return {
+          passed: false,
+          primaryReason: isRiskyProfile ? "risky_missing_depth" : "ignored_missing_depth",
+          penalty: 0
+        }
       }
       if (referenceSignals.hasStrongReferenceDeviation) {
         return { passed: false, primaryReason: "ignored_reference_deviation", penalty: 0 }
@@ -1405,8 +1535,38 @@ function computeRiskAdjustments({
     return { passed: false, primaryReason: "ignored_low_liquidity", penalty: 0 }
   }
 
-  if (isPremiumCategory && (depthSignals.hasBothDepthMissing || depthSignals.hasMissingDepth)) {
-    return { passed: false, primaryReason: "ignored_missing_depth", penalty: 0 }
+  if (
+    !isPremiumCategory &&
+    isRiskyProfile &&
+    itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+    depthSignals.hasMissingDepth &&
+    marketCoverage <= MIN_MARKET_COVERAGE
+  ) {
+    return { passed: false, primaryReason: "risky_missing_depth", penalty: 0 }
+  }
+
+  const weakPremiumConfidence =
+    hasSnapshotStale ||
+    (staleMinutes != null && staleMinutes >= 120) ||
+    referenceSignals.hasStrongReferenceDeviation ||
+    depthSignals.hasOutlierAdjusted ||
+    depthSignals.hasSuspiciousDepthGap
+  if (isPremiumCategory && depthSignals.hasBothDepthMissing) {
+    if (!isRiskyProfile || !allowMissingDepthWithPenalty || weakPremiumConfidence) {
+      return {
+        passed: false,
+        primaryReason: isRiskyProfile ? "risky_missing_depth" : "ignored_missing_depth",
+        penalty: 0
+      }
+    }
+  }
+  if (isPremiumCategory && depthSignals.hasMissingDepth && !depthSignals.hasBothDepthMissing) {
+    if (!isRiskyProfile || !allowMissingDepthWithPenalty) {
+      return { passed: false, primaryReason: "ignored_missing_depth", penalty: 0 }
+    }
+    if (weakPremiumConfidence && marketCoverage <= MIN_MARKET_COVERAGE) {
+      return { passed: false, primaryReason: "risky_missing_depth", penalty: 0 }
+    }
   }
 
   if (profile.requireFreshData) {
@@ -1443,8 +1603,10 @@ function computeRiskAdjustments({
     if (spread != null && spread > PREMIUM_SPREAD_HEAVY_PENALTY_PERCENT) {
       penalty += 22
     }
-    if (depthSignals.hasMissingDepth || depthSignals.hasBothDepthMissing) {
-      penalty += 26
+    if (depthSignals.hasBothDepthMissing) {
+      penalty += 28
+    } else if (depthSignals.hasMissingDepth) {
+      penalty += 22
     } else if (depthSignals.hasOutlierAdjusted || depthSignals.hasSuspiciousDepthGap) {
       penalty += 16
     }
@@ -1483,6 +1645,16 @@ function computeRiskAdjustments({
       penalty += 18
     } else if (staleMinutes != null && staleMinutes >= 60) {
       penalty += 10
+    }
+    if (
+      isRiskyProfile &&
+      itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+      (depthSignals.hasMissingDepth || depthSignals.hasOutlierAdjusted)
+    ) {
+      penalty += marketCoverage <= MIN_MARKET_COVERAGE ? 14 : 7
+    }
+    if (isRiskyProfile && itemCategory === ITEM_CATEGORIES.WEAPON_SKIN && profit < 1.2) {
+      penalty += 6
     }
   }
 
@@ -1535,6 +1707,10 @@ function buildApiOpportunityRow({
   const sellSource = normalizeMarketLabel(opportunity?.sellMarket)
   const buyQuote = bySource[buySource] || null
   const sellQuote = bySource[sellSource] || null
+  const itemCategory = normalizeItemCategory(
+    opportunity?.itemCategory || inputItem?.itemCategory,
+    opportunity?.itemName || inputItem?.marketHashName
+  )
   const baseScore = toFiniteOrNull(opportunity?.opportunityScore) ?? 0
   const stalePenalty = toFiniteOrNull(stale?.penalty) ?? 0
   const softPenalty = toFiniteOrNull(extraPenalty) ?? 0
@@ -1556,9 +1732,21 @@ function buildApiOpportunityRow({
     stale,
     snapshotStale
   )
+  const buyPrice = roundPrice(opportunity?.buyPrice || 0)
+  const volume7d = toFiniteOrNull(liquidity?.volume7d)
+  const premiumRiskyBadges =
+    isRiskyEligible && PREMIUM_ITEM_CATEGORIES.has(itemCategory)
+      ? [
+          "Premium category",
+          buyPrice >= 100 ? "High-ticket opportunity" : "",
+          volume7d == null || volume7d < PREMIUM_MIN_VOLUME_HIGH ? "Low-frequency market" : "",
+          hasMissingDepth ? "Missing depth tolerated" : ""
+        ].filter(Boolean)
+      : []
 
   const badges = normalizeBadges([
     ...(Array.isArray(opportunity?.reasonBadges) ? opportunity.reasonBadges : []),
+    ...premiumRiskyBadges,
     ...(toFiniteOrNull(stale?.maxAgeMinutes) ?? 0) >= 60 ? ["Stale market data"] : [],
     hasDepthGapExtreme ? ["Depth anomaly"] : [],
     !hasDepthGapExtreme && hasDepthGapSuspicious ? ["Depth gap flagged"] : [],
@@ -1572,10 +1760,7 @@ function buildApiOpportunityRow({
   return {
     itemId: Number(opportunity?.itemId || inputItem?.skinId || 0) || null,
     itemName: String(opportunity?.itemName || inputItem?.marketHashName || "Tracked Item"),
-    itemCategory: normalizeItemCategory(
-      opportunity?.itemCategory || inputItem?.itemCategory,
-      opportunity?.itemName || inputItem?.marketHashName
-    ),
+    itemCategory,
     itemSubcategory: String(inputItem?.itemSubcategory || "").trim() || null,
     itemRarity:
       String(
@@ -1591,7 +1776,7 @@ function buildApiOpportunityRow({
     itemImageUrl:
       sanitizeImageUrl(inputItem?.itemImageUrlLarge || inputItem?.itemImageUrl) || null,
     buyMarket: buySource || null,
-    buyPrice: roundPrice(opportunity?.buyPrice || 0),
+    buyPrice,
     sellMarket: sellSource || null,
     sellNet: roundPrice(opportunity?.sellNet || 0),
     profit: roundPrice(opportunity?.profit || 0),
@@ -1606,7 +1791,7 @@ function buildApiOpportunityRow({
       toFiniteOrNull(opportunity?.liquiditySample) ??
       null,
     liquidityScore: toFiniteOrNull(liquidity?.liquidityScore),
-    volume7d: toFiniteOrNull(liquidity?.volume7d),
+    volume7d,
     marketCoverage: Number(opportunity?.marketCoverage || 0),
     referencePrice: toFiniteOrNull(opportunity?.referencePrice ?? inputItem?.referencePrice),
     stalePenalty,
@@ -1955,14 +2140,53 @@ async function enrichFeedRowsWithSkinMetadata(rows = []) {
   })
 }
 
+function computeRiskyRankScore(row = {}) {
+  const baseScore = Number(row?.score || 0)
+  const category = normalizeItemCategory(row?.itemCategory, row?.itemName)
+  const price = toFiniteOrNull(row?.buyPrice) ?? 0
+  const profit = toFiniteOrNull(row?.profit) ?? 0
+  const volume7d = toFiniteOrNull(row?.volume7d)
+  const marketCoverage = Number(row?.marketCoverage || 0)
+  const confidence = normalizeConfidence(row?.executionConfidence)
+  const hasMissingDepth = Array.isArray(row?.flags) && row.flags.includes("MISSING_DEPTH")
+  const isHighConfidence = Boolean(row?.isHighConfidenceEligible)
+  let rankScore = baseScore
+
+  if (isHighConfidence) {
+    return rankScore + 20
+  }
+
+  if (PREMIUM_ITEM_CATEGORIES.has(category)) {
+    rankScore += 6
+    rankScore += Math.min(price / 120, 10)
+    rankScore += Math.min(profit / 4, 8)
+    rankScore += Math.min(marketCoverage * 2, 8)
+    if (confidence !== "Low") rankScore += 2
+    if (volume7d != null && volume7d < PREMIUM_MIN_VOLUME_HIGH) rankScore -= 2
+    if (hasMissingDepth) rankScore -= 3
+    return round2(rankScore)
+  }
+
+  if (category === ITEM_CATEGORIES.WEAPON_SKIN) {
+    if (price < 6) rankScore -= 8
+    if (profit < 1) rankScore -= 7
+    if ((volume7d ?? 0) < 60) rankScore -= 5
+    if (confidence === "Low") rankScore -= 6
+  }
+  return round2(rankScore)
+}
+
 function sortOpportunities(rows = []) {
-  return [...rows].sort(
-    (a, b) =>
+  return [...rows].sort((a, b) => {
+    const riskyRankDelta = computeRiskyRankScore(b) - computeRiskyRankScore(a)
+    if (riskyRankDelta) return riskyRankDelta
+    return (
       Number(b?.score || 0) - Number(a?.score || 0) ||
       confidenceRank(b?.executionConfidence) - confidenceRank(a?.executionConfidence) ||
       Number(b?.profit || 0) - Number(a?.profit || 0) ||
       Number(b?.spread || 0) - Number(a?.spread || 0)
-  )
+    )
+  })
 }
 
 function buildInputItemForComparison(item = {}) {
@@ -2878,12 +3102,71 @@ function toKnifeGloveRejectionSummary(discardedReasonsByCategory = {}) {
       low_liquidity: Number(reasons.ignored_low_liquidity || 0),
       extreme_spread: Number(reasons.ignored_extreme_spread || 0),
       stale_market_data: Number(reasons.ignored_stale_data || 0),
-      missing_depth: Number(reasons.ignored_missing_depth || 0),
+      missing_depth: Number(reasons.ignored_missing_depth || 0) + Number(reasons.risky_missing_depth || 0),
       reference_deviation: Number(reasons.ignored_reference_deviation || 0),
       weak_market_coverage: Number(reasons.ignored_missing_markets || 0)
     }
   }
   return result
+}
+
+function buildRiskyProfileDiagnostics() {
+  const diagnostics = {}
+  for (const category of Object.values(ITEM_CATEGORIES)) {
+    const profile = getCategoryRiskyProfile(category)
+    diagnostics[category] = {
+      profile: {
+        minPriceUsd: Number(profile.minPriceUsd || 0),
+        minProfitUsd: Number(profile.minProfitUsd || 0),
+        minSpreadPercent: Number(profile.minSpreadPercent || 0),
+        minVolume7d: Number(profile.minVolume7d || 0),
+        minMarketCoverage: Number(profile.minMarketCoverage || 0),
+        minScore: Number(profile.minScore || 0),
+        allowMissingDepthWithPenalty: Boolean(profile.allowMissingDepthWithPenalty)
+      },
+      attempted: 0,
+      accepted: 0,
+      rejected: 0,
+      acceptedReasons: {},
+      rejectedReasons: {}
+    }
+  }
+  return diagnostics
+}
+
+function trackRiskyDecision(
+  diagnostics = {},
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
+  status = "attempted",
+  reason = ""
+) {
+  const normalizedCategory = normalizeItemCategory(category)
+  if (!diagnostics[normalizedCategory]) {
+    diagnostics[normalizedCategory] = {
+      profile: getCategoryRiskyProfile(normalizedCategory),
+      attempted: 0,
+      accepted: 0,
+      rejected: 0,
+      acceptedReasons: {},
+      rejectedReasons: {}
+    }
+  }
+  const bucket = diagnostics[normalizedCategory]
+  if (status === "attempted") {
+    bucket.attempted += 1
+    return
+  }
+  if (status === "accepted") {
+    bucket.accepted += 1
+    if (reason) {
+      bucket.acceptedReasons[reason] = Number(bucket.acceptedReasons[reason] || 0) + 1
+    }
+    return
+  }
+  bucket.rejected += 1
+  if (reason) {
+    bucket.rejectedReasons[reason] = Number(bucket.rejectedReasons[reason] || 0) + 1
+  }
 }
 
 function buildScanProgressStats({
@@ -2967,6 +3250,7 @@ async function runScanInternal(options = {}) {
         selectedUniverseByCategory: { ...emptyByCategory },
         opportunitiesByCategory: { ...emptyByCategory },
         knifeGloveRejections: toKnifeGloveRejectionSummary({}),
+        riskyProfileDiagnostics: buildRiskyProfileDiagnostics(),
         snapshotWarmup: snapshotWarmupSummary,
         imageEnrichment: imageEnrichmentSummary,
         sourceCatalog: sourceCatalogDiagnostics,
@@ -3059,6 +3343,7 @@ async function runScanInternal(options = {}) {
     rejectedByItem
   )
   const rows = []
+  const riskyProfileDiagnostics = buildRiskyProfileDiagnostics()
   for (const selected of selectedUniverse) {
     const item = selected?.comparisonItem || null
     const inputItem = selected?.inputItem || null
@@ -3079,6 +3364,7 @@ async function runScanInternal(options = {}) {
     }
     const liquidity = resolveLiquidityMetrics(enrichedOpportunity, inputItem)
     const stale = resolveStaleDataPenalty(item?.perMarket, enrichedOpportunity)
+    trackRiskyDecision(riskyProfileDiagnostics, itemCategory, "attempted")
 
     const hardRejectionReason = getPrimaryHardRejectionReason(enrichedOpportunity)
     if (hardRejectionReason) {
@@ -3093,15 +3379,17 @@ async function runScanInternal(options = {}) {
         incrementReasonCounter(discardStats, hardRejectionReason, itemCategory)
         incrementItemReasonCounter(rejectedByItem, itemName, hardRejectionReason, itemCategory)
       }
+      trackRiskyDecision(riskyProfileDiagnostics, itemCategory, "rejected", hardRejectionReason)
       continue
     }
 
+    const riskyProfile = getCategoryRiskyProfile(itemCategory)
     const riskyEvaluation = computeRiskAdjustments({
       opportunity: enrichedOpportunity,
       liquidity,
       stale,
       inputItem,
-      profile: RISKY_SCAN_PROFILE
+      profile: riskyProfile
     })
     if (!riskyEvaluation.passed) {
       incrementReasonCounter(discardStats, riskyEvaluation.primaryReason, itemCategory)
@@ -3110,6 +3398,12 @@ async function runScanInternal(options = {}) {
         itemName,
         riskyEvaluation.primaryReason,
         itemCategory
+      )
+      trackRiskyDecision(
+        riskyProfileDiagnostics,
+        itemCategory,
+        "rejected",
+        riskyEvaluation.primaryReason
       )
       continue
     }
@@ -3133,9 +3427,26 @@ async function runScanInternal(options = {}) {
       isHighConfidenceEligible: strictEvaluation.passed
     })
 
-    if (Number(apiRow?.score || 0) < RISKY_MIN_SCORE) {
-      incrementReasonCounter(discardStats, "ignored_low_score", itemCategory)
-      incrementItemReasonCounter(rejectedByItem, itemName, "ignored_low_score", itemCategory)
+    const riskyFloor = getRiskyQualityFloor(itemCategory)
+    if (Number(apiRow?.profit || 0) < Number(riskyFloor.minProfitUsd || 0)) {
+      incrementReasonCounter(discardStats, "risky_low_profit", itemCategory)
+      incrementItemReasonCounter(rejectedByItem, itemName, "risky_low_profit", itemCategory)
+      trackRiskyDecision(riskyProfileDiagnostics, itemCategory, "rejected", "risky_low_profit")
+      continue
+    }
+    if (Number(apiRow?.score || 0) < Number(riskyFloor.minScore || RISKY_MIN_SCORE)) {
+      incrementReasonCounter(discardStats, "risky_low_score", itemCategory)
+      incrementItemReasonCounter(rejectedByItem, itemName, "risky_low_score", itemCategory)
+      trackRiskyDecision(riskyProfileDiagnostics, itemCategory, "rejected", "risky_low_score")
+      continue
+    }
+    if (
+      itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+      normalizeConfidence(apiRow?.executionConfidence) === "Low"
+    ) {
+      incrementReasonCounter(discardStats, "risky_low_confidence", itemCategory)
+      incrementItemReasonCounter(rejectedByItem, itemName, "risky_low_confidence", itemCategory)
+      trackRiskyDecision(riskyProfileDiagnostics, itemCategory, "rejected", "risky_low_confidence")
       continue
     }
 
@@ -3149,6 +3460,22 @@ async function runScanInternal(options = {}) {
       ...apiRow,
       isHighConfidenceEligible: highConfidenceEligible
     })
+    const premiumAcceptedWithMissingDepth =
+      PREMIUM_ITEM_CATEGORIES.has(itemCategory) &&
+      (
+        Boolean(liquidity?.hasMissingDepth) ||
+        (Boolean(liquidity?.buyDepthMissing) && Boolean(liquidity?.sellDepthMissing))
+      )
+    trackRiskyDecision(
+      riskyProfileDiagnostics,
+      itemCategory,
+      "accepted",
+      premiumAcceptedWithMissingDepth
+        ? "accepted_premium_missing_depth_tolerated"
+        : PREMIUM_ITEM_CATEGORIES.has(itemCategory)
+          ? "accepted_premium_profile"
+          : "accepted_standard_profile"
+    )
   }
 
   const sortedRows = sortOpportunities(rows)
@@ -3202,6 +3529,7 @@ async function runScanInternal(options = {}) {
       selectedUniverseByCategory,
       opportunitiesByCategory,
       knifeGloveRejections,
+      riskyProfileDiagnostics,
       snapshotWarmup: snapshotWarmupSummary,
       imageEnrichment: imageEnrichmentSummary,
       sourceCatalog: sourceCatalogDiagnostics,
@@ -3269,6 +3597,7 @@ function toScanDiagnosticsSummary(scanPayload = {}, persistSummary = {}, trigger
     selectedUniverseByCategory: scanPayload?.summary?.selectedUniverseByCategory || {},
     opportunitiesByCategory: scanPayload?.summary?.opportunitiesByCategory || {},
     knifeGloveRejections: scanPayload?.summary?.knifeGloveRejections || {},
+    riskyProfileDiagnostics: scanPayload?.summary?.riskyProfileDiagnostics || {},
     snapshotWarmup:
       scanPayload?.summary?.snapshotWarmup || scanPayload?.pipeline?.snapshotWarmup || {},
     imageEnrichment:
@@ -3300,8 +3629,16 @@ async function appendOpportunitiesToFeed(rows = [], scanRunId = "") {
       const marketHashName = String(row?.itemName || "").trim()
       if (!marketHashName) return false
       if (!Boolean(row?.isRiskyEligible) && !Boolean(row?.isHighConfidenceEligible)) return false
+      const itemCategory = normalizeItemCategory(row?.itemCategory, marketHashName)
+      const floor = getRiskyQualityFloor(itemCategory)
       const score = Number(row?.score || 0)
-      return score >= FEED_RISKY_MIN_SCORE
+      const minScore = Boolean(row?.isHighConfidenceEligible)
+        ? DEFAULT_SCORE_CUTOFF
+        : Number(floor?.minScore || FEED_RISKY_MIN_SCORE)
+      const minProfit = Boolean(row?.isHighConfidenceEligible)
+        ? 0
+        : Number(floor?.minProfitUsd || 0)
+      return score >= minScore && Number(row?.profit || 0) >= minProfit
     })
     .map((row) => ({
       ...row,
@@ -3692,6 +4029,11 @@ function resolveNoOpportunitiesReason(summary = {}, status = {}, opportunities =
     ignored_low_price: "Most candidates failed execution floor checks.",
     ignored_low_value_universe: "Most candidates were filtered as low-value universe items.",
     ignored_low_liquidity: "Most candidates were rejected for low liquidity.",
+    risky_low_price: "Most risky candidates were below category price floors.",
+    risky_low_profit: "Most risky candidates had insufficient profit for their category.",
+    risky_low_score: "Most risky candidates scored below category quality floors.",
+    risky_low_confidence: "Most risky candidates had low execution confidence.",
+    risky_missing_depth: "Most risky candidates failed depth checks under risky mode.",
     spread_below_min: "Most candidates were below spread baseline.",
     non_positive_profit: "Most candidates had non-positive projected profit.",
     ignored_extreme_spread: "Most candidates were rejected for extreme spread values.",
@@ -3783,6 +4125,7 @@ exports.getFeed = async (options = {}) => {
     selectedUniverseByCategory: diagnosticsSummary?.selectedUniverseByCategory || {},
     opportunitiesByCategory: diagnosticsSummary?.opportunitiesByCategory || {},
     knifeGloveRejections: diagnosticsSummary?.knifeGloveRejections || {},
+    riskyProfileDiagnostics: diagnosticsSummary?.riskyProfileDiagnostics || {},
     snapshotWarmup:
       diagnosticsSummary?.snapshotWarmup || diagnosticsSummary?.pipeline?.snapshotWarmup || {},
     imageEnrichment:
