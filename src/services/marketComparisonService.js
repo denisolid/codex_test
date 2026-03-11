@@ -53,6 +53,14 @@ function toFiniteOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function toIsoStringOrNull(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const ts = new Date(raw).getTime();
+  if (!Number.isFinite(ts)) return null;
+  return new Date(ts).toISOString();
+}
+
 function normalizePricingMode(value) {
   const mode = String(value || "")
     .trim()
@@ -284,8 +292,12 @@ function fromCachedRow(row, displayCurrency) {
   });
 }
 
-function toUpsertRow(record) {
+function toUpsertRow(record, fetchedAtIso = null) {
   if (!record || !record.source || !record.marketHashName) return null;
+  const fetchedAt = toIsoStringOrNull(fetchedAtIso) || new Date().toISOString();
+  const sourceUpdatedAt = toIsoStringOrNull(
+    record.updatedAt || record.fetched_at || record.fetchedAt
+  );
   return {
     market: record.source,
     market_hash_name: record.marketHashName,
@@ -293,10 +305,11 @@ function toUpsertRow(record) {
     gross_price: Number(record.grossPrice || 0),
     net_price: Number(record.netPriceAfterFees || 0),
     url: record.url || null,
-    fetched_at: record.updatedAt || new Date().toISOString(),
+    fetched_at: fetchedAt,
     raw: {
       ...(record.raw || {}),
-      confidence: record.confidence || "medium"
+      confidence: record.confidence || "medium",
+      source_updated_at: sourceUpdatedAt
     }
   };
 }
@@ -391,6 +404,7 @@ async function fetchLiveMarketData(itemsBySource = {}, displayCurrency, options 
       timeoutMs: Number(options.timeoutMs || marketCompareTimeoutMs || 9000),
       maxRetries: Number(options.maxRetries || marketCompareMaxRetries || 3)
     });
+    const sourceFetchedAt = new Date().toISOString();
     const adapterMeta = byName && typeof byName === "object" ? byName.__meta : null;
 
     result[source] = {};
@@ -405,7 +419,7 @@ async function fetchLiveMarketData(itemsBySource = {}, displayCurrency, options 
       const normalized = normalizeLiveRecord(rawRecord, displayCurrency);
       if (!normalized) continue;
       result[source][marketHashName] = normalized;
-      const row = toUpsertRow(rawRecord);
+      const row = toUpsertRow(rawRecord, sourceFetchedAt);
       if (row) {
         rowsToStore.push(row);
       }
@@ -545,6 +559,10 @@ exports.compareItems = async (items = [], options = {}) => {
   const entitlements =
     planContext?.entitlements || planService.getEntitlements(planContext?.planTier);
   const planConfig = planService.getPlanConfig(planContext?.planTier || entitlements?.planTier || "free");
+  const compareView = String(planConfig?.compareView || entitlements?.compareView || "limited")
+    .trim()
+    .toLowerCase();
+  const compareViewLimited = compareView === "limited";
   const premiumCategoryAccess = premiumCategoryAccessService.hasPremiumCategoryAccess(
     entitlements
   );
@@ -598,7 +616,7 @@ exports.compareItems = async (items = [], options = {}) => {
       items: [],
       plan: {
         planTier: planContext?.planTier || "free",
-        compareView: String(entitlements?.compareView || "full"),
+        compareView,
         compareViewMaxItems,
         premiumCategoryAccess,
         comparedItemsSubmitted,
@@ -745,6 +763,18 @@ exports.compareItems = async (items = [], options = {}) => {
       liquiditySales: item.liquiditySales,
       liquidityScore: item.liquidityScore
     });
+    const limitedPerMarket = compareViewLimited ? perMarket.slice(0, 2) : perMarket;
+    const responseBestBuy = pickBestBuy(limitedPerMarket) || bestBuy;
+    const responseBestSellNet = pickBestSellNet(limitedPerMarket) || bestSellNet;
+    const responseArbitrage = compareViewLimited
+      ? {
+          isOpportunity: false,
+          scoreCategory: "Locked",
+          executionConfidence: "Locked",
+          lockReason: "compare_view_limited",
+          lockMessage: "Unlock Full Access for complete compare drawer depth and arbitrage diagnostics."
+        }
+      : arbitrage;
 
     summary.totalValueSelected += selectedLineValue;
     summary.totalValueSteam += steamUnit * quantity;
@@ -763,27 +793,27 @@ exports.compareItems = async (items = [], options = {}) => {
       itemCategory: item.itemCategory,
       itemSubcategory: item.itemSubcategory,
       quantity: Number(item.quantity || 0),
-      perMarket,
-      bestBuy: bestBuy
+      perMarket: limitedPerMarket,
+      bestBuy: responseBestBuy
         ? {
-            source: bestBuy.source,
-            grossPrice: bestBuy.grossPrice,
-            currency: bestBuy.currency,
-            url: bestBuy.url
+            source: responseBestBuy.source,
+            grossPrice: responseBestBuy.grossPrice,
+            currency: responseBestBuy.currency,
+            url: responseBestBuy.url
           }
         : null,
-      bestSellNet: bestSellNet
+      bestSellNet: responseBestSellNet
         ? {
-            source: bestSellNet.source,
-            netPriceAfterFees: bestSellNet.netPriceAfterFees,
-            currency: bestSellNet.currency,
-            url: bestSellNet.url
+            source: responseBestSellNet.source,
+            netPriceAfterFees: responseBestSellNet.netPriceAfterFees,
+            currency: responseBestSellNet.currency,
+            url: responseBestSellNet.url
           }
         : null,
       selectedPricingSource: selected?.source || null,
       selectedUnitPrice,
       selectedLineValue,
-      arbitrage,
+      arbitrage: responseArbitrage,
       totalsByMode: {
         steam: roundPrice(steamUnit * quantity),
         best_sell_net: roundPrice(bestSellNetUnit * quantity),
@@ -817,7 +847,7 @@ exports.compareItems = async (items = [], options = {}) => {
     items: enrichedItems,
     plan: {
       planTier: planContext?.planTier || "free",
-      compareView: String(entitlements?.compareView || "full"),
+      compareView,
       compareViewMaxItems,
       premiumCategoryAccess,
       comparedItemsSubmitted,

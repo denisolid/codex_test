@@ -82,11 +82,44 @@ const INSERT_DUPLICATES = Boolean(arbitrageInsertDuplicates)
 const MANUAL_REFRESH_TRACKER_MAX = 4000
 const manualRefreshTracker = new Map()
 
-const STALE_PENALTY_RULES = Object.freeze([
-  { minMinutes: 180, penalty: 25 },
-  { minMinutes: 60, penalty: 15 },
-  { minMinutes: 15, penalty: 8 }
-])
+const FRESHNESS_STATES = Object.freeze({
+  FRESH: "fresh",
+  AGING: "aging",
+  STALE: "stale"
+})
+
+const CATEGORY_STALE_RULES = Object.freeze({
+  weapon_skin: Object.freeze({
+    freshMaxMinutes: 30,
+    agingMaxMinutes: 60,
+    agingPenalty: 8,
+    stalePenalty: 20
+  }),
+  case: Object.freeze({
+    freshMaxMinutes: 60,
+    agingMaxMinutes: 120,
+    agingPenalty: 6,
+    stalePenalty: 16
+  }),
+  sticker_capsule: Object.freeze({
+    freshMaxMinutes: 90,
+    agingMaxMinutes: 180,
+    agingPenalty: 5,
+    stalePenalty: 14
+  }),
+  knife: Object.freeze({
+    freshMaxMinutes: 120,
+    agingMaxMinutes: 240,
+    agingPenalty: 4,
+    stalePenalty: 12
+  }),
+  glove: Object.freeze({
+    freshMaxMinutes: 120,
+    agingMaxMinutes: 240,
+    agingPenalty: 4,
+    stalePenalty: 12
+  })
+})
 
 const SOURCE_ORDER = Object.freeze(["steam", "skinport", "csfloat", "dmarket"])
 const ITEM_CATEGORIES = Object.freeze({
@@ -564,6 +597,19 @@ function normalizeCategoryFilter(value) {
   return "all"
 }
 
+function getCategoryStaleRules(itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
+  const normalized = normalizeItemCategory(itemCategory)
+  return CATEGORY_STALE_RULES[normalized] || CATEGORY_STALE_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
+}
+
+function resolveFreshnessState(ageMinutes = null, rules = {}) {
+  const age = toFiniteOrNull(ageMinutes)
+  if (age == null || age < 0) return FRESHNESS_STATES.STALE
+  if (age <= Number(rules.freshMaxMinutes || 0)) return FRESHNESS_STATES.FRESH
+  if (age <= Number(rules.agingMaxMinutes || 0)) return FRESHNESS_STATES.AGING
+  return FRESHNESS_STATES.STALE
+}
+
 function computeLiquidityScoreFromSnapshot(snapshot = {}) {
   const volume24h = Math.max(toFiniteOrNull(snapshot?.volume_24h) ?? 0, 0)
   const volatility7dPercent = Math.max(toFiniteOrNull(snapshot?.volatility_7d_percent) ?? 0, 0)
@@ -686,43 +732,265 @@ function mergeUniverseSeeds(seedSets = []) {
 }
 
 function resolveQuoteAgeMinutes(quote = {}) {
-  const updatedAt = toIsoStringOrNull(quote?.updatedAt || quote?.fetched_at || quote?.recorded_at)
+  const updatedAt = toIsoStringOrNull(
+    quote?.updatedAt || quote?.fetched_at || quote?.fetchedAt || quote?.recorded_at
+  )
   if (!updatedAt) return null
   const ageMinutes = (Date.now() - new Date(updatedAt).getTime()) / (60 * 1000)
   if (!Number.isFinite(ageMinutes) || ageMinutes < 0) return null
-  return ageMinutes
+  return round2(ageMinutes)
 }
 
-function resolveStaleDataPenalty(perMarket = [], opportunity = {}) {
-  const bySource = toBySourceMap(perMarket)
-  const buySource = String(opportunity?.buyMarket || "").trim().toLowerCase()
-  const sellSource = String(opportunity?.sellMarket || "").trim().toLowerCase()
-  const buyAgeMinutes = resolveQuoteAgeMinutes(bySource[buySource])
-  const sellAgeMinutes = resolveQuoteAgeMinutes(bySource[sellSource])
-  const maxAgeMinutes = Math.max(
-    toFiniteOrNull(buyAgeMinutes) ?? 0,
-    toFiniteOrNull(sellAgeMinutes) ?? 0
-  )
+function resolveSnapshotAgeMinutes(inputItem = {}) {
+  const capturedAt = toIsoStringOrNull(inputItem?.snapshotCapturedAt || inputItem?.steamRecordedAt)
+  if (!capturedAt) return null
+  const ageMinutes = (Date.now() - new Date(capturedAt).getTime()) / (60 * 1000)
+  if (!Number.isFinite(ageMinutes) || ageMinutes < 0) return null
+  return round2(ageMinutes)
+}
 
-  if (!Number.isFinite(maxAgeMinutes) || maxAgeMinutes <= 0) {
+function resolveSnapshotFreshnessState(inputItem = {}, itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
+  const rules = getCategoryStaleRules(itemCategory)
+  const ageMinutes = resolveSnapshotAgeMinutes(inputItem)
+  const hasSnapshotData = Boolean(inputItem?.hasSnapshotData || inputItem?.snapshotCapturedAt)
+  if (!hasSnapshotData || ageMinutes == null) {
     return {
-      penalty: 0,
-      maxAgeMinutes: null
+      state: FRESHNESS_STATES.STALE,
+      ageMinutes: ageMinutes,
+      hasSnapshotData
+    }
+  }
+  return {
+    state: resolveFreshnessState(ageMinutes, rules),
+    ageMinutes,
+    hasSnapshotData
+  }
+}
+
+function hasUsableQuotePrice(quote = {}) {
+  const hasGross = Number.isFinite(Number(quote?.grossPrice)) && Number(quote.grossPrice) > 0
+  const hasNet =
+    Number.isFinite(Number(quote?.netPriceAfterFees)) && Number(quote.netPriceAfterFees) > 0
+  return Boolean(quote?.available) && (hasGross || hasNet)
+}
+
+function resolveQuoteFreshnessEntry(quote = {}, itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
+  const source = normalizeMarketLabel(quote?.source || quote?.market)
+  const ageMinutes = resolveQuoteAgeMinutes(quote)
+  const rules = getCategoryStaleRules(itemCategory)
+  const state = resolveFreshnessState(ageMinutes, rules)
+  const hasUsablePrice = hasUsableQuotePrice(quote)
+  return {
+    source,
+    ageMinutes,
+    state,
+    hasUsablePrice,
+    usable: hasUsablePrice && state !== FRESHNESS_STATES.STALE
+  }
+}
+
+function resolveStaleDataPenalty(
+  perMarket = [],
+  opportunity = {},
+  itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
+) {
+  const rules = getCategoryStaleRules(itemCategory)
+  const bySource = {}
+  for (const row of Array.isArray(perMarket) ? perMarket : []) {
+    const entry = resolveQuoteFreshnessEntry(row, itemCategory)
+    if (!entry.source || !SOURCE_ORDER.includes(entry.source)) continue
+    const existing = bySource[entry.source]
+    if (!existing) {
+      bySource[entry.source] = entry
+      continue
+    }
+    const existingAge = toFiniteOrNull(existing.ageMinutes)
+    const nextAge = toFiniteOrNull(entry.ageMinutes)
+    if (existingAge == null && nextAge != null) {
+      bySource[entry.source] = entry
+      continue
+    }
+    if (existingAge != null && nextAge != null && nextAge < existingAge) {
+      bySource[entry.source] = entry
     }
   }
 
-  for (const rule of STALE_PENALTY_RULES) {
-    if (maxAgeMinutes >= rule.minMinutes) {
-      return {
-        penalty: rule.penalty,
-        maxAgeMinutes: round2(maxAgeMinutes)
-      }
-    }
+  const buySource = normalizeMarketLabel(opportunity?.buyMarket)
+  const sellSource = normalizeMarketLabel(opportunity?.sellMarket)
+  const buyEntry = bySource[buySource] || null
+  const sellEntry = bySource[sellSource] || null
+  const buyAgeMinutes = toFiniteOrNull(buyEntry?.ageMinutes)
+  const sellAgeMinutes = toFiniteOrNull(sellEntry?.ageMinutes)
+  const maxAgeMinutes = [buyAgeMinutes, sellAgeMinutes].filter((value) => value != null).sort((a, b) => b - a)[0] ?? null
+
+  let freshMarkets = 0
+  let agingMarkets = 0
+  let staleMarkets = 0
+  let usableMarkets = 0
+  for (const source of SOURCE_ORDER) {
+    const entry = bySource[source]
+    if (!entry) continue
+    if (entry.state === FRESHNESS_STATES.FRESH) freshMarkets += 1
+    else if (entry.state === FRESHNESS_STATES.AGING) agingMarkets += 1
+    else staleMarkets += 1
+    if (entry.usable) usableMarkets += 1
+  }
+
+  const selectedState =
+    !buyEntry ||
+    !sellEntry ||
+    buyEntry.state === FRESHNESS_STATES.STALE ||
+    sellEntry.state === FRESHNESS_STATES.STALE
+      ? FRESHNESS_STATES.STALE
+      : buyEntry.state === FRESHNESS_STATES.AGING || sellEntry.state === FRESHNESS_STATES.AGING
+        ? FRESHNESS_STATES.AGING
+        : FRESHNESS_STATES.FRESH
+
+  let penalty = 0
+  if (selectedState === FRESHNESS_STATES.AGING) {
+    penalty += Number(rules.agingPenalty || 0)
+  } else if (selectedState === FRESHNESS_STATES.STALE) {
+    penalty += Number(rules.stalePenalty || 0)
+  }
+  if (usableMarkets === MIN_MARKET_COVERAGE && selectedState === FRESHNESS_STATES.AGING) {
+    penalty += 3
   }
 
   return {
-    penalty: 0,
-    maxAgeMinutes: round2(maxAgeMinutes)
+    penalty: round2(Math.max(penalty, 0)),
+    maxAgeMinutes: maxAgeMinutes != null ? round2(maxAgeMinutes) : null,
+    selectedState,
+    selectedBuyState: String(buyEntry?.state || FRESHNESS_STATES.STALE),
+    selectedSellState: String(sellEntry?.state || FRESHNESS_STATES.STALE),
+    buyAgeMinutes,
+    sellAgeMinutes,
+    usableMarkets,
+    freshMarkets,
+    agingMarkets,
+    staleMarkets,
+    hasInsufficientUsableMarkets: usableMarkets < MIN_MARKET_COVERAGE,
+    bySource,
+    rules
+  }
+}
+
+function buildFreshnessStateCounter() {
+  return {
+    [FRESHNESS_STATES.FRESH]: 0,
+    [FRESHNESS_STATES.AGING]: 0,
+    [FRESHNESS_STATES.STALE]: 0
+  }
+}
+
+function normalizeFreshnessState(value = "") {
+  const safe = String(value || "")
+    .trim()
+    .toLowerCase()
+  if (safe === FRESHNESS_STATES.FRESH) return FRESHNESS_STATES.FRESH
+  if (safe === FRESHNESS_STATES.AGING) return FRESHNESS_STATES.AGING
+  return FRESHNESS_STATES.STALE
+}
+
+function incrementFreshnessCounter(counter = {}, state = FRESHNESS_STATES.STALE, count = 1) {
+  const normalizedState = normalizeFreshnessState(state)
+  counter[normalizedState] = Number(counter?.[normalizedState] || 0) + Number(count || 0)
+}
+
+function buildStaleDiagnosticsAccumulator() {
+  const byMarket = Object.fromEntries(
+    SOURCE_ORDER.map((source) => [source, buildFreshnessStateCounter()])
+  )
+  const byCategory = Object.fromEntries(
+    Object.values(ITEM_CATEGORIES).map((category) => [category, buildFreshnessStateCounter()])
+  )
+  return {
+    byMarket,
+    byCategory
+  }
+}
+
+function trackStaleDiagnostics(
+  accumulator = null,
+  itemCategory = ITEM_CATEGORIES.WEAPON_SKIN,
+  stale = {}
+) {
+  if (!accumulator || typeof accumulator !== "object") return
+  if (!accumulator.byMarket || typeof accumulator.byMarket !== "object") {
+    accumulator.byMarket = Object.fromEntries(
+      SOURCE_ORDER.map((source) => [source, buildFreshnessStateCounter()])
+    )
+  }
+  if (!accumulator.byCategory || typeof accumulator.byCategory !== "object") {
+    accumulator.byCategory = Object.fromEntries(
+      Object.values(ITEM_CATEGORIES).map((category) => [category, buildFreshnessStateCounter()])
+    )
+  }
+
+  const normalizedCategory = normalizeItemCategory(itemCategory)
+  if (!accumulator.byCategory[normalizedCategory]) {
+    accumulator.byCategory[normalizedCategory] = buildFreshnessStateCounter()
+  }
+  incrementFreshnessCounter(accumulator.byCategory[normalizedCategory], stale?.selectedState, 1)
+
+  const bySource = stale?.bySource && typeof stale.bySource === "object" ? stale.bySource : {}
+  for (const source of SOURCE_ORDER) {
+    const entry = bySource[source]
+    if (!entry) continue
+    if (!accumulator.byMarket[source]) {
+      accumulator.byMarket[source] = buildFreshnessStateCounter()
+    }
+    incrementFreshnessCounter(accumulator.byMarket[source], entry?.state, 1)
+  }
+}
+
+function toStaleDiagnosticsSummary(accumulator = {}) {
+  const byMarket = {}
+  const staleByMarket = {}
+  const agingByMarket = {}
+  for (const source of SOURCE_ORDER) {
+    const bucket = accumulator?.byMarket?.[source] || {}
+    const fresh = Number(bucket?.[FRESHNESS_STATES.FRESH] || 0)
+    const aging = Number(bucket?.[FRESHNESS_STATES.AGING] || 0)
+    const stale = Number(bucket?.[FRESHNESS_STATES.STALE] || 0)
+    byMarket[source] = {
+      fresh,
+      aging,
+      stale
+    }
+    staleByMarket[source] = stale
+    agingByMarket[source] = aging
+  }
+
+  const byCategory = {}
+  const staleByCategory = {}
+  const agingByCategory = {}
+  for (const category of Object.values(ITEM_CATEGORIES)) {
+    const bucket = accumulator?.byCategory?.[category] || {}
+    const fresh = Number(bucket?.[FRESHNESS_STATES.FRESH] || 0)
+    const aging = Number(bucket?.[FRESHNESS_STATES.AGING] || 0)
+    const stale = Number(bucket?.[FRESHNESS_STATES.STALE] || 0)
+    byCategory[category] = {
+      fresh,
+      aging,
+      stale
+    }
+    staleByCategory[category] = stale
+    agingByCategory[category] = aging
+  }
+
+  return {
+    quoteStateByMarket: byMarket,
+    selectedStateByCategory: byCategory,
+    staleByMarket,
+    agingByMarket,
+    staleByCategory,
+    agingByCategory,
+    totals: {
+      staleQuotes: Object.values(staleByMarket).reduce((sum, value) => sum + Number(value || 0), 0),
+      agingQuotes: Object.values(agingByMarket).reduce((sum, value) => sum + Number(value || 0), 0),
+      staleItems: Object.values(staleByCategory).reduce((sum, value) => sum + Number(value || 0), 0),
+      agingItems: Object.values(agingByCategory).reduce((sum, value) => sum + Number(value || 0), 0)
+    }
   }
 }
 
@@ -1211,7 +1479,12 @@ function passesUniverseSeedFilters(
     }
   }
 
-  if (Boolean(inputItem?.snapshotStale)) {
+  const snapshotFreshness = resolveSnapshotFreshnessState(inputItem, itemCategory)
+  if (
+    snapshotFreshness.state === FRESHNESS_STATES.STALE &&
+    snapshotFreshness.ageMinutes != null &&
+    snapshotFreshness.ageMinutes > Math.max(Number(marketSnapshotTtlMinutes || 30), 1) * 12
+  ) {
     incrementReasonCounter(discardStats, "ignored_stale_data", itemCategory)
     if (rejectedByItem) {
       incrementItemReasonCounter(rejectedByItem, marketHashName, "ignored_stale_data", itemCategory)
@@ -1452,7 +1725,22 @@ function computeRiskAdjustments({
   const volume7d = toFiniteOrNull(liquidity?.volume7d)
   const marketCoverage = Number(opportunity?.marketCoverage || 0)
   const staleMinutes = toFiniteOrNull(stale?.maxAgeMinutes)
-  const hasSnapshotStale = Boolean(inputItem?.snapshotStale)
+  const quoteFreshnessState = String(
+    stale?.selectedState || stale?.state || FRESHNESS_STATES.FRESH
+  )
+    .trim()
+    .toLowerCase()
+  const usableMarketsAfterFreshness = Math.max(
+    Number(stale?.usableMarkets || marketCoverage || 0),
+    0
+  )
+  const hasInsufficientUsableMarkets = Boolean(stale?.hasInsufficientUsableMarkets)
+  const snapshotFreshness = resolveSnapshotFreshnessState(inputItem, itemCategory)
+  const snapshotState = String(snapshotFreshness?.state || FRESHNESS_STATES.STALE)
+    .trim()
+    .toLowerCase()
+  const hasSnapshotStale = snapshotState === FRESHNESS_STATES.STALE
+  const hasSnapshotAging = snapshotState === FRESHNESS_STATES.AGING
   const isPremiumCategory = PREMIUM_ITEM_CATEGORIES.has(itemCategory)
   const isRiskyProfile = String(profile?.name || "").trim().toLowerCase().startsWith("risky")
   const minProfitUsd = Number(rules.minProfitUsd ?? profile?.minProfitUsd ?? 0)
@@ -1488,6 +1776,9 @@ function computeRiskAdjustments({
           : "spread_below_min",
       penalty: 0
     }
+  }
+  if (hasInsufficientUsableMarkets || usableMarketsAfterFreshness < MIN_MARKET_COVERAGE) {
+    return { passed: false, primaryReason: "ignored_stale_data", penalty: 0 }
   }
   if (marketCoverage < Number(rules.minMarketCoverage || MIN_MARKET_COVERAGE)) {
     return { passed: false, primaryReason: "ignored_missing_markets", penalty: 0 }
@@ -1547,7 +1838,8 @@ function computeRiskAdjustments({
 
   const weakPremiumConfidence =
     hasSnapshotStale ||
-    (staleMinutes != null && staleMinutes >= 120) ||
+    quoteFreshnessState === FRESHNESS_STATES.STALE ||
+    (staleMinutes != null && staleMinutes >= Number(getCategoryStaleRules(itemCategory).agingMaxMinutes || 0)) ||
     referenceSignals.hasStrongReferenceDeviation ||
     depthSignals.hasOutlierAdjusted ||
     depthSignals.hasSuspiciousDepthGap
@@ -1569,22 +1861,13 @@ function computeRiskAdjustments({
     }
   }
 
-  if (profile.requireFreshData) {
-    if (hasSnapshotStale) {
+  if (isPremiumCategory && isRiskyProfile && quoteFreshnessState === FRESHNESS_STATES.STALE) {
+    if (
+      usableMarketsAfterFreshness <= MIN_MARKET_COVERAGE ||
+      referenceSignals.hasStrongReferenceDeviation
+    ) {
       return { passed: false, primaryReason: "ignored_stale_data", penalty: 0 }
     }
-    if (staleMinutes != null && staleMinutes >= Number(profile.maxQuoteAgeMinutes || 0)) {
-      return { passed: false, primaryReason: "ignored_stale_data", penalty: 0 }
-    }
-  }
-
-  if (
-    isPremiumCategory &&
-    profile.name === "risky" &&
-    staleMinutes != null &&
-    staleMinutes >= 180
-  ) {
-    return { passed: false, primaryReason: "ignored_stale_data", penalty: 0 }
   }
 
   let penalty = 0
@@ -1613,17 +1896,15 @@ function computeRiskAdjustments({
     if (referenceSignals.hasStrongReferenceDeviation) {
       penalty += 18
     }
-    if (hasSnapshotStale) {
-      penalty += 14
+    if (quoteFreshnessState === FRESHNESS_STATES.STALE) {
+      penalty += Number(getCategoryStaleRules(itemCategory).stalePenalty || 12) + 8
+    } else if (quoteFreshnessState === FRESHNESS_STATES.AGING) {
+      penalty += Number(getCategoryStaleRules(itemCategory).agingPenalty || 4)
     }
-    if (staleMinutes != null && staleMinutes >= 180) {
-      penalty += 24
-    } else if (staleMinutes != null && staleMinutes >= 120) {
-      penalty += 18
-    } else if (staleMinutes != null && staleMinutes >= 60) {
-      penalty += 12
-    } else if (staleMinutes != null && staleMinutes >= 30) {
-      penalty += 6
+    if (hasSnapshotStale) {
+      penalty += 8
+    } else if (hasSnapshotAging) {
+      penalty += 4
     }
   } else {
     if (volume7d == null) {
@@ -1638,13 +1919,15 @@ function computeRiskAdjustments({
     if (spread < Number(rules.minSpreadPercent || MIN_SPREAD_PERCENT)) {
       penalty += 10
     }
-    if (hasSnapshotStale) {
-      penalty += 12
+    if (quoteFreshnessState === FRESHNESS_STATES.STALE) {
+      penalty += Number(getCategoryStaleRules(itemCategory).stalePenalty || 20)
+    } else if (quoteFreshnessState === FRESHNESS_STATES.AGING) {
+      penalty += Number(getCategoryStaleRules(itemCategory).agingPenalty || 8)
     }
-    if (staleMinutes != null && staleMinutes >= 180) {
-      penalty += 18
-    } else if (staleMinutes != null && staleMinutes >= 60) {
+    if (hasSnapshotStale) {
       penalty += 10
+    } else if (hasSnapshotAging) {
+      penalty += 5
     }
     if (
       isRiskyProfile &&
@@ -1672,11 +1955,23 @@ function normalizeConfidence(value) {
   return "Low"
 }
 
-function downgradeConfidenceForStale(baseConfidence, stale = {}, snapshotStale = false) {
+function downgradeConfidenceForStale(
+  baseConfidence,
+  stale = {},
+  snapshotFreshnessState = FRESHNESS_STATES.FRESH
+) {
   const confidence = normalizeConfidence(baseConfidence)
-  const staleMinutes = toFiniteOrNull(stale?.maxAgeMinutes) ?? 0
-  if (staleMinutes >= 180) return "Low"
-  if (!snapshotStale && staleMinutes < 60) return confidence
+  const quoteState = String(stale?.selectedState || stale?.state || FRESHNESS_STATES.FRESH)
+    .trim()
+    .toLowerCase()
+  const snapshotState = String(snapshotFreshnessState || FRESHNESS_STATES.FRESH)
+    .trim()
+    .toLowerCase()
+  if (quoteState === FRESHNESS_STATES.STALE) return "Low"
+  if (quoteState === FRESHNESS_STATES.FRESH && snapshotState === FRESHNESS_STATES.FRESH) {
+    return confidence
+  }
+  if (snapshotState === FRESHNESS_STATES.STALE && confidence === "High") return "Low"
   if (confidence === "High") return "Medium"
   if (confidence === "Medium") return "Low"
   return "Low"
@@ -1726,11 +2021,14 @@ function buildApiOpportunityRow({
   const hasDepthGapExtreme = depthFlags.some(
     (flag) => flag === "BUY_DEPTH_GAP_EXTREME" || flag === "SELL_DEPTH_GAP_EXTREME"
   )
-  const snapshotStale = Boolean(inputItem?.snapshotStale)
+  const snapshotFreshness = resolveSnapshotFreshnessState(inputItem, itemCategory)
+  const snapshotFreshnessState = normalizeFreshnessState(snapshotFreshness?.state)
+  const snapshotStale = snapshotFreshnessState === FRESHNESS_STATES.STALE
+  const quoteFreshnessState = normalizeFreshnessState(stale?.selectedState || stale?.state)
   const executionConfidence = downgradeConfidenceForStale(
     opportunity?.executionConfidence,
     stale,
-    snapshotStale
+    snapshotFreshnessState
   )
   const buyPrice = roundPrice(opportunity?.buyPrice || 0)
   const volume7d = toFiniteOrNull(liquidity?.volume7d)
@@ -1747,7 +2045,9 @@ function buildApiOpportunityRow({
   const badges = normalizeBadges([
     ...(Array.isArray(opportunity?.reasonBadges) ? opportunity.reasonBadges : []),
     ...premiumRiskyBadges,
-    ...(toFiniteOrNull(stale?.maxAgeMinutes) ?? 0) >= 60 ? ["Stale market data"] : [],
+    quoteFreshnessState === FRESHNESS_STATES.STALE ? ["Stale market data"] : [],
+    quoteFreshnessState === FRESHNESS_STATES.AGING ? ["Aging market data"] : [],
+    snapshotFreshnessState === FRESHNESS_STATES.STALE ? ["Stale snapshot"] : [],
     hasDepthGapExtreme ? ["Depth anomaly"] : [],
     !hasDepthGapExtreme && hasDepthGapSuspicious ? ["Depth gap flagged"] : [],
     !hasDepthGapExtreme && !hasDepthGapSuspicious && hasMissingDepth ? ["Missing depth"] : [],
@@ -1797,6 +2097,11 @@ function buildApiOpportunityRow({
     stalePenalty,
     softPenalty,
     maxQuoteAgeMinutes: toFiniteOrNull(stale?.maxAgeMinutes),
+    quoteFreshnessState,
+    snapshotFreshnessState,
+    staleMarkets: Number(stale?.staleMarkets || 0),
+    agingMarkets: Number(stale?.agingMarkets || 0),
+    usableMarketsAfterFreshness: Number(stale?.usableMarkets || 0),
     buyUrl: buyQuote?.url || opportunity?.buyUrl || null,
     sellUrl: sellQuote?.url || opportunity?.sellUrl || null,
     snapshotStale,
@@ -1832,6 +2137,8 @@ function toGradeFromScore(score, row = {}) {
 }
 
 function toMetadataObject(row = {}) {
+  const rawQuoteState = String(row?.quoteFreshnessState || "").trim()
+  const rawSnapshotState = String(row?.snapshotFreshnessState || "").trim()
   return {
     item_id: Number(row?.itemId || 0) || null,
     item_subcategory: String(row?.itemSubcategory || "").trim() || null,
@@ -1845,6 +2152,17 @@ function toMetadataObject(row = {}) {
     market_coverage: Number(row?.marketCoverage || 0),
     reference_price: toFiniteOrNull(row?.referencePrice),
     stale_penalty: toFiniteOrNull(row?.stalePenalty),
+    quote_freshness_state: rawQuoteState
+      ? normalizeFreshnessState(rawQuoteState)
+      : FRESHNESS_STATES.FRESH,
+    snapshot_freshness_state: rawSnapshotState
+      ? normalizeFreshnessState(rawSnapshotState)
+      : Boolean(row?.snapshotStale)
+        ? FRESHNESS_STATES.STALE
+        : FRESHNESS_STATES.FRESH,
+    stale_markets: Number(row?.staleMarkets || 0),
+    aging_markets: Number(row?.agingMarkets || 0),
+    usable_markets_after_freshness: Number(row?.usableMarketsAfterFreshness || 0),
     soft_penalty: toFiniteOrNull(row?.softPenalty),
     buy_url: String(row?.buyUrl || "").trim() || null,
     sell_url: String(row?.sellUrl || "").trim() || null,
@@ -1918,6 +2236,8 @@ function mapFeedRowToApiRow(row = {}) {
   const score = clampScore(row?.opportunity_score)
   const executionConfidence = normalizeConfidence(row?.execution_confidence)
   const itemName = String(row?.item_name || "Tracked Item").trim() || "Tracked Item"
+  const rawQuoteState = String(metadata?.quote_freshness_state || "").trim()
+  const rawSnapshotState = String(metadata?.snapshot_freshness_state || "").trim()
   return {
     feedId: String(row?.id || "").trim() || null,
     detectedAt: row?.detected_at || null,
@@ -1950,6 +2270,17 @@ function mapFeedRowToApiRow(row = {}) {
     marketCoverage: Number(metadata?.market_coverage || 0),
     referencePrice: toFiniteOrNull(metadata?.reference_price),
     stalePenalty: toFiniteOrNull(metadata?.stale_penalty),
+    quoteFreshnessState: rawQuoteState
+      ? normalizeFreshnessState(rawQuoteState)
+      : FRESHNESS_STATES.FRESH,
+    snapshotFreshnessState: rawSnapshotState
+      ? normalizeFreshnessState(rawSnapshotState)
+      : Boolean(metadata?.snapshot_stale)
+        ? FRESHNESS_STATES.STALE
+        : FRESHNESS_STATES.FRESH,
+    staleMarkets: Number(metadata?.stale_markets || 0),
+    agingMarkets: Number(metadata?.aging_markets || 0),
+    usableMarketsAfterFreshness: Number(metadata?.usable_markets_after_freshness || 0),
     softPenalty: toFiniteOrNull(metadata?.soft_penalty),
     buyUrl: String(metadata?.buy_url || "").trim() || null,
     sellUrl: String(metadata?.sell_url || "").trim() || null,
@@ -3222,6 +3553,7 @@ async function runScanInternal(options = {}) {
     })
   const discardStats = {}
   const rejectedByItem = {}
+  const staleDiagnosticsAccumulator = buildStaleDiagnosticsAccumulator()
   const scannerInputs = await loadScannerInputs(discardStats, rejectedByItem)
   const universeSeeds = Array.isArray(scannerInputs?.seeds) ? scannerInputs.seeds : []
   const snapshotWarmupSummary = scannerInputs?.snapshotWarmup || toSnapshotWarmupSummary()
@@ -3249,6 +3581,7 @@ async function runScanInternal(options = {}) {
         rejectionReasonsByItem: toRejectionReasonsByItem(rejectedByItem),
         selectedUniverseByCategory: { ...emptyByCategory },
         opportunitiesByCategory: { ...emptyByCategory },
+        staleDiagnostics: toStaleDiagnosticsSummary(staleDiagnosticsAccumulator),
         knifeGloveRejections: toKnifeGloveRejectionSummary({}),
         riskyProfileDiagnostics: buildRiskyProfileDiagnostics(),
         snapshotWarmup: snapshotWarmupSummary,
@@ -3264,6 +3597,13 @@ async function runScanInternal(options = {}) {
       },
       opportunities: [],
       pipeline: {
+        sequence: [
+          "fetch_quotes",
+          "save_market_prices",
+          "compute_from_saved_quotes",
+          "apply_freshness_scoring",
+          "persist_diagnostics"
+        ],
         config: {
           defaultUniverseLimit: DEFAULT_UNIVERSE_LIMIT,
           universeTargetSize: UNIVERSE_TARGET_SIZE,
@@ -3363,7 +3703,8 @@ async function runScanInternal(options = {}) {
       marketCoverage: selected.marketCoverage
     }
     const liquidity = resolveLiquidityMetrics(enrichedOpportunity, inputItem)
-    const stale = resolveStaleDataPenalty(item?.perMarket, enrichedOpportunity)
+    const stale = resolveStaleDataPenalty(item?.perMarket, enrichedOpportunity, itemCategory)
+    trackStaleDiagnostics(staleDiagnosticsAccumulator, itemCategory, stale)
     trackRiskyDecision(riskyProfileDiagnostics, itemCategory, "attempted")
 
     const hardRejectionReason = getPrimaryHardRejectionReason(enrichedOpportunity)
@@ -3498,6 +3839,7 @@ async function runScanInternal(options = {}) {
   const discardedReasons = normalizeDiscardStats(discardStats)
   const discardedReasonsByCategory = normalizeDiscardStatsByCategory(discardStats)
   const rejectedByCategory = toRejectedCountByCategory(discardedReasonsByCategory)
+  const staleDiagnostics = toStaleDiagnosticsSummary(staleDiagnosticsAccumulator)
   const knifeGloveRejections = toKnifeGloveRejectionSummary(discardedReasonsByCategory)
   const scanProgress = buildScanProgressStats({
     universeTarget: UNIVERSE_TARGET_SIZE,
@@ -3528,6 +3870,7 @@ async function runScanInternal(options = {}) {
       rejectionReasonsByItem: toRejectionReasonsByItem(rejectedByItem),
       selectedUniverseByCategory,
       opportunitiesByCategory,
+      staleDiagnostics,
       knifeGloveRejections,
       riskyProfileDiagnostics,
       snapshotWarmup: snapshotWarmupSummary,
@@ -3539,6 +3882,13 @@ async function runScanInternal(options = {}) {
     },
     opportunities: sortedRows,
     pipeline: {
+      sequence: [
+        "fetch_quotes",
+        "save_market_prices",
+        "compute_from_saved_quotes",
+        "apply_freshness_scoring",
+        "persist_diagnostics"
+      ],
       config: {
         defaultUniverseLimit: DEFAULT_UNIVERSE_LIMIT,
         universeTargetSize: UNIVERSE_TARGET_SIZE,
@@ -3596,6 +3946,7 @@ function toScanDiagnosticsSummary(scanPayload = {}, persistSummary = {}, trigger
     rejectionReasonsByItem: scanPayload?.summary?.rejectionReasonsByItem || [],
     selectedUniverseByCategory: scanPayload?.summary?.selectedUniverseByCategory || {},
     opportunitiesByCategory: scanPayload?.summary?.opportunitiesByCategory || {},
+    staleDiagnostics: scanPayload?.summary?.staleDiagnostics || {},
     knifeGloveRejections: scanPayload?.summary?.knifeGloveRejections || {},
     riskyProfileDiagnostics: scanPayload?.summary?.riskyProfileDiagnostics || {},
     snapshotWarmup:
@@ -4124,6 +4475,7 @@ exports.getFeed = async (options = {}) => {
     rejectionReasonsByItem: diagnosticsSummary?.rejectionReasonsByItem || [],
     selectedUniverseByCategory: diagnosticsSummary?.selectedUniverseByCategory || {},
     opportunitiesByCategory: diagnosticsSummary?.opportunitiesByCategory || {},
+    staleDiagnostics: diagnosticsSummary?.staleDiagnostics || {},
     knifeGloveRejections: diagnosticsSummary?.knifeGloveRejections || {},
     riskyProfileDiagnostics: diagnosticsSummary?.riskyProfileDiagnostics || {},
     snapshotWarmup:
