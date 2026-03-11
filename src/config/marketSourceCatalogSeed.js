@@ -257,6 +257,178 @@ const CURATED_WEAPON_SKIN_BASES = Object.freeze([
   "MAG-7 | Cinquedea"
 ])
 
+const CURATED_KNIFE_SEEDS = Object.freeze([
+  "Karambit | Doppler",
+  "Karambit | Gamma Doppler",
+  "Karambit | Fade",
+  "Karambit | Tiger Tooth",
+  "Karambit | Slaughter",
+  "Karambit | Marble Fade",
+  "Karambit | Lore",
+  "Karambit | Autotronic",
+  "Karambit | Black Laminate",
+  "Karambit | Damascus Steel",
+
+  "M9 Bayonet | Doppler",
+  "M9 Bayonet | Gamma Doppler",
+  "M9 Bayonet | Fade",
+  "M9 Bayonet | Tiger Tooth",
+  "M9 Bayonet | Slaughter",
+  "M9 Bayonet | Marble Fade",
+  "M9 Bayonet | Lore",
+  "M9 Bayonet | Autotronic",
+  "M9 Bayonet | Freehand",
+  "M9 Bayonet | Damascus Steel",
+
+  "Bayonet | Doppler",
+  "Bayonet | Gamma Doppler",
+  "Bayonet | Fade",
+  "Bayonet | Tiger Tooth",
+  "Bayonet | Marble Fade",
+  "Bayonet | Lore",
+  "Bayonet | Autotronic",
+  "Bayonet | Black Laminate",
+
+  "Butterfly Knife | Doppler",
+  "Butterfly Knife | Gamma Doppler",
+  "Butterfly Knife | Fade",
+  "Butterfly Knife | Tiger Tooth",
+  "Butterfly Knife | Marble Fade",
+  "Butterfly Knife | Slaughter",
+  "Butterfly Knife | Crimson Web",
+  "Butterfly Knife | Freehand",
+  "Butterfly Knife | Case Hardened",
+
+  "Talon Knife | Doppler",
+  "Talon Knife | Fade",
+  "Talon Knife | Tiger Tooth",
+  "Talon Knife | Marble Fade",
+  "Talon Knife | Slaughter",
+  "Talon Knife | Damascus Steel",
+
+  "Flip Knife | Doppler",
+  "Flip Knife | Fade",
+  "Flip Knife | Tiger Tooth",
+  "Flip Knife | Marble Fade",
+  "Flip Knife | Lore",
+  "Flip Knife | Autotronic",
+
+  "Huntsman Knife | Doppler",
+  "Huntsman Knife | Fade",
+  "Huntsman Knife | Tiger Tooth",
+  "Huntsman Knife | Marble Fade",
+  "Huntsman Knife | Crimson Web",
+
+  "Skeleton Knife | Fade",
+  "Skeleton Knife | Crimson Web",
+  "Skeleton Knife | Slaughter",
+  "Skeleton Knife | Case Hardened",
+
+  "Nomad Knife | Fade",
+  "Nomad Knife | Slaughter",
+  "Nomad Knife | Case Hardened",
+
+  "Stiletto Knife | Doppler",
+  "Stiletto Knife | Fade",
+  "Stiletto Knife | Marble Fade",
+  "Stiletto Knife | Tiger Tooth",
+
+  "Bowie Knife | Doppler",
+  "Bowie Knife | Fade",
+  "Bowie Knife | Tiger Tooth",
+  "Bowie Knife | Marble Fade",
+
+  "Ursus Knife | Doppler",
+  "Falchion Knife | Doppler",
+  "Paracord Knife | Fade",
+  "Survival Knife | Fade",
+  "Gut Knife | Doppler",
+  "Navaja Knife | Doppler",
+  "Shadow Daggers | Doppler"
+])
+
+const CURATED_GLOVE_SEEDS = Object.freeze([
+  "Sport Gloves | Pandora's Box",
+  "Sport Gloves | Vice",
+  "Sport Gloves | Hedge Maze",
+  "Sport Gloves | Omega",
+  "Sport Gloves | Amphibious",
+  "Sport Gloves | Nocts",
+  "Sport Gloves | Arid",
+  "Sport Gloves | Scarlet Shamagh",
+  "Sport Gloves | Slingshot",
+  "Sport Gloves | Big Game",
+
+  "Specialist Gloves | Crimson Kimono",
+  "Specialist Gloves | Emerald Web",
+  "Specialist Gloves | Foundation",
+  "Specialist Gloves | Mogul",
+  "Specialist Gloves | Marble Fade",
+  "Specialist Gloves | Fade",
+  "Specialist Gloves | Forest DDPAT",
+
+  "Moto Gloves | Spearmint",
+  "Moto Gloves | Cool Mint",
+  "Moto Gloves | Boom!",
+  "Moto Gloves | Polygon",
+  "Moto Gloves | Eclipse",
+  "Moto Gloves | Smoke Out",
+  "Moto Gloves | Blood Pressure",
+  "Moto Gloves | Transport",
+
+  "Driver Gloves | King Snake",
+  "Driver Gloves | Imperial Plaid",
+  "Driver Gloves | Snow Leopard",
+  "Driver Gloves | Rezan the Red",
+  "Driver Gloves | Lunar Weave",
+  "Driver Gloves | Overtake",
+  "Driver Gloves | Diamondback",
+  "Driver Gloves | Queen Jaguar",
+
+  "Hand Wraps | Cobalt Skulls",
+  "Hand Wraps | Slaughter",
+  "Hand Wraps | Overprint",
+  "Hand Wraps | Arboreal",
+  "Hand Wraps | Desert Shamagh",
+  "Hand Wraps | Duct Tape",
+
+  "Hydra Gloves | Case Hardened",
+  "Hydra Gloves | Emerald",
+  "Hydra Gloves | Mangrove",
+  "Hydra Gloves | Rattler",
+
+  "Bloodhound Gloves | Charred",
+  "Bloodhound Gloves | Guerrilla",
+  "Bloodhound Gloves | Bronzed",
+  "Bloodhound Gloves | Snakebite",
+
+  "Broken Fang Gloves | Jade",
+  "Broken Fang Gloves | Yellow-banded",
+  "Broken Fang Gloves | Unhinged",
+  "Broken Fang Gloves | Needle Point"
+])
+
+const CATEGORY_ORDER = Object.freeze([
+  "weapon_skin",
+  "case",
+  "sticker_capsule",
+  "knife",
+  "glove"
+])
+
+const CATEGORY_SEED_TARGETS = Object.freeze({
+  weapon_skin: 580,
+  case: 200,
+  sticker_capsule: 110,
+  knife: 65,
+  glove: 45
+})
+
+const CATEGORY_SEED_BASE_TOTAL = Object.values(CATEGORY_SEED_TARGETS).reduce(
+  (sum, value) => sum + Number(value || 0),
+  0
+)
+
 function normalizeText(value) {
   return String(value || "").trim()
 }
@@ -266,12 +438,24 @@ function inferCategory(value) {
   if (!name) return "weapon_skin"
   if (name.endsWith(" case")) return "case"
   if (name.includes("sticker capsule")) return "sticker_capsule"
+  if (/\b(gloves|glove|hand wraps)\b/i.test(name)) return "glove"
+  if (/\b(knife|bayonet|karambit|daggers)\b/i.test(name)) return "knife"
   return "weapon_skin"
 }
 
 function inferSubcategory(value, category) {
   if (category === "case") return "weapon_case"
   if (category === "sticker_capsule") return "major_sticker_capsule"
+  if (category === "knife" || category === "glove") {
+    const family = normalizeText(value)
+      .replace(/^★\s*/, "")
+      .split("|")[0]
+    return family
+      .trim()
+      .toLowerCase()
+      .replace(/[^\w\s-]/g, "")
+      .replace(/\s+/g, "_")
+  }
 
   const name = normalizeText(value)
   if (name.startsWith("AK-47") || name.startsWith("M4A1-S") || name.startsWith("M4A4") || name.startsWith("FAMAS") || name.startsWith("Galil AR") || name.startsWith("SG 553") || name.startsWith("AUG")) {
@@ -346,21 +530,124 @@ function buildCapsuleRows() {
   return CURATED_STICKER_CAPSULES.map((name) => toCatalogRow(name, "sticker_capsule")).filter(Boolean)
 }
 
-function buildSourceCatalogSeed(limit = 1000) {
-  const targetLimit = Math.max(Math.round(Number(limit || 0)), 1)
-  const allRows = [...buildWeaponSkinRows(), ...buildCaseRows(), ...buildCapsuleRows()].filter(Boolean)
+function buildKnifeRows() {
+  const fnFinishes = new Set(["Doppler", "Gamma Doppler", "Tiger Tooth", "Fade", "Marble Fade"])
+  const mwFinishes = new Set([
+    "Slaughter",
+    "Lore",
+    "Autotronic",
+    "Freehand",
+    "Black Laminate",
+    "Damascus Steel"
+  ])
 
-  const deduped = []
-  const seen = new Set()
-  for (const row of allRows) {
-    const key = normalizeText(row?.marketHashName)
-    if (!key || seen.has(key)) continue
-    seen.add(key)
-    deduped.push(row)
-    if (deduped.length >= targetLimit) break
+  const rows = CURATED_KNIFE_SEEDS.map((seed) => {
+    const normalized = normalizeText(seed)
+    if (!normalized) return null
+    const [family, finish] = normalized.split("|").map((part) => normalizeText(part))
+    if (!family || !finish) return null
+    const wear = fnFinishes.has(finish)
+      ? "Factory New"
+      : mwFinishes.has(finish)
+        ? "Minimal Wear"
+        : "Field-Tested"
+    return toCatalogRow(`★ ${family} | ${finish} (${wear})`, "knife")
+  })
+
+  return rows.filter(Boolean)
+}
+
+function buildGloveRows() {
+  return CURATED_GLOVE_SEEDS.map((seed) =>
+    toCatalogRow(`★ ${normalizeText(seed)} (Field-Tested)`, "glove")
+  ).filter(Boolean)
+}
+
+function buildCategorySeedQuotas(limit = 1000) {
+  const targetLimit = Math.max(Math.round(Number(limit || 0)), 1)
+  const quotas = {
+    weapon_skin: 0,
+    case: 0,
+    sticker_capsule: 0,
+    knife: 0,
+    glove: 0
   }
 
-  return deduped
+  if (!CATEGORY_SEED_BASE_TOTAL) {
+    quotas.weapon_skin = targetLimit
+    return quotas
+  }
+
+  const buckets = CATEGORY_ORDER.map((category) => {
+    const baseTarget = Number(CATEGORY_SEED_TARGETS[category] || 0)
+    const exact = (baseTarget * targetLimit) / CATEGORY_SEED_BASE_TOTAL
+    const floor = Math.max(Math.floor(exact), 0)
+    quotas[category] = floor
+    return {
+      category,
+      baseTarget,
+      remainder: exact - floor
+    }
+  })
+
+  let remainderSlots = targetLimit - Object.values(quotas).reduce((sum, value) => sum + Number(value || 0), 0)
+  if (remainderSlots > 0) {
+    const byRemainder = buckets
+      .slice()
+      .sort((a, b) => Number(b.remainder || 0) - Number(a.remainder || 0) || Number(b.baseTarget || 0) - Number(a.baseTarget || 0))
+    let index = 0
+    while (remainderSlots > 0) {
+      const bucket = byRemainder[index % byRemainder.length]
+      quotas[bucket.category] += 1
+      remainderSlots -= 1
+      index += 1
+    }
+  }
+
+  return quotas
+}
+
+function buildSourceCatalogSeed(limit = 1000) {
+  const targetLimit = Math.max(Math.round(Number(limit || 0)), 1)
+  const byCategory = {
+    weapon_skin: buildWeaponSkinRows(),
+    case: buildCaseRows(),
+    sticker_capsule: buildCapsuleRows(),
+    knife: buildKnifeRows(),
+    glove: buildGloveRows()
+  }
+  const quotas = buildCategorySeedQuotas(targetLimit)
+  const selected = []
+  const seen = new Set()
+
+  for (const category of CATEGORY_ORDER) {
+    const categoryRows = Array.isArray(byCategory[category]) ? byCategory[category] : []
+    const categoryQuota = Math.max(Number(quotas[category] || 0), 0)
+    let added = 0
+    for (const row of categoryRows) {
+      if (added >= categoryQuota || selected.length >= targetLimit) break
+      const key = normalizeText(row?.marketHashName).toLowerCase()
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      selected.push(row)
+      added += 1
+    }
+  }
+
+  if (selected.length >= targetLimit) {
+    return selected.slice(0, targetLimit)
+  }
+
+  const leftovers = CATEGORY_ORDER.flatMap((category) => Array.isArray(byCategory[category]) ? byCategory[category] : [])
+  for (const row of leftovers) {
+    if (selected.length >= targetLimit) break
+    const key = normalizeText(row?.marketHashName).toLowerCase()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    selected.push(row)
+  }
+
+  return selected
 }
 
 const defaultSeed = buildSourceCatalogSeed(1000)

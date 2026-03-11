@@ -35,3 +35,18 @@ test("normalizeRows preserves explicit non-negative market_coverage_count", () =
   assert.equal(row.market_coverage_count, 4);
 });
 
+test("normalizeRows preserves knife and glove categories", () => {
+  const [knifeRow, gloveRow] = normalizeRows([
+    {
+      marketHashName: "★ Karambit | Doppler (Factory New)",
+      category: "knife"
+    },
+    {
+      marketHashName: "★ Sport Gloves | Vice (Field-Tested)",
+      category: "glove"
+    }
+  ]);
+
+  assert.equal(knifeRow.category, "knife");
+  assert.equal(gloveRow.category, "glove");
+});

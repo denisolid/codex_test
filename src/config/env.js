@@ -171,12 +171,12 @@ module.exports = {
     process.env.ARBITRAGE_SCANNER_INTERVAL_MINUTES || 5
   ),
   arbitrageDefaultUniverseLimit: Number(
-    process.env.ARBITRAGE_DEFAULT_UNIVERSE_LIMIT || 500
+    process.env.ARBITRAGE_DEFAULT_UNIVERSE_LIMIT || 1000
   ),
   arbitrageScannerUniverseTargetSize: Number(
     process.env.ARBITRAGE_SCANNER_UNIVERSE_TARGET_SIZE ||
       process.env.ARBITRAGE_DEFAULT_UNIVERSE_LIMIT ||
-      500
+      1000
   ),
   arbitrageScanBatchSize: Number(
     process.env.ARBITRAGE_SCAN_BATCH_SIZE ||

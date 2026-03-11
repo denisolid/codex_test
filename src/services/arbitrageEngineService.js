@@ -28,6 +28,45 @@ const DEFAULT_MIN_PROFIT_BUY_PERCENT = Number(
 )
 const ORDERBOOK_OUTLIER_RATIO = Number(arbitrageRules.ORDERBOOK_OUTLIER_RATIO || 3)
 
+const ITEM_CATEGORIES = Object.freeze({
+  WEAPON_SKIN: "weapon_skin",
+  CASE: "case",
+  STICKER_CAPSULE: "sticker_capsule",
+  KNIFE: "knife",
+  GLOVE: "glove"
+})
+
+const CATEGORY_LIQUIDITY_RULES = Object.freeze({
+  [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({
+    pass: LIQUIDITY_VOLUME_PASS,
+    high: LIQUIDITY_VOLUME_HIGH
+  }),
+  [ITEM_CATEGORIES.CASE]: Object.freeze({
+    pass: LIQUIDITY_VOLUME_PASS,
+    high: LIQUIDITY_VOLUME_HIGH
+  }),
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
+    pass: LIQUIDITY_VOLUME_PASS,
+    high: LIQUIDITY_VOLUME_HIGH
+  }),
+  [ITEM_CATEGORIES.KNIFE]: Object.freeze({
+    pass: 30,
+    high: 90
+  }),
+  [ITEM_CATEGORIES.GLOVE]: Object.freeze({
+    pass: 24,
+    high: 80
+  })
+})
+
+const REFERENCE_DEVIATION_RATIO_MAX_BY_CATEGORY = Object.freeze({
+  [ITEM_CATEGORIES.WEAPON_SKIN]: REFERENCE_DEVIATION_RATIO_MAX,
+  [ITEM_CATEGORIES.CASE]: REFERENCE_DEVIATION_RATIO_MAX,
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: REFERENCE_DEVIATION_RATIO_MAX,
+  [ITEM_CATEGORIES.KNIFE]: Math.min(REFERENCE_DEVIATION_RATIO_MAX, 1.9),
+  [ITEM_CATEGORIES.GLOVE]: Math.min(REFERENCE_DEVIATION_RATIO_MAX, 1.9)
+})
+
 const MARKET_RELIABILITY = Object.freeze({
   steam: 1,
   skinport: 0.9,
@@ -50,18 +89,35 @@ function normalizeItemCategory(value, itemName = "") {
   const raw = String(value || "")
     .trim()
     .toLowerCase()
+  if (raw === ITEM_CATEGORIES.KNIFE || raw === "knives") return ITEM_CATEGORIES.KNIFE
+  if (raw === ITEM_CATEGORIES.GLOVE || raw === "gloves") return ITEM_CATEGORIES.GLOVE
   if (
-    raw === "sticker_capsule" ||
+    raw === ITEM_CATEGORIES.STICKER_CAPSULE ||
     raw === "sticker capsule" ||
     raw === "capsule"
   ) {
-    return "sticker_capsule"
+    return ITEM_CATEGORIES.STICKER_CAPSULE
   }
-  if (raw === "case") return "case"
-  if (raw === "weapon_skin") return "weapon_skin"
-  if (/sticker capsule$/i.test(String(itemName || "").trim())) return "sticker_capsule"
-  if (/case$/i.test(String(itemName || "").trim())) return "case"
-  return "weapon_skin"
+  if (raw === ITEM_CATEGORIES.CASE) return ITEM_CATEGORIES.CASE
+  if (raw === ITEM_CATEGORIES.WEAPON_SKIN) return ITEM_CATEGORIES.WEAPON_SKIN
+  if (/sticker capsule$/i.test(String(itemName || "").trim())) return ITEM_CATEGORIES.STICKER_CAPSULE
+  if (/case$/i.test(String(itemName || "").trim())) return ITEM_CATEGORIES.CASE
+  if (/\b(gloves|glove|hand wraps)\b/i.test(String(itemName || "").trim())) return ITEM_CATEGORIES.GLOVE
+  if (/\b(knife|bayonet|karambit|daggers)\b/i.test(String(itemName || "").trim())) return ITEM_CATEGORIES.KNIFE
+  return ITEM_CATEGORIES.WEAPON_SKIN
+}
+
+function getCategoryLiquidityRules(itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
+  const normalized = normalizeItemCategory(itemCategory)
+  return CATEGORY_LIQUIDITY_RULES[normalized] || CATEGORY_LIQUIDITY_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
+}
+
+function getReferenceDeviationRatioMax(itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
+  const normalized = normalizeItemCategory(itemCategory)
+  return (
+    REFERENCE_DEVIATION_RATIO_MAX_BY_CATEGORY[normalized] ||
+    REFERENCE_DEVIATION_RATIO_MAX_BY_CATEGORY[ITEM_CATEGORIES.WEAPON_SKIN]
+  )
 }
 
 function toFiniteOrNull(value) {
@@ -272,7 +328,14 @@ function pickBestSellCandidate(quotes = []) {
   return candidates[0] || null
 }
 
-function evaluateLiquidityFilter({ buyQuote = null, sellQuote = null, quotes = [], item = {} } = {}) {
+function evaluateLiquidityFilter({
+  buyQuote = null,
+  sellQuote = null,
+  quotes = [],
+  item = {},
+  itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
+} = {}) {
+  const rules = getCategoryLiquidityRules(itemCategory)
   const quoteList = Array.isArray(quotes) ? quotes : []
   const bestVolumeAcrossMarkets = quoteList
     .map((row) => toFiniteOrNull(row?.volume_7d))
@@ -299,7 +362,7 @@ function evaluateLiquidityFilter({ buyQuote = null, sellQuote = null, quotes = [
     }
   }
 
-  if (volume7d > LIQUIDITY_VOLUME_HIGH) {
+  if (volume7d > Number(rules.high || LIQUIDITY_VOLUME_HIGH)) {
     return {
       passed: true,
       medium: false,
@@ -311,7 +374,7 @@ function evaluateLiquidityFilter({ buyQuote = null, sellQuote = null, quotes = [
     }
   }
 
-  if (volume7d >= LIQUIDITY_VOLUME_PASS) {
+  if (volume7d >= Number(rules.pass || LIQUIDITY_VOLUME_PASS)) {
     return {
       passed: true,
       medium: true,
@@ -403,12 +466,12 @@ function resolveReferencePrice(item = {}, quotes = [], buyPrice = null, sellNet 
   return mid != null ? roundPrice(mid) : null
 }
 
-function isReferenceDeviation(price, referencePrice) {
+function isReferenceDeviation(price, referencePrice, itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
   const candidate = toPositiveOrNull(price)
   const reference = toPositiveOrNull(referencePrice)
   if (candidate == null || reference == null) return false
   const ratio = Math.max(candidate / reference, reference / candidate)
-  return ratio > REFERENCE_DEVIATION_RATIO_MAX
+  return ratio > getReferenceDeviationRatioMax(itemCategory)
 }
 
 function getDepthConfidenceScore({
@@ -441,8 +504,10 @@ function resolveExecutionConfidence({
   marketScore = 0,
   depthFlags = [],
   quoteAgeMinutes = null,
-  snapshotStale = false
+  snapshotStale = false,
+  itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
 } = {}) {
+  const liquidityRules = getCategoryLiquidityRules(itemCategory)
   const volume = toFiniteOrNull(volume7d)
   const spread = toFiniteOrNull(spreadPercent)
   const hasOutlierFlag = Array.isArray(depthFlags)
@@ -455,7 +520,7 @@ function resolveExecutionConfidence({
 
   if (
     volume != null &&
-    volume > LIQUIDITY_VOLUME_HIGH &&
+    volume > Number(liquidityRules.high || LIQUIDITY_VOLUME_HIGH) &&
     spread != null &&
     spread < 40 &&
     !hasOutlierFlag &&
@@ -473,7 +538,7 @@ function resolveExecutionConfidence({
   if (spread == null || spread > 80 || spread < MIN_SPREAD_PERCENT) uncertainty += 1
   if (marketScore < 75) uncertainty += 1
 
-  if (volume != null && volume >= LIQUIDITY_VOLUME_PASS && uncertainty <= 1) {
+  if (volume != null && volume >= Number(liquidityRules.pass || LIQUIDITY_VOLUME_PASS) && uncertainty <= 1) {
     return "Medium"
   }
 
@@ -546,7 +611,8 @@ function evaluateItemOpportunity(item = {}, options = {}) {
     buyQuote,
     sellQuote,
     quotes,
-    item
+    item,
+    itemCategory
   })
   const liquiditySample = resolveLiquiditySample(item, quotes)
 
@@ -573,8 +639,8 @@ function evaluateItemOpportunity(item = {}, options = {}) {
     reasons.push("ignored_low_liquidity")
   }
   if (
-    isReferenceDeviation(buyPrice, referencePrice) ||
-    isReferenceDeviation(sellNet, referencePrice)
+    isReferenceDeviation(buyPrice, referencePrice, itemCategory) ||
+    isReferenceDeviation(sellNet, referencePrice, itemCategory)
   ) {
     reasons.push("ignored_reference_deviation")
   }
@@ -623,7 +689,8 @@ function evaluateItemOpportunity(item = {}, options = {}) {
     marketScore,
     depthFlags,
     quoteAgeMinutes,
-    snapshotStale: Boolean(item?.snapshotStale)
+    snapshotStale: Boolean(item?.snapshotStale),
+    itemCategory
   })
   const reasonBadges = buildReasonBadges({
     liquidityBand: liquidityFilter.band,
@@ -681,7 +748,7 @@ function evaluateItemOpportunity(item = {}, options = {}) {
         spreadSuspiciousPenaltyThreshold: SPREAD_SUSPICIOUS_PENALTY_THRESHOLD,
         spreadSanityMaxPercent: SPREAD_SANITY_MAX_PERCENT,
         minMarketCoverage: MIN_MARKET_COVERAGE,
-        referenceDeviationRatioMax: REFERENCE_DEVIATION_RATIO_MAX
+        referenceDeviationRatioMax: getReferenceDeviationRatioMax(itemCategory)
       },
       outlier: {
         buyAdjusted: Boolean(buyCandidate?.buyOutlierAdjusted),
