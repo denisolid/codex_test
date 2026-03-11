@@ -111,10 +111,13 @@ exports.CACHE_TTL_MS = CACHE_TTL_MS;
 
 exports.getArbitrageOpportunities = async (userId, options = {}) => {
   const { planTier, entitlements } = await planService.getUserPlanProfile(userId);
-  const advancedFiltersEnabled = Boolean(entitlements?.advancedFilters);
-  const visibleFeedLimit = Math.max(Number(entitlements?.visibleFeedLimit || MAX_LIMIT), 1);
+  const planConfig = planService.getPlanConfig(planTier, {
+    traderModeUnlocked: Boolean(entitlements?.traderModeUnlocked),
+  });
+  const advancedFiltersEnabled = planService.canUseAdvancedFilters(planConfig);
+  const visibleFeedLimit = Math.max(Number(planConfig?.visibleFeedLimit || MAX_LIMIT), 1);
   const opportunitiesDailyLimit = Math.max(
-    Number(entitlements?.opportunitiesDailyLimit || visibleFeedLimit),
+    Number(planConfig?.opportunitiesDailyLimit || visibleFeedLimit),
     1
   );
   const hardLimit = Math.min(visibleFeedLimit, opportunitiesDailyLimit, MAX_LIMIT);
@@ -159,7 +162,18 @@ exports.getArbitrageOpportunities = async (userId, options = {}) => {
     normalized.sortBy = String(DEFAULT_FREE_FILTERS.sortBy);
     normalized.markets = String(DEFAULT_FREE_FILTERS.markets);
   }
-  normalized.limit = Math.min(Math.max(Number(normalized.limit || 0), 1), hardLimit);
+  const normalizedLimit = Math.min(Math.max(Number(normalized.limit || 0), 1), hardLimit);
+  normalized.limit = Math.min(
+    normalizedLimit,
+    Math.max(
+      Number(
+        planService.canViewOpportunity(planConfig, {
+          position: normalizedLimit - 1,
+        }).visibleFeedLimit
+      ),
+      1
+    )
+  );
 
   const cacheKey = buildCacheKey(userId, normalized);
   const cached = getCachedValue(cacheKey);

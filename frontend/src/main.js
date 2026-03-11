@@ -24,6 +24,17 @@ import {
   renderStatGrid,
   renderStatTile,
 } from "./components/dashboardPrimitives";
+import {
+  canUseAdvancedFilters,
+  getAccountPlanLimits as getAccountPlanLimitsFromConfig,
+  getPlanBadgeLabel,
+  getPlanUpgradeTarget,
+  getProfileEntitlements as getProfileEntitlementsFromConfig,
+  normalizePlanTier as normalizePlanTierFromConfig,
+  planTierToLabel as planTierToLabelFromConfig,
+  shouldShowLockedPreview,
+  shouldShowUpgradePrompt,
+} from "./planPermissions";
 const app = document.querySelector("#app");
 injectSpeedInsights();
 
@@ -370,17 +381,7 @@ const PRICING_COMPARISON_GROUPS = Object.freeze([
 ]);
 
 function normalizePlanTier(value) {
-  const raw = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (!raw) return "free";
-  if (Object.prototype.hasOwnProperty.call(PLAN_TIER_ALIASES, raw)) {
-    return PLAN_TIER_ALIASES[raw];
-  }
-  if (Object.prototype.hasOwnProperty.call(ACCOUNT_PLAN_LIMITS, raw)) {
-    return raw;
-  }
-  return "free";
+  return normalizePlanTierFromConfig(value);
 }
 
 function cloneDefaultNotificationPrefs() {
@@ -483,27 +484,15 @@ function getPathForTab(tabId) {
 }
 
 function planTierToLabel(planTier) {
-  const tier = normalizePlanTier(planTier);
-  if (tier === "full_access") return "Full Access";
-  return "Free";
+  return planTierToLabelFromConfig(planTier);
 }
 
 function getAccountPlanLimits(planTier) {
-  const tier = normalizePlanTier(planTier);
-  return ACCOUNT_PLAN_LIMITS[tier] || ACCOUNT_PLAN_LIMITS.free;
+  return getAccountPlanLimitsFromConfig(planTier);
 }
 
 function getProfileEntitlements(profile = state.authProfile || {}) {
-  const planTier = normalizePlanTier(profile?.planTier || profile?.plan || "free");
-  const fallback = ACCOUNT_PLAN_ENTITLEMENT_FALLBACKS[planTier] || ACCOUNT_PLAN_ENTITLEMENT_FALLBACKS.free;
-  const fromProfile =
-    profile?.entitlements && typeof profile.entitlements === "object"
-      ? profile.entitlements
-      : {};
-  return {
-    ...fallback,
-    ...fromProfile,
-  };
+  return getProfileEntitlementsFromConfig(profile);
 }
 
 function getPricingDisplayPlan(planTier) {
@@ -530,6 +519,7 @@ function renderPricingValueChip(value) {
 function renderPricingPlanCards(options = {}) {
   const context = String(options.context || "public").trim().toLowerCase() || "public";
   const safeCurrentPlan = normalizePlanTier(options.currentPlanTier || "free");
+  const preferredUpgradeTarget = getPlanUpgradeTarget(safeCurrentPlan);
   const signedIn =
     typeof options.signedIn === "boolean" ? options.signedIn : Boolean(state.authenticated);
 
@@ -543,6 +533,7 @@ function renderPricingPlanCards(options = {}) {
             ? "is-coming-soon"
             : "is-standard";
         let ctaMarkup = "";
+        const badgeLabel = String(plan.badge || getPlanBadgeLabel(plan.planTier)).trim();
         if (plan.comingSoon) {
           ctaMarkup = `
             <button type="button" class="ghost-btn pricing-plan-cta pricing-plan-cta-waitlist" data-alpha-waitlist="1">
@@ -552,7 +543,7 @@ function renderPricingPlanCards(options = {}) {
         } else if (context === "account") {
           const label = isCurrent
             ? "Current plan"
-            : plan.planTier === "full_access"
+            : plan.planTier === preferredUpgradeTarget
               ? "Primary upgrade path"
               : "Available now";
           ctaMarkup = `
@@ -573,7 +564,7 @@ function renderPricingPlanCards(options = {}) {
         return `
           <article class="pricing-plan-card ${toneClass} ${isCurrent ? "is-current" : ""}">
             <header class="pricing-plan-head">
-              <span class="pricing-plan-badge">${escapeHtml(plan.badge)}</span>
+              <span class="pricing-plan-badge">${escapeHtml(badgeLabel)}</span>
               <h3>${escapeHtml(plan.label)}</h3>
               <p>${escapeHtml(plan.tagline)}</p>
             </header>
@@ -644,6 +635,8 @@ function renderPricingComparisonTable() {
 function renderPricingComparisonSection(options = {}) {
   const context = String(options.context || "public").trim().toLowerCase() || "public";
   const safeCurrentPlan = normalizePlanTier(options.currentPlanTier || "free");
+  const upgradeTarget = getPlanUpgradeTarget(safeCurrentPlan);
+  const upgradeTargetLabel = planTierToLabel(upgradeTarget);
   const signedIn =
     typeof options.signedIn === "boolean" ? options.signedIn : Boolean(state.authenticated);
   const sectionId = context === "public" ? 'id="pricing"' : "";
@@ -669,7 +662,7 @@ function renderPricingComparisonSection(options = {}) {
             ? `
               <p class="muted">
                 Current plan: <strong>${escapeHtml(currentPlanLabel)}</strong>.
-                Recommended upgrade path: <strong>Full Access</strong>.
+                Recommended upgrade path: <strong>${escapeHtml(upgradeTargetLabel)}</strong>.
                 Alpha status: <strong>Coming Soon</strong>.
               </p>
             `
@@ -1150,7 +1143,7 @@ function syncPlanAwareUiState() {
 
   state.accountPage.planSwitcher.selected = planTier;
 
-  if (!entitlements.advancedFilters) {
+  if (shouldShowUpgradePrompt(entitlements, "advancedFilters")) {
     state.globalOpportunities.showRisky = false;
     state.globalOpportunities.showOlder = false;
     state.globalOpportunities.category = "all";
@@ -5589,7 +5582,7 @@ function onAppChange(event) {
 
   if (target.matches("#global-opportunities-show-risky")) {
     const entitlements = getProfileEntitlements();
-    if (!entitlements.advancedFilters) {
+    if (shouldShowUpgradePrompt(entitlements, "advancedFilters")) {
       if (target instanceof HTMLInputElement) {
         target.checked = false;
       }
@@ -5612,7 +5605,7 @@ function onAppChange(event) {
 
   if (target.matches("#global-opportunities-show-older")) {
     const entitlements = getProfileEntitlements();
-    if (!entitlements.advancedFilters) {
+    if (shouldShowUpgradePrompt(entitlements, "advancedFilters")) {
       if (target instanceof HTMLInputElement) {
         target.checked = false;
       }
@@ -5635,7 +5628,7 @@ function onAppChange(event) {
 
   if (target.matches("#global-opportunities-category")) {
     const entitlements = getProfileEntitlements();
-    if (!entitlements.advancedFilters) {
+    if (shouldShowUpgradePrompt(entitlements, "advancedFilters")) {
       state.globalOpportunities.category = "all";
       if (target instanceof HTMLSelectElement) {
         target.value = "all";
@@ -7225,7 +7218,7 @@ async function refreshMarketOpportunities(options = {}) {
   const { silent = false } = options;
   const scanner = state.marketTab.opportunities;
   const entitlements = getProfileEntitlements();
-  const advancedFiltersEnabled = Boolean(entitlements.advancedFilters);
+  const advancedFiltersEnabled = canUseAdvancedFilters(entitlements);
   const visibleFeedLimit = Math.max(Number(entitlements.visibleFeedLimit || 250), 1);
   scanner.loading = true;
   scanner.error = "";
@@ -7299,7 +7292,7 @@ async function refreshGlobalOpportunities(options = {}) {
     options;
   const scanner = state.globalOpportunities || createGlobalOpportunitiesState();
   const entitlements = getProfileEntitlements();
-  const advancedFiltersEnabled = Boolean(entitlements.advancedFilters);
+  const advancedFiltersEnabled = canUseAdvancedFilters(entitlements);
   const visibleFeedLimit = Math.max(Number(entitlements.visibleFeedLimit || 100), 1);
   state.globalOpportunities = scanner;
   if (!advancedFiltersEnabled) {
@@ -8303,7 +8296,13 @@ function getOpportunityCategoryTone(value, marketHashName = "") {
 }
 
 function isLockedPremiumPreview(row = {}) {
-  return Boolean(row?.isLockedPreview);
+  if (Boolean(row?.isLockedPreview)) return true;
+  const entitlements = getProfileEntitlements();
+  const category = normalizeOpportunityCategory(
+    row?.itemCategory || row?.category,
+    row?.itemName || row?.marketHashName,
+  );
+  return shouldShowLockedPreview(entitlements, category);
 }
 
 function formatUniverseQuotaActualByCategory(universeBuild = {}) {
@@ -12039,7 +12038,7 @@ function renderMarketTab() {
     planTier,
     plan: planTier,
   });
-  const advancedFiltersEnabled = Boolean(entitlements.advancedFilters);
+  const advancedFiltersEnabled = canUseAdvancedFilters(entitlements);
   const visibleFeedLimit = Math.max(Number(entitlements.visibleFeedLimit || 250), 1);
   const holdings = getHoldingsList();
   const marketOptions = buildHoldingOptions(state.marketTab.skinId);
@@ -12623,7 +12622,7 @@ function renderGlobalOpportunitiesTab() {
     planTier,
     plan: planTier,
   });
-  const advancedFiltersEnabled = Boolean(entitlements.advancedFilters);
+  const advancedFiltersEnabled = canUseAdvancedFilters(entitlements);
   const rows = Array.isArray(scanner.items) ? scanner.items : [];
   const currencyCode = scanner.currency || "USD";
   const holdings = getHoldingsList();

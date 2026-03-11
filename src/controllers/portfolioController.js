@@ -17,10 +17,11 @@ exports.getPortfolio = asyncHandler(async (req, res) => {
 exports.getPortfolioHistory = asyncHandler(async (req, res) => {
   const { planTier, entitlements } = await planService.getUserPlanProfile(req.userId);
   const days = Number(req.query.days || 7);
+  const historyView = planService.canViewHistory(entitlements, days);
   const data = await portfolioService.getPortfolioHistory(req.userId, days, {
     currency: req.query.currency,
     planTier,
-    maxHistoryDays: entitlements.maxHistoryDays
+    maxHistoryDays: historyView.maxHistoryDays
   });
   res.json(data);
 });

@@ -52,12 +52,12 @@ const SOURCE_QUALITY_RULES = Object.freeze({
   }),
   [ITEM_CATEGORIES.KNIFE]: Object.freeze({
     minReferencePrice: 20,
-    minVolume7d: 18,
+    minVolume7d: 5,
     minMarketCoverage: 2
   }),
   [ITEM_CATEGORIES.GLOVE]: Object.freeze({
     minReferencePrice: 20,
-    minVolume7d: 16,
+    minVolume7d: 5,
     minMarketCoverage: 2
   })
 })
@@ -402,12 +402,20 @@ function resolveVolume7d(snapshot = null, quoteCoverage = {}) {
 
 function evaluateEligibility({ category, referencePrice, volume7d, marketCoverageCount, snapshotStale }) {
   const rules = SOURCE_QUALITY_RULES[category] || SOURCE_QUALITY_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
+  const isPremiumCategory = category === ITEM_CATEGORIES.KNIFE || category === ITEM_CATEGORIES.GLOVE
 
   if (referencePrice == null) return { eligible: false, reason: "excludedMissingReferenceItems" }
   if (referencePrice < Number(rules.minReferencePrice || 0)) {
     return { eligible: false, reason: "excludedLowValueItems" }
   }
-  if (volume7d == null || volume7d < Number(rules.minVolume7d || 0)) {
+  if (isPremiumCategory) {
+    if (volume7d != null && volume7d < Number(rules.minVolume7d || 0)) {
+      return { eligible: false, reason: "excludedLowLiquidityItems" }
+    }
+    if (volume7d == null && Number(marketCoverageCount || 0) < 3) {
+      return { eligible: false, reason: "excludedWeakMarketCoverageItems" }
+    }
+  } else if (volume7d == null || volume7d < Number(rules.minVolume7d || 0)) {
     return { eligible: false, reason: "excludedLowLiquidityItems" }
   }
   if (Number(marketCoverageCount || 0) < Number(rules.minMarketCoverage || 0)) {

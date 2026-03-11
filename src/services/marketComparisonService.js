@@ -544,10 +544,11 @@ exports.compareItems = async (items = [], options = {}) => {
   const planContext = await resolvePlanContext(options);
   const entitlements =
     planContext?.entitlements || planService.getEntitlements(planContext?.planTier);
+  const planConfig = planService.getPlanConfig(planContext?.planTier || entitlements?.planTier || "free");
   const premiumCategoryAccess = premiumCategoryAccessService.hasPremiumCategoryAccess(
     entitlements
   );
-  const compareViewMaxItems = Math.max(Number(entitlements?.compareViewMaxItems || 200), 1);
+  const compareViewMaxItems = Math.max(Number(planConfig?.compareViewMaxItems || 200), 1);
   const normalizedItemsAll = normalizeItems(items);
   const comparedItemsSubmitted = normalizedItemsAll.length;
   const blockedPremiumItemNames = [];

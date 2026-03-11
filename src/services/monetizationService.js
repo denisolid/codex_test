@@ -26,32 +26,6 @@ const PRICING = {
   }
 };
 
-const ALPHA_ACCESS_ROADMAP_ENTITLEMENTS = Object.freeze({
-  planTier: "alpha_access",
-  opportunitiesDailyLimit: "premium",
-  maxAlerts: "premium",
-  scannerRefreshIntervalMinutes: "priority",
-  maxHistoryDays: "premium",
-  visibleFeedLimit: "full",
-  advancedFilters: "advanced",
-  delayedSignals: false,
-  signalDelayMinutes: 0,
-  compareView: "advanced",
-  portfolioInsights: "premium",
-  fullGlobalScanner: true,
-  fullOpportunitiesFeed: true,
-  premiumRareItemIntelligence: true,
-  exportApiReady: true,
-  webhooksReady: true,
-  automationReady: true
-});
-
-const ALPHA_ACCESS_ROADMAP_COMPARISON = Object.freeze({
-  scannerCategories: ["weapon_skin", "case", "sticker_capsule", "knife", "glove"],
-  knivesGlovesAccess: true,
-  scannerCategoryAccessNote: "Advanced high-value scanner logic for knives and gloves."
-});
-
 const TRADER_MODE_PRODUCT = {
   sku: "trader_mode_unlock",
   oneTimeUsd: Number(traderModePriceUsd || 29),
@@ -70,23 +44,17 @@ function normalizeBillingStatusForPlan(planTier) {
 
 exports.getPricing = () => {
   const plans = Object.keys(PRICING).map((planTier) => {
-    const entitlements =
-      planTier === "alpha_access"
-        ? ALPHA_ACCESS_ROADMAP_ENTITLEMENTS
-        : planService.getEntitlements(planTier);
-    const comparison =
-      planTier === "alpha_access"
-        ? ALPHA_ACCESS_ROADMAP_COMPARISON
-        : {
-            scannerCategories: Array.isArray(entitlements?.scannerCategories)
-              ? entitlements.scannerCategories
-              : [],
-            knivesGlovesAccess: Boolean(
-              entitlements?.knivesGlovesAccess || entitlements?.premiumCategoryAccess
-            ),
-            scannerCategoryAccessNote:
-              String(entitlements?.scannerCategoryAccessNote || "").trim() || null
-          };
+    const entitlements = planService.getPlanConfig(planTier);
+    const comparison = {
+      scannerCategories: Array.isArray(entitlements?.scannerCategories)
+        ? entitlements.scannerCategories
+        : [],
+      knivesGlovesAccess: Boolean(
+        entitlements?.knivesGlovesAccess || entitlements?.premiumCategoryAccess
+      ),
+      scannerCategoryAccessNote:
+        String(entitlements?.scannerCategoryAccessNote || "").trim() || null
+    };
 
     return {
       planTier,
