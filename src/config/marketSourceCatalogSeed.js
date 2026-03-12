@@ -34,9 +34,17 @@ const CURATED_CASES = Object.freeze([
   "Spectrum Case",
   "Operation Breakout Weapon Case",
   "Operation Phoenix Weapon Case",
+  "Operation Vanguard Weapon Case",
+  "Operation Bravo Case",
   "Operation Wildfire Case",
+  "Operation Hydra Case",
+  "Operation Riptide Case",
+  "Operation Broken Fang Case",
+  "Shattered Web Case",
   "Shadow Case",
   "Falchion Case",
+  "Huntsman Weapon Case",
+  "Revolver Case",
   "Glove Case",
   "Weapon Case 2",
   "Weapon Case 3",
@@ -65,6 +73,66 @@ const CURATED_STICKER_CAPSULES = Object.freeze([
   "Copenhagen 2024 Legends Sticker Capsule",
   "Copenhagen 2024 Challengers Sticker Capsule",
   "Copenhagen 2024 Contenders Sticker Capsule"
+])
+const CURATED_MAJOR_EVENTS = Object.freeze([
+  "Katowice 2015",
+  "Cologne 2015",
+  "Cluj-Napoca 2015",
+  "Cologne 2016",
+  "Krakow 2017",
+  "Boston 2018",
+  "London 2018",
+  "Katowice 2019",
+  "Berlin 2019",
+  "Stockholm 2021",
+  "Antwerp 2022",
+  "Rio 2022",
+  "Paris 2023",
+  "Copenhagen 2024"
+])
+const MAJOR_CAPSULE_STICKER_VARIANTS = Object.freeze([
+  "Legends Sticker Capsule",
+  "Challengers Sticker Capsule",
+  "Contenders Sticker Capsule"
+])
+const MAJOR_CAPSULE_AUTOGRAPH_VARIANTS = Object.freeze([
+  "Legends Autograph Capsule",
+  "Challengers Autograph Capsule",
+  "Contenders Autograph Capsule"
+])
+const CURATED_LEGACY_CAPSULES = Object.freeze([
+  "Champions Autograph Capsule",
+  "Legends Autograph Capsule",
+  "Challengers Autograph Capsule",
+  "Team Roles Sticker Capsule",
+  "Community Sticker Capsule 1",
+  "Community Sticker Capsule 2",
+  "Community Sticker Capsule Series 1",
+  "Perfect World Sticker Capsule 1",
+  "Perfect World Sticker Capsule 2",
+  "CS20 Sticker Capsule",
+  "RMR 2020 Legends Sticker Capsule",
+  "RMR 2020 Challengers Sticker Capsule",
+  "RMR 2020 Contenders Sticker Capsule",
+  "RMR 2020 Legends Autograph Capsule",
+  "RMR 2020 Challengers Autograph Capsule",
+  "RMR 2020 Contenders Autograph Capsule"
+])
+const CURATED_SOUVENIR_EVENTS = Object.freeze([
+  "Stockholm 2021",
+  "Antwerp 2022",
+  "Rio 2022",
+  "Paris 2023",
+  "Copenhagen 2024"
+])
+const CURATED_SOUVENIR_MAPS = Object.freeze([
+  "Mirage",
+  "Dust II",
+  "Nuke",
+  "Inferno",
+  "Ancient",
+  "Anubis",
+  "Overpass"
 ])
 
 const CURATED_WEAPON_SKIN_BASES = Object.freeze([
@@ -433,12 +501,15 @@ function inferCategory(value) {
   const name = normalizeText(value).toLowerCase()
   if (!name) return "weapon_skin"
   if (name.endsWith(" case")) return "case"
-  if (name.includes("sticker capsule")) return "sticker_capsule"
+  if (name.includes("sticker capsule") || name.includes("autograph capsule")) return "sticker_capsule"
+  if (name.includes("souvenir package")) return "case"
   return "weapon_skin"
 }
 
 function inferSubcategory(value, category) {
-  if (category === "case") return "weapon_case"
+  if (category === "case") {
+    return /souvenir package/i.test(normalizeText(value)) ? "souvenir_package" : "weapon_case"
+  }
   if (category === "sticker_capsule") return "major_sticker_capsule"
   if (category === "knife" || category === "glove") {
     const family = normalizeText(value)
@@ -521,11 +592,36 @@ function buildWeaponSkinRows() {
 }
 
 function buildCaseRows() {
-  return CURATED_CASES.map((name) => toCatalogRow(name, "case")).filter(Boolean)
+  const souvenirPackages = []
+  for (const eventName of CURATED_SOUVENIR_EVENTS) {
+    for (const mapName of CURATED_SOUVENIR_MAPS) {
+      souvenirPackages.push(`${eventName} ${mapName} Souvenir Package`)
+    }
+  }
+
+  const names = Array.from(new Set([...CURATED_CASES, ...souvenirPackages]))
+  return names.map((name) => toCatalogRow(name, "case")).filter(Boolean)
 }
 
 function buildCapsuleRows() {
-  return CURATED_STICKER_CAPSULES.map((name) => toCatalogRow(name, "sticker_capsule")).filter(Boolean)
+  const generatedMajorCapsules = []
+  for (const eventName of CURATED_MAJOR_EVENTS) {
+    for (const variant of MAJOR_CAPSULE_STICKER_VARIANTS) {
+      generatedMajorCapsules.push(`${eventName} ${variant}`)
+    }
+    for (const variant of MAJOR_CAPSULE_AUTOGRAPH_VARIANTS) {
+      generatedMajorCapsules.push(`${eventName} ${variant}`)
+    }
+  }
+
+  const names = Array.from(
+    new Set([
+      ...CURATED_STICKER_CAPSULES,
+      ...CURATED_LEGACY_CAPSULES,
+      ...generatedMajorCapsules
+    ])
+  )
+  return names.map((name) => toCatalogRow(name, "sticker_capsule")).filter(Boolean)
 }
 
 function buildKnifeRows() {

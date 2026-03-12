@@ -8421,6 +8421,39 @@ function formatUniverseQuotaActualByCategory(universeBuild = {}) {
   return parts.join(", ");
 }
 
+function formatSourceCatalogFunnelByCategory(sourceCatalog = {}) {
+  const candidateRowsByCategory =
+    sourceCatalog?.candidateRowsByCategory &&
+    typeof sourceCatalog.candidateRowsByCategory === "object"
+      ? sourceCatalog.candidateRowsByCategory
+      : {};
+  const enrichingRowsByCategory =
+    sourceCatalog?.enrichingRowsByCategory &&
+    typeof sourceCatalog.enrichingRowsByCategory === "object"
+      ? sourceCatalog.enrichingRowsByCategory
+      : {};
+  const eligibleRowsByCategory =
+    sourceCatalog?.eligibleRowsByCategory &&
+    typeof sourceCatalog.eligibleRowsByCategory === "object"
+      ? sourceCatalog.eligibleRowsByCategory
+      : {};
+
+  const parts = UNIVERSE_CATEGORY_DIAGNOSTIC_ORDER
+    .filter((entry) =>
+      ["weapon_skin", "case", "sticker_capsule"].includes(String(entry?.key || "").trim()),
+    )
+    .map((entry) => {
+      const candidate = Number(candidateRowsByCategory?.[entry.key] || 0);
+      const enriching = Number(enrichingRowsByCategory?.[entry.key] || 0);
+      const eligible = Number(eligibleRowsByCategory?.[entry.key] || 0);
+      if (candidate <= 0 && enriching <= 0 && eligible <= 0) return "";
+      return `${entry.label} c${formatNumber(candidate, 0)} / e${formatNumber(enriching, 0)} / ok${formatNumber(eligible, 0)}`;
+    })
+    .filter(Boolean);
+
+  return parts.join(", ");
+}
+
 function formatScanRunLabel(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -13279,9 +13312,18 @@ function renderGlobalOpportunitiesTab() {
               summary?.sourceCatalog?.sourceCatalog?.activeCatalogRows || 0,
               0,
             )} active, ${formatNumber(
+              summary?.sourceCatalog?.sourceCatalog?.candidateRows || 0,
+              0,
+            )} candidate, ${formatNumber(
+              summary?.sourceCatalog?.sourceCatalog?.enrichingRows || 0,
+              0,
+            )} enriching, ${formatNumber(
               summary?.sourceCatalog?.sourceCatalog?.eligibleTradableRows || 0,
               0,
-            )} eligible. Universe built ${formatNumber(
+            )} eligible, ${formatNumber(
+              summary?.sourceCatalog?.sourceCatalog?.rejectedRows || 0,
+              0,
+            )} rejected. Universe built ${formatNumber(
               summary?.sourceCatalog?.universeBuild?.activeUniverseBuilt || 0,
               0,
             )}/${formatNumber(
@@ -13298,6 +13340,15 @@ function renderGlobalOpportunitiesTab() {
         : ""
     }
     ${
+      summary?.sourceCatalog?.sourceCatalog
+        ? `<p class="helper-text">${escapeHtml(
+            `Source funnel by category (candidate/enriching/eligible): ${formatSourceCatalogFunnelByCategory(
+              summary?.sourceCatalog?.sourceCatalog || {},
+            )}.`,
+          )}</p>`
+        : ""
+    }
+    ${
       summary?.sourceCatalog?.universeBuild?.selectedByCategory
         ? `<p class="helper-text">${escapeHtml(
             `Universe quota/actual by category: ${formatUniverseQuotaActualByCategory(
@@ -13309,7 +13360,7 @@ function renderGlobalOpportunitiesTab() {
     ${
       summary?.snapshotWarmup?.seedFilterMode === "allow_missing_snapshot_data" ||
       summary?.snapshotWarmup?.seedFilterMode === "strict_plus_missing_snapshot_data"
-        ? '<p class="helper-text">Seed filter fallback active: scanner allowed missing snapshot seeds this run to avoid zero-item scans.</p>'
+        ? '<p class="helper-text">Seed promotion active: candidate and enriching seeds were intentionally included while enrichment catches up.</p>'
         : ""
     }
     <p class="helper-text">

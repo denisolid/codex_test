@@ -10,7 +10,10 @@ const {
   __testables: {
     buildCategoryQuotas,
     buildSourceCatalogQuotas,
+    computeEnrichmentPriority,
+    evaluateCandidateState,
     evaluateEligibility,
+    normalizeCandidateStatus,
     normalizeCategory
   }
 } = require("../src/services/marketSourceCatalogService")
@@ -95,4 +98,48 @@ test("source eligibility rejects weak liquidity and coverage before universe bui
 
   assert.equal(normalizeCategory("", "Karambit | Doppler (Factory New)"), "")
   assert.equal(normalizeCategory("", "Sport Gloves | Vice (Field-Tested)"), "")
+})
+
+test("candidate state separates enriching from strict eligible", () => {
+  const category = normalizeCategory("case", "Revolution Case")
+  const lowContextState = evaluateCandidateState({
+    marketHashName: "Revolution Case",
+    category,
+    tradable: true,
+    eligibility: { eligible: false, reason: "excludedMissingReferenceItems" },
+    referencePrice: null,
+    volume7d: null,
+    marketCoverageCount: 0,
+    snapshot: null,
+    snapshotStale: true,
+    liquidityRank: 0
+  })
+
+  assert.equal(normalizeCandidateStatus(lowContextState.candidateStatus), "enriching")
+  assert.equal(lowContextState.missingSnapshot, true)
+  assert.equal(lowContextState.missingReference, true)
+  assert.equal(lowContextState.missingMarketCoverage, true)
+  assert.equal(lowContextState.strictEligible, false)
+  assert.equal(lowContextState.enrichmentPriority > 0, true)
+
+  const eligibleState = evaluateCandidateState({
+    marketHashName: "Revolution Case",
+    category,
+    tradable: true,
+    eligibility: { eligible: true, reason: "" },
+    referencePrice: 3.2,
+    volume7d: 410,
+    marketCoverageCount: 3,
+    snapshot: { captured_at: new Date().toISOString() },
+    snapshotStale: false,
+    liquidityRank: computeEnrichmentPriority({
+      candidateStatus: "eligible",
+      category,
+      referencePrice: 3.2,
+      volume7d: 410,
+      marketCoverageCount: 3
+    })
+  })
+  assert.equal(normalizeCandidateStatus(eligibleState.candidateStatus), "eligible")
+  assert.equal(eligibleState.strictEligible, true)
 })

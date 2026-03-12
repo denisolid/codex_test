@@ -24,6 +24,20 @@ const SCANNER_SCOPE_CATEGORIES = Object.freeze([
   ITEM_CATEGORIES.STICKER_CAPSULE
 ])
 const SCANNER_SCOPE_CATEGORY_SET = new Set(SCANNER_SCOPE_CATEGORIES)
+const CATALOG_CANDIDATE_STATUS = Object.freeze({
+  CANDIDATE: "candidate",
+  ENRICHING: "enriching",
+  ELIGIBLE: "eligible",
+  REJECTED: "rejected"
+})
+const ACTIVE_CANDIDATE_STATUSES = Object.freeze([
+  CATALOG_CANDIDATE_STATUS.ELIGIBLE,
+  CATALOG_CANDIDATE_STATUS.ENRICHING,
+  CATALOG_CANDIDATE_STATUS.CANDIDATE
+])
+const CATALOG_CANDIDATE_STATUS_SET = new Set(
+  Object.values(CATALOG_CANDIDATE_STATUS)
+)
 
 const DEFAULT_UNIVERSE_LIMIT = 3000
 const DEFAULT_SOURCE_CATALOG_TARGET = 5000
@@ -43,6 +57,8 @@ const SOURCE_CATALOG_REFRESH_MS =
   Math.max(Number(arbitrageSourceCatalogRefreshMinutes || 60), 5) * 60 * 1000
 const SNAPSHOT_TTL_MS = Math.max(Number(marketSnapshotTtlMinutes || 30), 5) * 60 * 1000
 const MAJOR_CAPSULE_EVENT_PATTERN = /\b(katowice|cologne|atlanta|krakow|boston|london|berlin|stockholm|antwerp|rio|paris|copenhagen|major|rmr)\b/i
+const CAPSULE_EVENT_SIGNAL_PATTERN = /\b(esl|blast|pgl|dreamhack|iem|cluj|funspark|faceit|challengers|legends|contenders|champions|team)\b/i
+const CAPSULE_YEAR_PATTERN = /\b20(1[3-9]|2[0-9])\b/
 const WEAR_PATTERN = /\((factory new|minimal wear|field-tested|well-worn|battle-scarred)\)$/i
 const WEAPON_PREFIX_ALLOWLIST = Object.freeze(
   new Set([
@@ -173,6 +189,11 @@ const SOURCE_QUALITY_RULES = Object.freeze({
     minMarketCoverage: 2
   })
 })
+const SOURCE_CANDIDATE_HARD_FLOOR = Object.freeze({
+  [ITEM_CATEGORIES.WEAPON_SKIN]: 0.45,
+  [ITEM_CATEGORIES.CASE]: 0.3,
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: 0.3
+})
 
 const CATEGORY_QUOTA_RULES = Object.freeze({
   [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({
@@ -204,12 +225,18 @@ const SOURCE_CATALOG_QUOTA_BASE_TOTAL = Object.values(SOURCE_CATALOG_QUOTA_RULES
 
 const CATEGORY_DEFAULT_COUNTER = Object.freeze({
   total: 0,
+  candidate: 0,
+  enriching: 0,
   eligible: 0,
+  rejected: 0,
   excludedLowValueItems: 0,
   excludedLowLiquidityItems: 0,
   excludedWeakMarketCoverageItems: 0,
   excludedStaleItems: 0,
-  excludedMissingReferenceItems: 0
+  excludedMissingReferenceItems: 0,
+  missingSnapshot: 0,
+  missingReference: 0,
+  missingMarketCoverage: 0
 })
 
 const BASE_EXCLUDED_REASON_COUNTER = Object.freeze({
@@ -251,6 +278,22 @@ function buildEmptyCategoryCounter() {
 function buildCategoryNumberMap(initialValue = 0) {
   const initial = Number(initialValue || 0)
   return Object.fromEntries(SCANNER_SCOPE_CATEGORIES.map((category) => [category, initial]))
+}
+
+function buildStatusNumberMap(initialValue = 0) {
+  const initial = Number(initialValue || 0)
+  return Object.fromEntries(
+    Object.values(CATALOG_CANDIDATE_STATUS).map((status) => [status, initial])
+  )
+}
+
+function normalizeCandidateStatus(value, fallback = CATALOG_CANDIDATE_STATUS.CANDIDATE) {
+  const text = normalizeText(value).toLowerCase()
+  if (CATALOG_CANDIDATE_STATUS_SET.has(text)) return text
+  const fallbackText = normalizeText(fallback).toLowerCase()
+  return CATALOG_CANDIDATE_STATUS_SET.has(fallbackText)
+    ? fallbackText
+    : CATALOG_CANDIDATE_STATUS.CANDIDATE
 }
 
 function normalizeText(value) {
@@ -323,7 +366,9 @@ function isEligibleStickerCapsuleName(name = "") {
   const hasStickerOrAuto = /\b(sticker|autograph)\b/i.test(text)
   if (!hasCapsule || !hasStickerOrAuto) return false
   const hasMajorSignals =
-    MAJOR_CAPSULE_EVENT_PATTERN.test(text) || /\b(legends|challengers|contenders|champions|team)\b/i.test(text)
+    MAJOR_CAPSULE_EVENT_PATTERN.test(text) ||
+    CAPSULE_EVENT_SIGNAL_PATTERN.test(text) ||
+    CAPSULE_YEAR_PATTERN.test(text)
   return hasMajorSignals
 }
 
@@ -549,6 +594,10 @@ function buildBaseDiagnostics() {
       missingRowsToTargetByCategory: buildCategoryNumberMap(),
       activeCatalogRows: 0,
       tradableRows: 0,
+      candidateRows: 0,
+      enrichingRows: 0,
+      eligibleRows: 0,
+      rejectedRows: 0,
       eligibleTradableRows: 0,
       excludedLowValueItems: 0,
       excludedLowLiquidityItems: 0,
@@ -556,7 +605,11 @@ function buildBaseDiagnostics() {
       excludedStaleItems: 0,
       excludedMissingReferenceItems: 0,
       excludedRowsByReason: { ...BASE_EXCLUDED_REASON_COUNTER },
+      candidateFunnel: buildStatusNumberMap(),
+      candidateFunnelByCategory: buildEmptyCategoryCounter(),
       eligibleRowsByCategory: buildCategoryNumberMap(),
+      candidateRowsByCategory: buildCategoryNumberMap(),
+      enrichingRowsByCategory: buildCategoryNumberMap(),
       byCategory: buildEmptyCategoryCounter()
     },
     universeBuild: {
@@ -571,7 +624,16 @@ function buildBaseDiagnostics() {
       quotaReallocationByCategory: buildCategoryNumberMap(),
       reallocatedSlots: 0,
       eligibleRows: 0,
+      candidateRows: 0,
+      enrichingRows: 0,
       eligibleRowsByCategory: buildCategoryNumberMap(),
+      candidateRowsByCategory: buildCategoryNumberMap(),
+      enrichingRowsByCategory: buildCategoryNumberMap(),
+      selectedFromEligible: 0,
+      selectedFromEnriching: 0,
+      selectedFromCandidate: 0,
+      candidateBackfillUsed: false,
+      seedPromotionActive: false,
       fallbackToMaxEligible: false
     },
     refreshed: false,
@@ -949,6 +1011,147 @@ function resolveVolume7d(snapshot = null, quoteCoverage = {}) {
   return Math.round(Math.max(snapshotVolume7d, quoteVolume))
 }
 
+function computeEnrichmentPriority({
+  candidateStatus = CATALOG_CANDIDATE_STATUS.CANDIDATE,
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
+  liquidityRank = 0,
+  referencePrice = null,
+  volume7d = null,
+  marketCoverageCount = 0,
+  missingSnapshot = false,
+  missingReference = false,
+  missingMarketCoverage = false,
+  snapshotStale = false
+} = {}) {
+  const status = normalizeCandidateStatus(candidateStatus)
+  if (status === CATALOG_CANDIDATE_STATUS.REJECTED) return 0
+
+  const statusBoost =
+    status === CATALOG_CANDIDATE_STATUS.ELIGIBLE
+      ? 38
+      : status === CATALOG_CANDIDATE_STATUS.ENRICHING
+        ? 26
+        : 18
+  const categoryBoost =
+    category === ITEM_CATEGORIES.CASE
+      ? 5
+      : category === ITEM_CATEGORIES.STICKER_CAPSULE
+        ? 6
+        : 0
+  const referenceBoost = referencePrice == null ? 0 : Math.min(Number(referencePrice || 0) * 2, 18)
+  const volumeBoost = volume7d == null ? 0 : Math.min(Number(volume7d || 0) / 12, 26)
+  const coverageBoost = Math.min(Math.max(Number(marketCoverageCount || 0), 0) * 4, 16)
+  const readinessBoost =
+    (missingReference ? 0 : 6) +
+    (missingMarketCoverage ? 0 : 6) +
+    (missingSnapshot ? 0 : 5)
+  const stalePenalty = snapshotStale ? 8 : 0
+  const missingPenalty =
+    (missingReference ? 8 : 0) +
+    (missingMarketCoverage ? 7 : 0) +
+    (missingSnapshot ? 7 : 0)
+
+  const score =
+    Number(liquidityRank || 0) +
+    statusBoost +
+    categoryBoost +
+    referenceBoost +
+    volumeBoost +
+    coverageBoost +
+    readinessBoost -
+    stalePenalty -
+    missingPenalty
+
+  return Number(Math.max(score, 0).toFixed(2))
+}
+
+function evaluateCandidateState({
+  marketHashName = "",
+  category = "",
+  tradable = true,
+  eligibility = {},
+  referencePrice = null,
+  volume7d = null,
+  marketCoverageCount = 0,
+  snapshot = null,
+  snapshotStale = true,
+  liquidityRank = 0
+} = {}) {
+  const normalizedCategory = normalizeCategory(category, marketHashName)
+  const hardFloor = Number(
+    SOURCE_CANDIDATE_HARD_FLOOR[normalizedCategory] ??
+      SOURCE_CANDIDATE_HARD_FLOOR[ITEM_CATEGORIES.WEAPON_SKIN]
+  )
+  const missingSnapshot = !snapshot || snapshotStale
+  const missingReference = referencePrice == null
+  const rules =
+    SOURCE_QUALITY_RULES[normalizedCategory] || SOURCE_QUALITY_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
+  const missingMarketCoverage =
+    Number(marketCoverageCount || 0) < Number(rules.minMarketCoverage || 0)
+  const missingLiquidityContext = volume7d == null
+
+  let rejectedReason = ""
+  if (!tradable) {
+    rejectedReason = "rejectedNotTradable"
+  } else if (!isScannerScopeCategory(normalizedCategory)) {
+    rejectedReason = "rejectedOutOfScopeCategory"
+  } else if (hasExcludedNamePattern(marketHashName)) {
+    rejectedReason = "rejectedNamePattern"
+  } else if (referencePrice != null && referencePrice < hardFloor) {
+    rejectedReason = "rejectedHardValueFloor"
+  }
+
+  const strictEligible = Boolean(eligibility?.eligible)
+  const strictReason = normalizeText(eligibility?.reason)
+  let candidateStatus = CATALOG_CANDIDATE_STATUS.CANDIDATE
+  if (rejectedReason) {
+    candidateStatus = CATALOG_CANDIDATE_STATUS.REJECTED
+  } else if (strictEligible) {
+    candidateStatus = CATALOG_CANDIDATE_STATUS.ELIGIBLE
+  } else if (missingSnapshot || missingReference || missingMarketCoverage || missingLiquidityContext) {
+    candidateStatus = CATALOG_CANDIDATE_STATUS.ENRICHING
+  }
+
+  const eligibilityReason =
+    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE
+      ? ""
+      : rejectedReason ||
+        (missingSnapshot
+          ? "missing_snapshot"
+          : missingReference
+            ? "missing_reference"
+            : missingMarketCoverage
+              ? "missing_market_coverage"
+              : missingLiquidityContext
+                ? "missing_liquidity_context"
+                : strictReason || "candidate_not_ready")
+
+  const enrichmentPriority = computeEnrichmentPriority({
+    candidateStatus,
+    category: normalizedCategory,
+    liquidityRank,
+    referencePrice,
+    volume7d,
+    marketCoverageCount,
+    missingSnapshot,
+    missingReference,
+    missingMarketCoverage,
+    snapshotStale
+  })
+
+  return {
+    candidateStatus,
+    missingSnapshot,
+    missingReference,
+    missingMarketCoverage,
+    missingLiquidityContext,
+    eligibilityReason,
+    strictEligible,
+    strictReason,
+    enrichmentPriority
+  }
+}
+
 function evaluateEligibility({ category, referencePrice, volume7d, marketCoverageCount, snapshotStale }) {
   const rules = SOURCE_QUALITY_RULES[category] || SOURCE_QUALITY_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
 
@@ -982,6 +1185,10 @@ async function enrichSourceCatalog() {
       totalRows: 0,
       activeCatalogRows: 0,
       tradableRows: 0,
+      candidateRows: 0,
+      enrichingRows: 0,
+      eligibleRows: 0,
+      rejectedRows: 0,
       eligibleTradableRows: 0,
       excludedLowValueItems: 0,
       excludedLowLiquidityItems: 0,
@@ -989,8 +1196,12 @@ async function enrichSourceCatalog() {
       excludedStaleItems: 0,
       excludedMissingReferenceItems: 0,
       excludedRowsByReason: { ...BASE_EXCLUDED_REASON_COUNTER },
+      candidateFunnel: buildStatusNumberMap(),
+      candidateFunnelByCategory: buildEmptyCategoryCounter(),
       byCategory: buildEmptyCategoryCounter(),
-      eligibleRowsByCategory: buildCategoryNumberMap()
+      eligibleRowsByCategory: buildCategoryNumberMap(),
+      candidateRowsByCategory: buildCategoryNumberMap(),
+      enrichingRowsByCategory: buildCategoryNumberMap()
     }
   }
 
@@ -1035,11 +1246,16 @@ async function enrichSourceCatalog() {
     : {}
 
   const byCategory = buildEmptyCategoryCounter()
+  const candidateFunnel = buildStatusNumberMap()
   const updates = []
   const counts = {
     totalRows: rows.length,
     activeCatalogRows: rows.length,
     tradableRows: 0,
+    candidateRows: 0,
+    enrichingRows: 0,
+    eligibleRows: 0,
+    rejectedRows: 0,
     eligibleTradableRows: 0,
     excludedLowValueItems: 0,
     excludedLowLiquidityItems: 0,
@@ -1049,6 +1265,8 @@ async function enrichSourceCatalog() {
   }
 
   const eligibleRowsByCategory = buildCategoryNumberMap()
+  const candidateRowsByCategory = buildCategoryNumberMap()
+  const enrichingRowsByCategory = buildCategoryNumberMap()
 
   for (const row of rows) {
     const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
@@ -1091,18 +1309,65 @@ async function enrichSourceCatalog() {
       marketCoverage: marketCoverageCount,
       snapshotStale
     })
+    const candidateState = evaluateCandidateState({
+      marketHashName,
+      category,
+      tradable,
+      eligibility,
+      referencePrice,
+      volume7d,
+      marketCoverageCount,
+      snapshot,
+      snapshotStale,
+      liquidityRank
+    })
+    const candidateStatus = normalizeCandidateStatus(candidateState.candidateStatus)
+    const scanEligible =
+      tradable &&
+      candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
+      candidateState.strictEligible
+    candidateFunnel[candidateStatus] = Number(candidateFunnel[candidateStatus] || 0) + 1
 
-    const scanEligible = tradable && eligibility.eligible
     if (scanEligible) {
       counts.eligibleTradableRows += 1
+      counts.eligibleRows += 1
       byCategory[category].eligible += 1
       eligibleRowsByCategory[category] += 1
-    } else if (eligibility.reason) {
+    } else if (candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING) {
+      counts.enrichingRows += 1
+      byCategory[category].enriching += 1
+      enrichingRowsByCategory[category] += 1
+    } else if (candidateStatus === CATALOG_CANDIDATE_STATUS.CANDIDATE) {
+      counts.candidateRows += 1
+      byCategory[category].candidate += 1
+      candidateRowsByCategory[category] += 1
+    } else if (candidateStatus === CATALOG_CANDIDATE_STATUS.REJECTED) {
+      counts.rejectedRows += 1
+      byCategory[category].rejected += 1
+    }
+    if (candidateState.missingSnapshot) {
+      byCategory[category].missingSnapshot += 1
+    }
+    if (candidateState.missingReference) {
+      byCategory[category].missingReference += 1
+    }
+    if (candidateState.missingMarketCoverage) {
+      byCategory[category].missingMarketCoverage += 1
+    }
+    if (eligibility.reason) {
       if (Object.prototype.hasOwnProperty.call(counts, eligibility.reason)) {
         counts[eligibility.reason] += 1
       }
       mergeCategoryCounter(byCategory, category, eligibility.reason)
     }
+
+    const invalidReason = scanEligible
+      ? null
+      : normalizeText(
+          candidateStatus === CATALOG_CANDIDATE_STATUS.REJECTED
+            ? candidateState.eligibilityReason
+            : eligibility.reason || candidateState.eligibilityReason || "candidate_not_ready"
+        ) || "candidate_not_ready"
 
     updates.push({
       market_hash_name: marketHashName,
@@ -1111,13 +1376,19 @@ async function enrichSourceCatalog() {
       subcategory: normalizeText(row?.subcategory) || inferSubcategory(marketHashName, category),
       tradable,
       scan_eligible: scanEligible,
+      candidate_status: candidateStatus,
+      missing_snapshot: Boolean(candidateState.missingSnapshot),
+      missing_reference: Boolean(candidateState.missingReference),
+      missing_market_coverage: Boolean(candidateState.missingMarketCoverage),
+      enrichment_priority: candidateState.enrichmentPriority,
+      eligibility_reason: scanEligible ? null : normalizeText(candidateState.eligibilityReason) || null,
       reference_price: referencePrice,
       market_coverage_count: marketCoverageCount,
       liquidity_rank: liquidityRank,
       volume_7d: volume7d,
       snapshot_stale: snapshotStale,
       snapshot_captured_at: snapshot?.captured_at || null,
-      invalid_reason: scanEligible ? null : eligibility.reason || "not_tradable",
+      invalid_reason: invalidReason,
       source_tag: normalizeText(row?.source_tag || row?.sourceTag) || "curated_seed",
       is_active: row?.is_active == null ? true : Boolean(row.is_active),
       last_enriched_at: new Date().toISOString()
@@ -1137,8 +1408,12 @@ async function enrichSourceCatalog() {
   return {
     ...counts,
     excludedRowsByReason,
+    candidateFunnel,
+    candidateFunnelByCategory: byCategory,
     byCategory,
-    eligibleRowsByCategory
+    eligibleRowsByCategory,
+    candidateRowsByCategory,
+    enrichingRowsByCategory
   }
 }
 
@@ -1179,25 +1454,86 @@ function takeTopByCategory(rows = [], quotas = {}) {
   }
 }
 
-function normalizeCatalogCandidateRows(rows = [], selectionTier = "strict_eligible") {
-  const tier = normalizeText(selectionTier) || "strict_eligible"
+function normalizeCatalogCandidateRows(rows = [], selectionTier = "") {
+  const forcedTier = normalizeText(selectionTier)
+  function resolveSelectionTier(candidateStatus = CATALOG_CANDIDATE_STATUS.CANDIDATE) {
+    if (forcedTier) return forcedTier
+    if (candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE) return "strict_eligible"
+    if (candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING) return "candidate_enriching"
+    if (candidateStatus === CATALOG_CANDIDATE_STATUS.CANDIDATE) return "candidate_backfill"
+    return "candidate_backfill"
+  }
+  function resolveTierRank(tier = "") {
+    const normalizedTier = normalizeText(tier).toLowerCase()
+    if (normalizedTier === "strict_eligible") return 3
+    if (normalizedTier === "candidate_enriching") return 2
+    return 1
+  }
+
   return (Array.isArray(rows) ? rows : [])
     .map((row) => {
       const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
       if (!marketHashName) return null
       const category = normalizeCategory(row?.category, marketHashName)
       if (!isScannerScopeCategory(category)) return null
+      const scanEligible =
+        row?.scan_eligible == null ? Boolean(row?.scanEligible) : Boolean(row.scan_eligible)
+      const hasExplicitCandidateStatus = Boolean(
+        normalizeText(row?.candidate_status ?? row?.candidateStatus)
+      )
+      const referencePrice = toFiniteOrNull(row?.reference_price ?? row?.referencePrice)
+      const marketCoverageCount = Math.max(
+        Number((row?.market_coverage_count ?? row?.marketCoverageCount) || 0),
+        0
+      )
+      const snapshotStale =
+        row?.snapshot_stale == null ? Boolean(row?.snapshotStale) : Boolean(row.snapshot_stale)
+      const snapshotCapturedAt = normalizeText(
+        row?.snapshot_captured_at || row?.snapshotCapturedAt
+      )
+      const missingSnapshot =
+        row?.missing_snapshot == null
+          ? !snapshotCapturedAt || snapshotStale
+          : Boolean(row.missing_snapshot)
+      const missingReference =
+        row?.missing_reference == null
+          ? referencePrice == null
+          : Boolean(row.missing_reference)
+      const missingMarketCoverage =
+        row?.missing_market_coverage == null
+          ? marketCoverageCount <= 0
+          : Boolean(row.missing_market_coverage)
+
+      let candidateStatus = normalizeCandidateStatus(
+        row?.candidate_status ?? row?.candidateStatus,
+        scanEligible ? CATALOG_CANDIDATE_STATUS.ELIGIBLE : CATALOG_CANDIDATE_STATUS.CANDIDATE
+      )
+      if (
+        !hasExplicitCandidateStatus &&
+        !scanEligible &&
+        (missingSnapshot || missingReference || missingMarketCoverage)
+      ) {
+        candidateStatus = CATALOG_CANDIDATE_STATUS.ENRICHING
+      }
+      if (candidateStatus === CATALOG_CANDIDATE_STATUS.REJECTED) return null
+      const tier = resolveSelectionTier(candidateStatus)
       return {
         ...row,
         market_hash_name: marketHashName,
         item_name: normalizeText(row?.item_name || row?.itemName || marketHashName) || marketHashName,
         category,
+        candidate_status: candidateStatus,
+        scan_eligible: scanEligible,
+        missing_snapshot: missingSnapshot,
+        missing_reference: missingReference,
+        missing_market_coverage: missingMarketCoverage,
+        enrichment_priority: toFiniteOrNull(row?.enrichment_priority ?? row?.enrichmentPriority) ?? 0,
         liquidity_rank: toFiniteOrNull(row?.liquidity_rank) ?? 0,
-        market_coverage_count: Math.max(Number(row?.market_coverage_count || 0), 0),
+        market_coverage_count: marketCoverageCount,
         volume_7d: Math.max(Number(row?.volume_7d || 0), 0),
-        reference_price: toFiniteOrNull(row?.reference_price) ?? 0,
+        reference_price: referencePrice ?? 0,
         selectionTier: tier,
-        selectionTierRank: tier === "strict_eligible" ? 2 : 1
+        selectionTierRank: resolveTierRank(tier)
       }
     })
     .filter(Boolean)
@@ -1237,11 +1573,32 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
     }),
     "strict_eligible"
   )
+  const candidatePoolRows = normalizeCatalogCandidateRows(
+    await marketSourceCatalogRepo.listCandidatePool({
+      limit: Math.max(SOURCE_CATALOG_LIMIT, safeTarget * 3),
+      categories: CATEGORY_PRIORITY,
+      candidateStatuses: [
+        CATALOG_CANDIDATE_STATUS.ENRICHING,
+        CATALOG_CANDIDATE_STATUS.CANDIDATE
+      ]
+    })
+  )
+  const enrichingRows = candidatePoolRows.filter(
+    (row) => normalizeCandidateStatus(row?.candidate_status) === CATALOG_CANDIDATE_STATUS.ENRICHING
+  )
+  const candidateRows = candidatePoolRows.filter(
+    (row) => normalizeCandidateStatus(row?.candidate_status) === CATALOG_CANDIDATE_STATUS.CANDIDATE
+  )
 
-  const rankedRows = dedupeByMarketHashName([...strictEligibleRows])
+  const rankedRows = dedupeByMarketHashName([
+    ...strictEligibleRows,
+    ...enrichingRows,
+    ...candidateRows
+  ])
     .sort(
       (a, b) =>
         Number(b.selectionTierRank || 0) - Number(a.selectionTierRank || 0) ||
+        Number(b.enrichment_priority || 0) - Number(a.enrichment_priority || 0) ||
         Number(b.liquidity_rank || 0) - Number(a.liquidity_rank || 0) ||
         Number(b.market_coverage_count || 0) - Number(a.market_coverage_count || 0) ||
         Number(b.volume_7d || 0) - Number(a.volume_7d || 0) ||
@@ -1266,7 +1623,14 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
   }
 
   const selectedFromStrict = finalRows.filter((row) => row.selectionTier === "strict_eligible").length
-  const selectedFromFallback = 0
+  const selectedFromEnriching = finalRows.filter(
+    (row) => row.selectionTier === "candidate_enriching"
+  ).length
+  const selectedFromCandidate = finalRows.filter(
+    (row) => row.selectionTier === "candidate_backfill"
+  ).length
+  const selectedFromFallback = selectedFromEnriching + selectedFromCandidate
+  const candidateBackfillUsed = selectedFromFallback > 0
 
   const normalizedUniverseRows = finalRows.slice(0, safeTarget).map((row, index) => ({
     marketHashName: row.market_hash_name,
@@ -1294,9 +1658,14 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
   return {
     targetUniverseSize: safeTarget,
     eligibleRows: strictEligibleRows.length,
+    candidateRows: candidateRows.length,
+    enrichingRows: enrichingRows.length,
     strictEligibleRows: strictEligibleRows.length,
-    fallbackTradableRows: 0,
+    fallbackTradableRows: candidatePoolRows.length,
     selectedFromStrict,
+    selectedFromEligible: selectedFromStrict,
+    selectedFromEnriching,
+    selectedFromCandidate,
     selectedFromFallback,
     activeUniverseBuilt: normalizedUniverseRows.length,
     missingToTarget: Math.max(safeTarget - normalizedUniverseRows.length, 0),
@@ -1308,8 +1677,12 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
     quotaReallocationByCategory,
     reallocatedSlots: Math.max(finalRows.length - selected.length, 0),
     eligibleRowsByCategory: countCatalogRowsByCategory(strictEligibleRows),
+    candidateRowsByCategory: countCatalogRowsByCategory(candidateRows),
+    enrichingRowsByCategory: countCatalogRowsByCategory(enrichingRows),
+    candidateBackfillUsed,
+    seedPromotionActive: candidateBackfillUsed,
     quotas,
-    fallbackToMaxEligible: false,
+    fallbackToMaxEligible: candidateBackfillUsed,
     persisted: persist
   }
 }
@@ -1358,6 +1731,10 @@ async function runPipeline(options = {}) {
         ingest?.missingRowsToTargetByCategory || base.sourceCatalog.missingRowsToTargetByCategory,
       activeCatalogRows: Number(sourceCoverage?.activeCatalogRows || 0),
       tradableRows: Number(sourceCoverage?.tradableRows || 0),
+      candidateRows: Number(sourceCoverage?.candidateRows || 0),
+      enrichingRows: Number(sourceCoverage?.enrichingRows || 0),
+      eligibleRows: Number(sourceCoverage?.eligibleRows || 0),
+      rejectedRows: Number(sourceCoverage?.rejectedRows || 0),
       eligibleTradableRows: Number(sourceCoverage?.eligibleTradableRows || 0),
       excludedLowValueItems: Number(sourceCoverage?.excludedLowValueItems || 0),
       excludedLowLiquidityItems: Number(sourceCoverage?.excludedLowLiquidityItems || 0),
@@ -1366,8 +1743,16 @@ async function runPipeline(options = {}) {
       excludedMissingReferenceItems: Number(sourceCoverage?.excludedMissingReferenceItems || 0),
       excludedRowsByReason:
         sourceCoverage?.excludedRowsByReason || base.sourceCatalog.excludedRowsByReason,
+      candidateFunnel:
+        sourceCoverage?.candidateFunnel || base.sourceCatalog.candidateFunnel,
+      candidateFunnelByCategory:
+        sourceCoverage?.candidateFunnelByCategory || base.sourceCatalog.candidateFunnelByCategory,
       eligibleRowsByCategory:
         sourceCoverage?.eligibleRowsByCategory || base.sourceCatalog.eligibleRowsByCategory,
+      candidateRowsByCategory:
+        sourceCoverage?.candidateRowsByCategory || base.sourceCatalog.candidateRowsByCategory,
+      enrichingRowsByCategory:
+        sourceCoverage?.enrichingRowsByCategory || base.sourceCatalog.enrichingRowsByCategory,
       byCategory: sourceCoverage?.byCategory || base.sourceCatalog.byCategory
     },
     universeBuild
@@ -1462,7 +1847,10 @@ module.exports = {
   getLastDiagnostics,
   __testables: {
     normalizeCategory,
+    normalizeCandidateStatus,
     computeSourceLiquidityScore,
+    computeEnrichmentPriority,
+    evaluateCandidateState,
     evaluateEligibility,
     buildCategoryQuotas,
     buildSourceCatalogQuotas,
