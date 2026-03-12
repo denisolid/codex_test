@@ -2,6 +2,7 @@ const { supabaseAdmin } = require("../config/supabase")
 const AppError = require("../utils/AppError")
 
 const TABLE = "scanner_runs"
+const RUNNING_LOCK_INDEX = "idx_scanner_runs_single_active_per_type"
 
 function normalizeScannerType(value) {
   const text = String(value || "global_arbitrage").trim()
@@ -14,10 +15,12 @@ function normalizeStatus(value, fallback = "running") {
     .toLowerCase()
   if (!text) return fallback
   if (
+    text === "queued" ||
     text === "running" ||
     text === "completed" ||
     text === "failed" ||
-    text === "timed_out"
+    text === "timed_out" ||
+    text === "skipped_already_running"
   ) {
     return text
   }
@@ -48,11 +51,29 @@ function normalizeFailureReason(value) {
   return text || null
 }
 
+function isUniqueViolation(error) {
+  return String(error?.code || "").trim() === "23505"
+}
+
+function isRunningLockConflict(error) {
+  if (!isUniqueViolation(error)) return false
+  const message = String(error?.message || "").toLowerCase()
+  const details = String(error?.details || "").toLowerCase()
+  return (
+    message.includes(RUNNING_LOCK_INDEX) ||
+    details.includes(RUNNING_LOCK_INDEX) ||
+    message.includes("scanner_type") ||
+    details.includes("scanner_type")
+  )
+}
+
 exports.createRun = async (payload = {}) => {
+  const status = normalizeStatus(payload.status, "running")
   const row = {
     scanner_type: normalizeScannerType(payload.scannerType),
     started_at: payload.startedAt || new Date().toISOString(),
-    status: normalizeStatus(payload.status, "running"),
+    completed_at: payload.completedAt || null,
+    status,
     items_scanned: toInteger(payload.itemsScanned, 0),
     opportunities_found: toInteger(payload.opportunitiesFound, 0),
     new_opportunities_added: toInteger(payload.newOpportunitiesAdded, 0),
@@ -72,6 +93,68 @@ exports.createRun = async (payload = {}) => {
   }
 
   return data
+}
+
+async function getLatestRunningRunInternal(scannerType = "global_arbitrage") {
+  const type = normalizeScannerType(scannerType)
+  const { data, error } = await supabaseAdmin
+    .from(TABLE)
+    .select("*")
+    .eq("scanner_type", type)
+    .eq("status", "running")
+    .order("started_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) {
+    throw new AppError(error.message, 500)
+  }
+
+  return data || null
+}
+
+exports.getLatestRunningRun = async (scannerType = "global_arbitrage") =>
+  getLatestRunningRunInternal(scannerType)
+
+exports.tryCreateRunningRun = async (payload = {}) => {
+  const row = {
+    scanner_type: normalizeScannerType(payload.scannerType),
+    started_at: payload.startedAt || new Date().toISOString(),
+    status: "running",
+    items_scanned: toInteger(payload.itemsScanned, 0),
+    opportunities_found: toInteger(payload.opportunitiesFound, 0),
+    new_opportunities_added: toInteger(payload.newOpportunitiesAdded, 0),
+    diagnostics_summary: toJsonObject(payload.diagnosticsSummary),
+    duration_ms: toDurationMs(payload.durationMs),
+    failure_reason: normalizeFailureReason(payload.failureReason)
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from(TABLE)
+    .insert(row)
+    .select("*")
+    .single()
+
+  if (!error) {
+    return {
+      run: data,
+      alreadyRunning: false,
+      conflictReason: null,
+      existingRun: null
+    }
+  }
+
+  if (isRunningLockConflict(error)) {
+    const existingRun = await getLatestRunningRunInternal(row.scanner_type).catch(() => null)
+    return {
+      run: null,
+      alreadyRunning: true,
+      conflictReason: "already_running",
+      existingRun
+    }
+  }
+
+  throw new AppError(error.message, 500)
 }
 
 exports.markCompleted = async (runId, payload = {}) => {

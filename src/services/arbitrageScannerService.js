@@ -11,6 +11,8 @@ const {
   arbitrageMaxConcurrentMarketRequests,
   arbitrageEnrichmentJobTimeoutMs,
   arbitrageOpportunityJobTimeoutMs,
+  arbitrageAllowCrossJobParallelism,
+  arbitrageRecordSkippedAlreadyRunning,
   arbitrageScanTimeoutPerBatchMs,
   arbitrageImageEnrichBatchSize,
   arbitrageImageEnrichConcurrency,
@@ -73,6 +75,8 @@ const OPPORTUNITY_JOB_TIMEOUT_MS = Math.max(
   Number(arbitrageOpportunityJobTimeoutMs || 420000),
   60000
 )
+const ALLOW_CROSS_JOB_PARALLELISM = arbitrageAllowCrossJobParallelism !== false
+const RECORD_SKIPPED_ALREADY_RUNNING = Boolean(arbitrageRecordSkippedAlreadyRunning)
 const STALE_RUN_RECONCILE_COOLDOWN_MS = 60 * 1000
 const HIGH_CONFIDENCE_MIN_PRICE_USD = 5
 const HIGH_CONFIDENCE_MIN_SPREAD_PERCENT = 5
@@ -3405,7 +3409,15 @@ function createJobState() {
     lastStartedAt: null,
     lastCompletedAt: null,
     lastPersistSummary: null,
-    lastStaleReconcileAt: 0
+    lastStaleReconcileAt: 0,
+    coordination: {
+      lockAcquired: 0,
+      lockDenied: 0,
+      skippedAlreadyRunning: 0,
+      staleReconciled: 0,
+      timedOutReconciled: 0,
+      crossJobBlocked: 0
+    }
   }
 }
 
@@ -3453,6 +3465,95 @@ function updateNextScheduledAt(scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN) {
   const state = getJobState(scannerType)
   const intervalMs = getJobIntervalMs(scannerType)
   state.nextScheduledAt = new Date(Date.now() + intervalMs).toISOString()
+}
+
+function getOtherScannerType(scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN) {
+  const normalized = String(scannerType || "")
+    .trim()
+    .toLowerCase()
+  return normalized === SCANNER_TYPES.ENRICHMENT
+    ? SCANNER_TYPES.OPPORTUNITY_SCAN
+    : SCANNER_TYPES.ENRICHMENT
+}
+
+function computeElapsedMs(startedAt) {
+  const startedMs = parseTimestampMs(startedAt)
+  if (startedMs == null) return null
+  return Math.max(Date.now() - startedMs, 0)
+}
+
+function toActiveRunDescriptor(run = null, fallback = {}) {
+  const runId = String(run?.id || fallback?.id || "").trim() || null
+  const startedAt = run?.started_at || run?.startedAt || fallback?.startedAt || null
+  return {
+    runId,
+    startedAt,
+    elapsedMs: computeElapsedMs(startedAt)
+  }
+}
+
+function buildAlreadyRunningResult(scannerType, run = null, fallback = {}) {
+  const descriptor = toActiveRunDescriptor(run, fallback)
+  return {
+    scannerType,
+    scanRunId: descriptor.runId,
+    alreadyRunning: true,
+    status: "already_running",
+    existingRunId: descriptor.runId,
+    existingRunStartedAt: descriptor.startedAt,
+    elapsedMs: descriptor.elapsedMs
+  }
+}
+
+function buildCrossJobBlockedResult(scannerType, blockingType, blockingRun = null, fallback = {}) {
+  const descriptor = toActiveRunDescriptor(blockingRun, fallback)
+  return {
+    scannerType,
+    scanRunId: null,
+    alreadyRunning: false,
+    status: "blocked_by_other_job",
+    blockedByCrossJob: true,
+    blockingScannerType: blockingType,
+    blockingRunId: descriptor.runId,
+    blockingRunStartedAt: descriptor.startedAt,
+    blockingElapsedMs: descriptor.elapsedMs
+  }
+}
+
+async function maybeRecordSkippedAlreadyRunningRun(
+  scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN,
+  trigger = "manual",
+  reason = "already_running",
+  activeRun = null
+) {
+  if (!RECORD_SKIPPED_ALREADY_RUNNING) return null
+  const nowIso = new Date().toISOString()
+  return scannerRunRepo
+    .createRun({
+      scannerType,
+      status: "skipped_already_running",
+      startedAt: nowIso,
+      completedAt: nowIso,
+      durationMs: 0,
+      failureReason: reason,
+      diagnosticsSummary: {
+        scannerType,
+        trigger: String(trigger || "manual"),
+        coordination: {
+          event: "skipped_already_running",
+          reason,
+          existingRunId: String(activeRun?.id || "").trim() || null,
+          existingRunStartedAt: activeRun?.started_at || null
+        }
+      }
+    })
+    .catch((err) => {
+      console.error(
+        `[arbitrage-scanner] Failed to record skipped_already_running run (${scannerType})`,
+        err.message
+      )
+      return null
+    })
 }
 
 function isScannerRunOverdue(status = {}, nowMs = Date.now(), options = {}) {
@@ -3564,6 +3665,16 @@ async function reconcileStaleRunningRunsForType(
         error: timedOut ? "job_timeout_reconciled" : "scanner_run_stale_reconciled"
       })
       markedFailed += 1
+      if (timedOut) {
+        state.coordination.timedOutReconciled += 1
+      } else {
+        state.coordination.staleReconciled += 1
+      }
+      console.warn(
+        `[arbitrage-scanner] Reconciled stale ${scannerType} run ${runId} as ${
+          timedOut ? "timed_out" : "failed"
+        } after ${elapsedMs}ms`
+      )
     } catch (err) {
       console.error(
         `[arbitrage-scanner] Failed to mark stale run ${runId} as failed (${scannerType})`,
@@ -6218,6 +6329,11 @@ async function runOpportunityWithRunRecord(runRecord = {}, options = {}, state =
       durationMs,
       diagnosticsSummary
     })
+    console.info(
+      `[arbitrage-scanner] opportunity_scan run ${
+        String(runRecord?.id || "").trim() || "unknown"
+      } completed in ${durationMs}ms`
+    )
 
     state.latest = scanPayload
     state.lastError = null
@@ -6231,6 +6347,12 @@ async function runOpportunityWithRunRecord(runRecord = {}, options = {}, state =
   } catch (err) {
     const timedOut = String(err?.code || "").trim().toLowerCase() === "job_timeout"
     state.lastError = err
+    console.error(
+      `[arbitrage-scanner] opportunity_scan run ${
+        String(runRecord?.id || "").trim() || "unknown"
+      } failed (${timedOut ? "timed_out" : "failed"})`,
+      String(err?.message || err)
+    )
     await scannerRunRepo
       .markFailed(runRecord?.id, {
         status: timedOut ? "timed_out" : "failed",
@@ -6272,6 +6394,11 @@ async function runEnrichmentWithRunRecord(runRecord = {}, options = {}, state = 
       durationMs,
       diagnosticsSummary
     })
+    console.info(
+      `[arbitrage-scanner] enrichment run ${
+        String(runRecord?.id || "").trim() || "unknown"
+      } completed in ${durationMs}ms`
+    )
     state.latest = enrichmentPayload
     state.lastError = null
     state.lastPersistSummary = null
@@ -6284,6 +6411,12 @@ async function runEnrichmentWithRunRecord(runRecord = {}, options = {}, state = 
   } catch (err) {
     const timedOut = String(err?.code || "").trim().toLowerCase() === "job_timeout"
     state.lastError = err
+    console.error(
+      `[arbitrage-scanner] enrichment run ${
+        String(runRecord?.id || "").trim() || "unknown"
+      } failed (${timedOut ? "timed_out" : "failed"})`,
+      String(err?.message || err)
+    )
     await scannerRunRepo
       .markFailed(runRecord?.id, {
         status: timedOut ? "timed_out" : "failed",
@@ -6311,6 +6444,7 @@ async function enqueueJob(scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN, options 
     .trim()
     .toLowerCase()
   const state = getJobState(normalizedType)
+  const trigger = String(options.trigger || "manual")
   await reconcileStaleRunningRunsForType(normalizedType, Date.now(), { force: true }).catch((err) => {
     console.error(
       `[arbitrage-scanner] Stale run reconciliation before enqueue failed (${normalizedType})`,
@@ -6319,45 +6453,82 @@ async function enqueueJob(scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN, options 
   })
 
   if (state.inFlight) {
-    return {
-      scanRunId: state.inFlightRunId,
-      alreadyRunning: true
+    const activeRun = {
+      id: state.inFlightRunId,
+      started_at: state.lastStartedAt
     }
+    state.coordination.lockDenied += 1
+    state.coordination.skippedAlreadyRunning += 1
+    console.info(
+      `[arbitrage-scanner] Lock denied for ${normalizedType}: already running (in-memory run ${
+        String(state.inFlightRunId || "").trim() || "unknown"
+      })`
+    )
+    await maybeRecordSkippedAlreadyRunningRun(normalizedType, trigger, "already_running", activeRun)
+    return buildAlreadyRunningResult(normalizedType, activeRun)
   }
 
-  const runningRows = await scannerRunRepo
-    .listRunningRuns(normalizedType, { limit: 10 })
-    .catch((err) => {
-      console.error(
-        `[arbitrage-scanner] Failed to inspect running rows before enqueue (${normalizedType})`,
-        err.message
+  if (!ALLOW_CROSS_JOB_PARALLELISM) {
+    const blockingType = getOtherScannerType(normalizedType)
+    const blockingState = getJobState(blockingType)
+    let blockingRun = null
+    if (blockingState.inFlight) {
+      blockingRun = {
+        id: blockingState.inFlightRunId,
+        started_at: blockingState.lastStartedAt
+      }
+    } else {
+      blockingRun = await scannerRunRepo.getLatestRunningRun(blockingType).catch((err) => {
+        console.error(
+          `[arbitrage-scanner] Failed to inspect cross-job running rows before enqueue (${normalizedType})`,
+          err.message
+        )
+        return null
+      })
+    }
+    if (blockingRun?.id) {
+      state.coordination.crossJobBlocked += 1
+      console.info(
+        `[arbitrage-scanner] ${normalizedType} enqueue blocked by ${blockingType} run ${blockingRun.id} (ALLOW_CROSS_JOB_PARALLELISM=false)`
       )
-      return []
-    })
-  const activeRunning = (Array.isArray(runningRows) ? runningRows : []).find((row) => {
-    const runId = String(row?.id || "").trim()
-    if (!runId) return false
-    if (runId === String(state.inFlightRunId || "").trim()) return false
-    const startedMs = parseTimestampMs(row?.started_at)
-    if (startedMs == null) return true
-    return Date.now() - startedMs < getJobTimeoutMs(normalizedType)
-  })
-  if (activeRunning) {
-    return {
-      scanRunId: String(activeRunning?.id || "").trim() || null,
-      alreadyRunning: true
+      return buildCrossJobBlockedResult(normalizedType, blockingType, blockingRun)
     }
   }
 
-  const trigger = String(options.trigger || "manual")
-  const runRecord = await scannerRunRepo.createRun({
+  const createAttempt = await scannerRunRepo.tryCreateRunningRun({
     scannerType: normalizedType,
-    status: "running",
     diagnosticsSummary: {
       scannerType: normalizedType,
-      trigger
+      trigger,
+      coordination: {
+        event: "lock_acquire_attempt",
+        allowCrossJobParallelism: ALLOW_CROSS_JOB_PARALLELISM
+      }
     }
   })
+  if (createAttempt?.alreadyRunning) {
+    const activeRun =
+      createAttempt?.existingRun || (await scannerRunRepo.getLatestRunningRun(normalizedType).catch(() => null))
+    state.coordination.lockDenied += 1
+    state.coordination.skippedAlreadyRunning += 1
+    console.info(
+      `[arbitrage-scanner] Lock denied for ${normalizedType}: already running (run ${
+        String(activeRun?.id || "").trim() || "unknown"
+      })`
+    )
+    await maybeRecordSkippedAlreadyRunningRun(normalizedType, trigger, "already_running", activeRun)
+    return buildAlreadyRunningResult(normalizedType, activeRun, {
+      id: state.inFlightRunId,
+      startedAt: state.lastStartedAt
+    })
+  }
+
+  const runRecord = createAttempt?.run || null
+  if (!runRecord?.id) {
+    throw new Error(`[arbitrage-scanner] Failed to acquire run lock for ${normalizedType}`)
+  }
+  state.coordination.lockAcquired += 1
+  console.info(`[arbitrage-scanner] Lock acquired for ${normalizedType} run ${runRecord.id}`)
 
   state.inFlightRunId = runRecord?.id || null
   state.lastStartedAt = runRecord?.started_at || new Date().toISOString()
@@ -6387,8 +6558,12 @@ async function enqueueJob(scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN, options 
   })
 
   return {
+    scannerType: normalizedType,
     scanRunId: runRecord?.id || null,
-    alreadyRunning: false
+    alreadyRunning: false,
+    status: "started",
+    startedAt: runRecord?.started_at || null,
+    elapsedMs: 0
   }
 }
 
@@ -6435,6 +6610,9 @@ async function getJobStatusInternal(scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN
     .toLowerCase()
   const currentStatus = state.inFlight || latestRunStatus === "running" ? "running" : "idle"
   const currentRunId = state.inFlightRunId || (currentStatus === "running" ? latestRun?.id || null : null)
+  const currentRunStartedAt =
+    currentStatus === "running" ? latestRun?.started_at || state.lastStartedAt || null : null
+  const currentRunElapsedMs = currentRunStartedAt ? computeElapsedMs(currentRunStartedAt) : null
   const intervalMinutes =
     normalizedType === SCANNER_TYPES.ENRICHMENT
       ? ENRICHMENT_INTERVAL_MINUTES
@@ -6445,9 +6623,21 @@ async function getJobStatusInternal(scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN
     schedulerRunning: Boolean(state.timer),
     currentStatus,
     currentRunId,
+    currentRunStartedAt,
+    currentRunElapsedMs,
     nextScheduledAt: state.nextScheduledAt,
     latestRun,
-    latestCompletedRun
+    latestCompletedRun,
+    coordination: {
+      lockAcquired: Number(state?.coordination?.lockAcquired || 0),
+      lockDenied: Number(state?.coordination?.lockDenied || 0),
+      skippedAlreadyRunning: Number(state?.coordination?.skippedAlreadyRunning || 0),
+      staleReconciled: Number(state?.coordination?.staleReconciled || 0),
+      timedOutReconciled: Number(state?.coordination?.timedOutReconciled || 0),
+      crossJobBlocked: Number(state?.coordination?.crossJobBlocked || 0),
+      allowCrossJobParallelism: ALLOW_CROSS_JOB_PARALLELISM,
+      recordSkippedAlreadyRunning: RECORD_SKIPPED_ALREADY_RUNNING
+    }
   }
   if (options.includeActiveCount) {
     status.activeOpportunities = Number(options.activeCount || 0)
@@ -6467,10 +6657,13 @@ async function getScannerStatusInternal() {
     schedulerRunning: Boolean(scannerState.timer) || Boolean(enrichmentState.timer),
     currentStatus: opportunityStatus?.currentStatus || "idle",
     currentRunId: opportunityStatus?.currentRunId || null,
+    currentRunStartedAt: opportunityStatus?.currentRunStartedAt || null,
+    currentRunElapsedMs: opportunityStatus?.currentRunElapsedMs ?? null,
     nextScheduledAt: opportunityStatus?.nextScheduledAt || null,
     activeOpportunities: Number(activeCount || 0),
     latestRun: opportunityStatus?.latestRun || null,
     latestCompletedRun: opportunityStatus?.latestCompletedRun || null,
+    coordination: opportunityStatus?.coordination || {},
     jobs: {
       [SCANNER_TYPES.OPPORTUNITY_SCAN]: {
         ...opportunityStatus,
@@ -6892,6 +7085,25 @@ exports.triggerRefresh = async (options = {}) => {
     runOpportunity ? enqueueScan({ forceRefresh, trigger }) : Promise.resolve(null),
     runEnrichment ? enqueueEnrichment({ forceRefresh, trigger }) : Promise.resolve(null)
   ])
+  const toJobResult = (result) =>
+    !result
+      ? null
+      : {
+          scanRunId: result?.scanRunId || null,
+          status: String(
+            result?.status || (result?.alreadyRunning ? "already_running" : "started")
+          ),
+          alreadyRunning: Boolean(result?.alreadyRunning),
+          startedAt: result?.startedAt || null,
+          elapsedMs: result?.elapsedMs ?? null,
+          existingRunId: result?.existingRunId || null,
+          existingRunStartedAt: result?.existingRunStartedAt || null,
+          blockedByCrossJob: Boolean(result?.blockedByCrossJob),
+          blockingScannerType: result?.blockingScannerType || null,
+          blockingRunId: result?.blockingRunId || null,
+          blockingRunStartedAt: result?.blockingRunStartedAt || null,
+          blockingElapsedMs: result?.blockingElapsedMs ?? null
+        }
   const scanRunId =
     opportunityEnqueue?.scanRunId || enrichmentEnqueue?.scanRunId || null
   const alreadyRunning = Boolean(
@@ -6904,16 +7116,10 @@ exports.triggerRefresh = async (options = {}) => {
     startedAt: new Date().toISOString(),
     jobs: {
       [SCANNER_TYPES.OPPORTUNITY_SCAN]: runOpportunity
-        ? {
-            scanRunId: opportunityEnqueue?.scanRunId || null,
-            alreadyRunning: Boolean(opportunityEnqueue?.alreadyRunning)
-          }
+        ? toJobResult(opportunityEnqueue)
         : null,
       [SCANNER_TYPES.ENRICHMENT]: runEnrichment
-        ? {
-            scanRunId: enrichmentEnqueue?.scanRunId || null,
-            alreadyRunning: Boolean(enrichmentEnqueue?.alreadyRunning)
-          }
+        ? toJobResult(enrichmentEnqueue)
         : null
     },
     plan: {
@@ -6928,6 +7134,7 @@ exports.triggerRefresh = async (options = {}) => {
         }
         return SCANNER_INTERVAL_MINUTES
       })(),
+      allowCrossJobParallelism: ALLOW_CROSS_JOB_PARALLELISM
     }
   }
 }
@@ -6940,10 +7147,13 @@ exports.getStatus = async () => {
     schedulerRunning: Boolean(status?.schedulerRunning),
     currentStatus: status?.currentStatus || "idle",
     currentRunId: status?.currentRunId || null,
+    currentRunStartedAt: status?.currentRunStartedAt || null,
+    currentRunElapsedMs: status?.currentRunElapsedMs ?? null,
     nextScheduledAt: status?.nextScheduledAt || null,
     activeOpportunities: Number(status?.activeOpportunities || 0),
     latestRun: status?.latestRun || null,
     latestCompletedRun: status?.latestCompletedRun || null,
+    coordination: status?.coordination || {},
     jobs: status?.jobs || {}
   }
 }
