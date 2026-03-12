@@ -109,7 +109,7 @@ const ACCOUNT_PLAN_LIMITS = Object.freeze({
   full_access: {
     opportunitiesDailyLimit: "High/unlimited opportunities",
     alertsLimit: "25 active alerts",
-    scannerRefresh: "Refresh every 30 minutes",
+    scannerRefresh: "No manual refresh cooldown",
     historyDaysLimit: "90 days history",
     visibleFeedLimit: "Full opportunities feed",
     advancedFilters: "Advanced filters enabled",
@@ -146,7 +146,7 @@ const ACCOUNT_PLAN_ENTITLEMENT_FALLBACKS = Object.freeze({
   full_access: {
     opportunitiesDailyLimit: 500,
     maxAlerts: 25,
-    scannerRefreshIntervalMinutes: 30,
+    scannerRefreshIntervalMinutes: 0,
     maxHistoryDays: 90,
     visibleFeedLimit: 500,
     advancedFilters: true,
@@ -274,7 +274,7 @@ const PRICING_COMPARISON_GROUPS = Object.freeze([
         feature: "Refresh",
         values: {
           free: { label: "Every 12 hours", tone: "limited" },
-          full_access: { label: "Every 30 minutes", tone: "included" },
+          full_access: { label: "No manual cooldown", tone: "included" },
           alpha_access: { label: "Priority", tone: "premium" },
         },
       },
@@ -13488,7 +13488,9 @@ function renderSettingsTab() {
     0,
   );
   const scannerRefreshHint =
-    scannerRefreshMinutes >= 60
+    scannerRefreshMinutes <= 0
+      ? "no manual cooldown"
+      : scannerRefreshMinutes >= 60
       ? `${Math.round(scannerRefreshMinutes / 60)} hour(s)`
       : `${scannerRefreshMinutes} minute(s)`;
   const canSwitchPlans = Boolean(profile.subscriptionSwitcherEnabled);
@@ -13764,7 +13766,7 @@ function renderSettingsTab() {
   const subscriptionMarkup = `
     <article class="panel wide account-card">
       <h2>Subscription / Access Level</h2>
-      <p class="helper-text">Current plan controls backend limits instantly. Scanner refresh cadence for this plan: every ${escapeHtml(scannerRefreshHint)}. Alpha Access is listed below as roadmap-only and cannot be purchased yet.</p>
+      <p class="helper-text">Current plan controls backend limits instantly. Scanner refresh cadence for this plan: ${escapeHtml(scannerRefreshHint)}. Alpha Access is listed below as roadmap-only and cannot be purchased yet.</p>
       <div class="sub-kpi-grid">
         <article class="sub-kpi-card">
           <span>Current Plan</span>

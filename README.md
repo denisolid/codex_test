@@ -1,6 +1,7 @@
 # CS2 Item Portfolio Analyzer (MVP)
 
 Backend MVP implemented with:
+
 - Node.js + Express
 - Supabase (PostgreSQL + Auth)
 - REST API
@@ -163,6 +164,7 @@ All non-auth routes require authentication via secure `HttpOnly` cookie (set by 
 Monetary endpoints support optional `?currency=<CODE>` query parameter.
 
 Examples:
+
 - `GET /api/portfolio?currency=EUR`
 - `GET /api/portfolio/history?currency=GBP`
 - `GET /api/skins/by-steam-item/:steamItemId?currency=UAH`
@@ -203,6 +205,7 @@ Examples:
   - `npm run security:gitleaks:staged`
 
 Notes:
+
 - The pre-commit hook is at `.githooks/pre-commit` and blocks commits if staged secrets are detected.
 - Keep real credentials only in local `.env` files and deployment secret managers.
 - Never commit `.env` or `frontend/.env`.
@@ -319,9 +322,11 @@ Notes:
 - Cached market rows are stored in `market_prices` with default TTL `60` minutes.
 
 Apply migration:
+
 - `supabase/migrations/2026-03-01-market-price-comparison.sql`
 
 Configure backend env (root `.env`):
+
 - `MARKET_COMPARE_CACHE_TTL_MINUTES=60`
 - `MARKET_COMPARE_CONCURRENCY=4`
 - `MARKET_COMPARE_TIMEOUT_MS=9000`
@@ -340,6 +345,7 @@ Configure backend env (root `.env`):
 - `DMARKET_SECRET_KEY=` (optional)
 
 Primary API:
+
 - `POST /api/market/compare`
   - body: `{ "items": [{ "skinId": 1, "marketHashName": "...", "quantity": 2 }], "pricingMode": "lowest_buy", "forceRefresh": false }`
 - `POST /api/market/refresh` (admin-protected, same body; forces refresh)
@@ -380,6 +386,7 @@ Primary API:
 Use the included `render.yaml` blueprint, or set values manually.
 
 Manual service settings:
+
 - Runtime: `Node`
 - Root Directory: repository root
 - Build Command: `npm ci`
@@ -387,6 +394,7 @@ Manual service settings:
 - Health Check Path: `/health`
 
 Render environment variables:
+
 - Required:
   - `SUPABASE_URL`
   - `SUPABASE_ANON_KEY`
@@ -399,22 +407,26 @@ Render environment variables:
   - `STEAM_INVENTORY_SOURCE` (default `auto`)
 
 Where to set on Render:
+
 - `Dashboard -> Web Service -> Environment`
 
 ## Deploy frontend on Vercel (from GitHub)
 
 Project settings:
+
 - Framework preset: `Vite`
 - Root Directory: `frontend`
 - Build Command: `npm run build`
 - Output Directory: `dist`
 
 Frontend environment variables on Vercel:
+
 - `VITE_API_URL=https://<your-render-service>.onrender.com/api`
 - `VITE_SUPABASE_URL=https://<your-project>.supabase.co`
 - `VITE_SUPABASE_ANON_KEY=<your-anon-key>`
 
 Where to set on Vercel:
+
 - `Dashboard -> Project -> Settings -> Environment Variables`
 
 ## Deploy frontend on Netlify (alternative)
@@ -422,11 +434,13 @@ Where to set on Vercel:
 `netlify.toml` is included for this repository.
 
 Netlify environment variables:
+
 - `VITE_API_URL=https://<your-render-service>.onrender.com/api`
 - `VITE_SUPABASE_URL=https://<your-project>.supabase.co`
 - `VITE_SUPABASE_ANON_KEY=<your-anon-key>`
 
 Where to set on Netlify:
+
 - `Dashboard -> Site configuration -> Environment variables`
 
 ## Connect frontend and backend
@@ -443,10 +457,12 @@ Where to set on Netlify:
 ## Verify deployment
 
 Backend:
+
 - Open `https://<render-service>.onrender.com/health`
 - Expect `200` with JSON, e.g. `{ "ok": true }`
 
 Frontend:
+
 - Open deployed frontend URL
 - Login/register and confirm requests are sent to Render API URL
 - Confirm authenticated API calls succeed without CORS errors

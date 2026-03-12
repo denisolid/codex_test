@@ -59,7 +59,7 @@ const PLAN_CONFIG = Object.freeze({
     opportunities_daily_limit: 500,
     alerts_limit: 25,
     minimum_alert_cooldown_minutes: 0,
-    scanner_refresh_interval_minutes: 30,
+    scanner_refresh_interval_minutes: 0,
     history_days_limit: 90,
     visible_feed_limit: 500,
     delayed_signals: false,
