@@ -167,3 +167,22 @@ exports.getById = async (runId) => {
 
   return data || null
 }
+
+exports.listRunningRuns = async (scannerType = "global_arbitrage", options = {}) => {
+  const type = normalizeScannerType(scannerType)
+  const limit = Math.max(Math.min(toInteger(options.limit, 100), 500), 1)
+
+  const { data, error } = await supabaseAdmin
+    .from(TABLE)
+    .select("*")
+    .eq("scanner_type", type)
+    .eq("status", "running")
+    .order("started_at", { ascending: false })
+    .limit(limit)
+
+  if (error) {
+    throw new AppError(error.message, 500)
+  }
+
+  return Array.isArray(data) ? data : []
+}

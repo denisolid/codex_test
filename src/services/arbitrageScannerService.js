@@ -41,6 +41,7 @@ const SCANNER_INTERVAL_MINUTES = Math.max(Number(arbitrageScannerIntervalMinutes
 const SCANNER_INTERVAL_MS = SCANNER_INTERVAL_MINUTES * 60 * 1000
 const CACHE_TTL_MS = SCANNER_INTERVAL_MS
 const SCANNER_OVERDUE_GRACE_MS = Math.max(Math.round(SCANNER_INTERVAL_MS * 0.2), 15 * 1000)
+const STALE_RUN_RECONCILE_COOLDOWN_MS = 60 * 1000
 const HIGH_CONFIDENCE_MIN_PRICE_USD = 5
 const HIGH_CONFIDENCE_MIN_SPREAD_PERCENT = 5
 const HIGH_CONFIDENCE_MAX_SPREAD_PERCENT = 120
@@ -2668,7 +2669,8 @@ const scannerState = {
   nextScheduledAt: null,
   lastStartedAt: null,
   lastCompletedAt: null,
-  lastPersistSummary: null
+  lastPersistSummary: null,
+  lastStaleReconcileAt: 0
 }
 
 function parseTimestampMs(value) {
@@ -2701,6 +2703,86 @@ function isScannerRunOverdue(status = {}, nowMs = Date.now()) {
   const lastActivityMs = Math.max(latestCompletedMs || 0, latestStartedMs || 0)
   if (!lastActivityMs) return true
   return nowMs - lastActivityMs >= SCANNER_INTERVAL_MS + SCANNER_OVERDUE_GRACE_MS
+}
+
+async function reconcileStaleRunningRuns(nowMs = Date.now(), options = {}) {
+  if (scannerState.inFlight) {
+    return {
+      runningRows: 0,
+      staleRows: 0,
+      markedFailed: 0,
+      skipped: true
+    }
+  }
+
+  const force = Boolean(options.force)
+  if (
+    !force &&
+    Number(scannerState.lastStaleReconcileAt || 0) > 0 &&
+    nowMs - Number(scannerState.lastStaleReconcileAt || 0) < STALE_RUN_RECONCILE_COOLDOWN_MS
+  ) {
+    return {
+      runningRows: 0,
+      staleRows: 0,
+      markedFailed: 0,
+      skipped: true
+    }
+  }
+
+  scannerState.lastStaleReconcileAt = nowMs
+  const staleThresholdMs = SCANNER_INTERVAL_MS + SCANNER_OVERDUE_GRACE_MS
+  let runningRows = []
+  try {
+    runningRows = await scannerRunRepo.listRunningRuns(SCANNER_TYPE, { limit: 120 })
+  } catch (err) {
+    console.error("[arbitrage-scanner] Failed to list running runs for stale reconciliation", err.message)
+    return {
+      runningRows: 0,
+      staleRows: 0,
+      markedFailed: 0,
+      skipped: true
+    }
+  }
+
+  let staleRows = 0
+  let markedFailed = 0
+  for (const run of runningRows) {
+    const runId = String(run?.id || "").trim()
+    if (!runId || runId === String(scannerState.inFlightRunId || "").trim()) continue
+    const startedMs = parseTimestampMs(run?.started_at)
+    const elapsedMs = startedMs == null ? staleThresholdMs + 1 : Math.max(nowMs - startedMs, 0)
+    if (elapsedMs < staleThresholdMs) continue
+
+    staleRows += 1
+    const existingDiagnostics =
+      run?.diagnostics_summary && typeof run.diagnostics_summary === "object"
+        ? run.diagnostics_summary
+        : {}
+    try {
+      await scannerRunRepo.markFailed(runId, {
+        diagnosticsSummary: {
+          ...existingDiagnostics,
+          trigger: String(existingDiagnostics?.trigger || "watchdog"),
+          staleRunReconciled: true,
+          staleDurationMinutes: Math.max(Math.round(elapsedMs / 60000), 1)
+        },
+        error: "scanner_run_stale_reconciled"
+      })
+      markedFailed += 1
+    } catch (err) {
+      console.error(
+        `[arbitrage-scanner] Failed to mark stale run ${runId} as failed`,
+        err.message
+      )
+    }
+  }
+
+  return {
+    runningRows: runningRows.length,
+    staleRows,
+    markedFailed,
+    skipped: false
+  }
 }
 
 function mergeDiscardStats(target = {}, source = {}) {
@@ -4749,6 +4831,10 @@ async function runScanWithRunRecord(runRecord = {}, options = {}) {
 }
 
 async function enqueueScan(options = {}) {
+  await reconcileStaleRunningRuns(Date.now(), { force: true }).catch((err) => {
+    console.error("[arbitrage-scanner] Stale run reconciliation before enqueue failed", err.message)
+  })
+
   if (scannerState.inFlight) {
     return {
       scanRunId: scannerState.inFlightRunId,
@@ -4786,6 +4872,10 @@ async function enqueueScan(options = {}) {
 }
 
 async function getScannerStatusInternal() {
+  await reconcileStaleRunningRuns().catch((err) => {
+    console.error("[arbitrage-scanner] Stale run reconciliation during status failed", err.message)
+  })
+
   const [latestRun, latestCompletedRun, activeCount] = await Promise.all([
     scannerRunRepo.getLatestRun(SCANNER_TYPE),
     scannerRunRepo.getLatestCompletedRun(SCANNER_TYPE),

@@ -201,9 +201,8 @@ function normalizeRows(rows = []) {
           row?.missing_market_coverage == null
             ? Boolean(row?.missingMarketCoverage)
             : Boolean(row.missing_market_coverage),
-        enrichment_priority: toFiniteOrNull(
-          row?.enrichment_priority ?? row?.enrichmentPriority
-        ),
+        enrichment_priority:
+          toFiniteOrNull(row?.enrichment_priority ?? row?.enrichmentPriority) ?? 0,
         eligibility_reason:
           normalizeText(row?.eligibility_reason || row?.eligibilityReason) || null,
         reference_price: toFiniteOrNull(row?.reference_price ?? row?.referencePrice),
