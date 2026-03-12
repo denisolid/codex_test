@@ -50,3 +50,28 @@ test("normalizeRows preserves knife and glove categories", () => {
   assert.equal(knifeRow.category, "knife");
   assert.equal(gloveRow.category, "glove");
 });
+
+test("normalizeRows assigns candidate status defaults and enrichment flags", () => {
+  const [eligibleRow, candidateRow] = normalizeRows([
+    {
+      marketHashName: "AK-47 | Redline (Field-Tested)",
+      category: "weapon_skin",
+      scanEligible: true
+    },
+    {
+      marketHashName: "Copenhagen 2024 Legends Sticker Capsule",
+      category: "sticker_capsule",
+      missingSnapshot: true,
+      missingReference: true,
+      missingMarketCoverage: true,
+      enrichmentPriority: 27.5
+    }
+  ]);
+
+  assert.equal(eligibleRow.candidate_status, "eligible");
+  assert.equal(candidateRow.candidate_status, "candidate");
+  assert.equal(candidateRow.missing_snapshot, true);
+  assert.equal(candidateRow.missing_reference, true);
+  assert.equal(candidateRow.missing_market_coverage, true);
+  assert.equal(candidateRow.enrichment_priority, 27.5);
+});
