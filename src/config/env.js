@@ -214,6 +214,20 @@ module.exports = {
   arbitrageOpportunityJobTimeoutMs: Number(
     process.env.ARBITRAGE_OPPORTUNITY_JOB_TIMEOUT_MS || 600000
   ),
+  arbitrageAllowCrossJobParallelism:
+    (
+      process.env.ALLOW_CROSS_JOB_PARALLELISM ??
+      process.env.ARBITRAGE_ALLOW_CROSS_JOB_PARALLELISM
+    ) == null
+      ? true
+      : (
+          process.env.ALLOW_CROSS_JOB_PARALLELISM ??
+          process.env.ARBITRAGE_ALLOW_CROSS_JOB_PARALLELISM
+        ) === "true",
+  arbitrageRecordSkippedAlreadyRunning:
+    process.env.ARBITRAGE_RECORD_SKIPPED_ALREADY_RUNNING == null
+      ? false
+      : process.env.ARBITRAGE_RECORD_SKIPPED_ALREADY_RUNNING === "true",
   arbitrageScanTimeoutPerBatchMs: Number(
     process.env.ARBITRAGE_SCAN_TIMEOUT_PER_BATCH_MS || 30000
   ),
