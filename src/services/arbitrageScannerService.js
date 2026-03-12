@@ -51,7 +51,7 @@ const RISKY_MIN_PRICE_USD = 3
 const RISKY_MIN_SPREAD_PERCENT = 3
 const RISKY_MAX_SPREAD_PERCENT = 250
 const RISKY_MIN_VOLUME_7D = 20
-const RISKY_MIN_SCORE = 50
+const RISKY_MIN_SCORE = 40
 const PREMIUM_MIN_PRICE_USD = 20
 const PREMIUM_MIN_SPREAD_PERCENT = 3
 const PREMIUM_SPREAD_HEAVY_PENALTY_PERCENT = 150
@@ -69,7 +69,7 @@ const MIN_EXECUTION_PRICE_USD = HIGH_CONFIDENCE_MIN_PRICE_USD
 const MIN_MARKET_COVERAGE = 2
 const DEFAULT_SCORE_CUTOFF = HIGH_CONFIDENCE_MIN_SCORE
 const RISKY_SCORE_CUTOFF = RISKY_MIN_SCORE
-const FEED_RISKY_MIN_SCORE = 48
+const FEED_RISKY_MIN_SCORE = RISKY_MIN_SCORE
 const MAX_API_LIMIT = 200
 const DEFAULT_API_LIMIT = 100
 const MAX_FEED_LIMIT = 500
@@ -203,14 +203,14 @@ const SNAPSHOT_WARMUP_TRIGGER_FRESH_MIN = Math.max(SCAN_BATCH_SIZE, 20)
 const MIN_STRICT_SEED_COVERAGE = Math.max(Math.round(SCAN_BATCH_SIZE / 2), 10)
 const STRICT_SEED_COVERAGE_RATIO_TARGET = 0.6
 const UNIVERSE_MIN_PRICE_FLOOR_BY_CATEGORY = Object.freeze({
-  [ITEM_CATEGORIES.WEAPON_SKIN]: 2,
+  [ITEM_CATEGORIES.WEAPON_SKIN]: 3,
   [ITEM_CATEGORIES.CASE]: 1,
   [ITEM_CATEGORIES.STICKER_CAPSULE]: 1,
   [ITEM_CATEGORIES.KNIFE]: 20,
   [ITEM_CATEGORIES.GLOVE]: 20
 })
 const UNIVERSE_MIN_VOLUME_7D_BY_CATEGORY = Object.freeze({
-  [ITEM_CATEGORIES.WEAPON_SKIN]: 20,
+  [ITEM_CATEGORIES.WEAPON_SKIN]: 35,
   [ITEM_CATEGORIES.CASE]: 20,
   [ITEM_CATEGORIES.STICKER_CAPSULE]: 20,
   [ITEM_CATEGORIES.KNIFE]: PREMIUM_MIN_VOLUME_REJECT,
@@ -219,8 +219,46 @@ const UNIVERSE_MIN_VOLUME_7D_BY_CATEGORY = Object.freeze({
 const LOW_VALUE_NAME_PATTERNS = Object.freeze([
   /^sticker\s*\|/i,
   /^graffiti\s*\|/i,
-  /^sealed graffiti\s*\|/i
+  /^sealed graffiti\s*\|/i,
+  /\|\s*(Sand Spray|Sand Dune|Grey Smoke|Coolant|Mudder|Gator Mesh|Orange Peel|Mandrel|Facility Draft|Facility Sketch|Short Ochre|Blue Spruce|Predator)\b/i
 ])
+const LIQUID_NAME_SIGNAL_PATTERNS = Object.freeze([
+  /\basiimov\b/i,
+  /\bprintstream\b/i,
+  /\bfade\b/i,
+  /\bdoppler\b/i,
+  /\bgamma\b/i,
+  /\bvulcan\b/i,
+  /\bredline\b/i,
+  /\bneo-noir\b/i,
+  /\bbloodsport\b/i,
+  /\bcase hardened\b/i,
+  /\btiger tooth\b/i,
+  /\bslaughter\b/i,
+  /\bmarble fade\b/i,
+  /\bkill confirmed\b/i,
+  /\btemukau\b/i,
+  /\bthe emperor\b/i,
+  /\bthe empress\b/i,
+  /\bcyrex\b/i,
+  /\bfrontside misty\b/i,
+  /\bhyper beast\b/i
+])
+const HIGH_SIGNAL_WEAPON_PREFIXES = Object.freeze(
+  new Set([
+    "AK-47",
+    "AWP",
+    "M4A1-S",
+    "M4A4",
+    "USP-S",
+    "Glock-18",
+    "Desert Eagle",
+    "FAMAS",
+    "Galil AR",
+    "MP9",
+    "MAC-10"
+  ])
+)
 const KNOWN_BAD_IMAGE_HOSTS = Object.freeze(
   new Set(["example.com", "www.example.com"])
 )
@@ -296,7 +334,7 @@ const CATEGORY_SCAN_RULES = Object.freeze({
       maxSpreadPercent: RISKY_MAX_SPREAD_PERCENT,
       minVolume7d: 40,
       minMarketCoverage: MIN_MARKET_COVERAGE,
-      minScore: 55
+      minScore: RISKY_MIN_SCORE
     })
   }),
   [ITEM_CATEGORIES.CASE]: Object.freeze({
@@ -314,7 +352,7 @@ const CATEGORY_SCAN_RULES = Object.freeze({
       maxSpreadPercent: RISKY_MAX_SPREAD_PERCENT,
       minVolume7d: RISKY_MIN_VOLUME_7D,
       minMarketCoverage: MIN_MARKET_COVERAGE,
-      minScore: 50
+      minScore: RISKY_MIN_SCORE
     })
   }),
   [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
@@ -332,7 +370,7 @@ const CATEGORY_SCAN_RULES = Object.freeze({
       maxSpreadPercent: RISKY_MAX_SPREAD_PERCENT,
       minVolume7d: RISKY_MIN_VOLUME_7D,
       minMarketCoverage: MIN_MARKET_COVERAGE,
-      minScore: 50
+      minScore: RISKY_MIN_SCORE
     })
   }),
   [ITEM_CATEGORIES.KNIFE]: Object.freeze({
@@ -350,7 +388,7 @@ const CATEGORY_SCAN_RULES = Object.freeze({
       maxSpreadPercent: PREMIUM_MAX_SPREAD_PERCENT,
       minVolume7d: PREMIUM_MIN_VOLUME_REJECT,
       minMarketCoverage: MIN_MARKET_COVERAGE,
-      minScore: 48,
+      minScore: RISKY_MIN_SCORE,
       allowMissingDepthWithPenalty: true
     })
   }),
@@ -369,7 +407,7 @@ const CATEGORY_SCAN_RULES = Object.freeze({
       maxSpreadPercent: PREMIUM_MAX_SPREAD_PERCENT,
       minVolume7d: PREMIUM_MIN_VOLUME_REJECT,
       minMarketCoverage: MIN_MARKET_COVERAGE,
-      minScore: 48,
+      minScore: RISKY_MIN_SCORE,
       allowMissingDepthWithPenalty: true
     })
   })
@@ -388,7 +426,7 @@ const CATEGORY_RISKY_MODE_PROFILES = Object.freeze({
     maxSpreadPercent: RISKY_MAX_SPREAD_PERCENT,
     minVolume7d: 40,
     minMarketCoverage: MIN_MARKET_COVERAGE,
-    minScore: 55,
+    minScore: RISKY_MIN_SCORE,
     allowMissingLiquidity: false,
     allowMissingDepthWithPenalty: false,
     requireFreshData: false,
@@ -402,7 +440,7 @@ const CATEGORY_RISKY_MODE_PROFILES = Object.freeze({
     maxSpreadPercent: RISKY_MAX_SPREAD_PERCENT,
     minVolume7d: 20,
     minMarketCoverage: MIN_MARKET_COVERAGE,
-    minScore: 50,
+    minScore: RISKY_MIN_SCORE,
     allowMissingLiquidity: true,
     allowMissingDepthWithPenalty: false,
     requireFreshData: false,
@@ -416,7 +454,7 @@ const CATEGORY_RISKY_MODE_PROFILES = Object.freeze({
     maxSpreadPercent: RISKY_MAX_SPREAD_PERCENT,
     minVolume7d: 20,
     minMarketCoverage: MIN_MARKET_COVERAGE,
-    minScore: 50,
+    minScore: RISKY_MIN_SCORE,
     allowMissingLiquidity: true,
     allowMissingDepthWithPenalty: false,
     requireFreshData: false,
@@ -430,7 +468,7 @@ const CATEGORY_RISKY_MODE_PROFILES = Object.freeze({
     maxSpreadPercent: PREMIUM_MAX_SPREAD_PERCENT,
     minVolume7d: PREMIUM_MIN_VOLUME_REJECT,
     minMarketCoverage: MIN_MARKET_COVERAGE,
-    minScore: 48,
+    minScore: RISKY_MIN_SCORE,
     allowMissingLiquidity: true,
     allowMissingDepthWithPenalty: true,
     requireFreshData: false,
@@ -444,7 +482,7 @@ const CATEGORY_RISKY_MODE_PROFILES = Object.freeze({
     maxSpreadPercent: PREMIUM_MAX_SPREAD_PERCENT,
     minVolume7d: PREMIUM_MIN_VOLUME_REJECT,
     minMarketCoverage: MIN_MARKET_COVERAGE,
-    minScore: 48,
+    minScore: RISKY_MIN_SCORE,
     allowMissingLiquidity: true,
     allowMissingDepthWithPenalty: true,
     requireFreshData: false,
@@ -453,11 +491,11 @@ const CATEGORY_RISKY_MODE_PROFILES = Object.freeze({
 })
 
 const RISKY_QUALITY_FLOOR_BY_CATEGORY = Object.freeze({
-  [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({ minScore: 55, minProfitUsd: 0.75 }),
-  [ITEM_CATEGORIES.CASE]: Object.freeze({ minScore: 50, minProfitUsd: 0.4 }),
-  [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({ minScore: 50, minProfitUsd: 0.5 }),
-  [ITEM_CATEGORIES.KNIFE]: Object.freeze({ minScore: 48, minProfitUsd: 3 }),
-  [ITEM_CATEGORIES.GLOVE]: Object.freeze({ minScore: 48, minProfitUsd: 3 })
+  [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({ minScore: RISKY_MIN_SCORE, minProfitUsd: 0.75 }),
+  [ITEM_CATEGORIES.CASE]: Object.freeze({ minScore: RISKY_MIN_SCORE, minProfitUsd: 0.4 }),
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({ minScore: RISKY_MIN_SCORE, minProfitUsd: 0.5 }),
+  [ITEM_CATEGORIES.KNIFE]: Object.freeze({ minScore: RISKY_MIN_SCORE, minProfitUsd: 3 }),
+  [ITEM_CATEGORIES.GLOVE]: Object.freeze({ minScore: RISKY_MIN_SCORE, minProfitUsd: 3 })
 })
 
 function normalizeMarketHashName(value) {
@@ -1037,6 +1075,40 @@ function isLowValueJunkName(marketHashName = "") {
   return LOW_VALUE_NAME_PATTERNS.some((pattern) => pattern.test(name))
 }
 
+function extractWeaponPrefix(name = "") {
+  const text = String(name || "").trim()
+  if (!text.includes("|")) return ""
+  return String(
+    text
+      .replace(/^stattrak[â„¢\u2122]?\s*/i, "")
+      .replace(/^souvenir\s+/i, "")
+      .split("|")[0] || ""
+  ).trim()
+}
+
+function hasLiquidNameSignal(name = "") {
+  return LIQUID_NAME_SIGNAL_PATTERNS.some((pattern) => pattern.test(String(name || "")))
+}
+
+function isHighSignalMissingSnapshotSeed(itemName = "", itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
+  const normalizedCategory = normalizeItemCategory(itemCategory, itemName)
+  if (normalizedCategory === ITEM_CATEGORIES.CASE) {
+    return /\b(case|souvenir package)\b/i.test(itemName)
+  }
+  if (normalizedCategory === ITEM_CATEGORIES.STICKER_CAPSULE) {
+    return /\b(sticker capsule|autograph capsule)\b/i.test(itemName)
+  }
+  if (normalizedCategory !== ITEM_CATEGORIES.WEAPON_SKIN) {
+    return true
+  }
+
+  const prefix = extractWeaponPrefix(itemName)
+  if (HIGH_SIGNAL_WEAPON_PREFIXES.has(prefix) && hasLiquidNameSignal(itemName)) {
+    return true
+  }
+  return false
+}
+
 function computeVolumeScore(volume7d, itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
   const normalizedCategory = normalizeItemCategory(itemCategory)
   const volume = toFiniteOrNull(volume7d)
@@ -1484,8 +1556,38 @@ function passesUniverseSeedFilters(
     return false
   }
 
+  if (
+    itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+    !hasLiquidNameSignal(marketHashName) &&
+    !HIGH_SIGNAL_WEAPON_PREFIXES.has(extractWeaponPrefix(marketHashName))
+  ) {
+    incrementReasonCounter(discardStats, "ignored_low_value_universe", itemCategory)
+    if (rejectedByItem) {
+      incrementItemReasonCounter(
+        rejectedByItem,
+        marketHashName,
+        "ignored_low_value_universe",
+        itemCategory
+      )
+    }
+    return false
+  }
+
   if (!Boolean(inputItem?.hasSnapshotData)) {
     if (!allowMissingSnapshotData) {
+      incrementReasonCounter(discardStats, "ignored_missing_liquidity_data", itemCategory)
+      if (rejectedByItem) {
+        incrementItemReasonCounter(
+          rejectedByItem,
+          marketHashName,
+          "ignored_missing_liquidity_data",
+          itemCategory
+        )
+      }
+      return false
+    }
+
+    if (!isHighSignalMissingSnapshotSeed(marketHashName, itemCategory)) {
       incrementReasonCounter(discardStats, "ignored_missing_liquidity_data", itemCategory)
       if (rejectedByItem) {
         incrementItemReasonCounter(

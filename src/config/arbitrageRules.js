@@ -57,10 +57,7 @@ module.exports = Object.freeze({
     min: 0,
     max: 100
   }),
-  RISKY_SCORE_CUTOFF: toNumber(process.env.ARBITRAGE_RISKY_SCORE_CUTOFF, 60, {
-    min: 0,
-    max: 100
-  }),
+  RISKY_SCORE_CUTOFF: 40,
   DEFAULT_MIN_PROFIT_ABSOLUTE: toNumber(process.env.ARBITRAGE_DEFAULT_MIN_PROFIT_ABSOLUTE, 0.5, {
     min: 0
   }),

@@ -126,6 +126,37 @@ test("rankOpportunities applies filters and sort order", () => {
   assert.equal(filtered[0].itemName, "Item B");
 });
 
+test("rankOpportunities uses a 40-point floor when includeRisky is enabled", () => {
+  const rows = [
+    {
+      itemName: "Risky OK",
+      buyMarket: "steam",
+      sellMarket: "skinport",
+      buyPrice: 15,
+      profit: 1.2,
+      spreadPercent: 6,
+      opportunityScore: 40,
+      isOpportunity: true,
+      liquiditySample: 60
+    },
+    {
+      itemName: "Risky Too Low",
+      buyMarket: "steam",
+      sellMarket: "skinport",
+      buyPrice: 15,
+      profit: 1.2,
+      spreadPercent: 6,
+      opportunityScore: 39,
+      isOpportunity: true,
+      liquiditySample: 60
+    }
+  ];
+
+  const filtered = rankOpportunities(rows, { includeRisky: true });
+  assert.equal(filtered.length, 1);
+  assert.equal(filtered[0].itemName, "Risky OK");
+});
+
 test("evaluateItemOpportunity filters fake extreme spread opportunities", () => {
   const result = evaluateItemOpportunity({
     skinId: 501,
@@ -207,7 +238,7 @@ test("evaluateItemOpportunity applies stricter reference deviation checks for kn
     skinId: 9991,
     marketHashName: "★ Karambit | Doppler (Factory New)",
     itemCategory: "knife",
-    referencePrice: 100,
+    referencePrice: 120,
     perMarket: [
       {
         source: "steam",
