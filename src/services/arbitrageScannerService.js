@@ -3155,10 +3155,14 @@ function isBatchTimeoutError(err = {}) {
 }
 
 async function compareBatchItems(batch = [], options = {}) {
+  const allowLiveFetch = options.allowLiveFetch !== false
+  const compareTimeoutMs = allowLiveFetch
+    ? Math.max(SCAN_TIMEOUT_PER_BATCH + 5000, SCAN_TIMEOUT_PER_BATCH)
+    : SCAN_TIMEOUT_PER_BATCH
   const comparePromise = marketComparisonService.compareItems(batch, {
     currency: "USD",
     pricingMode: "lowest_buy",
-    allowLiveFetch: options.allowLiveFetch !== false,
+    allowLiveFetch,
     forceRefresh: Boolean(options.forceRefresh),
     userId: null,
     concurrency: MAX_CONCURRENT_MARKET_REQUESTS,
@@ -3168,10 +3172,10 @@ async function compareBatchItems(batch = [], options = {}) {
   let timeoutId = null
   const timeoutPromise = new Promise((_, reject) => {
     timeoutId = setTimeout(() => {
-      const timeoutErr = new Error(`scan_batch_timeout_${SCAN_TIMEOUT_PER_BATCH}ms`)
+      const timeoutErr = new Error(`scan_batch_timeout_${compareTimeoutMs}ms`)
       timeoutErr.code = "scan_batch_timeout"
       reject(timeoutErr)
-    }, SCAN_TIMEOUT_PER_BATCH)
+    }, compareTimeoutMs)
   })
 
   try {
@@ -3603,6 +3607,61 @@ function resolveSourceCatalogEligibleByCategory(sourceCatalogDiagnostics = {}) {
   }
 
   return toScannerAuditCategoryCounts(sourceCatalog?.byCategory || {}, "eligible")
+}
+
+function deriveSourceCatalogDiagnosticsFromScan({
+  sourceCatalogDiagnostics = {},
+  candidateItems = 0,
+  scannedItems = 0,
+  candidateByCategory = {},
+  selectedByCategory = {},
+  universeTarget = UNIVERSE_TARGET_SIZE
+} = {}) {
+  const base =
+    sourceCatalogDiagnostics && typeof sourceCatalogDiagnostics === "object"
+      ? sourceCatalogDiagnostics
+      : {}
+  const sourceCatalog =
+    base?.sourceCatalog && typeof base.sourceCatalog === "object" ? base.sourceCatalog : {}
+  const universeBuild =
+    base?.universeBuild && typeof base.universeBuild === "object" ? base.universeBuild : {}
+  const hasUniverseCoverage = Number(universeBuild?.activeUniverseBuilt || 0) > 0
+  if (hasUniverseCoverage) {
+    return base
+  }
+
+  const hasScannerCoverage = Number(scannedItems || 0) > 0 || Number(candidateItems || 0) > 0
+  if (!hasScannerCoverage) {
+    return base
+  }
+
+  const derivedCandidateByCategory = toScannerAuditCategoryCounts(candidateByCategory)
+  const derivedSelectedByCategory = toScannerAuditCategoryCounts(selectedByCategory)
+  const normalizedTarget = Math.max(Number(universeTarget || UNIVERSE_TARGET_SIZE), 0)
+  const normalizedScanned = Math.max(Number(scannedItems || 0), 0)
+  const normalizedCandidates = Math.max(Number(candidateItems || 0), 0)
+
+  return {
+    ...base,
+    degradedFromScannerInputs: true,
+    sourceCatalog: {
+      ...sourceCatalog,
+      totalRows: Math.max(Number(sourceCatalog?.totalRows || 0), normalizedCandidates),
+      activeCatalogRows: Math.max(Number(sourceCatalog?.activeCatalogRows || 0), normalizedCandidates),
+      eligibleTradableRows: Math.max(
+        Number(sourceCatalog?.eligibleTradableRows || 0),
+        normalizedCandidates
+      ),
+      eligibleRowsByCategory: derivedCandidateByCategory
+    },
+    universeBuild: {
+      ...universeBuild,
+      targetUniverseSize: normalizedTarget,
+      activeUniverseBuilt: Math.max(Number(universeBuild?.activeUniverseBuilt || 0), normalizedScanned),
+      missingToTarget: Math.max(normalizedTarget - normalizedScanned, 0),
+      selectedByCategory: derivedSelectedByCategory
+    }
+  }
 }
 
 function buildTopReasonSummary(reasonCounter = {}, limit = 8) {
@@ -4349,6 +4408,20 @@ async function runScanInternal(options = {}) {
       itemName: row?.inputItem?.marketHashName
     }))
   )
+  const candidateUniverseByCategory = countRowsByCategory(
+    universeSeeds.map((row) => ({
+      itemCategory: row?.itemCategory,
+      itemName: row?.marketHashName
+    }))
+  )
+  const effectiveSourceCatalogDiagnostics = deriveSourceCatalogDiagnosticsFromScan({
+    sourceCatalogDiagnostics,
+    candidateItems: universeSeeds.length,
+    scannedItems: selectedUniverse.length,
+    candidateByCategory: candidateUniverseByCategory,
+    selectedByCategory: selectedUniverseByCategory,
+    universeTarget: UNIVERSE_TARGET_SIZE
+  })
   const opportunitiesByCategory = countRowsByCategory(sortedRows)
   const discardedReasons = normalizeDiscardStats(discardStats)
   const discardedReasonsByCategory = normalizeDiscardStatsByCategory(discardStats)
@@ -4389,7 +4462,7 @@ async function runScanInternal(options = {}) {
       riskyProfileDiagnostics,
       snapshotWarmup: snapshotWarmupSummary,
       imageEnrichment: imageEnrichmentSummary,
-      sourceCatalog: sourceCatalogDiagnostics,
+      sourceCatalog: effectiveSourceCatalogDiagnostics,
       scanProgress,
       highConfidence: highConfidenceCount,
       riskyEligible: riskyEligibleCount
@@ -4420,14 +4493,14 @@ async function runScanInternal(options = {}) {
       quoteSnapshot: quoteSnapshotSummary,
       snapshotWarmup: snapshotWarmupSummary,
       imageEnrichment: imageEnrichmentSummary,
-      sourceCatalog: sourceCatalogDiagnostics
+      sourceCatalog: effectiveSourceCatalogDiagnostics
     }
   }
 
   stageDurationsMs.diagnosticsAggregationMs = Date.now() - diagnosticsAggregationStartedAt
   const auditBuildStartedAt = Date.now()
   let performanceAudit = buildScannerPerformanceAudit({
-    sourceCatalogDiagnostics,
+    sourceCatalogDiagnostics: effectiveSourceCatalogDiagnostics,
     selectedUniverseByCategory,
     staleDiagnostics,
     discardedReasons,

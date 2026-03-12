@@ -387,43 +387,80 @@ async function fetchLiveMarketData(itemsBySource = {}, displayCurrency, options 
   const fetchCurrency = String(options.fetchCurrency || "USD")
     .trim()
     .toUpperCase();
+  const concurrency = Math.max(Number(options.concurrency || marketCompareConcurrency || 4), 1);
+  const timeoutMs = Number(options.timeoutMs || marketCompareTimeoutMs || 9000);
+  const maxRetries = Number(options.maxRetries || marketCompareMaxRetries || 3);
 
-  for (const source of SOURCE_ORDER) {
-    const adapter = ADAPTERS[source];
-    if (!adapter?.batchGetPrices) continue;
-    const sourceItems = Array.isArray(itemsBySource[source]) ? itemsBySource[source] : [];
-    if (!sourceItems.length) {
-      result[source] = {};
-      diagnosticsBySource[source] = {};
-      continue;
-    }
-
-    const byName = await adapter.batchGetPrices(sourceItems, {
-      currency: fetchCurrency,
-      concurrency: Math.max(Number(options.concurrency || marketCompareConcurrency || 4), 1),
-      timeoutMs: Number(options.timeoutMs || marketCompareTimeoutMs || 9000),
-      maxRetries: Number(options.maxRetries || marketCompareMaxRetries || 3)
-    });
-    const sourceFetchedAt = new Date().toISOString();
-    const adapterMeta = byName && typeof byName === "object" ? byName.__meta : null;
-
-    result[source] = {};
-    diagnosticsBySource[source] = {
-      failuresByName:
-        adapterMeta && adapterMeta.failuresByName && typeof adapterMeta.failuresByName === "object"
-          ? adapterMeta.failuresByName
-          : {},
-      sourceUnavailableReason: String(adapterMeta?.sourceUnavailableReason || "").trim() || null
-    };
-    for (const [marketHashName, rawRecord] of Object.entries(byName || {})) {
-      const normalized = normalizeLiveRecord(rawRecord, displayCurrency);
-      if (!normalized) continue;
-      result[source][marketHashName] = normalized;
-      const row = toUpsertRow(rawRecord, sourceFetchedAt);
-      if (row) {
-        rowsToStore.push(row);
+  const sourceResults = await Promise.all(
+    SOURCE_ORDER.map(async (source) => {
+      const adapter = ADAPTERS[source];
+      if (!adapter?.batchGetPrices) {
+        return {
+          source,
+          recordsByName: {},
+          diagnostics: {}
+        };
       }
-    }
+
+      const sourceItems = Array.isArray(itemsBySource[source]) ? itemsBySource[source] : [];
+      if (!sourceItems.length) {
+        return {
+          source,
+          recordsByName: {},
+          diagnostics: {}
+        };
+      }
+
+      const byName = await adapter.batchGetPrices(sourceItems, {
+        currency: fetchCurrency,
+        concurrency,
+        timeoutMs,
+        maxRetries
+      });
+      const sourceFetchedAt = new Date().toISOString();
+      const adapterMeta = byName && typeof byName === "object" ? byName.__meta : null;
+      const recordsByName = {};
+      const upsertRows = [];
+      for (const [marketHashName, rawRecord] of Object.entries(byName || {})) {
+        const normalized = normalizeLiveRecord(rawRecord, displayCurrency);
+        if (!normalized) continue;
+        recordsByName[marketHashName] = normalized;
+        const row = toUpsertRow(rawRecord, sourceFetchedAt);
+        if (row) {
+          upsertRows.push(row);
+        }
+      }
+
+      return {
+        source,
+        recordsByName,
+        diagnostics: {
+          failuresByName:
+            adapterMeta &&
+            adapterMeta.failuresByName &&
+            typeof adapterMeta.failuresByName === "object"
+              ? adapterMeta.failuresByName
+              : {},
+          sourceUnavailableReason:
+            String(adapterMeta?.sourceUnavailableReason || "").trim() || null
+        },
+        upsertRows
+      };
+    })
+  );
+
+  for (const sourceResult of sourceResults) {
+    const source = String(sourceResult?.source || "").trim().toLowerCase();
+    if (!source) continue;
+    result[source] =
+      sourceResult?.recordsByName && typeof sourceResult.recordsByName === "object"
+        ? sourceResult.recordsByName
+        : {};
+    diagnosticsBySource[source] =
+      sourceResult?.diagnostics && typeof sourceResult.diagnostics === "object"
+        ? sourceResult.diagnostics
+        : {};
+    rowsToStore.push(...(Array.isArray(sourceResult?.upsertRows) ? sourceResult.upsertRows : []));
   }
 
   if (rowsToStore.length) {
