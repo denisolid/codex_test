@@ -30,6 +30,12 @@ const CATALOG_CANDIDATE_STATUS = Object.freeze({
   ELIGIBLE: "eligible",
   REJECTED: "rejected"
 })
+const CATALOG_MATURITY_STATE = Object.freeze({
+  COLD: "cold",
+  ENRICHING: "enriching",
+  NEAR_ELIGIBLE: "near_eligible",
+  ELIGIBLE: "eligible"
+})
 const ACTIVE_CANDIDATE_STATUSES = Object.freeze([
   CATALOG_CANDIDATE_STATUS.ELIGIBLE,
   CATALOG_CANDIDATE_STATUS.ENRICHING,
@@ -38,6 +44,7 @@ const ACTIVE_CANDIDATE_STATUSES = Object.freeze([
 const CATALOG_CANDIDATE_STATUS_SET = new Set(
   Object.values(CATALOG_CANDIDATE_STATUS)
 )
+const CATALOG_MATURITY_STATE_SET = new Set(Object.values(CATALOG_MATURITY_STATE))
 
 const DEFAULT_UNIVERSE_LIMIT = 3000
 const DEFAULT_SOURCE_CATALOG_TARGET = 5000
@@ -225,8 +232,10 @@ const SOURCE_CATALOG_QUOTA_BASE_TOTAL = Object.values(SOURCE_CATALOG_QUOTA_RULES
 
 const CATEGORY_DEFAULT_COUNTER = Object.freeze({
   total: 0,
+  cold: 0,
   candidate: 0,
   enriching: 0,
+  nearEligible: 0,
   eligible: 0,
   rejected: 0,
   excludedLowValueItems: 0,
@@ -287,6 +296,19 @@ function buildStatusNumberMap(initialValue = 0) {
   )
 }
 
+function buildMaturityNumberMap(initialValue = 0) {
+  const initial = Number(initialValue || 0)
+  return Object.fromEntries(
+    Object.values(CATALOG_MATURITY_STATE).map((state) => [state, initial])
+  )
+}
+
+function buildMaturityByCategoryMap(initialValue = 0) {
+  return Object.fromEntries(
+    SCANNER_SCOPE_CATEGORIES.map((category) => [category, buildMaturityNumberMap(initialValue)])
+  )
+}
+
 function normalizeCandidateStatus(value, fallback = CATALOG_CANDIDATE_STATUS.CANDIDATE) {
   const text = normalizeText(value).toLowerCase()
   if (CATALOG_CANDIDATE_STATUS_SET.has(text)) return text
@@ -294,6 +316,15 @@ function normalizeCandidateStatus(value, fallback = CATALOG_CANDIDATE_STATUS.CAN
   return CATALOG_CANDIDATE_STATUS_SET.has(fallbackText)
     ? fallbackText
     : CATALOG_CANDIDATE_STATUS.CANDIDATE
+}
+
+function normalizeMaturityState(value, fallback = CATALOG_MATURITY_STATE.COLD) {
+  const text = normalizeText(value).toLowerCase()
+  if (CATALOG_MATURITY_STATE_SET.has(text)) return text
+  const fallbackText = normalizeText(fallback).toLowerCase()
+  return CATALOG_MATURITY_STATE_SET.has(fallbackText)
+    ? fallbackText
+    : CATALOG_MATURITY_STATE.COLD
 }
 
 function normalizeText(value) {
@@ -596,9 +627,15 @@ function buildBaseDiagnostics() {
       tradableRows: 0,
       candidateRows: 0,
       enrichingRows: 0,
+      nearEligibleRows: 0,
+      coldRows: 0,
       eligibleRows: 0,
       rejectedRows: 0,
       eligibleTradableRows: 0,
+      promotedToEligible: 0,
+      demotedToEnriching: 0,
+      promotedToEligibleByCategory: buildCategoryNumberMap(),
+      demotedToEnrichingByCategory: buildCategoryNumberMap(),
       excludedLowValueItems: 0,
       excludedLowLiquidityItems: 0,
       excludedWeakMarketCoverageItems: 0,
@@ -606,6 +643,8 @@ function buildBaseDiagnostics() {
       excludedMissingReferenceItems: 0,
       excludedRowsByReason: { ...BASE_EXCLUDED_REASON_COUNTER },
       candidateFunnel: buildStatusNumberMap(),
+      maturityFunnel: buildMaturityNumberMap(),
+      maturityFunnelByCategory: buildMaturityByCategoryMap(),
       candidateFunnelByCategory: buildEmptyCategoryCounter(),
       eligibleRowsByCategory: buildCategoryNumberMap(),
       candidateRowsByCategory: buildCategoryNumberMap(),
@@ -1065,6 +1104,115 @@ function computeEnrichmentPriority({
   return Number(Math.max(score, 0).toFixed(2))
 }
 
+function computeCatalogMaturity({
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
+  candidateStatus = CATALOG_CANDIDATE_STATUS.CANDIDATE,
+  missingSnapshot = false,
+  missingReference = false,
+  missingMarketCoverage = false,
+  missingLiquidityContext = false,
+  snapshotStale = false,
+  referencePrice = null,
+  volume7d = null,
+  marketCoverageCount = 0,
+  liquidityRank = 0,
+  eligibilityReason = ""
+} = {}) {
+  const normalizedCategory = normalizeCategory(category)
+  const normalizedStatus = normalizeCandidateStatus(candidateStatus)
+  const rules =
+    SOURCE_QUALITY_RULES[normalizedCategory] || SOURCE_QUALITY_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
+
+  const missingSignals =
+    Number(Boolean(missingSnapshot)) +
+    Number(Boolean(missingReference)) +
+    Number(Boolean(missingMarketCoverage)) +
+    Number(Boolean(missingLiquidityContext))
+  const hasReference = referencePrice != null
+  const hasCoverage = Number(marketCoverageCount || 0) >= Number(rules.minMarketCoverage || 2)
+  const hasReasonableVolume =
+    volume7d != null && Number(volume7d || 0) >= Math.max(Number(rules.minVolume7d || 40) * 0.6, 20)
+  const hasStructuralReason = /\brejected|hard|outofscope|namepattern|unsupported\b/i.test(
+    String(eligibilityReason || "")
+  )
+
+  let maturityState = CATALOG_MATURITY_STATE.COLD
+  if (
+    normalizedStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
+    !snapshotStale &&
+    missingSignals === 0
+  ) {
+    maturityState = CATALOG_MATURITY_STATE.ELIGIBLE
+  } else if (
+    (normalizedStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE ||
+      normalizedStatus === CATALOG_CANDIDATE_STATUS.ENRICHING) &&
+    missingSignals <= 1 &&
+    !snapshotStale &&
+    hasReference &&
+    (hasCoverage || hasReasonableVolume)
+  ) {
+    maturityState = CATALOG_MATURITY_STATE.NEAR_ELIGIBLE
+  } else if (
+    normalizedStatus === CATALOG_CANDIDATE_STATUS.ENRICHING ||
+    normalizedStatus === CATALOG_CANDIDATE_STATUS.CANDIDATE
+  ) {
+    maturityState =
+      missingSignals >= 3
+        ? CATALOG_MATURITY_STATE.COLD
+        : CATALOG_MATURITY_STATE.ENRICHING
+  }
+
+  const baseScore =
+    maturityState === CATALOG_MATURITY_STATE.ELIGIBLE
+      ? 84
+      : maturityState === CATALOG_MATURITY_STATE.NEAR_ELIGIBLE
+        ? 66
+        : maturityState === CATALOG_MATURITY_STATE.ENRICHING
+          ? 46
+          : 24
+  const categoryBoost =
+    normalizedCategory === ITEM_CATEGORIES.CASE
+      ? 5
+      : normalizedCategory === ITEM_CATEGORIES.STICKER_CAPSULE
+        ? 6
+        : 0
+  const freshnessBoost = snapshotStale ? -8 : 8
+  const referenceBoost = hasReference ? Math.min(Number(referencePrice || 0), 12) : -8
+  const coverageBoost = Math.min(Math.max(Number(marketCoverageCount || 0), 0) * 3, 15)
+  const volumeBoost =
+    volume7d == null
+      ? -6
+      : Math.min(
+          (Number(volume7d || 0) / Math.max(Number(rules.minVolume7d || 1), 1)) * 12,
+          16
+        )
+  const liquidityBoost = Math.min(Number(liquidityRank || 0) * 0.1, 10)
+  const missingPenalty = missingSignals * 6
+  const structuralPenalty = hasStructuralReason ? 12 : 0
+  const score = Math.max(
+    Math.min(
+      baseScore +
+        categoryBoost +
+        freshnessBoost +
+        referenceBoost +
+        coverageBoost +
+        volumeBoost +
+        liquidityBoost -
+        missingPenalty -
+        structuralPenalty,
+      100
+    ),
+    0
+  )
+
+  return {
+    maturityState: normalizeMaturityState(maturityState),
+    maturityScore: Number(score.toFixed(2)),
+    missingSignals,
+    hasStructuralReason
+  }
+}
+
 function evaluateCandidateState({
   marketHashName = "",
   category = "",
@@ -1138,6 +1286,20 @@ function evaluateCandidateState({
     missingMarketCoverage,
     snapshotStale
   })
+  const maturity = computeCatalogMaturity({
+    category: normalizedCategory,
+    candidateStatus,
+    missingSnapshot,
+    missingReference,
+    missingMarketCoverage,
+    missingLiquidityContext,
+    snapshotStale,
+    referencePrice,
+    volume7d,
+    marketCoverageCount,
+    liquidityRank,
+    eligibilityReason
+  })
 
   return {
     candidateStatus,
@@ -1148,7 +1310,10 @@ function evaluateCandidateState({
     eligibilityReason,
     strictEligible,
     strictReason,
-    enrichmentPriority
+    enrichmentPriority,
+    maturityState: maturity.maturityState,
+    maturityScore: maturity.maturityScore,
+    missingSignals: maturity.missingSignals
   }
 }
 
@@ -1187,9 +1352,13 @@ async function enrichSourceCatalog() {
       tradableRows: 0,
       candidateRows: 0,
       enrichingRows: 0,
+      nearEligibleRows: 0,
+      coldRows: 0,
       eligibleRows: 0,
       rejectedRows: 0,
       eligibleTradableRows: 0,
+      promotedToEligible: 0,
+      demotedToEnriching: 0,
       excludedLowValueItems: 0,
       excludedLowLiquidityItems: 0,
       excludedWeakMarketCoverageItems: 0,
@@ -1197,6 +1366,10 @@ async function enrichSourceCatalog() {
       excludedMissingReferenceItems: 0,
       excludedRowsByReason: { ...BASE_EXCLUDED_REASON_COUNTER },
       candidateFunnel: buildStatusNumberMap(),
+      maturityFunnel: buildMaturityNumberMap(),
+      maturityFunnelByCategory: buildMaturityByCategoryMap(),
+      promotedToEligibleByCategory: buildCategoryNumberMap(),
+      demotedToEnrichingByCategory: buildCategoryNumberMap(),
       candidateFunnelByCategory: buildEmptyCategoryCounter(),
       byCategory: buildEmptyCategoryCounter(),
       eligibleRowsByCategory: buildCategoryNumberMap(),
@@ -1247,6 +1420,8 @@ async function enrichSourceCatalog() {
 
   const byCategory = buildEmptyCategoryCounter()
   const candidateFunnel = buildStatusNumberMap()
+  const maturityFunnel = buildMaturityNumberMap()
+  const maturityFunnelByCategory = buildMaturityByCategoryMap()
   const updates = []
   const counts = {
     totalRows: rows.length,
@@ -1254,9 +1429,13 @@ async function enrichSourceCatalog() {
     tradableRows: 0,
     candidateRows: 0,
     enrichingRows: 0,
+    nearEligibleRows: 0,
+    coldRows: 0,
     eligibleRows: 0,
     rejectedRows: 0,
     eligibleTradableRows: 0,
+    promotedToEligible: 0,
+    demotedToEnriching: 0,
     excludedLowValueItems: 0,
     excludedLowLiquidityItems: 0,
     excludedWeakMarketCoverageItems: 0,
@@ -1267,6 +1446,8 @@ async function enrichSourceCatalog() {
   const eligibleRowsByCategory = buildCategoryNumberMap()
   const candidateRowsByCategory = buildCategoryNumberMap()
   const enrichingRowsByCategory = buildCategoryNumberMap()
+  const promotedToEligibleByCategory = buildCategoryNumberMap()
+  const demotedToEnrichingByCategory = buildCategoryNumberMap()
 
   for (const row of rows) {
     const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
@@ -1321,12 +1502,23 @@ async function enrichSourceCatalog() {
       snapshotStale,
       liquidityRank
     })
+    const previousCandidateStatus = normalizeCandidateStatus(
+      row?.candidate_status ?? row?.candidateStatus,
+      row?.scan_eligible ? CATALOG_CANDIDATE_STATUS.ELIGIBLE : CATALOG_CANDIDATE_STATUS.CANDIDATE
+    )
     const candidateStatus = normalizeCandidateStatus(candidateState.candidateStatus)
     const scanEligible =
       tradable &&
       candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
       candidateState.strictEligible
+    const maturityState = normalizeMaturityState(candidateState.maturityState)
     candidateFunnel[candidateStatus] = Number(candidateFunnel[candidateStatus] || 0) + 1
+    maturityFunnel[maturityState] = Number(maturityFunnel[maturityState] || 0) + 1
+    if (!maturityFunnelByCategory[category]) {
+      maturityFunnelByCategory[category] = buildMaturityNumberMap()
+    }
+    maturityFunnelByCategory[category][maturityState] =
+      Number(maturityFunnelByCategory[category][maturityState] || 0) + 1
 
     if (scanEligible) {
       counts.eligibleTradableRows += 1
@@ -1344,6 +1536,28 @@ async function enrichSourceCatalog() {
     } else if (candidateStatus === CATALOG_CANDIDATE_STATUS.REJECTED) {
       counts.rejectedRows += 1
       byCategory[category].rejected += 1
+    }
+    if (
+      previousCandidateStatus !== CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
+      candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE
+    ) {
+      counts.promotedToEligible += 1
+      promotedToEligibleByCategory[category] += 1
+    }
+    if (
+      previousCandidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
+      candidateStatus !== CATALOG_CANDIDATE_STATUS.ELIGIBLE
+    ) {
+      counts.demotedToEnriching += 1
+      demotedToEnrichingByCategory[category] += 1
+    }
+    if (maturityState === CATALOG_MATURITY_STATE.NEAR_ELIGIBLE) {
+      counts.nearEligibleRows += 1
+      byCategory[category].nearEligible += 1
+    }
+    if (maturityState === CATALOG_MATURITY_STATE.COLD) {
+      counts.coldRows += 1
+      byCategory[category].cold += 1
     }
     if (candidateState.missingSnapshot) {
       byCategory[category].missingSnapshot += 1
@@ -1409,6 +1623,10 @@ async function enrichSourceCatalog() {
     ...counts,
     excludedRowsByReason,
     candidateFunnel,
+    maturityFunnel,
+    maturityFunnelByCategory,
+    promotedToEligibleByCategory,
+    demotedToEnrichingByCategory,
     candidateFunnelByCategory: byCategory,
     byCategory,
     eligibleRowsByCategory,
@@ -1733,6 +1951,8 @@ async function runPipeline(options = {}) {
       tradableRows: Number(sourceCoverage?.tradableRows || 0),
       candidateRows: Number(sourceCoverage?.candidateRows || 0),
       enrichingRows: Number(sourceCoverage?.enrichingRows || 0),
+      nearEligibleRows: Number(sourceCoverage?.nearEligibleRows || 0),
+      coldRows: Number(sourceCoverage?.coldRows || 0),
       eligibleRows: Number(sourceCoverage?.eligibleRows || 0),
       rejectedRows: Number(sourceCoverage?.rejectedRows || 0),
       eligibleTradableRows: Number(sourceCoverage?.eligibleTradableRows || 0),
@@ -1745,6 +1965,21 @@ async function runPipeline(options = {}) {
         sourceCoverage?.excludedRowsByReason || base.sourceCatalog.excludedRowsByReason,
       candidateFunnel:
         sourceCoverage?.candidateFunnel || base.sourceCatalog.candidateFunnel,
+      maturityFunnel: sourceCoverage?.maturityFunnel || base.sourceCatalog.maturityFunnel,
+      maturityFunnelByCategory:
+        sourceCoverage?.maturityFunnelByCategory || base.sourceCatalog.maturityFunnelByCategory,
+      promotedToEligible: Number(
+        sourceCoverage?.promotedToEligible || base.sourceCatalog.promotedToEligible || 0
+      ),
+      demotedToEnriching: Number(
+        sourceCoverage?.demotedToEnriching || base.sourceCatalog.demotedToEnriching || 0
+      ),
+      promotedToEligibleByCategory:
+        sourceCoverage?.promotedToEligibleByCategory ||
+        base.sourceCatalog.promotedToEligibleByCategory,
+      demotedToEnrichingByCategory:
+        sourceCoverage?.demotedToEnrichingByCategory ||
+        base.sourceCatalog.demotedToEnrichingByCategory,
       candidateFunnelByCategory:
         sourceCoverage?.candidateFunnelByCategory || base.sourceCatalog.candidateFunnelByCategory,
       eligibleRowsByCategory:
@@ -1894,14 +2129,25 @@ function getLastDiagnostics() {
   return sourceCatalogState.lastDiagnostics || buildBaseDiagnostics()
 }
 
+async function getCatalogRowsByMarketHashNames(marketHashNames = [], options = {}) {
+  return marketSourceCatalogRepo.listByMarketHashNames(marketHashNames, {
+    categories: Array.isArray(options.categories) ? options.categories : CATEGORY_PRIORITY,
+    activeOnly: options.activeOnly !== false,
+    tradableOnly: options.tradableOnly !== false
+  })
+}
+
 module.exports = {
   prepareSourceCatalog,
   getLastDiagnostics,
+  getCatalogRowsByMarketHashNames,
   __testables: {
     normalizeCategory,
     normalizeCandidateStatus,
+    normalizeMaturityState,
     computeSourceLiquidityScore,
     computeEnrichmentPriority,
+    computeCatalogMaturity,
     evaluateCandidateState,
     evaluateEligibility,
     buildCategoryQuotas,
