@@ -259,6 +259,44 @@ test("universe seed filter can allow missing snapshot data in fallback mode", ()
   assert.equal(Number(discardStats.ignored_missing_liquidity_data || 0), 0);
 });
 
+test("universe seed filter still rejects weak missing-snapshot skin seeds in fallback mode", () => {
+  const discardStats = {};
+  const allowed = passesUniverseSeedFilters(
+    {
+      marketHashName: "Five-SeveN | Coolant (Minimal Wear)",
+      itemCategory: "weapon_skin",
+      hasSnapshotData: false,
+      snapshotStale: false,
+      referencePrice: null,
+      marketVolume7d: null
+    },
+    discardStats,
+    null,
+    { allowMissingSnapshotData: true }
+  );
+
+  assert.equal(allowed, false);
+  assert.equal(Number(discardStats.ignored_low_value_universe || 0) > 0, true);
+});
+
+test("universe seed filter rejects low-value skin finish patterns before scan", () => {
+  const discardStats = {};
+  const allowed = passesUniverseSeedFilters(
+    {
+      marketHashName: "P90 | Sand Spray (Well-Worn)",
+      itemCategory: "weapon_skin",
+      hasSnapshotData: true,
+      snapshotStale: false,
+      referencePrice: 2.2,
+      marketVolume7d: 80
+    },
+    discardStats
+  );
+
+  assert.equal(allowed, false);
+  assert.equal(Number(discardStats.ignored_low_value_universe || 0) > 0, true);
+});
+
 test("universe seed filter rejects stale snapshot seeds", () => {
   const discardStats = {};
   const allowed = passesUniverseSeedFilters(
