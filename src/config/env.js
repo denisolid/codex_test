@@ -170,6 +170,16 @@ module.exports = {
   arbitrageScannerIntervalMinutes: Number(
     process.env.ARBITRAGE_SCANNER_INTERVAL_MINUTES || 10
   ),
+  arbitrageEnrichmentIntervalMinutes: Number(
+    process.env.ARBITRAGE_ENRICHMENT_INTERVAL_MINUTES ||
+      process.env.ARBITRAGE_SCANNER_INTERVAL_MINUTES ||
+      10
+  ),
+  arbitrageOpportunityScanIntervalMinutes: Number(
+    process.env.ARBITRAGE_OPPORTUNITY_SCAN_INTERVAL_MINUTES ||
+      process.env.ARBITRAGE_SCANNER_INTERVAL_MINUTES ||
+      5
+  ),
   arbitrageDefaultUniverseLimit: Number(
     process.env.ARBITRAGE_DEFAULT_UNIVERSE_LIMIT || 3000
   ),
@@ -183,10 +193,26 @@ module.exports = {
       process.env.ARBITRAGE_QUOTE_REFRESH_BATCH_SIZE ||
       40
   ),
+  arbitrageEnrichmentBatchSize: Number(
+    process.env.ARBITRAGE_ENRICHMENT_BATCH_SIZE ||
+      process.env.ARBITRAGE_ENRICHMENT_ONLY_TARGET ||
+      100
+  ),
+  arbitrageOpportunityBatchSize: Number(
+    process.env.ARBITRAGE_OPPORTUNITY_BATCH_SIZE ||
+      process.env.ARBITRAGE_OPPORTUNITY_SCAN_TARGET ||
+      200
+  ),
   arbitrageMaxConcurrentMarketRequests: Number(
     process.env.ARBITRAGE_MAX_CONCURRENT_MARKET_REQUESTS ||
       process.env.MARKET_COMPARE_CONCURRENCY ||
       4
+  ),
+  arbitrageEnrichmentJobTimeoutMs: Number(
+    process.env.ARBITRAGE_ENRICHMENT_JOB_TIMEOUT_MS || 600000
+  ),
+  arbitrageOpportunityJobTimeoutMs: Number(
+    process.env.ARBITRAGE_OPPORTUNITY_JOB_TIMEOUT_MS || 600000
   ),
   arbitrageScanTimeoutPerBatchMs: Number(
     process.env.ARBITRAGE_SCAN_TIMEOUT_PER_BATCH_MS || 30000

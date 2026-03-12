@@ -7,14 +7,26 @@ const MAX_LIMIT = 12000
 const SELECT_PAGE_SIZE = 1000
 const QUERY_BATCH_SIZE = 120
 const CATEGORY_SET = new Set(["weapon_skin", "case", "sticker_capsule", "knife", "glove"])
-const CANDIDATE_STATUS_SET = new Set(["candidate", "enriching", "eligible", "rejected"])
+const CANDIDATE_STATUS_SET = new Set([
+  "candidate",
+  "enriching",
+  "near_eligible",
+  "eligible",
+  "rejected"
+])
+const MATURITY_STATE_SET = new Set(["cold", "enriching", "near_eligible", "eligible"])
+const SCAN_LAYER_SET = new Set(["hot", "warm", "cold"])
 const CANDIDATE_STATE_COLUMNS = Object.freeze([
   "candidate_status",
   "missing_snapshot",
   "missing_reference",
   "missing_market_coverage",
   "enrichment_priority",
-  "eligibility_reason"
+  "eligibility_reason",
+  "maturity_state",
+  "maturity_score",
+  "scan_layer",
+  "quote_fetched_at"
 ])
 
 function normalizeText(value) {
@@ -54,7 +66,31 @@ function normalizeCandidateStatus(value, fallback = "candidate") {
     : "candidate"
 }
 
-function normalizeCandidateStatuses(values = [], fallback = ["eligible", "enriching", "candidate"]) {
+function normalizeMaturityState(value, fallback = "cold") {
+  const text = normalizeText(value).toLowerCase()
+  if (MATURITY_STATE_SET.has(text)) return text
+  const fallbackValue = normalizeText(fallback).toLowerCase()
+  return MATURITY_STATE_SET.has(fallbackValue) ? fallbackValue : "cold"
+}
+
+function normalizeScanLayer(value, fallback = "cold") {
+  const text = normalizeText(value).toLowerCase()
+  if (SCAN_LAYER_SET.has(text)) return text
+  const fallbackValue = normalizeText(fallback).toLowerCase()
+  return SCAN_LAYER_SET.has(fallbackValue) ? fallbackValue : "cold"
+}
+
+function deriveScanLayerFromMaturityState(state = "cold") {
+  const maturityState = normalizeMaturityState(state, "cold")
+  if (maturityState === "eligible") return "hot"
+  if (maturityState === "near_eligible" || maturityState === "enriching") return "warm"
+  return "cold"
+}
+
+function normalizeCandidateStatuses(
+  values = [],
+  fallback = ["eligible", "near_eligible", "enriching", "candidate"]
+) {
   const fallbackList = Array.isArray(fallback) ? fallback : [fallback]
   const normalized = Array.from(
     new Set(
@@ -191,6 +227,20 @@ function normalizeRows(rows = []) {
         row?.candidate_status ?? row?.candidateStatus,
         scanEligible ? "eligible" : "candidate"
       )
+      const maturityState = normalizeMaturityState(
+        row?.maturity_state ?? row?.maturityState,
+        scanEligible
+          ? "eligible"
+          : candidateStatus === "near_eligible"
+            ? "near_eligible"
+            : candidateStatus === "enriching"
+              ? "enriching"
+              : "cold"
+      )
+      const scanLayer = normalizeScanLayer(
+        row?.scan_layer ?? row?.scanLayer,
+        deriveScanLayerFromMaturityState(maturityState)
+      )
 
       return {
         market_hash_name: marketHashName,
@@ -216,6 +266,9 @@ function normalizeRows(rows = []) {
           toFiniteOrNull(row?.enrichment_priority ?? row?.enrichmentPriority) ?? 0,
         eligibility_reason:
           normalizeText(row?.eligibility_reason || row?.eligibilityReason) || null,
+        maturity_state: maturityState,
+        maturity_score: toFiniteOrNull(row?.maturity_score ?? row?.maturityScore) ?? 0,
+        scan_layer: scanLayer,
         reference_price: toFiniteOrNull(row?.reference_price ?? row?.referencePrice),
         market_coverage_count: toIntegerOrDefault(
           row?.market_coverage_count ?? row?.marketCoverageCount,
@@ -226,6 +279,7 @@ function normalizeRows(rows = []) {
         volume_7d: toIntegerOrNull(row?.volume_7d ?? row?.volume7d, 0),
         snapshot_stale: row?.snapshot_stale == null ? Boolean(row?.snapshotStale) : Boolean(row.snapshot_stale),
         snapshot_captured_at: row?.snapshot_captured_at || row?.snapshotCapturedAt || null,
+        quote_fetched_at: row?.quote_fetched_at || row?.quoteFetchedAt || null,
         invalid_reason: normalizeText(row?.invalid_reason || row?.invalidReason) || null,
         source_tag: normalizeText(row?.source_tag || row?.sourceTag) || "curated_seed",
         is_active: row?.is_active == null ? (row?.isActive == null ? true : Boolean(row.isActive)) : Boolean(row.is_active),
@@ -303,7 +357,7 @@ exports.listActiveTradable = async (options = {}) => {
       let query = supabaseAdmin
         .from(TABLE)
         .select(
-          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,invalid_reason,source_tag,is_active,last_enriched_at"
+          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,invalid_reason,source_tag,is_active,last_enriched_at"
         )
         .eq("is_active", true)
         .eq("tradable", true)
@@ -342,7 +396,7 @@ exports.listScanEligible = async (options = {}) => {
       let query = supabaseAdmin
         .from(TABLE)
         .select(
-          "market_hash_name,item_name,category,subcategory,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at"
+          "market_hash_name,item_name,category,subcategory,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at"
         )
         .eq("is_active", true)
         .eq("tradable", true)
@@ -420,7 +474,7 @@ exports.listCandidatePool = async (options = {}) => {
       let query = supabaseAdmin
         .from(TABLE)
         .select(
-          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,invalid_reason,source_tag,is_active,last_enriched_at"
+          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,invalid_reason,source_tag,is_active,last_enriched_at"
         )
         .eq("is_active", true)
         .eq("tradable", true)
@@ -470,7 +524,7 @@ exports.listByMarketHashNames = async (marketHashNames = [], options = {}) => {
         let query = supabaseAdmin
           .from(TABLE)
           .select(
-            "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,invalid_reason,source_tag,is_active,last_enriched_at"
+            "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,invalid_reason,source_tag,is_active,last_enriched_at"
           )
           .in("market_hash_name", chunk)
 

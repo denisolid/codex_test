@@ -27,6 +27,7 @@ const SCANNER_SCOPE_CATEGORY_SET = new Set(SCANNER_SCOPE_CATEGORIES)
 const CATALOG_CANDIDATE_STATUS = Object.freeze({
   CANDIDATE: "candidate",
   ENRICHING: "enriching",
+  NEAR_ELIGIBLE: "near_eligible",
   ELIGIBLE: "eligible",
   REJECTED: "rejected"
 })
@@ -38,6 +39,7 @@ const CATALOG_MATURITY_STATE = Object.freeze({
 })
 const ACTIVE_CANDIDATE_STATUSES = Object.freeze([
   CATALOG_CANDIDATE_STATUS.ELIGIBLE,
+  CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE,
   CATALOG_CANDIDATE_STATUS.ENRICHING,
   CATALOG_CANDIDATE_STATUS.CANDIDATE
 ])
@@ -325,6 +327,18 @@ function normalizeMaturityState(value, fallback = CATALOG_MATURITY_STATE.COLD) {
   return CATALOG_MATURITY_STATE_SET.has(fallbackText)
     ? fallbackText
     : CATALOG_MATURITY_STATE.COLD
+}
+
+function resolveScanLayerForMaturityState(maturityState = CATALOG_MATURITY_STATE.COLD) {
+  const normalized = normalizeMaturityState(maturityState)
+  if (normalized === CATALOG_MATURITY_STATE.ELIGIBLE) return "hot"
+  if (
+    normalized === CATALOG_MATURITY_STATE.NEAR_ELIGIBLE ||
+    normalized === CATALOG_MATURITY_STATE.ENRICHING
+  ) {
+    return "warm"
+  }
+  return "cold"
 }
 
 function normalizeText(value) {
@@ -632,8 +646,10 @@ function buildBaseDiagnostics() {
       eligibleRows: 0,
       rejectedRows: 0,
       eligibleTradableRows: 0,
+      promotedToNearEligible: 0,
       promotedToEligible: 0,
       demotedToEnriching: 0,
+      promotedToNearEligibleByCategory: buildCategoryNumberMap(),
       promotedToEligibleByCategory: buildCategoryNumberMap(),
       demotedToEnrichingByCategory: buildCategoryNumberMap(),
       excludedLowValueItems: 0,
@@ -647,6 +663,7 @@ function buildBaseDiagnostics() {
       maturityFunnelByCategory: buildMaturityByCategoryMap(),
       candidateFunnelByCategory: buildEmptyCategoryCounter(),
       eligibleRowsByCategory: buildCategoryNumberMap(),
+      nearEligibleRowsByCategory: buildCategoryNumberMap(),
       candidateRowsByCategory: buildCategoryNumberMap(),
       enrichingRowsByCategory: buildCategoryNumberMap(),
       byCategory: buildEmptyCategoryCounter()
@@ -663,12 +680,15 @@ function buildBaseDiagnostics() {
       quotaReallocationByCategory: buildCategoryNumberMap(),
       reallocatedSlots: 0,
       eligibleRows: 0,
+      nearEligibleRows: 0,
       candidateRows: 0,
       enrichingRows: 0,
       eligibleRowsByCategory: buildCategoryNumberMap(),
+      nearEligibleRowsByCategory: buildCategoryNumberMap(),
       candidateRowsByCategory: buildCategoryNumberMap(),
       enrichingRowsByCategory: buildCategoryNumberMap(),
       selectedFromEligible: 0,
+      selectedFromNearEligible: 0,
       selectedFromEnriching: 0,
       selectedFromCandidate: 0,
       candidateBackfillUsed: false,
@@ -1068,6 +1088,8 @@ function computeEnrichmentPriority({
   const statusBoost =
     status === CATALOG_CANDIDATE_STATUS.ELIGIBLE
       ? 38
+      : status === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
+        ? 32
       : status === CATALOG_CANDIDATE_STATUS.ENRICHING
         ? 26
         : 18
@@ -1145,6 +1167,7 @@ function computeCatalogMaturity({
     maturityState = CATALOG_MATURITY_STATE.ELIGIBLE
   } else if (
     (normalizedStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE ||
+      normalizedStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE ||
       normalizedStatus === CATALOG_CANDIDATE_STATUS.ENRICHING) &&
     missingSignals <= 1 &&
     !snapshotStale &&
@@ -1153,6 +1176,7 @@ function computeCatalogMaturity({
   ) {
     maturityState = CATALOG_MATURITY_STATE.NEAR_ELIGIBLE
   } else if (
+    normalizedStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE ||
     normalizedStatus === CATALOG_CANDIDATE_STATUS.ENRICHING ||
     normalizedStatus === CATALOG_CANDIDATE_STATUS.CANDIDATE
   ) {
@@ -1256,6 +1280,8 @@ function evaluateCandidateState({
     candidateStatus = CATALOG_CANDIDATE_STATUS.REJECTED
   } else if (strictEligible) {
     candidateStatus = CATALOG_CANDIDATE_STATUS.ELIGIBLE
+  } else if (!missingSnapshot && !missingReference && !missingMarketCoverage) {
+    candidateStatus = CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
   } else if (missingSnapshot || missingReference || missingMarketCoverage || missingLiquidityContext) {
     candidateStatus = CATALOG_CANDIDATE_STATUS.ENRICHING
   }
@@ -1272,7 +1298,10 @@ function evaluateCandidateState({
               ? "missing_market_coverage"
               : missingLiquidityContext
                 ? "missing_liquidity_context"
-                : strictReason || "candidate_not_ready")
+                : strictReason ||
+                  (candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
+                    ? "near_eligible"
+                    : "candidate_not_ready"))
 
   const enrichmentPriority = computeEnrichmentPriority({
     candidateStatus,
@@ -1357,6 +1386,7 @@ async function enrichSourceCatalog() {
       eligibleRows: 0,
       rejectedRows: 0,
       eligibleTradableRows: 0,
+      promotedToNearEligible: 0,
       promotedToEligible: 0,
       demotedToEnriching: 0,
       excludedLowValueItems: 0,
@@ -1368,11 +1398,13 @@ async function enrichSourceCatalog() {
       candidateFunnel: buildStatusNumberMap(),
       maturityFunnel: buildMaturityNumberMap(),
       maturityFunnelByCategory: buildMaturityByCategoryMap(),
+      promotedToNearEligibleByCategory: buildCategoryNumberMap(),
       promotedToEligibleByCategory: buildCategoryNumberMap(),
       demotedToEnrichingByCategory: buildCategoryNumberMap(),
       candidateFunnelByCategory: buildEmptyCategoryCounter(),
       byCategory: buildEmptyCategoryCounter(),
       eligibleRowsByCategory: buildCategoryNumberMap(),
+      nearEligibleRowsByCategory: buildCategoryNumberMap(),
       candidateRowsByCategory: buildCategoryNumberMap(),
       enrichingRowsByCategory: buildCategoryNumberMap()
     }
@@ -1434,6 +1466,7 @@ async function enrichSourceCatalog() {
     eligibleRows: 0,
     rejectedRows: 0,
     eligibleTradableRows: 0,
+    promotedToNearEligible: 0,
     promotedToEligible: 0,
     demotedToEnriching: 0,
     excludedLowValueItems: 0,
@@ -1444,8 +1477,10 @@ async function enrichSourceCatalog() {
   }
 
   const eligibleRowsByCategory = buildCategoryNumberMap()
+  const nearEligibleRowsByCategory = buildCategoryNumberMap()
   const candidateRowsByCategory = buildCategoryNumberMap()
   const enrichingRowsByCategory = buildCategoryNumberMap()
+  const promotedToNearEligibleByCategory = buildCategoryNumberMap()
   const promotedToEligibleByCategory = buildCategoryNumberMap()
   const demotedToEnrichingByCategory = buildCategoryNumberMap()
 
@@ -1538,6 +1573,13 @@ async function enrichSourceCatalog() {
       byCategory[category].rejected += 1
     }
     if (
+      previousCandidateStatus !== CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE &&
+      candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
+    ) {
+      counts.promotedToNearEligible += 1
+      promotedToNearEligibleByCategory[category] += 1
+    }
+    if (
       previousCandidateStatus !== CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
       candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE
     ) {
@@ -1554,6 +1596,7 @@ async function enrichSourceCatalog() {
     if (maturityState === CATALOG_MATURITY_STATE.NEAR_ELIGIBLE) {
       counts.nearEligibleRows += 1
       byCategory[category].nearEligible += 1
+      nearEligibleRowsByCategory[category] += 1
     }
     if (maturityState === CATALOG_MATURITY_STATE.COLD) {
       counts.coldRows += 1
@@ -1582,6 +1625,8 @@ async function enrichSourceCatalog() {
             ? candidateState.eligibilityReason
             : eligibility.reason || candidateState.eligibilityReason || "candidate_not_ready"
         ) || "candidate_not_ready"
+    const quoteFetchedAt = normalizeText(quoteCoverage?.latestFetchedAt) || null
+    const scanLayer = resolveScanLayerForMaturityState(maturityState)
 
     updates.push({
       market_hash_name: marketHashName,
@@ -1596,12 +1641,16 @@ async function enrichSourceCatalog() {
       missing_market_coverage: Boolean(candidateState.missingMarketCoverage),
       enrichment_priority: candidateState.enrichmentPriority,
       eligibility_reason: scanEligible ? null : normalizeText(candidateState.eligibilityReason) || null,
+      maturity_state: maturityState,
+      maturity_score: Number(candidateState.maturityScore || 0),
+      scan_layer: scanLayer,
       reference_price: referencePrice,
       market_coverage_count: marketCoverageCount,
       liquidity_rank: liquidityRank,
       volume_7d: volume7d,
       snapshot_stale: snapshotStale,
       snapshot_captured_at: snapshot?.captured_at || null,
+      quote_fetched_at: quoteFetchedAt,
       invalid_reason: invalidReason,
       source_tag: normalizeText(row?.source_tag || row?.sourceTag) || "curated_seed",
       is_active: row?.is_active == null ? true : Boolean(row.is_active),
@@ -1625,11 +1674,13 @@ async function enrichSourceCatalog() {
     candidateFunnel,
     maturityFunnel,
     maturityFunnelByCategory,
+    promotedToNearEligibleByCategory,
     promotedToEligibleByCategory,
     demotedToEnrichingByCategory,
     candidateFunnelByCategory: byCategory,
     byCategory,
     eligibleRowsByCategory,
+    nearEligibleRowsByCategory,
     candidateRowsByCategory,
     enrichingRowsByCategory
   }
@@ -1677,6 +1728,7 @@ function normalizeCatalogCandidateRows(rows = [], selectionTier = "") {
   function resolveSelectionTier(candidateStatus = CATALOG_CANDIDATE_STATUS.CANDIDATE) {
     if (forcedTier) return forcedTier
     if (candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE) return "strict_eligible"
+    if (candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE) return "candidate_near_eligible"
     if (candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING) return "candidate_enriching"
     if (candidateStatus === CATALOG_CANDIDATE_STATUS.CANDIDATE) return "candidate_backfill"
     return "candidate_backfill"
@@ -1684,6 +1736,7 @@ function normalizeCatalogCandidateRows(rows = [], selectionTier = "") {
   function resolveTierRank(tier = "") {
     const normalizedTier = normalizeText(tier).toLowerCase()
     if (normalizedTier === "strict_eligible") return 3
+    if (normalizedTier === "candidate_near_eligible") return 2.5
     if (normalizedTier === "candidate_enriching") return 2
     return 1
   }
@@ -1728,12 +1781,24 @@ function normalizeCatalogCandidateRows(rows = [], selectionTier = "") {
       )
       if (
         !hasExplicitCandidateStatus &&
-        !scanEligible &&
-        (missingSnapshot || missingReference || missingMarketCoverage)
+        !scanEligible
       ) {
-        candidateStatus = CATALOG_CANDIDATE_STATUS.ENRICHING
+        candidateStatus =
+          missingSnapshot || missingReference || missingMarketCoverage
+            ? CATALOG_CANDIDATE_STATUS.ENRICHING
+            : CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
       }
       if (candidateStatus === CATALOG_CANDIDATE_STATUS.REJECTED) return null
+      const maturityState = normalizeMaturityState(
+        row?.maturity_state ?? row?.maturityState,
+        candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE
+          ? CATALOG_MATURITY_STATE.ELIGIBLE
+          : candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
+            ? CATALOG_MATURITY_STATE.NEAR_ELIGIBLE
+            : candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING
+              ? CATALOG_MATURITY_STATE.ENRICHING
+              : CATALOG_MATURITY_STATE.COLD
+      )
       const tier = resolveSelectionTier(candidateStatus)
       return {
         ...row,
@@ -1746,10 +1811,14 @@ function normalizeCatalogCandidateRows(rows = [], selectionTier = "") {
         missing_reference: missingReference,
         missing_market_coverage: missingMarketCoverage,
         enrichment_priority: toFiniteOrNull(row?.enrichment_priority ?? row?.enrichmentPriority) ?? 0,
+        maturity_state: maturityState,
+        maturity_score: toFiniteOrNull(row?.maturity_score ?? row?.maturityScore) ?? 0,
+        scan_layer: normalizeText(row?.scan_layer || row?.scanLayer) || resolveScanLayerForMaturityState(maturityState),
         liquidity_rank: toFiniteOrNull(row?.liquidity_rank) ?? 0,
         market_coverage_count: marketCoverageCount,
         volume_7d: Math.max(Number(row?.volume_7d || 0), 0),
         reference_price: referencePrice ?? 0,
+        quote_fetched_at: normalizeText(row?.quote_fetched_at || row?.quoteFetchedAt) || null,
         selectionTier: tier,
         selectionTierRank: resolveTierRank(tier)
       }
@@ -1796,10 +1865,14 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
       limit: Math.max(SOURCE_CATALOG_LIMIT, safeTarget * 3),
       categories: CATEGORY_PRIORITY,
       candidateStatuses: [
+        CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE,
         CATALOG_CANDIDATE_STATUS.ENRICHING,
         CATALOG_CANDIDATE_STATUS.CANDIDATE
       ]
     })
+  )
+  const nearEligibleRows = candidatePoolRows.filter(
+    (row) => normalizeCandidateStatus(row?.candidate_status) === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
   )
   const enrichingRows = candidatePoolRows.filter(
     (row) => normalizeCandidateStatus(row?.candidate_status) === CATALOG_CANDIDATE_STATUS.ENRICHING
@@ -1810,6 +1883,7 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
 
   const rankedRows = dedupeByMarketHashName([
     ...strictEligibleRows,
+    ...nearEligibleRows,
     ...enrichingRows,
     ...candidateRows
   ])
@@ -1841,13 +1915,16 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
   }
 
   const selectedFromStrict = finalRows.filter((row) => row.selectionTier === "strict_eligible").length
+  const selectedFromNearEligible = finalRows.filter(
+    (row) => row.selectionTier === "candidate_near_eligible"
+  ).length
   const selectedFromEnriching = finalRows.filter(
     (row) => row.selectionTier === "candidate_enriching"
   ).length
   const selectedFromCandidate = finalRows.filter(
     (row) => row.selectionTier === "candidate_backfill"
   ).length
-  const selectedFromFallback = selectedFromEnriching + selectedFromCandidate
+  const selectedFromFallback = selectedFromNearEligible + selectedFromEnriching + selectedFromCandidate
   const candidateBackfillUsed = selectedFromFallback > 0
 
   const normalizedUniverseRows = finalRows.slice(0, safeTarget).map((row, index) => ({
@@ -1876,12 +1953,14 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
   return {
     targetUniverseSize: safeTarget,
     eligibleRows: strictEligibleRows.length,
+    nearEligibleRows: nearEligibleRows.length,
     candidateRows: candidateRows.length,
     enrichingRows: enrichingRows.length,
     strictEligibleRows: strictEligibleRows.length,
     fallbackTradableRows: candidatePoolRows.length,
     selectedFromStrict,
     selectedFromEligible: selectedFromStrict,
+    selectedFromNearEligible,
     selectedFromEnriching,
     selectedFromCandidate,
     selectedFromFallback,
@@ -1895,6 +1974,7 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
     quotaReallocationByCategory,
     reallocatedSlots: Math.max(finalRows.length - selected.length, 0),
     eligibleRowsByCategory: countCatalogRowsByCategory(strictEligibleRows),
+    nearEligibleRowsByCategory: countCatalogRowsByCategory(nearEligibleRows),
     candidateRowsByCategory: countCatalogRowsByCategory(candidateRows),
     enrichingRowsByCategory: countCatalogRowsByCategory(enrichingRows),
     candidateBackfillUsed,
@@ -1968,12 +2048,18 @@ async function runPipeline(options = {}) {
       maturityFunnel: sourceCoverage?.maturityFunnel || base.sourceCatalog.maturityFunnel,
       maturityFunnelByCategory:
         sourceCoverage?.maturityFunnelByCategory || base.sourceCatalog.maturityFunnelByCategory,
+      promotedToNearEligible: Number(
+        sourceCoverage?.promotedToNearEligible || base.sourceCatalog.promotedToNearEligible || 0
+      ),
       promotedToEligible: Number(
         sourceCoverage?.promotedToEligible || base.sourceCatalog.promotedToEligible || 0
       ),
       demotedToEnriching: Number(
         sourceCoverage?.demotedToEnriching || base.sourceCatalog.demotedToEnriching || 0
       ),
+      promotedToNearEligibleByCategory:
+        sourceCoverage?.promotedToNearEligibleByCategory ||
+        base.sourceCatalog.promotedToNearEligibleByCategory,
       promotedToEligibleByCategory:
         sourceCoverage?.promotedToEligibleByCategory ||
         base.sourceCatalog.promotedToEligibleByCategory,
@@ -1984,6 +2070,8 @@ async function runPipeline(options = {}) {
         sourceCoverage?.candidateFunnelByCategory || base.sourceCatalog.candidateFunnelByCategory,
       eligibleRowsByCategory:
         sourceCoverage?.eligibleRowsByCategory || base.sourceCatalog.eligibleRowsByCategory,
+      nearEligibleRowsByCategory:
+        sourceCoverage?.nearEligibleRowsByCategory || base.sourceCatalog.nearEligibleRowsByCategory,
       candidateRowsByCategory:
         sourceCoverage?.candidateRowsByCategory || base.sourceCatalog.candidateRowsByCategory,
       enrichingRowsByCategory:
@@ -2021,6 +2109,7 @@ function shouldBypassSkipForRecovery(diagnostics = {}, targetUniverseSize = DEFA
   )
   const candidateRows = Math.max(Number(sourceCatalog?.candidateRows || 0), 0)
   const enrichingRows = Math.max(Number(sourceCatalog?.enrichingRows || 0), 0)
+  const nearEligibleRows = Math.max(Number(sourceCatalog?.nearEligibleRows || 0), 0)
   const rejectedRows = Math.max(Number(sourceCatalog?.rejectedRows || 0), 0)
   const activeUniverseBuilt = Math.max(Number(universeBuild?.activeUniverseBuilt || 0), 0)
   const targetSize = Math.max(
@@ -2040,6 +2129,7 @@ function shouldBypassSkipForRecovery(diagnostics = {}, targetUniverseSize = DEFA
     eligibleRows > 0 &&
     candidateRows === 0 &&
     enrichingRows === 0 &&
+    nearEligibleRows === 0 &&
     rejectedRows === 0
   const hasCollapsedUniverse =
     activeUniverseBuilt > 0 &&

@@ -143,7 +143,8 @@ exports.getLatestCoverageByItemNames = async (itemNames = []) => {
       coverageByItem[itemName] = {
         marketCoverageCount: 0,
         markets: {},
-        volume7dMax: null
+        volume7dMax: null,
+        latestFetchedAt: null
       }
     }
     const bucket = coverageByItem[itemName]
@@ -157,6 +158,16 @@ exports.getLatestCoverageByItemNames = async (itemNames = []) => {
     if (volume7d != null) {
       bucket.volume7dMax =
         bucket.volume7dMax == null ? volume7d : Math.max(Number(bucket.volume7dMax), volume7d)
+    }
+    const fetchedAt = normalizeText(row?.fetched_at)
+    if (fetchedAt) {
+      const nextTs = new Date(fetchedAt).getTime()
+      const prevTs = bucket.latestFetchedAt
+        ? new Date(bucket.latestFetchedAt).getTime()
+        : NaN
+      if (!Number.isFinite(prevTs) || (Number.isFinite(nextTs) && nextTs > prevTs)) {
+        bucket.latestFetchedAt = fetchedAt
+      }
     }
   }
 
