@@ -1,10 +1,16 @@
 const { round2, roundPrice } = require("../markets/marketUtils")
 const {
   arbitrageScannerIntervalMinutes,
+  arbitrageEnrichmentIntervalMinutes,
+  arbitrageOpportunityScanIntervalMinutes,
   arbitrageDefaultUniverseLimit,
   arbitrageScannerUniverseTargetSize,
   arbitrageScanBatchSize,
+  arbitrageEnrichmentBatchSize,
+  arbitrageOpportunityBatchSize,
   arbitrageMaxConcurrentMarketRequests,
+  arbitrageEnrichmentJobTimeoutMs,
+  arbitrageOpportunityJobTimeoutMs,
   arbitrageScanTimeoutPerBatchMs,
   arbitrageImageEnrichBatchSize,
   arbitrageImageEnrichConcurrency,
@@ -36,11 +42,37 @@ const planService = require("./planService")
 const premiumCategoryAccessService = require("./premiumCategoryAccessService")
 const AppError = require("../utils/AppError")
 
-const SCANNER_TYPE = "global_arbitrage"
-const SCANNER_INTERVAL_MINUTES = Math.max(Number(arbitrageScannerIntervalMinutes || 30), 1)
-const SCANNER_INTERVAL_MS = SCANNER_INTERVAL_MINUTES * 60 * 1000
-const CACHE_TTL_MS = SCANNER_INTERVAL_MS
-const SCANNER_OVERDUE_GRACE_MS = Math.max(Math.round(SCANNER_INTERVAL_MS * 0.2), 15 * 1000)
+const SCANNER_TYPES = Object.freeze({
+  ENRICHMENT: "enrichment",
+  OPPORTUNITY_SCAN: "opportunity_scan"
+})
+const LEGACY_SCANNER_TYPE = "global_arbitrage"
+const ENRICHMENT_INTERVAL_MINUTES = Math.max(
+  Number(arbitrageEnrichmentIntervalMinutes || arbitrageScannerIntervalMinutes || 10),
+  1
+)
+const OPPORTUNITY_SCAN_INTERVAL_MINUTES = Math.max(
+  Number(arbitrageOpportunityScanIntervalMinutes || arbitrageScannerIntervalMinutes || 10),
+  1
+)
+const SCANNER_INTERVAL_MINUTES = OPPORTUNITY_SCAN_INTERVAL_MINUTES
+const ENRICHMENT_INTERVAL_MS = ENRICHMENT_INTERVAL_MINUTES * 60 * 1000
+const OPPORTUNITY_SCAN_INTERVAL_MS = OPPORTUNITY_SCAN_INTERVAL_MINUTES * 60 * 1000
+const SCANNER_INTERVAL_MS = OPPORTUNITY_SCAN_INTERVAL_MS
+const CACHE_TTL_MS = OPPORTUNITY_SCAN_INTERVAL_MS
+const SCANNER_OVERDUE_GRACE_MS = Math.max(
+  Math.round(OPPORTUNITY_SCAN_INTERVAL_MS * 0.2),
+  15 * 1000
+)
+const ENRICHMENT_OVERDUE_GRACE_MS = Math.max(
+  Math.round(ENRICHMENT_INTERVAL_MS * 0.2),
+  15 * 1000
+)
+const ENRICHMENT_JOB_TIMEOUT_MS = Math.max(Number(arbitrageEnrichmentJobTimeoutMs || 420000), 60000)
+const OPPORTUNITY_JOB_TIMEOUT_MS = Math.max(
+  Number(arbitrageOpportunityJobTimeoutMs || 420000),
+  60000
+)
 const STALE_RUN_RECONCILE_COOLDOWN_MS = 60 * 1000
 const HIGH_CONFIDENCE_MIN_PRICE_USD = 5
 const HIGH_CONFIDENCE_MIN_SPREAD_PERCENT = 5
@@ -133,6 +165,7 @@ const ITEM_CATEGORIES = Object.freeze({
 const CATALOG_CANDIDATE_STATUS = Object.freeze({
   CANDIDATE: "candidate",
   ENRICHING: "enriching",
+  NEAR_ELIGIBLE: "near_eligible",
   ELIGIBLE: "eligible",
   REJECTED: "rejected"
 })
@@ -219,6 +252,24 @@ const ENRICHMENT_ONLY_TARGET = Math.max(
     PRE_COMPARE_UNIVERSE_LIMIT
   ),
   120
+)
+const ENRICHMENT_BATCH_SIZE = Math.max(
+  Math.min(
+    Number(arbitrageEnrichmentBatchSize || ENRICHMENT_ONLY_TARGET),
+    Math.min(PRE_COMPARE_UNIVERSE_LIMIT, 200)
+  ),
+  50
+)
+const OPPORTUNITY_BATCH_SIZE = Math.max(
+  Math.min(
+    Number(arbitrageOpportunityBatchSize || OPPORTUNITY_SCAN_TARGET),
+    Math.min(PRE_COMPARE_UNIVERSE_LIMIT, 500)
+  ),
+  100
+)
+const OPPORTUNITY_NEAR_ELIGIBLE_LIMIT = Math.max(
+  Math.min(Number(process.env.ARBITRAGE_OPPORTUNITY_NEAR_ELIGIBLE_LIMIT || 40), 120),
+  0
 )
 const UNIVERSE_DB_LIMIT = Math.max(
   Number(arbitrageUniverseDbLimit || DEFAULT_UNIVERSE_LIMIT * 2),
@@ -1437,6 +1488,21 @@ function buildInputItemFromSkinAndSnapshot({
   const eligibilityReason = String(
     catalogRow?.eligibility_reason || catalogRow?.eligibilityReason || ""
   ).trim()
+  const maturityState = normalizeMaturityState(
+    catalogRow?.maturity_state ?? catalogRow?.maturityState,
+    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE
+      ? MATURITY_STATES.ELIGIBLE
+      : candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
+        ? MATURITY_STATES.NEAR_ELIGIBLE
+        : candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING
+          ? MATURITY_STATES.ENRICHING
+          : MATURITY_STATES.COLD
+  )
+  const scanLayer = String(
+    catalogRow?.scan_layer || catalogRow?.scanLayer || resolveScanLayerForMaturity({ maturityState })
+  )
+    .trim()
+    .toLowerCase()
 
   return {
     skinId: Number(skin?.id || 0) || null,
@@ -1465,6 +1531,10 @@ function buildInputItemFromSkinAndSnapshot({
     missingReference,
     missingMarketCoverage,
     enrichmentPriority,
+    maturityState,
+    maturityScore: clampMaturityScore(catalogRow?.maturity_score ?? catalogRow?.maturityScore),
+    scanLayer,
+    quoteFetchedAt: catalogRow?.quote_fetched_at || catalogRow?.quoteFetchedAt || null,
     eligibilityReason: eligibilityReason || null,
     marketCoverageCount
   }
@@ -1594,17 +1664,34 @@ function normalizeCatalogRowsByMarketHashName(rows = []) {
 
 function applyCatalogStateToSeed(seed = {}, catalogRow = null) {
   if (!catalogRow || typeof catalogRow !== "object") {
+    const fallbackCandidateStatus = normalizeCatalogCandidateStatus(
+      seed?.candidateStatus,
+      seed?.scanEligible ? CATALOG_CANDIDATE_STATUS.ELIGIBLE : CATALOG_CANDIDATE_STATUS.CANDIDATE
+    )
+    const fallbackMaturityState = normalizeMaturityState(
+      seed?.maturityState,
+      fallbackCandidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE
+        ? MATURITY_STATES.ELIGIBLE
+        : fallbackCandidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
+          ? MATURITY_STATES.NEAR_ELIGIBLE
+          : fallbackCandidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING
+            ? MATURITY_STATES.ENRICHING
+            : MATURITY_STATES.COLD
+    )
     return {
       ...seed,
-      candidateStatus: normalizeCatalogCandidateStatus(
-        seed?.candidateStatus,
-        seed?.scanEligible ? CATALOG_CANDIDATE_STATUS.ELIGIBLE : CATALOG_CANDIDATE_STATUS.CANDIDATE
-      ),
+      candidateStatus: fallbackCandidateStatus,
       scanEligible: Boolean(seed?.scanEligible),
       missingSnapshot: Boolean(seed?.missingSnapshot),
       missingReference: Boolean(seed?.missingReference),
       missingMarketCoverage: Boolean(seed?.missingMarketCoverage),
       enrichmentPriority: toFiniteOrNull(seed?.enrichmentPriority) ?? 0,
+      maturityState: fallbackMaturityState,
+      maturityScore: clampMaturityScore(seed?.maturityScore),
+      scanLayer: String(seed?.scanLayer || resolveScanLayerForMaturity({ maturityState: fallbackMaturityState }))
+        .trim()
+        .toLowerCase(),
+      quoteFetchedAt: seed?.quoteFetchedAt || null,
       eligibilityReason: String(seed?.eligibilityReason || "").trim() || null,
       marketCoverageCount: Math.max(Number(seed?.marketCoverageCount || 0), 0)
     }
@@ -1632,15 +1719,26 @@ function applyCatalogStateToSeed(seed = {}, catalogRow = null) {
     catalogRow?.missing_market_coverage == null
       ? marketCoverageCount < MIN_MARKET_COVERAGE
       : Boolean(catalogRow.missing_market_coverage)
+  const candidateStatus = normalizeCatalogCandidateStatus(
+    catalogRow?.candidate_status ?? catalogRow?.candidateStatus,
+    seed?.scanEligible || catalogRow?.scan_eligible
+      ? CATALOG_CANDIDATE_STATUS.ELIGIBLE
+      : CATALOG_CANDIDATE_STATUS.CANDIDATE
+  )
+  const maturityState = normalizeMaturityState(
+    catalogRow?.maturity_state ?? catalogRow?.maturityState,
+    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE
+      ? MATURITY_STATES.ELIGIBLE
+      : candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
+        ? MATURITY_STATES.NEAR_ELIGIBLE
+        : candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING
+          ? MATURITY_STATES.ENRICHING
+          : MATURITY_STATES.COLD
+  )
 
   return {
     ...seed,
-    candidateStatus: normalizeCatalogCandidateStatus(
-      catalogRow?.candidate_status ?? catalogRow?.candidateStatus,
-      seed?.scanEligible || catalogRow?.scan_eligible
-        ? CATALOG_CANDIDATE_STATUS.ELIGIBLE
-        : CATALOG_CANDIDATE_STATUS.CANDIDATE
-    ),
+    candidateStatus,
     scanEligible:
       catalogRow?.scan_eligible == null ? Boolean(seed?.scanEligible) : Boolean(catalogRow.scan_eligible),
     missingSnapshot,
@@ -1654,6 +1752,14 @@ function applyCatalogStateToSeed(seed = {}, catalogRow = null) {
       String(catalogRow?.eligibility_reason || catalogRow?.eligibilityReason || seed?.eligibilityReason || "")
         .trim() || null,
     marketCoverageCount,
+    maturityState,
+    maturityScore: clampMaturityScore(catalogRow?.maturity_score ?? catalogRow?.maturityScore),
+    scanLayer: String(
+      catalogRow?.scan_layer || catalogRow?.scanLayer || resolveScanLayerForMaturity({ maturityState })
+    )
+      .trim()
+      .toLowerCase(),
+    quoteFetchedAt: catalogRow?.quote_fetched_at || catalogRow?.quoteFetchedAt || seed?.quoteFetchedAt || null,
     snapshotStale,
     snapshotCapturedAt
   }
@@ -1700,6 +1806,7 @@ function resolveMaturityStateForSeed(seed = {}) {
     maturityState = MATURITY_STATES.ELIGIBLE
   } else if (
     (candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE ||
+      candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE ||
       candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING) &&
     missingSignals <= 1 &&
     !snapshotStale &&
@@ -1708,6 +1815,7 @@ function resolveMaturityStateForSeed(seed = {}) {
   ) {
     maturityState = MATURITY_STATES.NEAR_ELIGIBLE
   } else if (
+    candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE ||
     candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING ||
     (candidateStatus === CATALOG_CANDIDATE_STATUS.CANDIDATE && missingSignals <= 2)
   ) {
@@ -3286,18 +3394,23 @@ function applyGuardFallbackReason(
   }
 }
 
-const scannerState = {
-  latest: null,
-  inFlight: null,
-  inFlightRunId: null,
-  timer: null,
-  lastError: null,
-  nextScheduledAt: null,
-  lastStartedAt: null,
-  lastCompletedAt: null,
-  lastPersistSummary: null,
-  lastStaleReconcileAt: 0
+function createJobState() {
+  return {
+    latest: null,
+    inFlight: null,
+    inFlightRunId: null,
+    timer: null,
+    lastError: null,
+    nextScheduledAt: null,
+    lastStartedAt: null,
+    lastCompletedAt: null,
+    lastPersistSummary: null,
+    lastStaleReconcileAt: 0
+  }
 }
+
+const scannerState = createJobState()
+const enrichmentState = createJobState()
 
 function parseTimestampMs(value) {
   const text = String(value || "").trim()
@@ -3306,33 +3419,79 @@ function parseTimestampMs(value) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
-function updateNextScheduledAt() {
-  scannerState.nextScheduledAt = new Date(Date.now() + SCANNER_INTERVAL_MS).toISOString()
+function getJobState(scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN) {
+  const normalized = String(scannerType || "")
+    .trim()
+    .toLowerCase()
+  return normalized === SCANNER_TYPES.ENRICHMENT ? enrichmentState : scannerState
 }
 
-function isScannerRunOverdue(status = {}, nowMs = Date.now()) {
-  const latestStartedMs = parseTimestampMs(status?.latestRun?.started_at || scannerState.lastStartedAt)
+function getJobIntervalMs(scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN) {
+  const normalized = String(scannerType || "")
+    .trim()
+    .toLowerCase()
+  return normalized === SCANNER_TYPES.ENRICHMENT ? ENRICHMENT_INTERVAL_MS : OPPORTUNITY_SCAN_INTERVAL_MS
+}
+
+function getJobOverdueGraceMs(scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN) {
+  const normalized = String(scannerType || "")
+    .trim()
+    .toLowerCase()
+  return normalized === SCANNER_TYPES.ENRICHMENT
+    ? ENRICHMENT_OVERDUE_GRACE_MS
+    : SCANNER_OVERDUE_GRACE_MS
+}
+
+function getJobTimeoutMs(scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN) {
+  const normalized = String(scannerType || "")
+    .trim()
+    .toLowerCase()
+  return normalized === SCANNER_TYPES.ENRICHMENT ? ENRICHMENT_JOB_TIMEOUT_MS : OPPORTUNITY_JOB_TIMEOUT_MS
+}
+
+function updateNextScheduledAt(scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN) {
+  const state = getJobState(scannerType)
+  const intervalMs = getJobIntervalMs(scannerType)
+  state.nextScheduledAt = new Date(Date.now() + intervalMs).toISOString()
+}
+
+function isScannerRunOverdue(status = {}, nowMs = Date.now(), options = {}) {
+  const scannerType = String(options?.scannerType || SCANNER_TYPES.OPPORTUNITY_SCAN)
+    .trim()
+    .toLowerCase()
+  const state = options?.state || getJobState(scannerType)
+  const intervalMs = Math.max(Number(options?.intervalMs || getJobIntervalMs(scannerType)), 1)
+  const overdueGraceMs = Math.max(
+    Number(options?.overdueGraceMs || getJobOverdueGraceMs(scannerType)),
+    1000
+  )
+  const latestStartedMs = parseTimestampMs(status?.latestRun?.started_at || state.lastStartedAt)
   const latestRunStatus = String(status?.latestRun?.status || "")
     .trim()
     .toLowerCase()
   if (latestRunStatus === "running") {
-    if (scannerState.inFlight) return false
+    if (state.inFlight) return false
     if (!latestStartedMs) return true
-    return nowMs - latestStartedMs >= SCANNER_INTERVAL_MS + SCANNER_OVERDUE_GRACE_MS
+    return nowMs - latestStartedMs >= intervalMs + overdueGraceMs
   }
 
   const latestCompletedMs = parseTimestampMs(
     status?.latestCompletedRun?.completed_at ||
       status?.latestCompletedRun?.started_at ||
-      scannerState.lastCompletedAt
+      state.lastCompletedAt
   )
   const lastActivityMs = Math.max(latestCompletedMs || 0, latestStartedMs || 0)
   if (!lastActivityMs) return true
-  return nowMs - lastActivityMs >= SCANNER_INTERVAL_MS + SCANNER_OVERDUE_GRACE_MS
+  return nowMs - lastActivityMs >= intervalMs + overdueGraceMs
 }
 
-async function reconcileStaleRunningRuns(nowMs = Date.now(), options = {}) {
-  if (scannerState.inFlight) {
+async function reconcileStaleRunningRunsForType(
+  scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN,
+  nowMs = Date.now(),
+  options = {}
+) {
+  const state = getJobState(scannerType)
+  if (state.inFlight) {
     return {
       runningRows: 0,
       staleRows: 0,
@@ -3344,8 +3503,8 @@ async function reconcileStaleRunningRuns(nowMs = Date.now(), options = {}) {
   const force = Boolean(options.force)
   if (
     !force &&
-    Number(scannerState.lastStaleReconcileAt || 0) > 0 &&
-    nowMs - Number(scannerState.lastStaleReconcileAt || 0) < STALE_RUN_RECONCILE_COOLDOWN_MS
+    Number(state.lastStaleReconcileAt || 0) > 0 &&
+    nowMs - Number(state.lastStaleReconcileAt || 0) < STALE_RUN_RECONCILE_COOLDOWN_MS
   ) {
     return {
       runningRows: 0,
@@ -3355,13 +3514,17 @@ async function reconcileStaleRunningRuns(nowMs = Date.now(), options = {}) {
     }
   }
 
-  scannerState.lastStaleReconcileAt = nowMs
-  const staleThresholdMs = SCANNER_INTERVAL_MS + SCANNER_OVERDUE_GRACE_MS
+  state.lastStaleReconcileAt = nowMs
+  const staleThresholdMs = getJobIntervalMs(scannerType) + getJobOverdueGraceMs(scannerType)
+  const timeoutMs = getJobTimeoutMs(scannerType)
   let runningRows = []
   try {
-    runningRows = await scannerRunRepo.listRunningRuns(SCANNER_TYPE, { limit: 120 })
+    runningRows = await scannerRunRepo.listRunningRuns(scannerType, { limit: 120 })
   } catch (err) {
-    console.error("[arbitrage-scanner] Failed to list running runs for stale reconciliation", err.message)
+    console.error(
+      `[arbitrage-scanner] Failed to list running runs for stale reconciliation (${scannerType})`,
+      err.message
+    )
     return {
       runningRows: 0,
       staleRows: 0,
@@ -3374,7 +3537,7 @@ async function reconcileStaleRunningRuns(nowMs = Date.now(), options = {}) {
   let markedFailed = 0
   for (const run of runningRows) {
     const runId = String(run?.id || "").trim()
-    if (!runId || runId === String(scannerState.inFlightRunId || "").trim()) continue
+    if (!runId || runId === String(state.inFlightRunId || "").trim()) continue
     const startedMs = parseTimestampMs(run?.started_at)
     const elapsedMs = startedMs == null ? staleThresholdMs + 1 : Math.max(nowMs - startedMs, 0)
     if (elapsedMs < staleThresholdMs) continue
@@ -3385,19 +3548,25 @@ async function reconcileStaleRunningRuns(nowMs = Date.now(), options = {}) {
         ? run.diagnostics_summary
         : {}
     try {
+      const timedOut = elapsedMs >= timeoutMs
       await scannerRunRepo.markFailed(runId, {
+        status: timedOut ? "timed_out" : "failed",
+        durationMs: elapsedMs,
+        failureReason: timedOut ? "job_timeout_reconciled" : "scanner_run_stale_reconciled",
         diagnosticsSummary: {
           ...existingDiagnostics,
           trigger: String(existingDiagnostics?.trigger || "watchdog"),
+          scannerType,
           staleRunReconciled: true,
-          staleDurationMinutes: Math.max(Math.round(elapsedMs / 60000), 1)
+          staleDurationMinutes: Math.max(Math.round(elapsedMs / 60000), 1),
+          timeoutMs
         },
-        error: "scanner_run_stale_reconciled"
+        error: timedOut ? "job_timeout_reconciled" : "scanner_run_stale_reconciled"
       })
       markedFailed += 1
     } catch (err) {
       console.error(
-        `[arbitrage-scanner] Failed to mark stale run ${runId} as failed`,
+        `[arbitrage-scanner] Failed to mark stale run ${runId} as failed (${scannerType})`,
         err.message
       )
     }
@@ -3409,6 +3578,14 @@ async function reconcileStaleRunningRuns(nowMs = Date.now(), options = {}) {
     markedFailed,
     skipped: false
   }
+}
+
+async function reconcileStaleRunningRuns(nowMs = Date.now(), options = {}) {
+  return reconcileStaleRunningRunsForType(
+    SCANNER_TYPES.OPPORTUNITY_SCAN,
+    nowMs,
+    options
+  )
 }
 
 function mergeDiscardStats(target = {}, source = {}) {
@@ -3476,7 +3653,20 @@ function filterUniverseSeedsForScan(seeds = [], options = {}) {
   }
 }
 
-async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
+async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options = {}) {
+  const mode = String(options?.mode || SCANNER_TYPES.OPPORTUNITY_SCAN)
+    .trim()
+    .toLowerCase()
+  const enrichmentBatchSize = Math.max(
+    Math.min(Number(options?.enrichmentBatchSize || ENRICHMENT_BATCH_SIZE), PRE_COMPARE_UNIVERSE_LIMIT),
+    1
+  )
+  const opportunityBatchSize = Math.max(
+    Math.min(Number(options?.opportunityBatchSize || OPPORTUNITY_BATCH_SIZE), PRE_COMPARE_UNIVERSE_LIMIT),
+    1
+  )
+  const includeNearEligibleInOpportunity = options?.includeNearEligibleInOpportunity !== false
+
   const [curatedSeeds, fallbackSeeds] = await Promise.all([
     loadCuratedUniverseSeeds().catch((err) => {
       console.error("[arbitrage-scanner] Curated universe load failed", err.message)
@@ -3510,7 +3700,12 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
   const strictCoverageThreshold = computeStrictCoverageThreshold(hydratedSeeds.length)
   let selectedFilterResult = strictFilterResult
   let seedFilterMode = "strict"
-  if (strictFilterResult.selectedSeeds.length < strictCoverageThreshold) {
+  if (mode === SCANNER_TYPES.ENRICHMENT) {
+    selectedFilterResult = filterUniverseSeedsForScan(hydratedSeeds, {
+      allowMissingSnapshotData: true
+    })
+    seedFilterMode = "allow_missing_snapshot_data"
+  } else if (strictFilterResult.selectedSeeds.length < strictCoverageThreshold) {
     const relaxedFilterResult = filterUniverseSeedsForScan(hydratedSeeds, {
       allowMissingSnapshotData: true
     })
@@ -3554,13 +3749,80 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
     .slice(0, PRE_COMPARE_UNIVERSE_LIMIT)
 
   const layeredSelection = selectSeedsForLayeredScanning(ranked)
-  const opportunitySeeds = layeredSelection.opportunitySeeds.slice(0, PRE_COMPARE_UNIVERSE_LIMIT)
-  const enrichmentSeeds = layeredSelection.enrichmentSeeds.slice(0, PRE_COMPARE_UNIVERSE_LIMIT)
+  const allRankedSeeds = Array.isArray(layeredSelection?.allRankedSeeds)
+    ? layeredSelection.allRankedSeeds
+    : ranked
+  const hotEligibleSeeds = allRankedSeeds.filter(
+    (row) =>
+      normalizeMaturityState(row?.maturityState) === MATURITY_STATES.ELIGIBLE &&
+      resolveScanLayerForMaturity(row) === SCAN_LAYERS.HOT
+  )
+  const nearEligibleWarmSeeds = allRankedSeeds.filter(
+    (row) =>
+      normalizeMaturityState(row?.maturityState) === MATURITY_STATES.NEAR_ELIGIBLE &&
+      resolveScanLayerForMaturity(row) === SCAN_LAYERS.WARM
+  )
+  const enrichmentCandidates = allRankedSeeds.filter((row) => {
+    const maturityState = normalizeMaturityState(row?.maturityState)
+    if (
+      maturityState === MATURITY_STATES.ENRICHING ||
+      maturityState === MATURITY_STATES.COLD ||
+      maturityState === MATURITY_STATES.NEAR_ELIGIBLE
+    ) {
+      return true
+    }
+    const candidateStatus = normalizeCatalogCandidateStatus(row?.candidateStatus)
+    return (
+      candidateStatus === CATALOG_CANDIDATE_STATUS.CANDIDATE ||
+      candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING ||
+      candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
+    )
+  })
+
+  const opportunitySeeds = []
+  const seenOpportunity = new Set()
+  const pushUniqueOpportunity = (seed = {}) => {
+    const name = normalizeMarketHashName(seed?.marketHashName)
+    if (!name || seenOpportunity.has(name) || opportunitySeeds.length >= opportunityBatchSize) {
+      return false
+    }
+    seenOpportunity.add(name)
+    opportunitySeeds.push(seed)
+    return true
+  }
+
+  for (const seed of hotEligibleSeeds) {
+    if (!pushUniqueOpportunity(seed)) break
+  }
+  if (includeNearEligibleInOpportunity && opportunitySeeds.length < opportunityBatchSize) {
+    const nearEligibleBudget = Math.min(
+      OPPORTUNITY_NEAR_ELIGIBLE_LIMIT,
+      opportunityBatchSize - opportunitySeeds.length
+    )
+    let addedNearEligible = 0
+    for (const seed of nearEligibleWarmSeeds) {
+      if (addedNearEligible >= nearEligibleBudget || opportunitySeeds.length >= opportunityBatchSize) {
+        break
+      }
+      if (pushUniqueOpportunity(seed)) {
+        addedNearEligible += 1
+      }
+    }
+  }
+
+  const enrichmentSeeds = []
+  const enrichmentSeen = new Set()
+  for (const seed of enrichmentCandidates) {
+    const name = normalizeMarketHashName(seed?.marketHashName)
+    if (!name || enrichmentSeen.has(name) || enrichmentSeeds.length >= enrichmentBatchSize) continue
+    enrichmentSeen.add(name)
+    enrichmentSeeds.push(seed)
+  }
 
   return {
-    seeds: opportunitySeeds,
+    seeds: mode === SCANNER_TYPES.ENRICHMENT ? [] : opportunitySeeds,
     enrichmentSeeds,
-    allSeeds: layeredSelection.allRankedSeeds,
+    allSeeds: allRankedSeeds,
     snapshotWarmup: toSnapshotWarmupSummary({
       ...snapshotWarmup,
       seedFilterMode,
@@ -3580,8 +3842,8 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
     layeredScanning: layeredSelection.diagnostics || {
       totalRankedSeeds: ranked.length,
       coreUniverseSize: 0,
-      opportunityTarget: OPPORTUNITY_SCAN_TARGET,
-      enrichmentTarget: ENRICHMENT_ONLY_TARGET,
+      opportunityTarget: opportunityBatchSize,
+      enrichmentTarget: enrichmentBatchSize,
       selectedForOpportunity: opportunitySeeds.length,
       selectedForEnrichment: enrichmentSeeds.length,
       allSeeds: buildLayerDiagnostics(ranked),
@@ -5002,6 +5264,7 @@ function extendPerformanceAudit(
 
 async function runScanInternal(options = {}) {
   const forceRefresh = Boolean(options.forceRefresh)
+  const opportunityUniverseTarget = OPPORTUNITY_BATCH_SIZE
   const scanStartedAt = Date.now()
   const stageDurationsMs = buildDefaultPerformanceStageDurations()
   let imageEnrichmentSummary = buildDefaultImageEnrichmentSummary()
@@ -5023,7 +5286,12 @@ async function runScanInternal(options = {}) {
   const rejectedByItem = {}
   const staleDiagnosticsAccumulator = buildStaleDiagnosticsAccumulator()
   const inputHydrationStartedAt = Date.now()
-  const scannerInputs = await loadScannerInputs(discardStats, rejectedByItem)
+  const scannerInputs = await loadScannerInputs(discardStats, rejectedByItem, {
+    mode: SCANNER_TYPES.OPPORTUNITY_SCAN,
+    opportunityBatchSize: opportunityUniverseTarget,
+    enrichmentBatchSize: ENRICHMENT_BATCH_SIZE,
+    includeNearEligibleInOpportunity: true
+  })
   stageDurationsMs.inputHydrationMs = Date.now() - inputHydrationStartedAt
   const universeSeeds = Array.isArray(scannerInputs?.seeds) ? scannerInputs.seeds : []
   const enrichmentSeeds = Array.isArray(scannerInputs?.enrichmentSeeds)
@@ -5037,8 +5305,8 @@ async function runScanInternal(options = {}) {
       : {
           totalRankedSeeds: universeSeeds.length,
           coreUniverseSize: 0,
-          opportunityTarget: OPPORTUNITY_SCAN_TARGET,
-          enrichmentTarget: ENRICHMENT_ONLY_TARGET,
+          opportunityTarget: opportunityUniverseTarget,
+          enrichmentTarget: ENRICHMENT_BATCH_SIZE,
           selectedForOpportunity: universeSeeds.length,
           selectedForEnrichment: enrichmentSeeds.length,
           allSeeds: buildLayerDiagnostics(universeSeeds),
@@ -5065,7 +5333,7 @@ async function runScanInternal(options = {}) {
         opportunities: 0,
         totalDetected: 0,
         universeSize: 0,
-        universeTarget: UNIVERSE_TARGET_SIZE,
+        universeTarget: opportunityUniverseTarget,
         candidateItems: allLayeredSeeds.length,
         discardedReasons,
         discardedReasonsByCategory,
@@ -5091,8 +5359,14 @@ async function runScanInternal(options = {}) {
           coreUniverseSize: Number(layeredScanningSummary?.coreUniverseSize || 0),
           selectedForOpportunity: Number(layeredScanningSummary?.selectedForOpportunity || 0),
           selectedForEnrichment: Number(layeredScanningSummary?.selectedForEnrichment || 0),
+          promotedToNearEligible: Number(
+            sourceCatalogDiagnostics?.sourceCatalog?.promotedToNearEligible || 0
+          ),
           promotedToEligible: Number(sourceCatalogDiagnostics?.sourceCatalog?.promotedToEligible || 0),
           demotedToEnriching: Number(sourceCatalogDiagnostics?.sourceCatalog?.demotedToEnriching || 0),
+          promotedToNearEligibleByCategory:
+            sourceCatalogDiagnostics?.sourceCatalog?.promotedToNearEligibleByCategory ||
+            buildScannerAuditCategoryCounter(0),
           promotedToEligibleByCategory:
             sourceCatalogDiagnostics?.sourceCatalog?.promotedToEligibleByCategory ||
             buildScannerAuditCategoryCounter(0),
@@ -5102,7 +5376,7 @@ async function runScanInternal(options = {}) {
         },
         sourceCatalog: sourceCatalogDiagnostics,
         scanProgress: buildScanProgressStats({
-          universeTarget: UNIVERSE_TARGET_SIZE,
+          universeTarget: opportunityUniverseTarget,
           candidateItems: allLayeredSeeds.length,
           scannedItems: 0
         }),
@@ -5112,7 +5386,6 @@ async function runScanInternal(options = {}) {
       opportunities: [],
       pipeline: {
         sequence: [
-          "enrichment_pipeline",
           "fetch_quotes",
           "save_market_prices",
           "compute_from_saved_quotes",
@@ -5121,10 +5394,12 @@ async function runScanInternal(options = {}) {
         ],
         config: {
           defaultUniverseLimit: DEFAULT_UNIVERSE_LIMIT,
-          universeTargetSize: UNIVERSE_TARGET_SIZE,
+          universeTargetSize: opportunityUniverseTarget,
           preCompareUniverseLimit: PRE_COMPARE_UNIVERSE_LIMIT,
           universeDbLimit: UNIVERSE_DB_LIMIT,
           scanBatchSize: SCAN_BATCH_SIZE,
+          enrichmentBatchSize: ENRICHMENT_BATCH_SIZE,
+          opportunityBatchSize: opportunityUniverseTarget,
           maxConcurrentMarketRequests: MAX_CONCURRENT_MARKET_REQUESTS,
           scanTimeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH,
           imageEnrichBatchSize: IMAGE_ENRICH_BATCH_SIZE,
@@ -5134,8 +5409,8 @@ async function runScanInternal(options = {}) {
           hotLayerScanTarget: HOT_LAYER_SCAN_TARGET,
           warmLayerScanTarget: WARM_LAYER_SCAN_TARGET,
           coldLayerScanTarget: COLD_LAYER_SCAN_TARGET,
-          opportunityScanTarget: OPPORTUNITY_SCAN_TARGET,
-          enrichmentOnlyTarget: ENRICHMENT_ONLY_TARGET
+          opportunityScanTarget: opportunityUniverseTarget,
+          enrichmentOnlyTarget: ENRICHMENT_BATCH_SIZE
         },
         quoteRefresh: {
           batchSize: SCAN_BATCH_SIZE,
@@ -5203,7 +5478,6 @@ async function runScanInternal(options = {}) {
     emptyPayload.summary.performanceAudit = performanceAudit
     emptyPayload.pipeline.performanceAudit = performanceAudit
 
-    scannerState.latest = emptyPayload
     return emptyPayload
   }
 
@@ -5219,16 +5493,14 @@ async function runScanInternal(options = {}) {
   stageDurationsMs.normalizationMs += Date.now() - normalizationStartedAt
 
   if (enrichmentSeeds.length) {
-    const enrichmentPipelineStartedAt = Date.now()
-    enrichmentPipelineSummary = await runEnrichmentPipeline(enrichmentSeeds, {
-      forceRefresh: false
-    })
-    const enrichmentPipelineDurationMs = Math.max(Date.now() - enrichmentPipelineStartedAt, 0)
-    stageDurationsMs.quoteFetchingMs += Math.max(
-      Number(enrichmentPipelineSummary?.timingMs?.quoteFetchingMs || 0),
-      Math.max(enrichmentPipelineDurationMs - Number(enrichmentPipelineSummary?.timingMs?.dbWritesMs || 0), 0)
-    )
-    stageDurationsMs.dbWritesMs += Number(enrichmentPipelineSummary?.timingMs?.dbWritesMs || 0)
+    const enrichmentLayers = buildLayerDiagnostics(enrichmentSeeds)
+    enrichmentPipelineSummary = {
+      ...enrichmentPipelineSummary,
+      attempted: false,
+      requestedItems: enrichmentSeeds.length,
+      selectedLayers: enrichmentLayers.layers,
+      selectedLayersByCategory: enrichmentLayers.layersByCategory
+    }
   }
 
   const quoteFetchingStartedAt = Date.now()
@@ -5420,7 +5692,7 @@ async function runScanInternal(options = {}) {
     scannedItems: selectedUniverse.length,
     candidateByCategory: candidateUniverseByCategory,
     selectedByCategory: selectedUniverseByCategory,
-    universeTarget: UNIVERSE_TARGET_SIZE
+    universeTarget: opportunityUniverseTarget
   })
   const opportunitiesByCategory = countRowsByCategory(sortedRows)
   const discardedReasons = normalizeDiscardStats(discardStats)
@@ -5429,7 +5701,7 @@ async function runScanInternal(options = {}) {
   const staleDiagnostics = toStaleDiagnosticsSummary(staleDiagnosticsAccumulator)
   const knifeGloveRejections = toKnifeGloveRejectionSummary(discardedReasonsByCategory)
   const scanProgress = buildScanProgressStats({
-    universeTarget: UNIVERSE_TARGET_SIZE,
+    universeTarget: opportunityUniverseTarget,
     candidateItems: allLayeredSeeds.length,
     scannedItems: selectedUniverse.length,
     quoteRefresh: quoteRefreshSummary,
@@ -5448,7 +5720,7 @@ async function runScanInternal(options = {}) {
       opportunities: highConfidenceCount,
       totalDetected: sortedRows.length,
       universeSize: selectedUniverse.length,
-      universeTarget: UNIVERSE_TARGET_SIZE,
+      universeTarget: opportunityUniverseTarget,
       candidateItems: allLayeredSeeds.length,
       discardedReasons,
       discardedReasonsByCategory,
@@ -5474,12 +5746,18 @@ async function runScanInternal(options = {}) {
         coreUniverseSize: Number(layeredScanningSummary?.coreUniverseSize || 0),
         selectedForOpportunity: Number(layeredScanningSummary?.selectedForOpportunity || 0),
         selectedForEnrichment: Number(layeredScanningSummary?.selectedForEnrichment || 0),
+        promotedToNearEligible: Number(
+          effectiveSourceCatalogDiagnostics?.sourceCatalog?.promotedToNearEligible || 0
+        ),
         promotedToEligible: Number(
           effectiveSourceCatalogDiagnostics?.sourceCatalog?.promotedToEligible || 0
         ),
         demotedToEnriching: Number(
           effectiveSourceCatalogDiagnostics?.sourceCatalog?.demotedToEnriching || 0
         ),
+        promotedToNearEligibleByCategory:
+          effectiveSourceCatalogDiagnostics?.sourceCatalog?.promotedToNearEligibleByCategory ||
+          buildScannerAuditCategoryCounter(0),
         promotedToEligibleByCategory:
           effectiveSourceCatalogDiagnostics?.sourceCatalog?.promotedToEligibleByCategory ||
           buildScannerAuditCategoryCounter(0),
@@ -5495,7 +5773,6 @@ async function runScanInternal(options = {}) {
     opportunities: sortedRows,
     pipeline: {
       sequence: [
-        "enrichment_pipeline",
         "fetch_quotes",
         "save_market_prices",
         "compute_from_saved_quotes",
@@ -5504,10 +5781,12 @@ async function runScanInternal(options = {}) {
       ],
       config: {
         defaultUniverseLimit: DEFAULT_UNIVERSE_LIMIT,
-        universeTargetSize: UNIVERSE_TARGET_SIZE,
+        universeTargetSize: opportunityUniverseTarget,
         preCompareUniverseLimit: PRE_COMPARE_UNIVERSE_LIMIT,
         universeDbLimit: UNIVERSE_DB_LIMIT,
         scanBatchSize: SCAN_BATCH_SIZE,
+        enrichmentBatchSize: ENRICHMENT_BATCH_SIZE,
+        opportunityBatchSize: opportunityUniverseTarget,
         maxConcurrentMarketRequests: MAX_CONCURRENT_MARKET_REQUESTS,
         scanTimeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH,
         imageEnrichBatchSize: IMAGE_ENRICH_BATCH_SIZE,
@@ -5517,8 +5796,8 @@ async function runScanInternal(options = {}) {
         hotLayerScanTarget: HOT_LAYER_SCAN_TARGET,
         warmLayerScanTarget: WARM_LAYER_SCAN_TARGET,
         coldLayerScanTarget: COLD_LAYER_SCAN_TARGET,
-        opportunityScanTarget: OPPORTUNITY_SCAN_TARGET,
-        enrichmentOnlyTarget: ENRICHMENT_ONLY_TARGET
+        opportunityScanTarget: opportunityUniverseTarget,
+        enrichmentOnlyTarget: ENRICHMENT_BATCH_SIZE
       },
       quoteRefresh: quoteRefreshSummary,
       computeFromSavedQuotes: comparisonFromSaved?.diagnostics || null,
@@ -5554,9 +5833,132 @@ async function runScanInternal(options = {}) {
   payload.summary.performanceAudit = performanceAudit
   payload.pipeline.performanceAudit = performanceAudit
 
-  scannerState.latest = payload
-  scannerState.lastError = null
   return payload
+}
+
+function sumMissingSignalsFromSourceCatalog(sourceCatalog = {}) {
+  const byCategory =
+    sourceCatalog?.byCategory && typeof sourceCatalog.byCategory === "object"
+      ? sourceCatalog.byCategory
+      : {}
+  let missingSnapshot = 0
+  let missingReference = 0
+  let missingMarketCoverage = 0
+  for (const payload of Object.values(byCategory)) {
+    missingSnapshot += Number(payload?.missingSnapshot || 0)
+    missingReference += Number(payload?.missingReference || 0)
+    missingMarketCoverage += Number(payload?.missingMarketCoverage || 0)
+  }
+  return {
+    missingSnapshot,
+    missingReference,
+    missingMarketCoverage
+  }
+}
+
+async function runEnrichmentInternal(options = {}) {
+  const forceRefresh = Boolean(options.forceRefresh)
+  const runStartedAt = Date.now()
+  const sourceCatalogStartedAt = Date.now()
+  const sourceCatalogDiagnostics = await marketSourceCatalogService
+    .prepareSourceCatalog({
+      targetUniverseSize: UNIVERSE_TARGET_SIZE,
+      forceRefresh
+    })
+    .catch((err) => {
+      console.error("[arbitrage-scanner] Source catalog refresh failed (enrichment)", err.message)
+      return {
+        ...marketSourceCatalogService.getLastDiagnostics(),
+        error: String(err?.message || "source_catalog_refresh_failed")
+      }
+    })
+  const sourceCatalogPreparationMs = Date.now() - sourceCatalogStartedAt
+
+  const discardStats = {}
+  const rejectedByItem = {}
+  const inputHydrationStartedAt = Date.now()
+  const scannerInputs = await loadScannerInputs(discardStats, rejectedByItem, {
+    mode: SCANNER_TYPES.ENRICHMENT,
+    enrichmentBatchSize: ENRICHMENT_BATCH_SIZE,
+    opportunityBatchSize: OPPORTUNITY_BATCH_SIZE,
+    includeNearEligibleInOpportunity: false
+  })
+  const inputHydrationMs = Date.now() - inputHydrationStartedAt
+  const enrichmentSeeds = Array.isArray(scannerInputs?.enrichmentSeeds)
+    ? scannerInputs.enrichmentSeeds.slice(0, ENRICHMENT_BATCH_SIZE)
+    : []
+  const allLayeredSeeds = Array.isArray(scannerInputs?.allSeeds) ? scannerInputs.allSeeds : []
+  const snapshotWarmupSummary = scannerInputs?.snapshotWarmup || toSnapshotWarmupSummary()
+  const layeredScanningSummary =
+    scannerInputs?.layeredScanning && typeof scannerInputs.layeredScanning === "object"
+      ? scannerInputs.layeredScanning
+      : {
+          totalRankedSeeds: allLayeredSeeds.length,
+          coreUniverseSize: 0,
+          opportunityTarget: OPPORTUNITY_BATCH_SIZE,
+          enrichmentTarget: ENRICHMENT_BATCH_SIZE,
+          selectedForOpportunity: 0,
+          selectedForEnrichment: enrichmentSeeds.length,
+          allSeeds: buildLayerDiagnostics(allLayeredSeeds),
+          opportunity: buildLayerDiagnostics([]),
+          enrichment: buildLayerDiagnostics(enrichmentSeeds)
+        }
+
+  const enrichmentPipelineSummary = await runEnrichmentPipeline(enrichmentSeeds, {
+    forceRefresh: true
+  })
+
+  const sourceCatalog =
+    sourceCatalogDiagnostics?.sourceCatalog && typeof sourceCatalogDiagnostics.sourceCatalog === "object"
+      ? sourceCatalogDiagnostics.sourceCatalog
+      : {}
+  const missingSignals = sumMissingSignalsFromSourceCatalog(sourceCatalog)
+  const diagnosticsSummary = {
+    trigger: String(options.trigger || "scheduled"),
+    generatedAt: new Date().toISOString(),
+    selectedItems: enrichmentSeeds.length,
+    itemsUpdated: Number(enrichmentPipelineSummary?.enrichedItems || 0),
+    promotedToNearEligible: Number(sourceCatalog?.promotedToNearEligible || 0),
+    promotedToEligible: Number(sourceCatalog?.promotedToEligible || 0),
+    stillMissingData: missingSignals,
+    timing: {
+      sourceCatalogPreparationMs,
+      inputHydrationMs,
+      quoteFetchingMs: Number(enrichmentPipelineSummary?.timingMs?.quoteFetchingMs || 0),
+      writesMs: Number(enrichmentPipelineSummary?.timingMs?.dbWritesMs || 0),
+      totalDurationMs: Date.now() - runStartedAt
+    },
+    hotWarmCold: layeredScanningSummary?.allSeeds?.layers || buildLayerCounter(0),
+    maturity: layeredScanningSummary?.allSeeds?.maturityFunnel || buildMaturityCounter(0),
+    candidateStates:
+      sourceCatalog?.candidateFunnel && typeof sourceCatalog.candidateFunnel === "object"
+        ? sourceCatalog.candidateFunnel
+        : {},
+    sourceCatalog: sourceCatalogDiagnostics,
+    snapshotWarmup: snapshotWarmupSummary,
+    enrichmentPipeline: enrichmentPipelineSummary,
+    rejectedByItem: toTopRejectedItems(rejectedByItem),
+    discardedReasons: normalizeDiscardStats(discardStats)
+  }
+
+  return {
+    generatedAt: diagnosticsSummary.generatedAt,
+    summary: diagnosticsSummary,
+    pipeline: {
+      sequence: ["prepare_source_catalog", "select_enrichment_batch", "refresh_quotes", "write_quotes"],
+      config: {
+        enrichmentBatchSize: ENRICHMENT_BATCH_SIZE,
+        scanBatchSize: SCAN_BATCH_SIZE,
+        maxConcurrentMarketRequests: MAX_CONCURRENT_MARKET_REQUESTS,
+        scanTimeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH
+      },
+      snapshotWarmup: snapshotWarmupSummary,
+      layeredScanning: layeredScanningSummary,
+      sourceCatalog: sourceCatalogDiagnostics,
+      enrichmentPipeline: enrichmentPipelineSummary
+    },
+    opportunities: []
+  }
 }
 
 async function runScan(options = {}) {
@@ -5573,15 +5975,16 @@ function normalizeLimit(value, fallback = DEFAULT_API_LIMIT, maxLimit = MAX_API_
   return Math.min(Math.max(Math.round(parsed), 1), maxLimit)
 }
 
-function toScanDiagnosticsSummary(scanPayload = {}, persistSummary = {}, trigger = "manual") {
+function toOpportunityDiagnosticsSummary(scanPayload = {}, persistSummary = {}, trigger = "manual") {
   return {
+    scannerType: SCANNER_TYPES.OPPORTUNITY_SCAN,
     trigger: String(trigger || "manual"),
     generatedAt: scanPayload?.generatedAt || null,
     scannedItems: Number(scanPayload?.summary?.scannedItems || 0),
     opportunities: Number(scanPayload?.summary?.opportunities || 0),
     totalDetected: Number(scanPayload?.summary?.totalDetected || 0),
     universeSize: Number(scanPayload?.summary?.universeSize || 0),
-    universeTarget: Number(scanPayload?.summary?.universeTarget || UNIVERSE_TARGET_SIZE),
+    universeTarget: Number(scanPayload?.summary?.universeTarget || OPPORTUNITY_BATCH_SIZE),
     candidateItems: Number(scanPayload?.summary?.candidateItems || 0),
     discardedReasons: scanPayload?.summary?.discardedReasons || {},
     discardedReasonsByCategory: scanPayload?.summary?.discardedReasonsByCategory || {},
@@ -5611,6 +6014,56 @@ function toScanDiagnosticsSummary(scanPayload = {}, persistSummary = {}, trigger
     riskyEligible: Number(scanPayload?.summary?.riskyEligible || 0),
     pipeline: scanPayload?.pipeline || {},
     persisted: persistSummary || {}
+  }
+}
+
+function toEnrichmentDiagnosticsSummary(enrichmentPayload = {}, trigger = "manual") {
+  const summary =
+    enrichmentPayload?.summary && typeof enrichmentPayload.summary === "object"
+      ? enrichmentPayload.summary
+      : {}
+  return {
+    scannerType: SCANNER_TYPES.ENRICHMENT,
+    trigger: String(trigger || "manual"),
+    generatedAt: enrichmentPayload?.generatedAt || summary?.generatedAt || new Date().toISOString(),
+    selectedItems: Number(summary?.selectedItems || 0),
+    itemsUpdated: Number(summary?.itemsUpdated || 0),
+    promotedToNearEligible: Number(summary?.promotedToNearEligible || 0),
+    promotedToEligible: Number(summary?.promotedToEligible || 0),
+    stillMissingData: summary?.stillMissingData || {},
+    timing: summary?.timing || {},
+    hotWarmCold: summary?.hotWarmCold || buildLayerCounter(0),
+    maturity: summary?.maturity || buildMaturityCounter(0),
+    candidateStates: summary?.candidateStates || {},
+    sourceCatalog: summary?.sourceCatalog || enrichmentPayload?.pipeline?.sourceCatalog || {},
+    snapshotWarmup: summary?.snapshotWarmup || enrichmentPayload?.pipeline?.snapshotWarmup || {},
+    enrichmentPipeline:
+      summary?.enrichmentPipeline || enrichmentPayload?.pipeline?.enrichmentPipeline || {},
+    discardedReasons: summary?.discardedReasons || {},
+    rejectedByItem: summary?.rejectedByItem || [],
+    pipeline: enrichmentPayload?.pipeline || {}
+  }
+}
+
+function createJobTimeoutError(scannerType, timeoutMs) {
+  const err = new Error(`${scannerType}_job_timeout_${timeoutMs}ms`)
+  err.code = "job_timeout"
+  err.scannerType = scannerType
+  err.timeoutMs = timeoutMs
+  return err
+}
+
+async function runWithTimeout(jobRunner = async () => null, scannerType = "", timeoutMs = 60000) {
+  let timeoutId = null
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(createJobTimeoutError(scannerType, timeoutMs))
+    }, timeoutMs)
+  })
+  try {
+    return await Promise.race([jobRunner(), timeoutPromise])
+  } finally {
+    clearTimeout(timeoutId)
   }
 }
 
@@ -5716,12 +6169,16 @@ async function appendOpportunitiesToFeed(rows = [], scanRunId = "") {
   }
 }
 
-async function runScanWithRunRecord(runRecord = {}, options = {}) {
+async function runOpportunityWithRunRecord(runRecord = {}, options = {}, state = scannerState) {
   const trigger = String(options.trigger || "manual")
   const forceRefresh = Boolean(options.forceRefresh)
   const runStartedAt = Date.now()
   try {
-    const scanPayload = await runScanInternal({ forceRefresh })
+    const scanPayload = await runWithTimeout(
+      () => runScanInternal({ forceRefresh }),
+      SCANNER_TYPES.OPPORTUNITY_SCAN,
+      getJobTimeoutMs(SCANNER_TYPES.OPPORTUNITY_SCAN)
+    )
     const feedPersistStartedAt = Date.now()
     const persistSummary = await appendOpportunitiesToFeed(scanPayload?.opportunities || [], runRecord?.id)
     const feedPersistDurationMs = Date.now() - feedPersistStartedAt
@@ -5739,7 +6196,7 @@ async function runScanWithRunRecord(runRecord = {}, options = {}) {
     }
 
     const diagnosticsAggregationStartedAt = Date.now()
-    const diagnosticsSummary = toScanDiagnosticsSummary(scanPayload, persistSummary, trigger)
+    const diagnosticsSummary = toOpportunityDiagnosticsSummary(scanPayload, persistSummary, trigger)
     const diagnosticsAggregationDurationMs = Date.now() - diagnosticsAggregationStartedAt
     if (scanPayload?.summary?.performanceAudit && typeof scanPayload.summary.performanceAudit === "object") {
       const extendedPerformanceAudit = extendPerformanceAudit(scanPayload.summary.performanceAudit, {
@@ -5753,25 +6210,34 @@ async function runScanWithRunRecord(runRecord = {}, options = {}) {
       diagnosticsSummary.performanceAudit = extendedPerformanceAudit
     }
 
+    const durationMs = Date.now() - runStartedAt
     const completedRun = await scannerRunRepo.markCompleted(runRecord?.id, {
       itemsScanned: Number(scanPayload?.summary?.scannedItems || 0),
       opportunitiesFound: Number(scanPayload?.opportunities?.length || 0),
       newOpportunitiesAdded: Number(persistSummary?.insertedCount || 0),
+      durationMs,
       diagnosticsSummary
     })
 
-    scannerState.lastPersistSummary = persistSummary
-    scannerState.lastCompletedAt = completedRun?.completed_at || scanPayload?.generatedAt || null
+    state.latest = scanPayload
+    state.lastError = null
+    state.lastPersistSummary = persistSummary
+    state.lastCompletedAt = completedRun?.completed_at || scanPayload?.generatedAt || null
     return {
       run: completedRun || runRecord,
       payload: scanPayload,
       persistSummary
     }
   } catch (err) {
-    scannerState.lastError = err
+    const timedOut = String(err?.code || "").trim().toLowerCase() === "job_timeout"
+    state.lastError = err
     await scannerRunRepo
       .markFailed(runRecord?.id, {
+        status: timedOut ? "timed_out" : "failed",
+        durationMs: Date.now() - runStartedAt,
+        failureReason: timedOut ? "job_timeout" : "opportunity_scan_failed",
         diagnosticsSummary: {
+          scannerType: SCANNER_TYPES.OPPORTUNITY_SCAN,
           trigger,
           error: String(err?.message || "scan_failed")
         },
@@ -5782,44 +6248,142 @@ async function runScanWithRunRecord(runRecord = {}, options = {}) {
       })
     throw err
   } finally {
-    scannerState.inFlight = null
-    scannerState.inFlightRunId = null
+    state.inFlight = null
+    state.inFlightRunId = null
   }
 }
 
-async function enqueueScan(options = {}) {
-  await reconcileStaleRunningRuns(Date.now(), { force: true }).catch((err) => {
-    console.error("[arbitrage-scanner] Stale run reconciliation before enqueue failed", err.message)
+async function runEnrichmentWithRunRecord(runRecord = {}, options = {}, state = enrichmentState) {
+  const trigger = String(options.trigger || "manual")
+  const forceRefresh = Boolean(options.forceRefresh)
+  const runStartedAt = Date.now()
+  try {
+    const enrichmentPayload = await runWithTimeout(
+      () => runEnrichmentInternal({ forceRefresh, trigger }),
+      SCANNER_TYPES.ENRICHMENT,
+      getJobTimeoutMs(SCANNER_TYPES.ENRICHMENT)
+    )
+    const diagnosticsSummary = toEnrichmentDiagnosticsSummary(enrichmentPayload, trigger)
+    const durationMs = Date.now() - runStartedAt
+    const completedRun = await scannerRunRepo.markCompleted(runRecord?.id, {
+      itemsScanned: Number(diagnosticsSummary?.selectedItems || 0),
+      opportunitiesFound: 0,
+      newOpportunitiesAdded: 0,
+      durationMs,
+      diagnosticsSummary
+    })
+    state.latest = enrichmentPayload
+    state.lastError = null
+    state.lastPersistSummary = null
+    state.lastCompletedAt = completedRun?.completed_at || enrichmentPayload?.generatedAt || null
+    return {
+      run: completedRun || runRecord,
+      payload: enrichmentPayload,
+      persistSummary: null
+    }
+  } catch (err) {
+    const timedOut = String(err?.code || "").trim().toLowerCase() === "job_timeout"
+    state.lastError = err
+    await scannerRunRepo
+      .markFailed(runRecord?.id, {
+        status: timedOut ? "timed_out" : "failed",
+        durationMs: Date.now() - runStartedAt,
+        failureReason: timedOut ? "job_timeout" : "enrichment_failed",
+        diagnosticsSummary: {
+          scannerType: SCANNER_TYPES.ENRICHMENT,
+          trigger,
+          error: String(err?.message || "enrichment_failed")
+        },
+        error: err?.message
+      })
+      .catch((persistErr) => {
+        console.error("[arbitrage-scanner] Failed to mark enrichment run as failed", persistErr.message)
+      })
+    throw err
+  } finally {
+    state.inFlight = null
+    state.inFlightRunId = null
+  }
+}
+
+async function enqueueJob(scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN, options = {}) {
+  const normalizedType = String(scannerType || SCANNER_TYPES.OPPORTUNITY_SCAN)
+    .trim()
+    .toLowerCase()
+  const state = getJobState(normalizedType)
+  await reconcileStaleRunningRunsForType(normalizedType, Date.now(), { force: true }).catch((err) => {
+    console.error(
+      `[arbitrage-scanner] Stale run reconciliation before enqueue failed (${normalizedType})`,
+      err.message
+    )
   })
 
-  if (scannerState.inFlight) {
+  if (state.inFlight) {
     return {
-      scanRunId: scannerState.inFlightRunId,
+      scanRunId: state.inFlightRunId,
+      alreadyRunning: true
+    }
+  }
+
+  const runningRows = await scannerRunRepo
+    .listRunningRuns(normalizedType, { limit: 10 })
+    .catch((err) => {
+      console.error(
+        `[arbitrage-scanner] Failed to inspect running rows before enqueue (${normalizedType})`,
+        err.message
+      )
+      return []
+    })
+  const activeRunning = (Array.isArray(runningRows) ? runningRows : []).find((row) => {
+    const runId = String(row?.id || "").trim()
+    if (!runId) return false
+    if (runId === String(state.inFlightRunId || "").trim()) return false
+    const startedMs = parseTimestampMs(row?.started_at)
+    if (startedMs == null) return true
+    return Date.now() - startedMs < getJobTimeoutMs(normalizedType)
+  })
+  if (activeRunning) {
+    return {
+      scanRunId: String(activeRunning?.id || "").trim() || null,
       alreadyRunning: true
     }
   }
 
   const trigger = String(options.trigger || "manual")
   const runRecord = await scannerRunRepo.createRun({
-    scannerType: SCANNER_TYPE,
+    scannerType: normalizedType,
     status: "running",
     diagnosticsSummary: {
+      scannerType: normalizedType,
       trigger
     }
   })
 
-  scannerState.inFlightRunId = runRecord?.id || null
-  scannerState.lastStartedAt = runRecord?.started_at || new Date().toISOString()
-  scannerState.inFlight = runScanWithRunRecord(runRecord, options).catch((err) => {
-    if (scannerState.latest) {
+  state.inFlightRunId = runRecord?.id || null
+  state.lastStartedAt = runRecord?.started_at || new Date().toISOString()
+  const runner =
+    normalizedType === SCANNER_TYPES.ENRICHMENT
+      ? runEnrichmentWithRunRecord(runRecord, options, state)
+      : runOpportunityWithRunRecord(runRecord, options, state)
+  state.inFlight = runner.catch((err) => {
+    console.error(
+      `[arbitrage-scanner] ${normalizedType} run failed`,
+      String(err?.message || err)
+    )
+    if (state.latest) {
       return {
         run: runRecord,
-        payload: scannerState.latest,
-        persistSummary: scannerState.lastPersistSummary || null,
+        payload: state.latest,
+        persistSummary: state.lastPersistSummary || null,
         error: err
       }
     }
-    throw err
+    return {
+      run: runRecord,
+      payload: null,
+      persistSummary: state.lastPersistSummary || null,
+      error: err
+    }
   })
 
   return {
@@ -5828,51 +6392,127 @@ async function enqueueScan(options = {}) {
   }
 }
 
-async function getScannerStatusInternal() {
-  await reconcileStaleRunningRuns().catch((err) => {
-    console.error("[arbitrage-scanner] Stale run reconciliation during status failed", err.message)
-  })
+async function enqueueScan(options = {}) {
+  return enqueueJob(SCANNER_TYPES.OPPORTUNITY_SCAN, options)
+}
 
-  const [latestRun, latestCompletedRun, activeCount] = await Promise.all([
-    scannerRunRepo.getLatestRun(SCANNER_TYPE),
-    scannerRunRepo.getLatestCompletedRun(SCANNER_TYPE),
-    arbitrageFeedRepo.countFeed({ includeInactive: false })
+async function enqueueEnrichment(options = {}) {
+  return enqueueJob(SCANNER_TYPES.ENRICHMENT, options)
+}
+
+async function getLatestRunWithFallback(scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN, completed = false) {
+  const normalizedType = String(scannerType || SCANNER_TYPES.OPPORTUNITY_SCAN)
+    .trim()
+    .toLowerCase()
+  const primary = completed
+    ? await scannerRunRepo.getLatestCompletedRun(normalizedType)
+    : await scannerRunRepo.getLatestRun(normalizedType)
+  if (primary || normalizedType !== SCANNER_TYPES.OPPORTUNITY_SCAN) {
+    return primary || null
+  }
+  return completed
+    ? scannerRunRepo.getLatestCompletedRun(LEGACY_SCANNER_TYPE)
+    : scannerRunRepo.getLatestRun(LEGACY_SCANNER_TYPE)
+}
+
+async function getJobStatusInternal(scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN, options = {}) {
+  const normalizedType = String(scannerType || SCANNER_TYPES.OPPORTUNITY_SCAN)
+    .trim()
+    .toLowerCase()
+  await reconcileStaleRunningRunsForType(normalizedType).catch((err) => {
+    console.error(
+      `[arbitrage-scanner] Stale run reconciliation during status failed (${normalizedType})`,
+      err.message
+    )
+  })
+  const state = getJobState(normalizedType)
+  const [latestRun, latestCompletedRun] = await Promise.all([
+    getLatestRunWithFallback(normalizedType, false),
+    getLatestRunWithFallback(normalizedType, true)
   ])
   const latestRunStatus = String(latestRun?.status || "")
     .trim()
     .toLowerCase()
-  const currentStatus = scannerState.inFlight || latestRunStatus === "running" ? "running" : "idle"
-  const currentRunId = scannerState.inFlightRunId || (currentStatus === "running" ? latestRun?.id || null : null)
-
-  return {
-    scannerType: SCANNER_TYPE,
-    intervalMinutes: SCANNER_INTERVAL_MINUTES,
-    schedulerRunning: Boolean(scannerState.timer),
+  const currentStatus = state.inFlight || latestRunStatus === "running" ? "running" : "idle"
+  const currentRunId = state.inFlightRunId || (currentStatus === "running" ? latestRun?.id || null : null)
+  const intervalMinutes =
+    normalizedType === SCANNER_TYPES.ENRICHMENT
+      ? ENRICHMENT_INTERVAL_MINUTES
+      : OPPORTUNITY_SCAN_INTERVAL_MINUTES
+  const status = {
+    scannerType: normalizedType,
+    intervalMinutes,
+    schedulerRunning: Boolean(state.timer),
     currentStatus,
     currentRunId,
-    nextScheduledAt: scannerState.nextScheduledAt,
-    activeOpportunities: Number(activeCount || 0),
+    nextScheduledAt: state.nextScheduledAt,
     latestRun,
     latestCompletedRun
   }
+  if (options.includeActiveCount) {
+    status.activeOpportunities = Number(options.activeCount || 0)
+  }
+  return status
 }
 
-async function ensureScheduledScanHeartbeat(statusHint = null, trigger = "watchdog") {
-  if (scannerState.inFlight) return false
+async function getScannerStatusInternal() {
+  const [activeCount, opportunityStatus, enrichmentStatus] = await Promise.all([
+    arbitrageFeedRepo.countFeed({ includeInactive: false }),
+    getJobStatusInternal(SCANNER_TYPES.OPPORTUNITY_SCAN),
+    getJobStatusInternal(SCANNER_TYPES.ENRICHMENT)
+  ])
+  return {
+    scannerType: SCANNER_TYPES.OPPORTUNITY_SCAN,
+    intervalMinutes: OPPORTUNITY_SCAN_INTERVAL_MINUTES,
+    schedulerRunning: Boolean(scannerState.timer) || Boolean(enrichmentState.timer),
+    currentStatus: opportunityStatus?.currentStatus || "idle",
+    currentRunId: opportunityStatus?.currentRunId || null,
+    nextScheduledAt: opportunityStatus?.nextScheduledAt || null,
+    activeOpportunities: Number(activeCount || 0),
+    latestRun: opportunityStatus?.latestRun || null,
+    latestCompletedRun: opportunityStatus?.latestCompletedRun || null,
+    jobs: {
+      [SCANNER_TYPES.OPPORTUNITY_SCAN]: {
+        ...opportunityStatus,
+        activeOpportunities: Number(activeCount || 0)
+      },
+      [SCANNER_TYPES.ENRICHMENT]: enrichmentStatus
+    }
+  }
+}
 
-  const status = statusHint || (await getScannerStatusInternal())
-  if (!isScannerRunOverdue(status)) {
+async function ensureScheduledJobHeartbeat(
+  scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN,
+  statusHint = null,
+  trigger = "watchdog"
+) {
+  const normalizedType = String(scannerType || SCANNER_TYPES.OPPORTUNITY_SCAN)
+    .trim()
+    .toLowerCase()
+  const state = getJobState(normalizedType)
+  if (state.inFlight) return false
+
+  const status = statusHint || (await getJobStatusInternal(normalizedType))
+  if (!isScannerRunOverdue(status, Date.now(), { scannerType: normalizedType, state })) {
     return false
   }
 
-  const enqueue = await enqueueScan({
+  const enqueue = await enqueueJob(normalizedType, {
     forceRefresh: false,
     trigger
   })
   if (!enqueue?.alreadyRunning) {
-    updateNextScheduledAt()
+    updateNextScheduledAt(normalizedType)
   }
   return Boolean(enqueue?.scanRunId)
+}
+
+async function ensureScheduledScanHeartbeat(statusHint = null, trigger = "watchdog") {
+  const opportunityStatus =
+    statusHint?.scannerType === SCANNER_TYPES.OPPORTUNITY_SCAN
+      ? statusHint
+      : statusHint?.jobs?.[SCANNER_TYPES.OPPORTUNITY_SCAN] || null
+  return ensureScheduledJobHeartbeat(SCANNER_TYPES.OPPORTUNITY_SCAN, opportunityStatus, trigger)
 }
 
 function parseIsoTimestampMs(value) {
@@ -6162,7 +6802,7 @@ exports.getFeed = async (options = {}) => {
     totalDetected: Number(totalCount || mappedRows.length),
     activeOpportunities: Number(activeCount || 0),
     universeSize: Number(diagnosticsSummary?.universeSize || 0),
-    universeTarget: Number(diagnosticsSummary?.universeTarget || UNIVERSE_TARGET_SIZE),
+    universeTarget: Number(diagnosticsSummary?.universeTarget || OPPORTUNITY_BATCH_SIZE),
     candidateItems: Number(diagnosticsSummary?.candidateItems || 0),
     discardedReasons: diagnosticsSummary?.discardedReasons || {},
     discardedReasonsByCategory: diagnosticsSummary?.discardedReasonsByCategory || {},
@@ -6224,15 +6864,16 @@ exports.getFeed = async (options = {}) => {
     opportunities: mappedRows,
     plan: summary.plan,
     status: {
-      scannerType: SCANNER_TYPE,
-      intervalMinutes: SCANNER_INTERVAL_MINUTES,
+      scannerType: SCANNER_TYPES.OPPORTUNITY_SCAN,
+      intervalMinutes: OPPORTUNITY_SCAN_INTERVAL_MINUTES,
       schedulerRunning: Boolean(status?.schedulerRunning),
       currentStatus: status?.currentStatus || "idle",
       currentRunId: status?.currentRunId || null,
       nextScheduledAt: status?.nextScheduledAt || null,
       activeOpportunities: Number(status?.activeOpportunities || 0),
       latestRun: status?.latestRun || null,
-      latestCompletedRun: latestCompleted
+      latestCompletedRun: latestCompleted,
+      jobs: status?.jobs || {}
     }
   }
 }
@@ -6243,14 +6884,38 @@ exports.triggerRefresh = async (options = {}) => {
   const planContext = await resolvePlanContext(options)
   enforceManualRefreshCooldown(planContext?.userId, planContext?.entitlements, Date.now())
   const forceRefresh = options.forceRefresh == null ? true : normalizeBoolean(options.forceRefresh)
-  const enqueue = await enqueueScan({
-    forceRefresh,
-    trigger: String(options.trigger || "manual")
-  })
+  const requestedJobType = String(options.jobType || "").trim().toLowerCase()
+  const trigger = String(options.trigger || "manual")
+  const runOpportunity = !requestedJobType || requestedJobType === SCANNER_TYPES.OPPORTUNITY_SCAN
+  const runEnrichment = !requestedJobType || requestedJobType === SCANNER_TYPES.ENRICHMENT
+  const [opportunityEnqueue, enrichmentEnqueue] = await Promise.all([
+    runOpportunity ? enqueueScan({ forceRefresh, trigger }) : Promise.resolve(null),
+    runEnrichment ? enqueueEnrichment({ forceRefresh, trigger }) : Promise.resolve(null)
+  ])
+  const scanRunId =
+    opportunityEnqueue?.scanRunId || enrichmentEnqueue?.scanRunId || null
+  const alreadyRunning = Boolean(
+    (runOpportunity ? opportunityEnqueue?.alreadyRunning : true) &&
+      (runEnrichment ? enrichmentEnqueue?.alreadyRunning : true)
+  )
   return {
-    scanRunId: enqueue.scanRunId || null,
-    alreadyRunning: Boolean(enqueue.alreadyRunning),
+    scanRunId,
+    alreadyRunning,
     startedAt: new Date().toISOString(),
+    jobs: {
+      [SCANNER_TYPES.OPPORTUNITY_SCAN]: runOpportunity
+        ? {
+            scanRunId: opportunityEnqueue?.scanRunId || null,
+            alreadyRunning: Boolean(opportunityEnqueue?.alreadyRunning)
+          }
+        : null,
+      [SCANNER_TYPES.ENRICHMENT]: runEnrichment
+        ? {
+            scanRunId: enrichmentEnqueue?.scanRunId || null,
+            alreadyRunning: Boolean(enrichmentEnqueue?.alreadyRunning)
+          }
+        : null
+    },
     plan: {
       planTier: planContext?.planTier || "free",
       scannerRefreshIntervalMinutes: (() => {
@@ -6270,44 +6935,64 @@ exports.triggerRefresh = async (options = {}) => {
 exports.getStatus = async () => {
   const status = await getScannerStatusInternal()
   return {
-    scannerType: SCANNER_TYPE,
-    intervalMinutes: SCANNER_INTERVAL_MINUTES,
+    scannerType: SCANNER_TYPES.OPPORTUNITY_SCAN,
+    intervalMinutes: OPPORTUNITY_SCAN_INTERVAL_MINUTES,
     schedulerRunning: Boolean(status?.schedulerRunning),
     currentStatus: status?.currentStatus || "idle",
     currentRunId: status?.currentRunId || null,
     nextScheduledAt: status?.nextScheduledAt || null,
     activeOpportunities: Number(status?.activeOpportunities || 0),
     latestRun: status?.latestRun || null,
-    latestCompletedRun: status?.latestCompletedRun || null
+    latestCompletedRun: status?.latestCompletedRun || null,
+    jobs: status?.jobs || {}
   }
 }
 
 exports.startScheduler = () => {
-  if (scannerState.timer) {
-    return
+  if (!enrichmentState.timer) {
+    enqueueEnrichment({ forceRefresh: false, trigger: "startup_enrichment" }).catch((err) => {
+      console.error("[arbitrage-scanner] Initial enrichment enqueue failed", err.message)
+    })
+    updateNextScheduledAt(SCANNER_TYPES.ENRICHMENT)
+    enrichmentState.timer = setInterval(() => {
+      enqueueEnrichment({ forceRefresh: false, trigger: "scheduled_enrichment" }).catch((err) => {
+        console.error("[arbitrage-scanner] Scheduled enrichment enqueue failed", err.message)
+      })
+      updateNextScheduledAt(SCANNER_TYPES.ENRICHMENT)
+    }, ENRICHMENT_INTERVAL_MS)
+    enrichmentState.timer.unref?.()
   }
 
-  enqueueScan({ forceRefresh: false, trigger: "startup" }).catch((err) => {
-    console.error("[arbitrage-scanner] Initial scan enqueue failed", err.message)
-  })
-  updateNextScheduledAt()
-
-  scannerState.timer = setInterval(() => {
-    enqueueScan({ forceRefresh: false, trigger: "scheduled" }).catch((err) => {
-      console.error("[arbitrage-scanner] Scheduled scan enqueue failed", err.message)
+  if (!scannerState.timer) {
+    enqueueScan({ forceRefresh: false, trigger: "startup_opportunity_scan" }).catch((err) => {
+      console.error("[arbitrage-scanner] Initial opportunity scan enqueue failed", err.message)
     })
-    updateNextScheduledAt()
-  }, SCANNER_INTERVAL_MS)
-  scannerState.timer.unref?.()
+    updateNextScheduledAt(SCANNER_TYPES.OPPORTUNITY_SCAN)
+    scannerState.timer = setInterval(() => {
+      enqueueScan({ forceRefresh: false, trigger: "scheduled_opportunity_scan" }).catch((err) => {
+        console.error("[arbitrage-scanner] Scheduled opportunity scan enqueue failed", err.message)
+      })
+      updateNextScheduledAt(SCANNER_TYPES.OPPORTUNITY_SCAN)
+    }, OPPORTUNITY_SCAN_INTERVAL_MS)
+    scannerState.timer.unref?.()
+  }
 
-  console.log(`[arbitrage-scanner] Scheduler started (every ${SCANNER_INTERVAL_MINUTES} minute(s))`)
+  console.log(
+    `[arbitrage-scanner] Scheduler started (enrichment=${ENRICHMENT_INTERVAL_MINUTES}m, opportunity_scan=${OPPORTUNITY_SCAN_INTERVAL_MINUTES}m)`
+  )
 }
 
 exports.stopScheduler = () => {
-  if (!scannerState.timer) return
-  clearInterval(scannerState.timer)
-  scannerState.timer = null
-  scannerState.nextScheduledAt = null
+  if (scannerState.timer) {
+    clearInterval(scannerState.timer)
+    scannerState.timer = null
+    scannerState.nextScheduledAt = null
+  }
+  if (enrichmentState.timer) {
+    clearInterval(enrichmentState.timer)
+    enrichmentState.timer = null
+    enrichmentState.nextScheduledAt = null
+  }
 }
 
 exports.forceRefresh = async () => runScan({ forceRefresh: true, trigger: "manual" })

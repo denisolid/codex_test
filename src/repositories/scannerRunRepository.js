@@ -13,7 +13,12 @@ function normalizeStatus(value, fallback = "running") {
     .trim()
     .toLowerCase()
   if (!text) return fallback
-  if (text === "running" || text === "completed" || text === "failed") {
+  if (
+    text === "running" ||
+    text === "completed" ||
+    text === "failed" ||
+    text === "timed_out"
+  ) {
     return text
   }
   return fallback
@@ -32,6 +37,17 @@ function toJsonObject(value) {
   return value
 }
 
+function toDurationMs(value) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(Math.round(parsed), 0)
+}
+
+function normalizeFailureReason(value) {
+  const text = String(value || "").trim()
+  return text || null
+}
+
 exports.createRun = async (payload = {}) => {
   const row = {
     scanner_type: normalizeScannerType(payload.scannerType),
@@ -40,7 +56,9 @@ exports.createRun = async (payload = {}) => {
     items_scanned: toInteger(payload.itemsScanned, 0),
     opportunities_found: toInteger(payload.opportunitiesFound, 0),
     new_opportunities_added: toInteger(payload.newOpportunitiesAdded, 0),
-    diagnostics_summary: toJsonObject(payload.diagnosticsSummary)
+    diagnostics_summary: toJsonObject(payload.diagnosticsSummary),
+    duration_ms: toDurationMs(payload.durationMs),
+    failure_reason: normalizeFailureReason(payload.failureReason)
   }
 
   const { data, error } = await supabaseAdmin
@@ -66,7 +84,9 @@ exports.markCompleted = async (runId, payload = {}) => {
     items_scanned: toInteger(payload.itemsScanned, 0),
     opportunities_found: toInteger(payload.opportunitiesFound, 0),
     new_opportunities_added: toInteger(payload.newOpportunitiesAdded, 0),
-    diagnostics_summary: toJsonObject(payload.diagnosticsSummary)
+    diagnostics_summary: toJsonObject(payload.diagnosticsSummary),
+    duration_ms: toDurationMs(payload.durationMs),
+    failure_reason: null
   }
 
   const { data, error } = await supabaseAdmin
@@ -89,10 +109,12 @@ exports.markFailed = async (runId, payload = {}) => {
 
   const patch = {
     completed_at: payload.completedAt || new Date().toISOString(),
-    status: "failed",
+    status: normalizeStatus(payload.status, "failed"),
     items_scanned: toInteger(payload.itemsScanned, 0),
     opportunities_found: toInteger(payload.opportunitiesFound, 0),
     new_opportunities_added: toInteger(payload.newOpportunitiesAdded, 0),
+    duration_ms: toDurationMs(payload.durationMs),
+    failure_reason: normalizeFailureReason(payload.failureReason || payload.error),
     diagnostics_summary: {
       ...toJsonObject(payload.diagnosticsSummary),
       error: String(payload.error || "").trim() || undefined
