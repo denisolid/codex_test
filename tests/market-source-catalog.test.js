@@ -14,7 +14,8 @@ const {
     evaluateCandidateState,
     evaluateEligibility,
     normalizeCandidateStatus,
-    normalizeCategory
+    normalizeCategory,
+    shouldBypassSkipForRecovery
   }
 } = require("../src/services/marketSourceCatalogService")
 
@@ -142,4 +143,46 @@ test("candidate state separates enriching from strict eligible", () => {
   })
   assert.equal(normalizeCandidateStatus(eligibleState.candidateStatus), "eligible")
   assert.equal(eligibleState.strictEligible, true)
+})
+
+test("skip recovery bypass triggers for collapsed legacy diagnostics", () => {
+  const shouldBypass = shouldBypassSkipForRecovery(
+    {
+      targetUniverseSize: 3000,
+      sourceCatalog: {
+        activeCatalogRows: 2257,
+        eligibleTradableRows: 20,
+        candidateRows: 0,
+        enrichingRows: 0,
+        rejectedRows: 0
+      },
+      universeBuild: {
+        targetUniverseSize: 3000,
+        activeUniverseBuilt: 20,
+        missingToTarget: 2980
+      }
+    },
+    3000
+  )
+  assert.equal(shouldBypass, true)
+
+  const shouldNotBypass = shouldBypassSkipForRecovery(
+    {
+      targetUniverseSize: 3000,
+      sourceCatalog: {
+        activeCatalogRows: 2384,
+        eligibleTradableRows: 20,
+        candidateRows: 6,
+        enrichingRows: 2340,
+        rejectedRows: 18
+      },
+      universeBuild: {
+        targetUniverseSize: 3000,
+        activeUniverseBuilt: 2294,
+        missingToTarget: 706
+      }
+    },
+    3000
+  )
+  assert.equal(shouldNotBypass, false)
 })

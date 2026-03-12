@@ -1766,11 +1766,63 @@ function shouldRefresh(force = false) {
   return Date.now() - sourceCatalogState.lastPreparedAt >= SOURCE_CATALOG_REFRESH_MS
 }
 
+function shouldBypassSkipForRecovery(diagnostics = {}, targetUniverseSize = DEFAULT_UNIVERSE_TARGET) {
+  const sourceCatalog =
+    diagnostics?.sourceCatalog && typeof diagnostics.sourceCatalog === "object"
+      ? diagnostics.sourceCatalog
+      : {}
+  const universeBuild =
+    diagnostics?.universeBuild && typeof diagnostics.universeBuild === "object"
+      ? diagnostics.universeBuild
+      : {}
+
+  const activeCatalogRows = Math.max(
+    Number(sourceCatalog?.activeCatalogRows || sourceCatalog?.totalRows || 0),
+    0
+  )
+  const eligibleRows = Math.max(
+    Number(sourceCatalog?.eligibleTradableRows || sourceCatalog?.eligibleRows || 0),
+    0
+  )
+  const candidateRows = Math.max(Number(sourceCatalog?.candidateRows || 0), 0)
+  const enrichingRows = Math.max(Number(sourceCatalog?.enrichingRows || 0), 0)
+  const rejectedRows = Math.max(Number(sourceCatalog?.rejectedRows || 0), 0)
+  const activeUniverseBuilt = Math.max(Number(universeBuild?.activeUniverseBuilt || 0), 0)
+  const targetSize = Math.max(
+    Math.round(
+      Number(
+        universeBuild?.targetUniverseSize || diagnostics?.targetUniverseSize || targetUniverseSize
+      )
+    ),
+    1
+  )
+  const missingToTarget = Math.max(
+    Number(universeBuild?.missingToTarget ?? Math.max(targetSize - activeUniverseBuilt, 0)),
+    0
+  )
+  const hasCollapsedFunnel =
+    activeCatalogRows > 250 &&
+    eligibleRows > 0 &&
+    candidateRows === 0 &&
+    enrichingRows === 0 &&
+    rejectedRows === 0
+  const hasCollapsedUniverse =
+    activeUniverseBuilt > 0 &&
+    activeUniverseBuilt <= Math.max(eligibleRows, 1) &&
+    missingToTarget > Math.max(Math.round(targetSize * 0.5), 500)
+
+  return hasCollapsedFunnel || hasCollapsedUniverse
+}
+
 async function prepareSourceCatalog(options = {}) {
   const forceRefresh = Boolean(options.forceRefresh)
   const targetUniverseSize = Number(options.targetUniverseSize || DEFAULT_UNIVERSE_TARGET)
 
-  if (!shouldRefresh(forceRefresh) && sourceCatalogState.lastDiagnostics) {
+  if (
+    !shouldRefresh(forceRefresh) &&
+    sourceCatalogState.lastDiagnostics &&
+    !shouldBypassSkipForRecovery(sourceCatalogState.lastDiagnostics, targetUniverseSize)
+  ) {
     return {
       ...sourceCatalogState.lastDiagnostics,
       refreshed: false,
@@ -1854,6 +1906,7 @@ module.exports = {
     evaluateEligibility,
     buildCategoryQuotas,
     buildSourceCatalogQuotas,
-    resolveVolume7d
+    resolveVolume7d,
+    shouldBypassSkipForRecovery
   }
 }

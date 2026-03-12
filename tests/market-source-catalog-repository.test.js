@@ -20,6 +20,7 @@ test("normalizeRows defaults market_coverage_count to zero when missing", () => 
 
   assert.equal(row.market_hash_name, "AWP | Neo-Noir (Field-Tested)");
   assert.equal(row.market_coverage_count, 0);
+  assert.equal(row.enrichment_priority, 0);
 });
 
 test("normalizeRows preserves explicit non-negative market_coverage_count", () => {
