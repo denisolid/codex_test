@@ -4949,7 +4949,14 @@ function enforceManualRefreshCooldown(userId, entitlements = {}, nowMs = Date.no
   const refreshPolicy = planService.canRefreshScanner(entitlements, lastTriggeredAtMs, {
     nowMs
   })
-  const intervalMinutes = Math.max(Number(refreshPolicy?.intervalMinutes || SCANNER_INTERVAL_MINUTES), 1)
+  const intervalMinutes = Math.max(
+    Number(
+      refreshPolicy?.intervalMinutes == null
+        ? SCANNER_INTERVAL_MINUTES
+        : refreshPolicy.intervalMinutes
+    ),
+    0
+  )
 
   if (!refreshPolicy.allowed) {
     const retryAfterMs = Math.max(Number(refreshPolicy?.retryAfterMs || 0), 0)
@@ -5194,10 +5201,16 @@ exports.triggerRefresh = async (options = {}) => {
     startedAt: new Date().toISOString(),
     plan: {
       planTier: planContext?.planTier || "free",
-      scannerRefreshIntervalMinutes: Number(
-        planService.getPlanConfig(planContext?.entitlements || planContext?.planTier)
-          .scannerRefreshIntervalMinutes || SCANNER_INTERVAL_MINUTES
-      ),
+      scannerRefreshIntervalMinutes: (() => {
+        const configuredInterval = Number(
+          planService.getPlanConfig(planContext?.entitlements || planContext?.planTier)
+            .scannerRefreshIntervalMinutes
+        )
+        if (Number.isFinite(configuredInterval)) {
+          return Math.max(configuredInterval, 0)
+        }
+        return SCANNER_INTERVAL_MINUTES
+      })(),
     }
   }
 }

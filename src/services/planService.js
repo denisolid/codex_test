@@ -132,7 +132,7 @@ function withLegacyAliases(config = {}) {
     scannerRefreshIntervalMinutes: toSafeNumber(
       config.scanner_refresh_interval_minutes,
       1,
-      1
+      0
     ),
     historyDaysLimit,
     maxHistoryDays: historyDaysLimit,
@@ -388,9 +388,17 @@ function canRefreshScanner(plan, lastRefreshAt, options = {}) {
   const config = resolvePlanConfig(plan, options);
   const nowMs = toSafeNumber(options.nowMs, Date.now());
   const intervalMinutes = Math.max(
-    toSafeNumber(readFeatureValue(config, "scanner_refresh_interval_minutes"), 1, 1),
-    1
+    toSafeNumber(readFeatureValue(config, "scanner_refresh_interval_minutes"), 1, 0),
+    0
   );
+  if (intervalMinutes <= 0) {
+    return {
+      allowed: true,
+      intervalMinutes: 0,
+      retryAfterMs: 0,
+      retryAfterMinutes: 0,
+    };
+  }
   const intervalMs = intervalMinutes * 60 * 1000;
   const lastRefreshMs = parseTimestampMs(lastRefreshAt);
   if (lastRefreshMs == null) {

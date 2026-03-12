@@ -54,7 +54,7 @@ const PLAN_CONFIG = Object.freeze({
     opportunitiesDailyLimit: 500,
     alertsLimit: 25,
     minimumAlertCooldownMinutes: 0,
-    scannerRefreshIntervalMinutes: 30,
+    scannerRefreshIntervalMinutes: 0,
     historyDaysLimit: 90,
     visibleFeedLimit: 500,
     delayedSignals: false,
@@ -130,7 +130,7 @@ const ACCOUNT_PLAN_LIMITS = Object.freeze({
   full_access: Object.freeze({
     opportunitiesDailyLimit: "High/unlimited opportunities",
     alertsLimit: "25 active alerts",
-    scannerRefresh: "Refresh every 30 minutes",
+    scannerRefresh: "No manual refresh cooldown",
     historyDaysLimit: "90 days history",
     visibleFeedLimit: "Full opportunities feed",
     advancedFilters: "Advanced filters enabled",
@@ -275,7 +275,10 @@ export function canCreateAlert(plan, currentCount = 0, options = {}) {
 
 export function canRefreshScanner(plan, lastRefreshAt, nowMs = Date.now()) {
   const config = typeof plan === "object" ? plan : getPlanConfig(plan);
-  const intervalMinutes = Math.max(normalizeNumber(config.scannerRefreshIntervalMinutes, 1, 1), 1);
+  const intervalMinutes = Math.max(normalizeNumber(config.scannerRefreshIntervalMinutes, 1, 0), 0);
+  if (intervalMinutes <= 0) {
+    return { allowed: true, intervalMinutes: 0, retryAfterMs: 0 };
+  }
   const intervalMs = intervalMinutes * 60 * 1000;
   const lastTs =
     typeof lastRefreshAt === "number"
