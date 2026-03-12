@@ -234,7 +234,8 @@ const BASE_INGEST_EXCLUDED_REASON_COUNTER = Object.freeze({
 const sourceCatalogState = {
   inFlight: null,
   lastPreparedAt: 0,
-  lastDiagnostics: null
+  lastDiagnostics: null,
+  lastSuccessfulDiagnostics: null
 }
 
 function isScannerScopeCategory(category = "") {
@@ -1400,6 +1401,7 @@ async function prepareSourceCatalog(options = {}) {
     .then((diagnostics) => {
       sourceCatalogState.lastPreparedAt = Date.now()
       sourceCatalogState.lastDiagnostics = diagnostics
+      sourceCatalogState.lastSuccessfulDiagnostics = diagnostics
       return diagnostics
     })
     .catch((err) => {
@@ -1407,13 +1409,29 @@ async function prepareSourceCatalog(options = {}) {
         Math.round(Number(targetUniverseSize || DEFAULT_UNIVERSE_TARGET)),
         1
       )
+      const errorMessage = String(err?.message || "source_catalog_pipeline_failed")
+      const lastSuccessful = sourceCatalogState.lastSuccessfulDiagnostics
+      if (lastSuccessful && typeof lastSuccessful === "object") {
+        const degraded = {
+          ...lastSuccessful,
+          generatedAt: new Date().toISOString(),
+          refreshed: false,
+          skipped: true,
+          error: errorMessage,
+          staleDiagnosticsRetained: true
+        }
+        sourceCatalogState.lastPreparedAt = Date.now()
+        sourceCatalogState.lastDiagnostics = degraded
+        return degraded
+      }
+
       const fallback = {
         ...buildBaseDiagnostics(),
         generatedAt: new Date().toISOString(),
         targetUniverseSize: safeTarget,
         refreshed: false,
         skipped: false,
-        error: String(err?.message || "source_catalog_pipeline_failed")
+        error: errorMessage
       }
       fallback.universeBuild = {
         ...fallback.universeBuild,
