@@ -10,10 +10,12 @@ const {
   __testables: {
     buildCategoryQuotas,
     buildSourceCatalogQuotas,
+    computeCatalogMaturity,
     computeEnrichmentPriority,
     evaluateCandidateState,
     evaluateEligibility,
     normalizeCandidateStatus,
+    normalizeMaturityState,
     normalizeCategory,
     shouldBypassSkipForRecovery
   }
@@ -143,6 +145,41 @@ test("candidate state separates enriching from strict eligible", () => {
   })
   assert.equal(normalizeCandidateStatus(eligibleState.candidateStatus), "eligible")
   assert.equal(eligibleState.strictEligible, true)
+})
+
+test("catalog maturity scoring distinguishes near-eligible from cold", () => {
+  const nearEligible = computeCatalogMaturity({
+    category: "case",
+    candidateStatus: "enriching",
+    missingSnapshot: false,
+    missingReference: false,
+    missingMarketCoverage: true,
+    missingLiquidityContext: false,
+    snapshotStale: false,
+    referencePrice: 2.8,
+    volume7d: 180,
+    marketCoverageCount: 1,
+    liquidityRank: 62,
+    eligibilityReason: "missing_market_coverage"
+  })
+  const cold = computeCatalogMaturity({
+    category: "sticker_capsule",
+    candidateStatus: "candidate",
+    missingSnapshot: true,
+    missingReference: true,
+    missingMarketCoverage: true,
+    missingLiquidityContext: true,
+    snapshotStale: true,
+    referencePrice: null,
+    volume7d: null,
+    marketCoverageCount: 0,
+    liquidityRank: 12,
+    eligibilityReason: "candidate_not_ready"
+  })
+
+  assert.equal(normalizeMaturityState(nearEligible.maturityState), "near_eligible")
+  assert.equal(normalizeMaturityState(cold.maturityState), "cold")
+  assert.equal(Number(nearEligible.maturityScore || 0) > Number(cold.maturityScore || 0), true)
 })
 
 test("skip recovery bypass triggers for collapsed legacy diagnostics", () => {

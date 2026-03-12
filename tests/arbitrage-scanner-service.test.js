@@ -24,6 +24,10 @@ const {
     isMateriallyNewOpportunity,
     isScannerRunOverdue,
     computeStrictCoverageThreshold,
+    resolveMaturityStateForSeed,
+    resolveScanLayerForMaturity,
+    computeLayerPriority,
+    selectSeedsForLayeredScanning,
     DEFAULT_UNIVERSE_LIMIT,
     SCAN_BATCH_SIZE,
     MAX_CONCURRENT_MARKET_REQUESTS,
@@ -504,4 +508,82 @@ test("strict seed coverage threshold scales with universe size", () => {
   assert.equal(computeStrictCoverageThreshold(0) >= 10, true);
   assert.equal(computeStrictCoverageThreshold(50), 30);
   assert.equal(computeStrictCoverageThreshold(198), 119);
+});
+
+test("seed maturity model maps ready items to hot layer", () => {
+  const maturity = resolveMaturityStateForSeed({
+    marketHashName: "Revolution Case",
+    itemCategory: "case",
+    candidateStatus: "eligible",
+    scanEligible: true,
+    hasSnapshotData: true,
+    snapshotStale: false,
+    referencePrice: 3.4,
+    marketCoverageCount: 3,
+    marketVolume7d: 240,
+    liquidityRank: 78
+  });
+  const cold = resolveMaturityStateForSeed({
+    marketHashName: "Dreams & Nightmares Sticker Capsule",
+    itemCategory: "sticker_capsule",
+    candidateStatus: "candidate",
+    scanEligible: false,
+    hasSnapshotData: false,
+    snapshotStale: true,
+    referencePrice: null,
+    marketCoverageCount: 0,
+    marketVolume7d: null,
+    liquidityRank: 10
+  });
+
+  assert.equal(maturity.maturityState, "eligible");
+  assert.equal(resolveScanLayerForMaturity(maturity), "hot");
+  assert.equal(cold.maturityState, "cold");
+  assert.equal(resolveScanLayerForMaturity(cold), "cold");
+  assert.equal(Number(maturity.maturityScore || 0) > Number(cold.maturityScore || 0), true);
+  assert.equal(computeLayerPriority({ ...maturity, itemCategory: "case" }) > 0, true);
+});
+
+test("layered scanning prioritizes hot core and limits cold scan share", () => {
+  const hotSeeds = Array.from({ length: 180 }, (_, index) => ({
+    marketHashName: `Hot Seed ${index}`,
+    itemCategory: index % 3 === 0 ? "case" : "weapon_skin",
+    maturityState: "eligible",
+    maturityScore: 85,
+    liquidityRank: 70 - (index % 20),
+    enrichmentPriority: 60,
+    scanLayer: "hot",
+    layerPriority: 120 - index
+  }));
+  const warmSeeds = Array.from({ length: 300 }, (_, index) => ({
+    marketHashName: `Warm Seed ${index}`,
+    itemCategory: index % 2 === 0 ? "sticker_capsule" : "weapon_skin",
+    maturityState: "near_eligible",
+    maturityScore: 64,
+    liquidityRank: 48 - (index % 12),
+    enrichmentPriority: 72 - (index % 10),
+    scanLayer: "warm",
+    layerPriority: 95 - (index % 15)
+  }));
+  const coldSeeds = Array.from({ length: 220 }, (_, index) => ({
+    marketHashName: `Cold Seed ${index}`,
+    itemCategory: "weapon_skin",
+    maturityState: "cold",
+    maturityScore: 22,
+    liquidityRank: 12,
+    enrichmentPriority: 28,
+    scanLayer: "cold",
+    layerPriority: 30 - (index % 8)
+  }));
+
+  const selection = selectSeedsForLayeredScanning([...hotSeeds, ...warmSeeds, ...coldSeeds]);
+  const opportunityLayers = selection?.diagnostics?.opportunity?.layers || {};
+  const enrichmentLayers = selection?.diagnostics?.enrichment?.layers || {};
+
+  assert.equal(Number(selection?.coreSeeds?.length || 0) >= 100, true);
+  assert.equal(Number(selection?.opportunitySeeds?.length || 0) > 0, true);
+  assert.equal(Number(opportunityLayers.hot || 0) >= Number(opportunityLayers.cold || 0), true);
+  assert.equal(Number(selection?.enrichmentSeeds?.length || 0) > 0, true);
+  assert.equal(Number(enrichmentLayers.hot || 0), 0);
+  assert.equal(Number(selection?.enrichmentSeeds?.length || 0) <= 120, true);
 });

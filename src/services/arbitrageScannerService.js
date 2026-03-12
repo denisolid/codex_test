@@ -130,6 +130,23 @@ const ITEM_CATEGORIES = Object.freeze({
   KNIFE: "knife",
   GLOVE: "glove"
 })
+const CATALOG_CANDIDATE_STATUS = Object.freeze({
+  CANDIDATE: "candidate",
+  ENRICHING: "enriching",
+  ELIGIBLE: "eligible",
+  REJECTED: "rejected"
+})
+const MATURITY_STATES = Object.freeze({
+  COLD: "cold",
+  ENRICHING: "enriching",
+  NEAR_ELIGIBLE: "near_eligible",
+  ELIGIBLE: "eligible"
+})
+const SCAN_LAYERS = Object.freeze({
+  HOT: "hot",
+  WARM: "warm",
+  COLD: "cold"
+})
 const SCANNER_AUDIT_CATEGORIES = Object.freeze([
   ITEM_CATEGORIES.WEAPON_SKIN,
   ITEM_CATEGORIES.CASE,
@@ -157,6 +174,51 @@ const UNIVERSE_TARGET_SIZE = Math.max(
 const PRE_COMPARE_UNIVERSE_LIMIT = Math.max(
   UNIVERSE_TARGET_SIZE * 2,
   DEFAULT_UNIVERSE_LIMIT
+)
+const HIGH_YIELD_CORE_TARGET = Math.max(
+  Math.min(
+    Number(process.env.ARBITRAGE_CORE_UNIVERSE_TARGET || Math.round(UNIVERSE_TARGET_SIZE * 0.08)),
+    300
+  ),
+  100
+)
+const HOT_LAYER_SCAN_TARGET = Math.max(
+  Math.min(
+    Number(process.env.ARBITRAGE_HOT_LAYER_SCAN_TARGET || Math.round(UNIVERSE_TARGET_SIZE * 0.25)),
+    PRE_COMPARE_UNIVERSE_LIMIT
+  ),
+  400
+)
+const WARM_LAYER_SCAN_TARGET = Math.max(
+  Math.min(
+    Number(process.env.ARBITRAGE_WARM_LAYER_SCAN_TARGET || Math.round(UNIVERSE_TARGET_SIZE * 0.1)),
+    PRE_COMPARE_UNIVERSE_LIMIT
+  ),
+  120
+)
+const COLD_LAYER_SCAN_TARGET = Math.max(
+  Math.min(
+    Number(process.env.ARBITRAGE_COLD_LAYER_SCAN_TARGET || Math.round(UNIVERSE_TARGET_SIZE * 0.03)),
+    PRE_COMPARE_UNIVERSE_LIMIT
+  ),
+  40
+)
+const OPPORTUNITY_SCAN_TARGET = Math.max(
+  Math.min(
+    Number(
+      process.env.ARBITRAGE_OPPORTUNITY_SCAN_TARGET ||
+        HOT_LAYER_SCAN_TARGET + WARM_LAYER_SCAN_TARGET + COLD_LAYER_SCAN_TARGET
+    ),
+    PRE_COMPARE_UNIVERSE_LIMIT
+  ),
+  600
+)
+const ENRICHMENT_ONLY_TARGET = Math.max(
+  Math.min(
+    Number(process.env.ARBITRAGE_ENRICHMENT_ONLY_TARGET || Math.round(UNIVERSE_TARGET_SIZE * 0.12)),
+    PRE_COMPARE_UNIVERSE_LIMIT
+  ),
+  120
 )
 const UNIVERSE_DB_LIMIT = Math.max(
   Number(arbitrageUniverseDbLimit || DEFAULT_UNIVERSE_LIMIT * 2),
@@ -1322,6 +1384,7 @@ function normalizeDiscardStatsByCategory(counter = {}) {
 function buildInputItemFromSkinAndSnapshot({
   skin = null,
   snapshot = null,
+  catalogRow = null,
   marketHashName = "",
   category = ITEM_CATEGORIES.WEAPON_SKIN,
   subcategory = null,
@@ -1345,6 +1408,35 @@ function buildInputItemFromSkinAndSnapshot({
   const imageUrl = sanitizeImageUrl(skin?.image_url || skin?.imageUrl)
   const imageUrlLarge =
     sanitizeImageUrl(skin?.image_url_large || skin?.imageUrlLarge) || imageUrl || null
+  const candidateStatus = normalizeCatalogCandidateStatus(
+    catalogRow?.candidate_status ?? catalogRow?.candidateStatus,
+    catalogRow?.scan_eligible
+      ? CATALOG_CANDIDATE_STATUS.ELIGIBLE
+      : CATALOG_CANDIDATE_STATUS.CANDIDATE
+  )
+  const marketCoverageCount = Math.max(
+    Number(
+      toFiniteOrNull(catalogRow?.market_coverage_count ?? catalogRow?.marketCoverageCount) || 0
+    ),
+    0
+  )
+  const missingSnapshot =
+    catalogRow?.missing_snapshot == null
+      ? !(Boolean(snapshot) && hasUsableSnapshotLiquidity) || (snapshot ? isSnapshotStale(snapshot) : true)
+      : Boolean(catalogRow.missing_snapshot)
+  const missingReference =
+    catalogRow?.missing_reference == null
+      ? referencePrice == null
+      : Boolean(catalogRow.missing_reference)
+  const missingMarketCoverage =
+    catalogRow?.missing_market_coverage == null
+      ? marketCoverageCount < MIN_MARKET_COVERAGE
+      : Boolean(catalogRow.missing_market_coverage)
+  const enrichmentPriority =
+    toFiniteOrNull(catalogRow?.enrichment_priority ?? catalogRow?.enrichmentPriority) ?? 0
+  const eligibilityReason = String(
+    catalogRow?.eligibility_reason || catalogRow?.eligibilityReason || ""
+  ).trim()
 
   return {
     skinId: Number(skin?.id || 0) || null,
@@ -1365,7 +1457,16 @@ function buildInputItemFromSkinAndSnapshot({
     snapshotCapturedAt: snapshot?.captured_at || null,
     snapshotStale: snapshot ? isSnapshotStale(snapshot) : false,
     universeSource: String(universeSource || "fallback_curated").trim() || "fallback_curated",
-    liquidityRank: toFiniteOrNull(liquidityRank)
+    liquidityRank: toFiniteOrNull(liquidityRank),
+    candidateStatus,
+    scanEligible:
+      catalogRow?.scan_eligible == null ? candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE : Boolean(catalogRow.scan_eligible),
+    missingSnapshot,
+    missingReference,
+    missingMarketCoverage,
+    enrichmentPriority,
+    eligibilityReason: eligibilityReason || null,
+    marketCoverageCount
   }
 }
 
@@ -1426,6 +1527,395 @@ function computeStrictCoverageThreshold(totalSeeds = 0) {
   return Math.max(Math.min(ratioThreshold, seedCount), MIN_STRICT_SEED_COVERAGE)
 }
 
+function normalizeCatalogCandidateStatus(value, fallback = CATALOG_CANDIDATE_STATUS.CANDIDATE) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+  if (Object.values(CATALOG_CANDIDATE_STATUS).includes(normalized)) {
+    return normalized
+  }
+  const fallbackNormalized = String(fallback || "")
+    .trim()
+    .toLowerCase()
+  return Object.values(CATALOG_CANDIDATE_STATUS).includes(fallbackNormalized)
+    ? fallbackNormalized
+    : CATALOG_CANDIDATE_STATUS.CANDIDATE
+}
+
+function normalizeMaturityState(value, fallback = MATURITY_STATES.COLD) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+  if (Object.values(MATURITY_STATES).includes(normalized)) {
+    return normalized
+  }
+  return String(fallback || MATURITY_STATES.COLD)
+    .trim()
+    .toLowerCase()
+}
+
+function clampMaturityScore(value) {
+  const parsed = toFiniteOrNull(value)
+  if (parsed == null) return 0
+  return round2(Math.max(Math.min(parsed, 100), 0))
+}
+
+function buildMaturityCounter(initialValue = 0) {
+  const initial = Number(initialValue || 0)
+  return Object.fromEntries(Object.values(MATURITY_STATES).map((state) => [state, initial]))
+}
+
+function buildMaturityByCategoryCounter(initialValue = 0) {
+  return Object.fromEntries(
+    SCANNER_AUDIT_CATEGORIES.map((category) => [category, buildMaturityCounter(initialValue)])
+  )
+}
+
+function buildLayerCounter(initialValue = 0) {
+  const initial = Number(initialValue || 0)
+  return Object.fromEntries(Object.values(SCAN_LAYERS).map((layer) => [layer, initial]))
+}
+
+function buildLayerByCategoryCounter(initialValue = 0) {
+  return Object.fromEntries(
+    SCANNER_AUDIT_CATEGORIES.map((category) => [category, buildLayerCounter(initialValue)])
+  )
+}
+
+function normalizeCatalogRowsByMarketHashName(rows = []) {
+  const map = {}
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const marketHashName = normalizeMarketHashName(row?.market_hash_name || row?.marketHashName)
+    if (!marketHashName) continue
+    map[marketHashName] = row
+  }
+  return map
+}
+
+function applyCatalogStateToSeed(seed = {}, catalogRow = null) {
+  if (!catalogRow || typeof catalogRow !== "object") {
+    return {
+      ...seed,
+      candidateStatus: normalizeCatalogCandidateStatus(
+        seed?.candidateStatus,
+        seed?.scanEligible ? CATALOG_CANDIDATE_STATUS.ELIGIBLE : CATALOG_CANDIDATE_STATUS.CANDIDATE
+      ),
+      scanEligible: Boolean(seed?.scanEligible),
+      missingSnapshot: Boolean(seed?.missingSnapshot),
+      missingReference: Boolean(seed?.missingReference),
+      missingMarketCoverage: Boolean(seed?.missingMarketCoverage),
+      enrichmentPriority: toFiniteOrNull(seed?.enrichmentPriority) ?? 0,
+      eligibilityReason: String(seed?.eligibilityReason || "").trim() || null,
+      marketCoverageCount: Math.max(Number(seed?.marketCoverageCount || 0), 0)
+    }
+  }
+
+  const referencePrice = toFiniteOrNull(seed?.referencePrice)
+  const marketCoverageCount = Math.max(
+    Number(
+      toFiniteOrNull(catalogRow?.market_coverage_count ?? catalogRow?.marketCoverageCount) ??
+        seed?.marketCoverageCount ??
+        0
+    ),
+    0
+  )
+  const snapshotStale =
+    catalogRow?.snapshot_stale == null ? Boolean(seed?.snapshotStale) : Boolean(catalogRow.snapshot_stale)
+  const snapshotCapturedAt = catalogRow?.snapshot_captured_at || seed?.snapshotCapturedAt || null
+  const missingSnapshot =
+    catalogRow?.missing_snapshot == null
+      ? !Boolean(seed?.hasSnapshotData) || snapshotStale
+      : Boolean(catalogRow.missing_snapshot)
+  const missingReference =
+    catalogRow?.missing_reference == null ? referencePrice == null : Boolean(catalogRow.missing_reference)
+  const missingMarketCoverage =
+    catalogRow?.missing_market_coverage == null
+      ? marketCoverageCount < MIN_MARKET_COVERAGE
+      : Boolean(catalogRow.missing_market_coverage)
+
+  return {
+    ...seed,
+    candidateStatus: normalizeCatalogCandidateStatus(
+      catalogRow?.candidate_status ?? catalogRow?.candidateStatus,
+      seed?.scanEligible || catalogRow?.scan_eligible
+        ? CATALOG_CANDIDATE_STATUS.ELIGIBLE
+        : CATALOG_CANDIDATE_STATUS.CANDIDATE
+    ),
+    scanEligible:
+      catalogRow?.scan_eligible == null ? Boolean(seed?.scanEligible) : Boolean(catalogRow.scan_eligible),
+    missingSnapshot,
+    missingReference,
+    missingMarketCoverage,
+    enrichmentPriority:
+      toFiniteOrNull(catalogRow?.enrichment_priority ?? catalogRow?.enrichmentPriority) ??
+      toFiniteOrNull(seed?.enrichmentPriority) ??
+      0,
+    eligibilityReason:
+      String(catalogRow?.eligibility_reason || catalogRow?.eligibilityReason || seed?.eligibilityReason || "")
+        .trim() || null,
+    marketCoverageCount,
+    snapshotStale,
+    snapshotCapturedAt
+  }
+}
+
+function resolveMaturityStateForSeed(seed = {}) {
+  const itemCategory = normalizeItemCategory(seed?.itemCategory, seed?.marketHashName)
+  const candidateStatus = normalizeCatalogCandidateStatus(
+    seed?.candidateStatus,
+    seed?.scanEligible ? CATALOG_CANDIDATE_STATUS.ELIGIBLE : CATALOG_CANDIDATE_STATUS.CANDIDATE
+  )
+  const hasSnapshotData = Boolean(seed?.hasSnapshotData)
+  const snapshotStale = Boolean(seed?.snapshotStale)
+  const referencePrice = toFiniteOrNull(seed?.referencePrice)
+  const coverageCount = Math.max(Number(seed?.marketCoverageCount || 0), 0)
+  const volume7d = toFiniteOrNull(seed?.marketVolume7d)
+  const missingSnapshot = Boolean(seed?.missingSnapshot) || !hasSnapshotData || snapshotStale
+  const missingReference = Boolean(seed?.missingReference) || referencePrice == null
+  const missingCoverage = Boolean(seed?.missingMarketCoverage) || coverageCount < MIN_MARKET_COVERAGE
+  const missingLiquidityContext = volume7d == null
+  const missingSignals =
+    Number(missingSnapshot) +
+    Number(missingReference) +
+    Number(missingCoverage) +
+    Number(missingLiquidityContext)
+  const structuralReason = String(seed?.eligibilityReason || "").trim().toLowerCase()
+  const structuralPenalty = /\brejected|hard|outofscope|namepattern|unsupported\b/.test(structuralReason)
+    ? 12
+    : 0
+  const categoryBoost =
+    itemCategory === ITEM_CATEGORIES.CASE
+      ? 4
+      : itemCategory === ITEM_CATEGORIES.STICKER_CAPSULE
+        ? 5
+        : 0
+  let maturityState = MATURITY_STATES.COLD
+  if (
+    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
+    hasSnapshotData &&
+    !snapshotStale &&
+    !missingReference &&
+    !missingCoverage
+  ) {
+    maturityState = MATURITY_STATES.ELIGIBLE
+  } else if (
+    (candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE ||
+      candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING) &&
+    missingSignals <= 1 &&
+    !snapshotStale &&
+    !missingReference &&
+    (coverageCount >= 1 || (volume7d != null && volume7d >= 20))
+  ) {
+    maturityState = MATURITY_STATES.NEAR_ELIGIBLE
+  } else if (
+    candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING ||
+    (candidateStatus === CATALOG_CANDIDATE_STATUS.CANDIDATE && missingSignals <= 2)
+  ) {
+    maturityState = MATURITY_STATES.ENRICHING
+  }
+
+  const baseScore =
+    maturityState === MATURITY_STATES.ELIGIBLE
+      ? 84
+      : maturityState === MATURITY_STATES.NEAR_ELIGIBLE
+        ? 66
+        : maturityState === MATURITY_STATES.ENRICHING
+          ? 46
+          : 24
+  const freshnessBoost = snapshotStale ? -8 : 8
+  const referenceBoost = referencePrice == null ? -8 : Math.min(referencePrice, 12)
+  const coverageBoost = Math.min(coverageCount * 3, 15)
+  const volumeBoost =
+    volume7d == null
+      ? -6
+      : Math.min((volume7d / Math.max(UNIVERSE_MIN_VOLUME_7D_BY_CATEGORY[itemCategory] || 20, 1)) * 12, 14)
+  const liquidityBoost = Math.min((toFiniteOrNull(seed?.liquidityRank) ?? 0) * 0.12, 10)
+  const maturityScore = clampMaturityScore(
+    baseScore +
+      categoryBoost +
+      freshnessBoost +
+      referenceBoost +
+      coverageBoost +
+      volumeBoost +
+      liquidityBoost -
+      missingSignals * 6 -
+      structuralPenalty
+  )
+
+  return {
+    maturityState: normalizeMaturityState(maturityState),
+    maturityScore,
+    missingSignals,
+    candidateStatus,
+    structuralPenalty
+  }
+}
+
+function resolveScanLayerForMaturity(seed = {}) {
+  const maturityState = normalizeMaturityState(seed?.maturityState)
+  if (maturityState === MATURITY_STATES.ELIGIBLE) return SCAN_LAYERS.HOT
+  if (
+    maturityState === MATURITY_STATES.NEAR_ELIGIBLE ||
+    maturityState === MATURITY_STATES.ENRICHING
+  ) {
+    return SCAN_LAYERS.WARM
+  }
+  return SCAN_LAYERS.COLD
+}
+
+function computeLayerPriority(seed = {}) {
+  const category = normalizeItemCategory(seed?.itemCategory, seed?.marketHashName)
+  const maturityScore = clampMaturityScore(seed?.maturityScore)
+  const liquidityRank = toFiniteOrNull(seed?.liquidityRank) ?? 0
+  const enrichmentPriority = toFiniteOrNull(seed?.enrichmentPriority) ?? 0
+  const categoryBoost =
+    category === ITEM_CATEGORIES.CASE
+      ? 6
+      : category === ITEM_CATEGORIES.STICKER_CAPSULE
+        ? 8
+        : 0
+  const sourceBoost =
+    seed?.universeSource === "curated_db"
+      ? 5
+      : seed?.universeSource === "fallback_curated"
+        ? 2
+        : 0
+  const volumeBoost = Math.min((toFiniteOrNull(seed?.marketVolume7d) ?? 0) / 20, 10)
+  const referenceBoost = Math.min((toFiniteOrNull(seed?.referencePrice) ?? 0) / 4, 10)
+  return round2(
+    maturityScore + liquidityRank * 0.5 + enrichmentPriority * 0.25 + categoryBoost + sourceBoost + volumeBoost + referenceBoost
+  )
+}
+
+function buildLayerDiagnostics(seeds = []) {
+  const maturityFunnel = buildMaturityCounter(0)
+  const maturityByCategory = buildMaturityByCategoryCounter(0)
+  const layers = buildLayerCounter(0)
+  const layersByCategory = buildLayerByCategoryCounter(0)
+
+  for (const row of Array.isArray(seeds) ? seeds : []) {
+    const category = normalizeItemCategory(row?.itemCategory, row?.marketHashName)
+    if (!SCANNER_AUDIT_CATEGORIES.includes(category)) continue
+    const maturityState = normalizeMaturityState(row?.maturityState)
+    const scanLayer = String(row?.scanLayer || "").trim().toLowerCase()
+    if (maturityFunnel[maturityState] == null) {
+      maturityFunnel[maturityState] = 0
+    }
+    maturityFunnel[maturityState] += 1
+    maturityByCategory[category][maturityState] =
+      Number(maturityByCategory[category]?.[maturityState] || 0) + 1
+
+    if (!Object.values(SCAN_LAYERS).includes(scanLayer)) continue
+    layers[scanLayer] = Number(layers[scanLayer] || 0) + 1
+    layersByCategory[category][scanLayer] = Number(layersByCategory[category]?.[scanLayer] || 0) + 1
+  }
+
+  return {
+    maturityFunnel,
+    maturityByCategory,
+    layers,
+    layersByCategory
+  }
+}
+
+function dedupeSeedRows(rows = []) {
+  const seen = new Set()
+  const deduped = []
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const key = normalizeMarketHashName(row?.marketHashName)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    deduped.push(row)
+  }
+  return deduped
+}
+
+function rankLayerRows(rows = []) {
+  return dedupeSeedRows(rows).sort(
+    (a, b) =>
+      Number(b.layerPriority || 0) - Number(a.layerPriority || 0) ||
+      Number(b.maturityScore || 0) - Number(a.maturityScore || 0) ||
+      Number(b.liquidityRank || 0) - Number(a.liquidityRank || 0) ||
+      sourceRank(b.universeSource) - sourceRank(a.universeSource)
+  )
+}
+
+function selectSeedsForLayeredScanning(seeds = []) {
+  const ranked = rankLayerRows(seeds)
+  const byLayer = {
+    [SCAN_LAYERS.HOT]: ranked.filter((row) => row.scanLayer === SCAN_LAYERS.HOT),
+    [SCAN_LAYERS.WARM]: ranked.filter((row) => row.scanLayer === SCAN_LAYERS.WARM),
+    [SCAN_LAYERS.COLD]: ranked.filter((row) => row.scanLayer === SCAN_LAYERS.COLD)
+  }
+
+  const coreSeeds = byLayer[SCAN_LAYERS.HOT].slice(0, HIGH_YIELD_CORE_TARGET)
+  const selectedNames = new Set(coreSeeds.map((row) => normalizeMarketHashName(row?.marketHashName)))
+  const opportunitySeeds = [...coreSeeds]
+
+  const addFromLayer = (rows = [], limit = 0) => {
+    const maxItems = Math.max(Number(limit || 0), 0)
+    if (!maxItems) return 0
+    let added = 0
+    for (const row of rows) {
+      if (added >= maxItems || opportunitySeeds.length >= OPPORTUNITY_SCAN_TARGET) break
+      const key = normalizeMarketHashName(row?.marketHashName)
+      if (!key || selectedNames.has(key)) continue
+      selectedNames.add(key)
+      opportunitySeeds.push(row)
+      added += 1
+    }
+    return added
+  }
+
+  const existingCore = coreSeeds.length
+  addFromLayer(byLayer[SCAN_LAYERS.HOT], Math.max(HOT_LAYER_SCAN_TARGET - existingCore, 0))
+  addFromLayer(byLayer[SCAN_LAYERS.WARM], WARM_LAYER_SCAN_TARGET)
+  addFromLayer(byLayer[SCAN_LAYERS.COLD], COLD_LAYER_SCAN_TARGET)
+
+  const fallbackOrder = [
+    ...byLayer[SCAN_LAYERS.HOT],
+    ...byLayer[SCAN_LAYERS.WARM],
+    ...byLayer[SCAN_LAYERS.COLD]
+  ]
+  addFromLayer(fallbackOrder, Math.max(OPPORTUNITY_SCAN_TARGET - opportunitySeeds.length, 0))
+
+  const enrichmentSeeds = []
+  const enrichmentSeen = new Set()
+  const enrichmentCandidates = rankLayerRows([
+    ...byLayer[SCAN_LAYERS.WARM],
+    ...byLayer[SCAN_LAYERS.COLD]
+  ])
+  for (const row of enrichmentCandidates) {
+    if (enrichmentSeeds.length >= ENRICHMENT_ONLY_TARGET) break
+    const key = normalizeMarketHashName(row?.marketHashName)
+    if (!key || selectedNames.has(key) || enrichmentSeen.has(key)) continue
+    enrichmentSeen.add(key)
+    enrichmentSeeds.push(row)
+  }
+
+  const layerDiagnostics = buildLayerDiagnostics(ranked)
+  const opportunityDiagnostics = buildLayerDiagnostics(opportunitySeeds)
+  const enrichmentDiagnostics = buildLayerDiagnostics(enrichmentSeeds)
+
+  return {
+    allRankedSeeds: ranked,
+    coreSeeds,
+    opportunitySeeds,
+    enrichmentSeeds,
+    diagnostics: {
+      totalRankedSeeds: ranked.length,
+      coreUniverseSize: coreSeeds.length,
+      opportunityTarget: OPPORTUNITY_SCAN_TARGET,
+      enrichmentTarget: ENRICHMENT_ONLY_TARGET,
+      selectedForOpportunity: opportunitySeeds.length,
+      selectedForEnrichment: enrichmentSeeds.length,
+      allSeeds: layerDiagnostics,
+      opportunity: opportunityDiagnostics,
+      enrichment: enrichmentDiagnostics
+    }
+  }
+}
+
 async function loadCuratedUniverseSeeds() {
   let curatedRows = []
   try {
@@ -1465,6 +1955,24 @@ async function loadCuratedUniverseSeeds() {
     return []
   }
 
+  let catalogRows = []
+  try {
+    catalogRows = await marketSourceCatalogService.getCatalogRowsByMarketHashNames(
+      normalizedRows.map((row) => row.marketHashName),
+      {
+        categories: [
+          ITEM_CATEGORIES.WEAPON_SKIN,
+          ITEM_CATEGORIES.CASE,
+          ITEM_CATEGORIES.STICKER_CAPSULE
+        ]
+      }
+    )
+  } catch (err) {
+    console.error("[arbitrage-scanner] Failed to load source catalog metadata for curated seeds", err.message)
+    catalogRows = []
+  }
+  const catalogByName = normalizeCatalogRowsByMarketHashName(catalogRows)
+
   const skins = await ensureSkinsForMarketNames(normalizedRows.map((row) => row.marketHashName))
   const skinsByName = toByNameMap(
     (Array.isArray(skins) ? skins : []).map((row) => ({
@@ -1492,6 +2000,7 @@ async function loadCuratedUniverseSeeds() {
         marketHashName: row.marketHashName,
         category: row.category,
         subcategory: row.subcategory,
+        catalogRow: catalogByName[row.marketHashName] || null,
         universeSource: "curated_db",
         liquidityRank: row.liquidityRank
       })
@@ -1501,6 +2010,20 @@ async function loadCuratedUniverseSeeds() {
 
 async function loadFallbackUniverseSeeds() {
   const marketNames = FALLBACK_UNIVERSE.map((entry) => entry.marketHashName)
+  let catalogRows = []
+  try {
+    catalogRows = await marketSourceCatalogService.getCatalogRowsByMarketHashNames(marketNames, {
+      categories: [
+        ITEM_CATEGORIES.WEAPON_SKIN,
+        ITEM_CATEGORIES.CASE,
+        ITEM_CATEGORIES.STICKER_CAPSULE
+      ]
+    })
+  } catch (err) {
+    console.error("[arbitrage-scanner] Failed to load source catalog metadata for fallback seeds", err.message)
+    catalogRows = []
+  }
+  const catalogByName = normalizeCatalogRowsByMarketHashName(catalogRows)
   const skins = await ensureSkinsForMarketNames(marketNames)
   const skinsByName = toByNameMap(
     (Array.isArray(skins) ? skins : []).map((row) => ({
@@ -1527,6 +2050,7 @@ async function loadFallbackUniverseSeeds() {
       marketHashName: entry.marketHashName,
       category: entry.category,
       subcategory: entry.subcategory,
+      catalogRow: catalogByName[entry.marketHashName] || null,
       universeSource: "fallback_curated",
       liquidityRank: index + 1
     })
@@ -2964,8 +3488,24 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
     })
   ])
 
-  const mergedSeeds = mergeUniverseSeeds([curatedSeeds, fallbackSeeds])
-  const { seeds: hydratedSeeds, snapshotWarmup } = await refreshSeedSnapshotsIfNeeded(mergedSeeds)
+  const mergedSeeds = mergeUniverseSeeds([curatedSeeds, fallbackSeeds]).map((seed) =>
+    applyCatalogStateToSeed(seed, null)
+  )
+  const preMaturitySeeds = mergedSeeds.map((seed) => {
+    const preliminaryMaturity = resolveMaturityStateForSeed(seed)
+    return {
+      ...seed,
+      maturityState: preliminaryMaturity.maturityState,
+      maturityScore: preliminaryMaturity.maturityScore,
+      missingSignals: preliminaryMaturity.missingSignals,
+      scanLayer: resolveScanLayerForMaturity(preliminaryMaturity),
+      layerPriority: computeLayerPriority({
+        ...seed,
+        ...preliminaryMaturity
+      })
+    }
+  })
+  const { seeds: hydratedSeeds, snapshotWarmup } = await refreshSeedSnapshotsIfNeeded(preMaturitySeeds)
   const strictFilterResult = filterUniverseSeedsForScan(hydratedSeeds)
   const strictCoverageThreshold = computeStrictCoverageThreshold(hydratedSeeds.length)
   let selectedFilterResult = strictFilterResult
@@ -2995,25 +3535,59 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}) {
         sevenDayChangePercent: row.sevenDayChangePercent,
         referencePrice: row.referencePrice,
         itemCategory: row.itemCategory
-      })
+      }),
+      ...resolveMaturityStateForSeed(row)
+    }))
+    .map((row) => ({
+      ...row,
+      scanLayer: resolveScanLayerForMaturity(row),
+      layerPriority: computeLayerPriority(row)
     }))
     .sort(
       (a, b) =>
+        Number(b.layerPriority || 0) - Number(a.layerPriority || 0) ||
+        Number(b.maturityScore || 0) - Number(a.maturityScore || 0) ||
         Number(b.liquidityRank || 0) - Number(a.liquidityRank || 0) ||
         sourceRank(b.universeSource) - sourceRank(a.universeSource) ||
         Number(b.marketVolume7d || 0) - Number(a.marketVolume7d || 0)
     )
     .slice(0, PRE_COMPARE_UNIVERSE_LIMIT)
 
+  const layeredSelection = selectSeedsForLayeredScanning(ranked)
+  const opportunitySeeds = layeredSelection.opportunitySeeds.slice(0, PRE_COMPARE_UNIVERSE_LIMIT)
+  const enrichmentSeeds = layeredSelection.enrichmentSeeds.slice(0, PRE_COMPARE_UNIVERSE_LIMIT)
+
   return {
-    seeds: ranked,
+    seeds: opportunitySeeds,
+    enrichmentSeeds,
+    allSeeds: layeredSelection.allRankedSeeds,
     snapshotWarmup: toSnapshotWarmupSummary({
       ...snapshotWarmup,
       seedFilterMode,
       strictCoverageThreshold,
       strictEligibleSeeds: strictFilterResult.selectedSeeds.length,
-      selectedEligibleSeeds: selectedFilterResult.selectedSeeds.length
-    })
+      selectedEligibleSeeds: selectedFilterResult.selectedSeeds.length,
+      maturityFunnel: layeredSelection.diagnostics?.allSeeds?.maturityFunnel || buildMaturityCounter(0),
+      maturityByCategory:
+        layeredSelection.diagnostics?.allSeeds?.maturityByCategory || buildMaturityByCategoryCounter(0),
+      layerDistribution: layeredSelection.diagnostics?.allSeeds?.layers || buildLayerCounter(0),
+      layerDistributionByCategory:
+        layeredSelection.diagnostics?.allSeeds?.layersByCategory || buildLayerByCategoryCounter(0),
+      highYieldCoreSize: Number(layeredSelection?.coreSeeds?.length || 0),
+      selectedForOpportunity: opportunitySeeds.length,
+      selectedForEnrichment: enrichmentSeeds.length
+    }),
+    layeredScanning: layeredSelection.diagnostics || {
+      totalRankedSeeds: ranked.length,
+      coreUniverseSize: 0,
+      opportunityTarget: OPPORTUNITY_SCAN_TARGET,
+      enrichmentTarget: ENRICHMENT_ONLY_TARGET,
+      selectedForOpportunity: opportunitySeeds.length,
+      selectedForEnrichment: enrichmentSeeds.length,
+      allSeeds: buildLayerDiagnostics(ranked),
+      opportunity: buildLayerDiagnostics(opportunitySeeds),
+      enrichment: buildLayerDiagnostics(enrichmentSeeds)
+    }
   }
 }
 
@@ -3032,6 +3606,9 @@ function toSnapshotWarmupSummary(overrides = {}) {
     strictCoverageThreshold: MIN_STRICT_SEED_COVERAGE,
     strictEligibleSeeds: 0,
     selectedEligibleSeeds: 0,
+    missingSnapshotBacklog: 0,
+    attemptedByCategory: buildScannerAuditCategoryCounter(0),
+    refreshedByCategory: buildScannerAuditCategoryCounter(0),
     errors: [],
     ...overrides
   }
@@ -3226,7 +3803,63 @@ function mergeSeedWithSnapshot(seed = {}, snapshot = null) {
   }
 }
 
-async function refreshSeedSnapshotsIfNeeded(seeds = []) {
+function selectSnapshotWarmupCandidates(candidates = [], limit = SNAPSHOT_WARMUP_MAX_ITEMS) {
+  const safeCandidates = Array.isArray(candidates) ? candidates : []
+  const safeLimit = Math.max(Math.round(Number(limit || 0)), 0)
+  if (!safeLimit || !safeCandidates.length) return []
+
+  const categoryTargets = {
+    [ITEM_CATEGORIES.WEAPON_SKIN]: Math.max(Math.round(safeLimit * 0.62), 1),
+    [ITEM_CATEGORIES.CASE]: Math.max(Math.round(safeLimit * 0.2), 1),
+    [ITEM_CATEGORIES.STICKER_CAPSULE]: Math.max(Math.round(safeLimit * 0.18), 1)
+  }
+  const byCategory = {
+    [ITEM_CATEGORIES.WEAPON_SKIN]: [],
+    [ITEM_CATEGORIES.CASE]: [],
+    [ITEM_CATEGORIES.STICKER_CAPSULE]: []
+  }
+  for (const row of safeCandidates) {
+    const category = normalizeItemCategory(row?.itemCategory, row?.marketHashName)
+    if (!byCategory[category]) continue
+    byCategory[category].push(row)
+  }
+  for (const category of Object.keys(byCategory)) {
+    byCategory[category].sort(
+      (a, b) =>
+        Number(b?.maturityScore || 0) - Number(a?.maturityScore || 0) ||
+        Number(b?.enrichmentPriority || 0) - Number(a?.enrichmentPriority || 0) ||
+        Number(b?.layerPriority || 0) - Number(a?.layerPriority || 0) ||
+        Number(a?.liquidityRank || Number.MAX_SAFE_INTEGER) -
+          Number(b?.liquidityRank || Number.MAX_SAFE_INTEGER)
+    )
+  }
+
+  const selected = []
+  const used = new Set()
+  const take = (row) => {
+    const key = normalizeMarketHashName(row?.marketHashName)
+    if (!key || used.has(key) || selected.length >= safeLimit) return false
+    used.add(key)
+    selected.push(row)
+    return true
+  }
+
+  for (const category of SCANNER_AUDIT_CATEGORIES) {
+    const target = Math.min(Number(categoryTargets[category] || 0), byCategory[category].length)
+    for (let index = 0; index < target; index += 1) {
+      take(byCategory[category][index])
+    }
+  }
+
+  if (selected.length >= safeLimit) return selected
+  for (const row of safeCandidates) {
+    if (selected.length >= safeLimit) break
+    take(row)
+  }
+  return selected
+}
+
+async function refreshSeedSnapshotsIfNeeded(seeds = [], options = {}) {
   const rows = Array.isArray(seeds) ? seeds : []
   if (!rows.length) {
     return {
@@ -3238,6 +3871,7 @@ async function refreshSeedSnapshotsIfNeeded(seeds = []) {
   const freshSeedsBefore = rows.filter(
     (seed) => Boolean(seed?.hasSnapshotData) && !Boolean(seed?.snapshotStale)
   ).length
+  const missingSnapshotBacklog = rows.filter((seed) => !Boolean(seed?.hasSnapshotData)).length
   const warmupCandidates = rows
     .filter((seed) => {
       const skinId = Number(seed?.skinId || 0)
@@ -3245,6 +3879,8 @@ async function refreshSeedSnapshotsIfNeeded(seeds = []) {
     })
     .sort(
       (a, b) =>
+        Number(b?.maturityScore || 0) - Number(a?.maturityScore || 0) ||
+        Number(b?.enrichmentPriority || 0) - Number(a?.enrichmentPriority || 0) ||
         sourceRank(b?.universeSource) - sourceRank(a?.universeSource) ||
         Number(a?.liquidityRank || Number.MAX_SAFE_INTEGER) -
           Number(b?.liquidityRank || Number.MAX_SAFE_INTEGER)
@@ -3255,26 +3891,48 @@ async function refreshSeedSnapshotsIfNeeded(seeds = []) {
       seeds: rows,
       snapshotWarmup: toSnapshotWarmupSummary({
         freshSeedsBefore,
-        warmupCandidates: warmupCandidates.length
+        warmupCandidates: warmupCandidates.length,
+        missingSnapshotBacklog
       })
     }
   }
 
+  const hotLayerCount = rows.filter((seed) => String(seed?.scanLayer || "").trim().toLowerCase() === SCAN_LAYERS.HOT).length
+  const backlogBoost =
+    missingSnapshotBacklog >= 400 || warmupCandidates.length >= 500
+      ? 2
+      : missingSnapshotBacklog >= 180
+        ? 1.5
+        : 1
+  const explicitWarmupLimit = Number(options?.warmupLimit || 0)
   const warmupLimit =
-    freshSeedsBefore < SNAPSHOT_WARMUP_TRIGGER_FRESH_MIN
-      ? SNAPSHOT_WARMUP_MAX_ITEMS
-      : Math.max(Math.round(SNAPSHOT_WARMUP_MAX_ITEMS / 2), 5)
-  const selected = warmupCandidates.slice(0, warmupLimit)
+    explicitWarmupLimit > 0
+      ? Math.max(Math.round(explicitWarmupLimit), 5)
+      : freshSeedsBefore < Math.max(SNAPSHOT_WARMUP_TRIGGER_FRESH_MIN, Math.round(hotLayerCount * 0.65))
+        ? Math.max(Math.round(SNAPSHOT_WARMUP_MAX_ITEMS * backlogBoost), SNAPSHOT_WARMUP_MAX_ITEMS)
+        : Math.max(Math.round((SNAPSHOT_WARMUP_MAX_ITEMS / 2) * backlogBoost), 5)
+  const selected = selectSnapshotWarmupCandidates(warmupCandidates, warmupLimit)
   const errors = []
   const refreshedSkinIds = []
+  const attemptedByCategory = buildScannerAuditCategoryCounter(0)
+  const refreshedByCategory = buildScannerAuditCategoryCounter(0)
   const results = await mapWithConcurrency(
     selected,
     SNAPSHOT_WARMUP_CONCURRENCY,
     async (seed) => {
       const skinId = Number(seed?.skinId || 0)
+      const category = normalizeItemCategory(seed?.itemCategory, seed?.marketHashName)
+      if (attemptedByCategory[category] == null) {
+        attemptedByCategory[category] = 0
+      }
+      attemptedByCategory[category] += 1
       try {
         await marketService.getLiquidityScore(skinId)
         refreshedSkinIds.push(skinId)
+        if (refreshedByCategory[category] == null) {
+          refreshedByCategory[category] = 0
+        }
+        refreshedByCategory[category] += 1
         return true
       } catch (err) {
         errors.push(String(err?.message || `snapshot_refresh_failed:${skinId}`))
@@ -3307,9 +3965,12 @@ async function refreshSeedSnapshotsIfNeeded(seeds = []) {
       reason: "insufficient_fresh_snapshot_coverage",
       freshSeedsBefore,
       warmupCandidates: warmupCandidates.length,
+      missingSnapshotBacklog,
       attemptedItems: selected.length,
       refreshedItems: refreshedCount,
       failedItems: Math.max(selected.length - refreshedCount, 0),
+      attemptedByCategory,
+      refreshedByCategory,
       errors: errors.slice(0, 8)
     })
   }
@@ -3479,6 +4140,99 @@ async function compareFromSavedQuotes(inputItems = []) {
       slowestBatchMs,
       errors: errors.slice(0, 5)
     }
+  }
+}
+
+function buildDefaultEnrichmentPipelineSummary() {
+  return {
+    attempted: false,
+    requestedItems: 0,
+    enrichedItems: 0,
+    durationMs: 0,
+    timingMs: {
+      quoteFetchingMs: 0,
+      dbWritesMs: 0
+    },
+    selectedLayers: buildLayerCounter(0),
+    selectedLayersByCategory: buildLayerByCategoryCounter(0),
+    quoteRefresh: {
+      batchSize: SCAN_BATCH_SIZE,
+      timeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH,
+      maxConcurrentMarketRequests: MAX_CONCURRENT_MARKET_REQUESTS,
+      requestedItems: 0,
+      totalBatches: 0,
+      completedBatches: 0,
+      failedBatches: 0,
+      timedOutBatches: 0,
+      itemsCompared: 0,
+      availableQuotes: 0,
+      averageBatchMs: 0,
+      slowestBatchMs: 0,
+      errors: []
+    },
+    computeFromSavedQuotes: {
+      batchSize: SCAN_BATCH_SIZE,
+      timeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH,
+      maxConcurrentMarketRequests: MAX_CONCURRENT_MARKET_REQUESTS,
+      requestedItems: 0,
+      totalBatches: 0,
+      completedBatches: 0,
+      failedBatches: 0,
+      timedOutBatches: 0,
+      itemsCompared: 0,
+      availableQuotes: 0,
+      averageBatchMs: 0,
+      slowestBatchMs: 0,
+      errors: []
+    },
+    quoteSnapshot: {
+      rowsPrepared: 0,
+      rowsInserted: 0,
+      persisted: true
+    }
+  }
+}
+
+async function runEnrichmentPipeline(seeds = [], options = {}) {
+  const selectedSeeds = Array.isArray(seeds) ? seeds : []
+  if (!selectedSeeds.length) {
+    return buildDefaultEnrichmentPipelineSummary()
+  }
+
+  const pipelineStartedAt = Date.now()
+  const comparisonInputItems = selectedSeeds.map((row) => buildInputItemForComparison(row))
+  const inputByName = toByNameMap(
+    selectedSeeds.map((row) => ({
+      ...row,
+      marketHashName: normalizeMarketHashName(row?.marketHashName)
+    })),
+    "marketHashName"
+  )
+  const quoteFetchingStartedAt = Date.now()
+  const quoteRefresh = await refreshQuotesInBatches(comparisonInputItems, {
+    forceRefresh: Boolean(options.forceRefresh)
+  })
+  const compareFromSaved = await compareFromSavedQuotes(comparisonInputItems)
+  const quoteFetchingMs = Date.now() - quoteFetchingStartedAt
+  const dbWritesStartedAt = Date.now()
+  const quoteSnapshot = await persistQuoteSnapshot(compareFromSaved.items, inputByName)
+  const dbWritesMs = Date.now() - dbWritesStartedAt
+  const layerDiagnostics = buildLayerDiagnostics(selectedSeeds)
+
+  return {
+    attempted: true,
+    requestedItems: selectedSeeds.length,
+    enrichedItems: Number(compareFromSaved?.diagnostics?.itemsCompared || 0),
+    durationMs: Date.now() - pipelineStartedAt,
+    timingMs: {
+      quoteFetchingMs,
+      dbWritesMs
+    },
+    selectedLayers: layerDiagnostics.layers,
+    selectedLayersByCategory: layerDiagnostics.layersByCategory,
+    quoteRefresh,
+    computeFromSavedQuotes: compareFromSaved?.diagnostics || {},
+    quoteSnapshot
   }
 }
 
@@ -4272,7 +5026,26 @@ async function runScanInternal(options = {}) {
   const scannerInputs = await loadScannerInputs(discardStats, rejectedByItem)
   stageDurationsMs.inputHydrationMs = Date.now() - inputHydrationStartedAt
   const universeSeeds = Array.isArray(scannerInputs?.seeds) ? scannerInputs.seeds : []
+  const enrichmentSeeds = Array.isArray(scannerInputs?.enrichmentSeeds)
+    ? scannerInputs.enrichmentSeeds
+    : []
+  const allLayeredSeeds = Array.isArray(scannerInputs?.allSeeds) ? scannerInputs.allSeeds : universeSeeds
   const snapshotWarmupSummary = scannerInputs?.snapshotWarmup || toSnapshotWarmupSummary()
+  const layeredScanningSummary =
+    scannerInputs?.layeredScanning && typeof scannerInputs.layeredScanning === "object"
+      ? scannerInputs.layeredScanning
+      : {
+          totalRankedSeeds: universeSeeds.length,
+          coreUniverseSize: 0,
+          opportunityTarget: OPPORTUNITY_SCAN_TARGET,
+          enrichmentTarget: ENRICHMENT_ONLY_TARGET,
+          selectedForOpportunity: universeSeeds.length,
+          selectedForEnrichment: enrichmentSeeds.length,
+          allSeeds: buildLayerDiagnostics(universeSeeds),
+          opportunity: buildLayerDiagnostics(universeSeeds),
+          enrichment: buildLayerDiagnostics(enrichmentSeeds)
+        }
+  let enrichmentPipelineSummary = buildDefaultEnrichmentPipelineSummary()
   if (!universeSeeds.length) {
     const diagnosticsAggregationStartedAt = Date.now()
     const generatedTs = Date.now()
@@ -4293,7 +5066,7 @@ async function runScanInternal(options = {}) {
         totalDetected: 0,
         universeSize: 0,
         universeTarget: UNIVERSE_TARGET_SIZE,
-        candidateItems: 0,
+        candidateItems: allLayeredSeeds.length,
         discardedReasons,
         discardedReasonsByCategory,
         rejectedByCategory: { ...emptyByCategory },
@@ -4306,10 +5079,31 @@ async function runScanInternal(options = {}) {
         riskyProfileDiagnostics: buildRiskyProfileDiagnostics(),
         snapshotWarmup: snapshotWarmupSummary,
         imageEnrichment: imageEnrichmentSummary,
+        layeredScanning: layeredScanningSummary,
+        enrichmentPipeline: enrichmentPipelineSummary,
+        maturity: {
+          funnel: layeredScanningSummary?.allSeeds?.maturityFunnel || buildMaturityCounter(0),
+          byCategory:
+            layeredScanningSummary?.allSeeds?.maturityByCategory || buildMaturityByCategoryCounter(0),
+          layers: layeredScanningSummary?.allSeeds?.layers || buildLayerCounter(0),
+          layersByCategory:
+            layeredScanningSummary?.allSeeds?.layersByCategory || buildLayerByCategoryCounter(0),
+          coreUniverseSize: Number(layeredScanningSummary?.coreUniverseSize || 0),
+          selectedForOpportunity: Number(layeredScanningSummary?.selectedForOpportunity || 0),
+          selectedForEnrichment: Number(layeredScanningSummary?.selectedForEnrichment || 0),
+          promotedToEligible: Number(sourceCatalogDiagnostics?.sourceCatalog?.promotedToEligible || 0),
+          demotedToEnriching: Number(sourceCatalogDiagnostics?.sourceCatalog?.demotedToEnriching || 0),
+          promotedToEligibleByCategory:
+            sourceCatalogDiagnostics?.sourceCatalog?.promotedToEligibleByCategory ||
+            buildScannerAuditCategoryCounter(0),
+          demotedToEnrichingByCategory:
+            sourceCatalogDiagnostics?.sourceCatalog?.demotedToEnrichingByCategory ||
+            buildScannerAuditCategoryCounter(0)
+        },
         sourceCatalog: sourceCatalogDiagnostics,
         scanProgress: buildScanProgressStats({
           universeTarget: UNIVERSE_TARGET_SIZE,
-          candidateItems: 0,
+          candidateItems: allLayeredSeeds.length,
           scannedItems: 0
         }),
         highConfidence: 0,
@@ -4318,6 +5112,7 @@ async function runScanInternal(options = {}) {
       opportunities: [],
       pipeline: {
         sequence: [
+          "enrichment_pipeline",
           "fetch_quotes",
           "save_market_prices",
           "compute_from_saved_quotes",
@@ -4334,7 +5129,13 @@ async function runScanInternal(options = {}) {
           scanTimeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH,
           imageEnrichBatchSize: IMAGE_ENRICH_BATCH_SIZE,
           imageEnrichConcurrency: IMAGE_ENRICH_CONCURRENCY,
-          imageEnrichTimeoutMs: IMAGE_ENRICH_TIMEOUT_MS
+          imageEnrichTimeoutMs: IMAGE_ENRICH_TIMEOUT_MS,
+          highYieldCoreTarget: HIGH_YIELD_CORE_TARGET,
+          hotLayerScanTarget: HOT_LAYER_SCAN_TARGET,
+          warmLayerScanTarget: WARM_LAYER_SCAN_TARGET,
+          coldLayerScanTarget: COLD_LAYER_SCAN_TARGET,
+          opportunityScanTarget: OPPORTUNITY_SCAN_TARGET,
+          enrichmentOnlyTarget: ENRICHMENT_ONLY_TARGET
         },
         quoteRefresh: {
           batchSize: SCAN_BATCH_SIZE,
@@ -4373,6 +5174,8 @@ async function runScanInternal(options = {}) {
         },
         snapshotWarmup: snapshotWarmupSummary,
         imageEnrichment: imageEnrichmentSummary,
+        layeredScanning: layeredScanningSummary,
+        enrichmentPipeline: enrichmentPipelineSummary,
         sourceCatalog: sourceCatalogDiagnostics
       }
     }
@@ -4415,12 +5218,25 @@ async function runScanInternal(options = {}) {
   )
   stageDurationsMs.normalizationMs += Date.now() - normalizationStartedAt
 
+  if (enrichmentSeeds.length) {
+    const enrichmentPipelineStartedAt = Date.now()
+    enrichmentPipelineSummary = await runEnrichmentPipeline(enrichmentSeeds, {
+      forceRefresh: false
+    })
+    const enrichmentPipelineDurationMs = Math.max(Date.now() - enrichmentPipelineStartedAt, 0)
+    stageDurationsMs.quoteFetchingMs += Math.max(
+      Number(enrichmentPipelineSummary?.timingMs?.quoteFetchingMs || 0),
+      Math.max(enrichmentPipelineDurationMs - Number(enrichmentPipelineSummary?.timingMs?.dbWritesMs || 0), 0)
+    )
+    stageDurationsMs.dbWritesMs += Number(enrichmentPipelineSummary?.timingMs?.dbWritesMs || 0)
+  }
+
   const quoteFetchingStartedAt = Date.now()
   const quoteRefreshSummary = await refreshQuotesInBatches(comparisonInputItems, {
     forceRefresh
   })
   const comparisonFromSaved = await compareFromSavedQuotes(comparisonInputItems)
-  stageDurationsMs.quoteFetchingMs = Date.now() - quoteFetchingStartedAt
+  stageDurationsMs.quoteFetchingMs += Date.now() - quoteFetchingStartedAt
 
   const normalizationEnrichmentStartedAt = Date.now()
   imageEnrichmentSummary = await hydrateUniverseImages(inputByName, comparisonFromSaved.items)
@@ -4593,14 +5409,14 @@ async function runScanInternal(options = {}) {
     }))
   )
   const candidateUniverseByCategory = countRowsByCategory(
-    universeSeeds.map((row) => ({
+    allLayeredSeeds.map((row) => ({
       itemCategory: row?.itemCategory,
       itemName: row?.marketHashName
     }))
   )
   const effectiveSourceCatalogDiagnostics = deriveSourceCatalogDiagnosticsFromScan({
     sourceCatalogDiagnostics,
-    candidateItems: universeSeeds.length,
+    candidateItems: allLayeredSeeds.length,
     scannedItems: selectedUniverse.length,
     candidateByCategory: candidateUniverseByCategory,
     selectedByCategory: selectedUniverseByCategory,
@@ -4614,7 +5430,7 @@ async function runScanInternal(options = {}) {
   const knifeGloveRejections = toKnifeGloveRejectionSummary(discardedReasonsByCategory)
   const scanProgress = buildScanProgressStats({
     universeTarget: UNIVERSE_TARGET_SIZE,
-    candidateItems: universeSeeds.length,
+    candidateItems: allLayeredSeeds.length,
     scannedItems: selectedUniverse.length,
     quoteRefresh: quoteRefreshSummary,
     computeFromSavedQuotes: comparisonFromSaved?.diagnostics || {}
@@ -4633,7 +5449,7 @@ async function runScanInternal(options = {}) {
       totalDetected: sortedRows.length,
       universeSize: selectedUniverse.length,
       universeTarget: UNIVERSE_TARGET_SIZE,
-      candidateItems: universeSeeds.length,
+      candidateItems: allLayeredSeeds.length,
       discardedReasons,
       discardedReasonsByCategory,
       rejectedByCategory,
@@ -4646,6 +5462,31 @@ async function runScanInternal(options = {}) {
       riskyProfileDiagnostics,
       snapshotWarmup: snapshotWarmupSummary,
       imageEnrichment: imageEnrichmentSummary,
+      layeredScanning: layeredScanningSummary,
+      enrichmentPipeline: enrichmentPipelineSummary,
+      maturity: {
+        funnel: layeredScanningSummary?.allSeeds?.maturityFunnel || buildMaturityCounter(0),
+        byCategory:
+          layeredScanningSummary?.allSeeds?.maturityByCategory || buildMaturityByCategoryCounter(0),
+        layers: layeredScanningSummary?.allSeeds?.layers || buildLayerCounter(0),
+        layersByCategory:
+          layeredScanningSummary?.allSeeds?.layersByCategory || buildLayerByCategoryCounter(0),
+        coreUniverseSize: Number(layeredScanningSummary?.coreUniverseSize || 0),
+        selectedForOpportunity: Number(layeredScanningSummary?.selectedForOpportunity || 0),
+        selectedForEnrichment: Number(layeredScanningSummary?.selectedForEnrichment || 0),
+        promotedToEligible: Number(
+          effectiveSourceCatalogDiagnostics?.sourceCatalog?.promotedToEligible || 0
+        ),
+        demotedToEnriching: Number(
+          effectiveSourceCatalogDiagnostics?.sourceCatalog?.demotedToEnriching || 0
+        ),
+        promotedToEligibleByCategory:
+          effectiveSourceCatalogDiagnostics?.sourceCatalog?.promotedToEligibleByCategory ||
+          buildScannerAuditCategoryCounter(0),
+        demotedToEnrichingByCategory:
+          effectiveSourceCatalogDiagnostics?.sourceCatalog?.demotedToEnrichingByCategory ||
+          buildScannerAuditCategoryCounter(0)
+      },
       sourceCatalog: effectiveSourceCatalogDiagnostics,
       scanProgress,
       highConfidence: highConfidenceCount,
@@ -4654,6 +5495,7 @@ async function runScanInternal(options = {}) {
     opportunities: sortedRows,
     pipeline: {
       sequence: [
+        "enrichment_pipeline",
         "fetch_quotes",
         "save_market_prices",
         "compute_from_saved_quotes",
@@ -4670,13 +5512,21 @@ async function runScanInternal(options = {}) {
         scanTimeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH,
         imageEnrichBatchSize: IMAGE_ENRICH_BATCH_SIZE,
         imageEnrichConcurrency: IMAGE_ENRICH_CONCURRENCY,
-        imageEnrichTimeoutMs: IMAGE_ENRICH_TIMEOUT_MS
+        imageEnrichTimeoutMs: IMAGE_ENRICH_TIMEOUT_MS,
+        highYieldCoreTarget: HIGH_YIELD_CORE_TARGET,
+        hotLayerScanTarget: HOT_LAYER_SCAN_TARGET,
+        warmLayerScanTarget: WARM_LAYER_SCAN_TARGET,
+        coldLayerScanTarget: COLD_LAYER_SCAN_TARGET,
+        opportunityScanTarget: OPPORTUNITY_SCAN_TARGET,
+        enrichmentOnlyTarget: ENRICHMENT_ONLY_TARGET
       },
       quoteRefresh: quoteRefreshSummary,
       computeFromSavedQuotes: comparisonFromSaved?.diagnostics || null,
       quoteSnapshot: quoteSnapshotSummary,
       snapshotWarmup: snapshotWarmupSummary,
       imageEnrichment: imageEnrichmentSummary,
+      layeredScanning: layeredScanningSummary,
+      enrichmentPipeline: enrichmentPipelineSummary,
       sourceCatalog: effectiveSourceCatalogDiagnostics
     }
   }
@@ -4747,6 +5597,11 @@ function toScanDiagnosticsSummary(scanPayload = {}, persistSummary = {}, trigger
       scanPayload?.summary?.snapshotWarmup || scanPayload?.pipeline?.snapshotWarmup || {},
     imageEnrichment:
       scanPayload?.summary?.imageEnrichment || scanPayload?.pipeline?.imageEnrichment || {},
+    layeredScanning:
+      scanPayload?.summary?.layeredScanning || scanPayload?.pipeline?.layeredScanning || {},
+    enrichmentPipeline:
+      scanPayload?.summary?.enrichmentPipeline || scanPayload?.pipeline?.enrichmentPipeline || {},
+    maturity: scanPayload?.summary?.maturity || {},
     sourceCatalog:
       scanPayload?.summary?.sourceCatalog || scanPayload?.pipeline?.sourceCatalog || {},
     scanProgress: scanPayload?.summary?.scanProgress || {},
@@ -5323,6 +6178,11 @@ exports.getFeed = async (options = {}) => {
       diagnosticsSummary?.snapshotWarmup || diagnosticsSummary?.pipeline?.snapshotWarmup || {},
     imageEnrichment:
       diagnosticsSummary?.imageEnrichment || diagnosticsSummary?.pipeline?.imageEnrichment || {},
+    layeredScanning:
+      diagnosticsSummary?.layeredScanning || diagnosticsSummary?.pipeline?.layeredScanning || {},
+    enrichmentPipeline:
+      diagnosticsSummary?.enrichmentPipeline || diagnosticsSummary?.pipeline?.enrichmentPipeline || {},
+    maturity: diagnosticsSummary?.maturity || {},
     sourceCatalog:
       diagnosticsSummary?.sourceCatalog || diagnosticsSummary?.pipeline?.sourceCatalog || {},
     scanProgress: diagnosticsSummary?.scanProgress || {},
@@ -5472,6 +6332,10 @@ exports.__testables = {
   countAvailableMarkets,
   isLowValueJunkName,
   computeStrictCoverageThreshold,
+  resolveMaturityStateForSeed,
+  resolveScanLayerForMaturity,
+  computeLayerPriority,
+  selectSeedsForLayeredScanning,
   DEFAULT_UNIVERSE_LIMIT,
   SCAN_BATCH_SIZE,
   MAX_CONCURRENT_MARKET_REQUESTS,

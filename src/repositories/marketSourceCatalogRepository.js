@@ -5,6 +5,7 @@ const TABLE = "market_source_catalog"
 const INSERT_BATCH_SIZE = 200
 const MAX_LIMIT = 12000
 const SELECT_PAGE_SIZE = 1000
+const QUERY_BATCH_SIZE = 120
 const CATEGORY_SET = new Set(["weapon_skin", "case", "sticker_capsule", "knife", "glove"])
 const CANDIDATE_STATUS_SET = new Set(["candidate", "enriching", "eligible", "rejected"])
 const CANDIDATE_STATE_COLUMNS = Object.freeze([
@@ -78,6 +79,16 @@ function normalizeCategories(values = []) {
       (Array.isArray(values) ? values : [])
         .map((value) => normalizeText(value).toLowerCase())
         .filter((value) => CATEGORY_SET.has(value))
+    )
+  )
+}
+
+function normalizeMarketHashNames(values = []) {
+  return Array.from(
+    new Set(
+      (Array.isArray(values) ? values : [])
+        .map((value) => normalizeText(value))
+        .filter(Boolean)
     )
   )
 }
@@ -441,6 +452,65 @@ exports.listCandidatePool = async (options = {}) => {
     limit,
     fallbackMessage: "market_source_catalog_list_candidate_pool_failed"
   })
+}
+
+exports.listByMarketHashNames = async (marketHashNames = [], options = {}) => {
+  const names = normalizeMarketHashNames(marketHashNames)
+  if (!names.length) return []
+
+  const categories = normalizeCategories(options.categories)
+  const activeOnly = options.activeOnly !== false
+  const tradableOnly = options.tradableOnly !== false
+  const rows = []
+
+  for (let index = 0; index < names.length; index += QUERY_BATCH_SIZE) {
+    const chunk = names.slice(index, index + QUERY_BATCH_SIZE)
+    const chunkRows = await selectWithCompatibilityFallback({
+      buildPrimaryQuery: () => {
+        let query = supabaseAdmin
+          .from(TABLE)
+          .select(
+            "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,invalid_reason,source_tag,is_active,last_enriched_at"
+          )
+          .in("market_hash_name", chunk)
+
+        if (activeOnly) {
+          query = query.eq("is_active", true)
+        }
+        if (tradableOnly) {
+          query = query.eq("tradable", true)
+        }
+        if (categories.length) {
+          query = query.in("category", categories)
+        }
+        return query.order("liquidity_rank", { ascending: false, nullsFirst: false })
+      },
+      buildFallbackQuery: () => {
+        let query = supabaseAdmin
+          .from(TABLE)
+          .select(
+            "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,invalid_reason,source_tag,is_active,last_enriched_at"
+          )
+          .in("market_hash_name", chunk)
+
+        if (activeOnly) {
+          query = query.eq("is_active", true)
+        }
+        if (tradableOnly) {
+          query = query.eq("tradable", true)
+        }
+        if (categories.length) {
+          query = query.in("category", categories)
+        }
+        return query.order("liquidity_rank", { ascending: false, nullsFirst: false })
+      },
+      limit: chunk.length,
+      fallbackMessage: "market_source_catalog_list_by_names_failed"
+    })
+    rows.push(...chunkRows)
+  }
+
+  return rows
 }
 
 exports.__testables = {
