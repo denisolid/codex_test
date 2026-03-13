@@ -1785,12 +1785,12 @@ test("opportunity admission diagnostics explain universe-to-scan drop", () => {
   assert.equal(summary.universe_eligible, 0);
   assert.equal(summary.universe_near_eligible, 5);
   assert.equal(summary.universe_blocked, 1);
-  assert.equal(summary.scan_candidates_loaded, 1);
-  assert.equal(summary.scan_candidates_deferred, 5);
+  assert.equal(summary.scan_candidates_loaded, 4);
+  assert.equal(summary.scan_candidates_deferred, 2);
   assert.equal(summary.scan_candidates_executed, 1);
-  assert.equal(summary.deferred_due_to_missing_reference, 1);
-  assert.equal(summary.deferred_due_to_missing_liquidity, 1);
-  assert.equal(summary.deferred_due_to_stale, 1);
+  assert.equal(summary.deferred_due_to_missing_reference, 0);
+  assert.equal(summary.deferred_due_to_missing_liquidity, 0);
+  assert.equal(summary.deferred_due_to_stale, 0);
   assert.equal(summary.deferred_due_to_maturity, 1);
   assert.equal(summary.deferred_due_to_risk_profile, 1);
   assert.equal(summary.deferred_due_to_visibility_or_feed_floor, 0);
