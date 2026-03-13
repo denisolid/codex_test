@@ -1469,26 +1469,9 @@ function evaluateWeaponSkinSeedFilters(inputItem = {}) {
       veryLowPrice ||
       weakUtility)
 
-  const missingLiquidityEvidenceCount = countTrueValues([
-    supportSignals.hasCoverage,
-    supportSignals.hasNonTrivialPrice,
-    supportSignals.hasNameSignal,
-    supportSignals.hasUsefulVolume,
-    supportSignals.hasFreshData,
-    supportSignals.isUsefulCandidate
-  ])
-  const missingLiquidityWeakCount = countTrueValues([
-    !supportSignals.hasCoverage,
-    referencePrice == null || referencePrice < WEAPON_SKIN_FALLBACK_MIN_REFERENCE_PRICE_USD,
-    !supportSignals.hasFreshData,
-    weakVolume && !supportSignals.isUsefulCandidate,
-    supportSignals.lowValuePattern
-  ])
   const hardRejectMissingLiquidity =
-    hasMissingLiquidityContext &&
-    !canForwardAsUsefulSkin &&
-    (missingLiquidityWeakCount >= 4 || (missingLiquidityWeakCount >= 3 && missingLiquidityEvidenceCount <= 1))
-  const penaltyMissingLiquidity = hasMissingLiquidityContext && !hardRejectMissingLiquidity
+    false
+  const penaltyMissingLiquidity = hasMissingLiquidityContext
 
   return {
     hardRejectLowValue,
@@ -3249,11 +3232,8 @@ function evaluateWeaponSkinRiskContext({
       variantSpeculativeAllowed,
     allowLowConfidencePath:
       hasMissingLiquidityFallbackPath || borderlineLowValueAllowedForward || variantSpeculativeAllowed,
-    missingLiquidityRejected:
-      volume7d == null &&
-      isRiskyProfile &&
-      !hasMissingLiquidityFallbackPath,
-    missingLiquidityPenaltyApplied: volume7d == null && hasMissingLiquidityFallbackPath
+    missingLiquidityRejected: false,
+    missingLiquidityPenaltyApplied: volume7d == null && isRiskyProfile
   }
 }
 
