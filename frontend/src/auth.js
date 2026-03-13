@@ -1,5 +1,4 @@
 import "./style.css";
-import { injectSpeedInsights } from "@vercel/speed-insights";
 import { hasSupabaseConfig, supabase } from "./supabaseClient";
 import { API_URL } from "./config";
 import {
@@ -7,9 +6,10 @@ import {
   setAuthToken,
   withAuthHeaders
 } from "./authToken";
+import { initObservability } from "./observability";
 
 const app = document.querySelector("#app");
-injectSpeedInsights();
+initObservability();
 
 const page = window.location.pathname.endsWith("register.html")
   ? "register"

@@ -24,14 +24,21 @@ const {
   arbitrageFeedRetentionHours,
   arbitrageFeedActiveLimit,
   arbitrageDuplicateWindowHours,
+  arbitrageHotOpportunityScanTarget,
+  arbitrageHotMaturePoolLimit,
   arbitrageMinProfitChangePct,
   arbitrageMinScoreChange,
+  arbitrageMinSpreadChangePct,
+  arbitrageMinLiquidityChangePct,
+  arbitrageMinConfidenceChangeLevels,
+  arbitrageSignalHistoryLookbackHours,
   arbitrageInsertDuplicates
 } = require("../config/env")
 const marketUniverseTop100 = require("../config/marketUniverseTop100.json")
 const skinRepo = require("../repositories/skinRepository")
 const marketSnapshotRepo = require("../repositories/marketSnapshotRepository")
 const marketUniverseRepo = require("../repositories/marketUniverseRepository")
+const marketSourceCatalogRepo = require("../repositories/marketSourceCatalogRepository")
 const marketQuoteRepo = require("../repositories/marketQuoteRepository")
 const arbitrageFeedRepo = require("../repositories/arbitrageFeedRepository")
 const scannerRunRepo = require("../repositories/scannerRunRepository")
@@ -113,8 +120,19 @@ const FEED_METADATA_ENRICH_LIMIT = 60
 const FEED_RETENTION_HOURS = Math.max(Number(arbitrageFeedRetentionHours || 24), 1)
 const FEED_ACTIVE_LIMIT = Math.max(Number(arbitrageFeedActiveLimit || 500), 50)
 const DUPLICATE_WINDOW_HOURS = Math.max(Number(arbitrageDuplicateWindowHours || 4), 1)
+const HOT_MATURE_POOL_LIMIT = Math.max(Number(arbitrageHotMaturePoolLimit || 400), 120)
 const MIN_PROFIT_CHANGE_PCT = Math.max(Number(arbitrageMinProfitChangePct || 10), 0)
 const MIN_SCORE_CHANGE = Math.max(Number(arbitrageMinScoreChange || 8), 0)
+const MIN_SPREAD_CHANGE_PCT = Math.max(Number(arbitrageMinSpreadChangePct || 3), 0)
+const MIN_LIQUIDITY_CHANGE_PCT = Math.max(Number(arbitrageMinLiquidityChangePct || 20), 0)
+const MIN_CONFIDENCE_CHANGE_LEVELS = Math.max(
+  Math.round(Number(arbitrageMinConfidenceChangeLevels || 1)),
+  0
+)
+const SIGNAL_HISTORY_LOOKBACK_HOURS = Math.max(
+  Number(arbitrageSignalHistoryLookbackHours || 72),
+  1
+)
 const INSERT_DUPLICATES = Boolean(arbitrageInsertDuplicates)
 const MANUAL_REFRESH_TRACKER_MAX = 4000
 const manualRefreshTracker = new Map()
@@ -271,8 +289,22 @@ const OPPORTUNITY_BATCH_SIZE = Math.max(
   ),
   100
 )
+const HOT_OPPORTUNITY_SCAN_TARGET = Math.max(
+  Math.min(
+    Number(arbitrageHotOpportunityScanTarget || 96),
+    OPPORTUNITY_BATCH_SIZE,
+    PRE_COMPARE_UNIVERSE_LIMIT
+  ),
+  20
+)
 const OPPORTUNITY_NEAR_ELIGIBLE_LIMIT = Math.max(
-  Math.min(Number(process.env.ARBITRAGE_OPPORTUNITY_NEAR_ELIGIBLE_LIMIT || 40), 120),
+  Math.min(
+    Number(
+      process.env.ARBITRAGE_OPPORTUNITY_NEAR_ELIGIBLE_LIMIT ||
+        Math.max(Math.round(HOT_OPPORTUNITY_SCAN_TARGET * 0.3), 12)
+    ),
+    HOT_OPPORTUNITY_SCAN_TARGET
+  ),
   0
 )
 const UNIVERSE_DB_LIMIT = Math.max(
@@ -856,11 +888,22 @@ function sourceRank(value) {
   const source = String(value || "")
     .trim()
     .toLowerCase()
+  if (source === "catalog_eligible") return 5
+  if (source === "catalog_near_eligible") return 4
   if (source === "curated_db") return 4
+  if (source === "catalog_enriching") return 3
   if (source === "dynamic_snapshot") return 3
   if (source === "fallback_curated") return 2
   if (source === "fallback_mvp") return 2
   return 1
+}
+
+function resolveCatalogSeedSource(candidateStatus = CATALOG_CANDIDATE_STATUS.CANDIDATE) {
+  const normalizedStatus = normalizeCatalogCandidateStatus(candidateStatus)
+  if (normalizedStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE) return "catalog_eligible"
+  if (normalizedStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE) return "catalog_near_eligible"
+  if (normalizedStatus === CATALOG_CANDIDATE_STATUS.ENRICHING) return "catalog_enriching"
+  return "dynamic_snapshot"
 }
 
 function computeUniverseSeedRank(seed = {}) {
@@ -1451,11 +1494,26 @@ function buildInputItemFromSkinAndSnapshot({
   )
   if (!normalizedName) return null
 
-  const referencePrice = toPositiveOrNull(
-    toFiniteOrNull(snapshot?.average_7d_price) ?? toFiniteOrNull(snapshot?.lowest_listing_price)
+  const catalogReferencePrice = toPositiveOrNull(
+    toFiniteOrNull(catalogRow?.reference_price ?? catalogRow?.referencePrice)
   )
-  const volume7d = toPositiveOrNull(resolveVolume7d(snapshot || {}))
+  const catalogVolume7d = toPositiveOrNull(toFiniteOrNull(catalogRow?.volume_7d ?? catalogRow?.volume7d))
+  const referencePrice = toPositiveOrNull(
+    toFiniteOrNull(snapshot?.average_7d_price) ??
+      toFiniteOrNull(snapshot?.lowest_listing_price) ??
+      catalogReferencePrice
+  )
+  const volume7d = toPositiveOrNull(resolveVolume7d(snapshot || {}) ?? catalogVolume7d)
+  const snapshotCapturedAt =
+    snapshot?.captured_at || catalogRow?.snapshot_captured_at || catalogRow?.snapshotCapturedAt || null
+  const snapshotStale =
+    catalogRow?.snapshot_stale == null
+      ? snapshot
+        ? isSnapshotStale(snapshot)
+        : !snapshotCapturedAt
+      : Boolean(catalogRow.snapshot_stale)
   const hasUsableSnapshotLiquidity = referencePrice != null || volume7d != null
+  const hasSnapshotData = Boolean(snapshotCapturedAt) && hasUsableSnapshotLiquidity
   const liquidityScore =
     snapshot && hasUsableSnapshotLiquidity ? computeLiquidityScoreFromSnapshot(snapshot) : null
   const sevenDayChangePercent =
@@ -1477,7 +1535,7 @@ function buildInputItemFromSkinAndSnapshot({
   )
   const missingSnapshot =
     catalogRow?.missing_snapshot == null
-      ? !(Boolean(snapshot) && hasUsableSnapshotLiquidity) || (snapshot ? isSnapshotStale(snapshot) : true)
+      ? !hasSnapshotData || snapshotStale
       : Boolean(catalogRow.missing_snapshot)
   const missingReference =
     catalogRow?.missing_reference == null
@@ -1523,9 +1581,9 @@ function buildInputItemFromSkinAndSnapshot({
     liquidityScore,
     sevenDayChangePercent,
     referencePrice,
-    hasSnapshotData: Boolean(snapshot) && hasUsableSnapshotLiquidity,
-    snapshotCapturedAt: snapshot?.captured_at || null,
-    snapshotStale: snapshot ? isSnapshotStale(snapshot) : false,
+    hasSnapshotData,
+    snapshotCapturedAt,
+    snapshotStale,
     universeSource: String(universeSource || "fallback_curated").trim() || "fallback_curated",
     liquidityRank: toFiniteOrNull(liquidityRank),
     candidateStatus,
@@ -1880,6 +1938,7 @@ function computeLayerPriority(seed = {}) {
   const maturityScore = clampMaturityScore(seed?.maturityScore)
   const liquidityRank = toFiniteOrNull(seed?.liquidityRank) ?? 0
   const enrichmentPriority = toFiniteOrNull(seed?.enrichmentPriority) ?? 0
+  const marketCoverageCount = Math.max(Number(seed?.marketCoverageCount || 0), 0)
   const categoryBoost =
     category === ITEM_CATEGORIES.CASE
       ? 6
@@ -1887,15 +1946,34 @@ function computeLayerPriority(seed = {}) {
         ? 8
         : 0
   const sourceBoost =
-    seed?.universeSource === "curated_db"
-      ? 5
-      : seed?.universeSource === "fallback_curated"
-        ? 2
-        : 0
+    seed?.universeSource === "catalog_eligible"
+      ? 8
+      : seed?.universeSource === "catalog_near_eligible"
+        ? 6
+        : seed?.universeSource === "curated_db"
+          ? 5
+          : seed?.universeSource === "catalog_enriching"
+            ? 3
+            : seed?.universeSource === "fallback_curated"
+              ? 2
+              : 0
   const volumeBoost = Math.min((toFiniteOrNull(seed?.marketVolume7d) ?? 0) / 20, 10)
   const referenceBoost = Math.min((toFiniteOrNull(seed?.referencePrice) ?? 0) / 4, 10)
+  const coverageBoost = Math.min(marketCoverageCount * 4, 16)
+  const signalHistoryBoost = Math.min(
+    toFiniteOrNull(seed?.signalHistoryScore ?? seed?.signalHistory?.score) ?? 0,
+    18
+  )
   return round2(
-    maturityScore + liquidityRank * 0.5 + enrichmentPriority * 0.25 + categoryBoost + sourceBoost + volumeBoost + referenceBoost
+    maturityScore +
+      liquidityRank * 0.5 +
+      enrichmentPriority * 0.25 +
+      categoryBoost +
+      sourceBoost +
+      volumeBoost +
+      referenceBoost +
+      coverageBoost +
+      signalHistoryBoost
   )
 }
 
@@ -1952,24 +2030,58 @@ function rankLayerRows(rows = []) {
   )
 }
 
-function selectSeedsForLayeredScanning(seeds = []) {
+function selectSeedsForLayeredScanning(seeds = [], options = {}) {
   const ranked = rankLayerRows(seeds)
   const byLayer = {
     [SCAN_LAYERS.HOT]: ranked.filter((row) => row.scanLayer === SCAN_LAYERS.HOT),
     [SCAN_LAYERS.WARM]: ranked.filter((row) => row.scanLayer === SCAN_LAYERS.WARM),
     [SCAN_LAYERS.COLD]: ranked.filter((row) => row.scanLayer === SCAN_LAYERS.COLD)
   }
-
-  const coreSeeds = byLayer[SCAN_LAYERS.HOT].slice(0, HIGH_YIELD_CORE_TARGET)
+  const opportunityTarget = Math.max(
+    Math.min(
+      Number(options?.opportunityTarget || HOT_OPPORTUNITY_SCAN_TARGET),
+      PRE_COMPARE_UNIVERSE_LIMIT
+    ),
+    1
+  )
+  const enrichmentTarget = Math.max(
+    Math.min(
+      Number(options?.enrichmentTarget || ENRICHMENT_ONLY_TARGET),
+      PRE_COMPARE_UNIVERSE_LIMIT
+    ),
+    0
+  )
+  const nearEligibleTarget = Math.max(
+    Math.min(
+      Number(options?.nearEligibleTarget || OPPORTUNITY_NEAR_ELIGIBLE_LIMIT),
+      opportunityTarget
+    ),
+    0
+  )
+  const hotTarget = Math.max(
+    Math.min(
+      Number(options?.hotTarget || Math.max(opportunityTarget - nearEligibleTarget, 0)),
+      opportunityTarget
+    ),
+    0
+  )
+  const coreSeeds = byLayer[SCAN_LAYERS.HOT].slice(0, Math.min(HIGH_YIELD_CORE_TARGET, hotTarget))
   const selectedNames = new Set(coreSeeds.map((row) => normalizeMarketHashName(row?.marketHashName)))
   const opportunitySeeds = [...coreSeeds]
+  const nearEligibleWarmSeeds = byLayer[SCAN_LAYERS.WARM].filter(
+    (row) => normalizeMaturityState(row?.maturityState) === MATURITY_STATES.NEAR_ELIGIBLE
+  )
+  const enrichingWarmSeeds = byLayer[SCAN_LAYERS.WARM].filter(
+    (row) => normalizeMaturityState(row?.maturityState) !== MATURITY_STATES.NEAR_ELIGIBLE
+  )
+  const hotUniverse = rankLayerRows([...byLayer[SCAN_LAYERS.HOT], ...nearEligibleWarmSeeds])
 
   const addFromLayer = (rows = [], limit = 0) => {
     const maxItems = Math.max(Number(limit || 0), 0)
     if (!maxItems) return 0
     let added = 0
     for (const row of rows) {
-      if (added >= maxItems || opportunitySeeds.length >= OPPORTUNITY_SCAN_TARGET) break
+      if (added >= maxItems || opportunitySeeds.length >= opportunityTarget) break
       const key = normalizeMarketHashName(row?.marketHashName)
       if (!key || selectedNames.has(key)) continue
       selectedNames.add(key)
@@ -1980,25 +2092,27 @@ function selectSeedsForLayeredScanning(seeds = []) {
   }
 
   const existingCore = coreSeeds.length
-  addFromLayer(byLayer[SCAN_LAYERS.HOT], Math.max(HOT_LAYER_SCAN_TARGET - existingCore, 0))
-  addFromLayer(byLayer[SCAN_LAYERS.WARM], WARM_LAYER_SCAN_TARGET)
-  addFromLayer(byLayer[SCAN_LAYERS.COLD], COLD_LAYER_SCAN_TARGET)
+  addFromLayer(byLayer[SCAN_LAYERS.HOT], Math.max(hotTarget - existingCore, 0))
+  addFromLayer(nearEligibleWarmSeeds, nearEligibleTarget)
+  addFromLayer(enrichingWarmSeeds, Math.max(opportunityTarget - opportunitySeeds.length, 0))
 
   const fallbackOrder = [
     ...byLayer[SCAN_LAYERS.HOT],
-    ...byLayer[SCAN_LAYERS.WARM],
+    ...nearEligibleWarmSeeds,
+    ...enrichingWarmSeeds,
     ...byLayer[SCAN_LAYERS.COLD]
   ]
-  addFromLayer(fallbackOrder, Math.max(OPPORTUNITY_SCAN_TARGET - opportunitySeeds.length, 0))
+  addFromLayer(fallbackOrder, Math.max(opportunityTarget - opportunitySeeds.length, 0))
 
   const enrichmentSeeds = []
   const enrichmentSeen = new Set()
   const enrichmentCandidates = rankLayerRows([
-    ...byLayer[SCAN_LAYERS.WARM],
+    ...nearEligibleWarmSeeds,
+    ...enrichingWarmSeeds,
     ...byLayer[SCAN_LAYERS.COLD]
   ])
   for (const row of enrichmentCandidates) {
-    if (enrichmentSeeds.length >= ENRICHMENT_ONLY_TARGET) break
+    if (enrichmentSeeds.length >= enrichmentTarget) break
     const key = normalizeMarketHashName(row?.marketHashName)
     if (!key || selectedNames.has(key) || enrichmentSeen.has(key)) continue
     enrichmentSeen.add(key)
@@ -2017,14 +2131,263 @@ function selectSeedsForLayeredScanning(seeds = []) {
     diagnostics: {
       totalRankedSeeds: ranked.length,
       coreUniverseSize: coreSeeds.length,
-      opportunityTarget: OPPORTUNITY_SCAN_TARGET,
-      enrichmentTarget: ENRICHMENT_ONLY_TARGET,
+      opportunityTarget,
+      hotTarget,
+      nearEligibleTarget,
+      enrichmentTarget,
       selectedForOpportunity: opportunitySeeds.length,
       selectedForEnrichment: enrichmentSeeds.length,
+      hotUniverse: {
+        total: hotUniverse.length,
+        eligibleCount: byLayer[SCAN_LAYERS.HOT].length,
+        nearEligibleCount: nearEligibleWarmSeeds.length,
+        itemsByCategory: countRowsByCategory(
+          hotUniverse.map((row) => ({
+            itemCategory: row?.itemCategory,
+            itemName: row?.marketHashName
+          }))
+        ),
+        selectedByCategory: countRowsByCategory(
+          opportunitySeeds.map((row) => ({
+            itemCategory: row?.itemCategory,
+            itemName: row?.marketHashName
+          }))
+        )
+      },
       allSeeds: layerDiagnostics,
       opportunity: opportunityDiagnostics,
       enrichment: enrichmentDiagnostics
     }
+  }
+}
+
+function dedupeCatalogRowsByMarketHashName(rows = []) {
+  const seen = new Set()
+  const deduped = []
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const marketHashName = normalizeMarketHashName(
+      row?.market_hash_name || row?.marketHashName || row?.item_name || row?.itemName
+    )
+    if (!marketHashName || seen.has(marketHashName)) continue
+    seen.add(marketHashName)
+    deduped.push({
+      ...row,
+      market_hash_name: marketHashName
+    })
+  }
+  return deduped
+}
+
+function compareCatalogSeedRows(a = {}, b = {}) {
+  const candidatePriority = (row = {}) => {
+    const status = normalizeCatalogCandidateStatus(row?.candidate_status ?? row?.candidateStatus)
+    if (status === CATALOG_CANDIDATE_STATUS.ELIGIBLE) return 4
+    if (status === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE) return 3
+    if (status === CATALOG_CANDIDATE_STATUS.ENRICHING) return 2
+    return 1
+  }
+  return (
+    candidatePriority(b) - candidatePriority(a) ||
+    Number(toFiniteOrNull(b?.maturity_score ?? b?.maturityScore) ?? 0) -
+      Number(toFiniteOrNull(a?.maturity_score ?? a?.maturityScore) ?? 0) ||
+    Number(toFiniteOrNull(b?.enrichment_priority ?? b?.enrichmentPriority) ?? 0) -
+      Number(toFiniteOrNull(a?.enrichment_priority ?? a?.enrichmentPriority) ?? 0) ||
+    Number(toFiniteOrNull(b?.market_coverage_count ?? b?.marketCoverageCount) ?? 0) -
+      Number(toFiniteOrNull(a?.market_coverage_count ?? a?.marketCoverageCount) ?? 0) ||
+    Number(toFiniteOrNull(b?.liquidity_rank ?? b?.liquidityRank) ?? 0) -
+      Number(toFiniteOrNull(a?.liquidity_rank ?? a?.liquidityRank) ?? 0) ||
+    Number(toFiniteOrNull(b?.volume_7d ?? b?.volume7d) ?? 0) -
+      Number(toFiniteOrNull(a?.volume_7d ?? a?.volume7d) ?? 0) ||
+    Number(toFiniteOrNull(b?.reference_price ?? b?.referencePrice) ?? 0) -
+      Number(toFiniteOrNull(a?.reference_price ?? a?.referencePrice) ?? 0)
+  )
+}
+
+async function buildSeedsFromCatalogRows(rows = [], options = {}) {
+  const normalizedRows = dedupeCatalogRowsByMarketHashName(rows)
+    .sort(compareCatalogSeedRows)
+    .slice(0, Math.max(Number(options?.limit || rows.length || 0), 0))
+  if (!normalizedRows.length) {
+    return []
+  }
+
+  const marketNames = normalizedRows.map((row) => row.market_hash_name)
+  const skins = await ensureSkinsForMarketNames(marketNames)
+  const skinsByName = toByNameMap(
+    (Array.isArray(skins) ? skins : []).map((row) => ({
+      ...row,
+      market_hash_name: normalizeMarketHashName(row?.market_hash_name)
+    })),
+    "market_hash_name"
+  )
+  const skinIds = (Array.isArray(skins) ? skins : [])
+    .map((row) => Number(row?.id || 0))
+    .filter((value) => Number.isInteger(value) && value > 0)
+  const snapshotsBySkinId = skinIds.length
+    ? await marketSnapshotRepo.getLatestBySkinIds(skinIds)
+    : {}
+
+  return normalizedRows
+    .map((row) => {
+      const marketHashName = normalizeMarketHashName(row?.market_hash_name || row?.marketHashName)
+      const skin = skinsByName[marketHashName] || null
+      return buildInputItemFromSkinAndSnapshot({
+        skin,
+        snapshot:
+          Number(skin?.id || 0) > 0 ? snapshotsBySkinId[Number(skin.id)] || null : null,
+        marketHashName,
+        category: row?.category,
+        subcategory: row?.subcategory,
+        catalogRow: row,
+        universeSource: resolveCatalogSeedSource(row?.candidate_status ?? row?.candidateStatus),
+        liquidityRank: toFiniteOrNull(row?.liquidity_rank ?? row?.liquidityRank)
+      })
+    })
+    .filter(Boolean)
+}
+
+async function loadMatureCatalogUniverseSeeds(limit = HOT_MATURE_POOL_LIMIT) {
+  const safeLimit = Math.max(Math.round(Number(limit || HOT_MATURE_POOL_LIMIT)), 0)
+  if (!safeLimit) return []
+
+  const categories = [
+    ITEM_CATEGORIES.WEAPON_SKIN,
+    ITEM_CATEGORIES.CASE,
+    ITEM_CATEGORIES.STICKER_CAPSULE
+  ]
+  let eligibleRows = []
+  let candidateRows = []
+  try {
+    ;[eligibleRows, candidateRows] = await Promise.all([
+      marketSourceCatalogRepo.listScanEligible({
+        limit: safeLimit,
+        categories
+      }),
+      marketSourceCatalogRepo.listCandidatePool({
+        limit: safeLimit,
+        categories,
+        candidateStatuses: [
+          CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE,
+          CATALOG_CANDIDATE_STATUS.ENRICHING
+        ]
+      })
+    ])
+  } catch (err) {
+    console.error("[arbitrage-scanner] Failed to load mature source catalog seeds", err.message)
+    return []
+  }
+
+  return buildSeedsFromCatalogRows([...(eligibleRows || []), ...(candidateRows || [])], {
+    limit: safeLimit
+  })
+}
+
+function normalizeFeedEventType(value) {
+  const text = String(value || "")
+    .trim()
+    .toLowerCase()
+  if (
+    text === "new" ||
+    text === "updated" ||
+    text === "reactivated" ||
+    text === "duplicate"
+  ) {
+    return text
+  }
+  return ""
+}
+
+function computeSignalHistoryScore(signalHistory = {}) {
+  const totalEvents = Math.max(Number(signalHistory?.totalEvents || 0), 0)
+  const activeEvents = Math.max(Number(signalHistory?.activeEvents || 0), 0)
+  const updatedEvents = Math.max(Number(signalHistory?.updatedEvents || 0), 0)
+  const reactivatedEvents = Math.max(Number(signalHistory?.reactivatedEvents || 0), 0)
+  const lastDetectedAtMs = parseIsoTimestampMs(signalHistory?.lastDetectedAt)
+  let recencyBoost = 0
+  if (lastDetectedAtMs != null) {
+    const ageHours = Math.max((Date.now() - lastDetectedAtMs) / (60 * 60 * 1000), 0)
+    if (ageHours <= 6) recencyBoost = 10
+    else if (ageHours <= 24) recencyBoost = 6
+    else if (ageHours <= 72) recencyBoost = 3
+  }
+
+  return round2(
+    Math.min(totalEvents * 2.5, 10) +
+      Math.min(activeEvents * 4, 10) +
+      Math.min(updatedEvents * 2, 6) +
+      Math.min(reactivatedEvents * 2.5, 6) +
+      recencyBoost
+  )
+}
+
+function buildSignalHistoryByItem(rows = []) {
+  const byItem = {}
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const itemName = normalizeMarketHashName(row?.item_name || row?.itemName)
+    if (!itemName) continue
+    if (!byItem[itemName]) {
+      byItem[itemName] = {
+        totalEvents: 0,
+        activeEvents: 0,
+        updatedEvents: 0,
+        reactivatedEvents: 0,
+        duplicateEvents: 0,
+        lastDetectedAt: null
+      }
+    }
+    const bucket = byItem[itemName]
+    const detectedAt = row?.detected_at || row?.detectedAt || null
+    if (detectedAt && (!bucket.lastDetectedAt || detectedAt > bucket.lastDetectedAt)) {
+      bucket.lastDetectedAt = detectedAt
+    }
+    if (Boolean(row?.is_active)) {
+      bucket.activeEvents += 1
+    }
+    if (Boolean(row?.is_duplicate)) {
+      bucket.duplicateEvents += 1
+      continue
+    }
+    bucket.totalEvents += 1
+    const eventType = normalizeFeedEventType(row?.metadata?.event_type)
+    if (eventType === "updated") {
+      bucket.updatedEvents += 1
+    } else if (eventType === "reactivated") {
+      bucket.reactivatedEvents += 1
+    }
+  }
+
+  return Object.fromEntries(
+    Object.entries(byItem).map(([itemName, signalHistory]) => [
+      itemName,
+      {
+        ...signalHistory,
+        score: computeSignalHistoryScore(signalHistory)
+      }
+    ])
+  )
+}
+
+async function loadFeedSignalHistoryForItems(itemNames = []) {
+  const names = Array.from(
+    new Set((Array.isArray(itemNames) ? itemNames : []).map((value) => normalizeMarketHashName(value)).filter(Boolean))
+  )
+  if (!names.length) {
+    return {}
+  }
+
+  const sinceIso = new Date(
+    Date.now() - SIGNAL_HISTORY_LOOKBACK_HOURS * 60 * 60 * 1000
+  ).toISOString()
+  try {
+    const recentRows = await arbitrageFeedRepo.getRecentRowsByItems({
+      itemNames: names,
+      sinceIso,
+      limit: Math.min(Math.max(names.length * 6, 2000), 10000)
+    })
+    return buildSignalHistoryByItem(recentRows)
+  } catch (err) {
+    console.error("[arbitrage-scanner] Failed to load recent signal history", err.message)
+    return {}
   }
 }
 
@@ -2943,6 +3306,11 @@ function buildFeedInsertRow(row = {}, scanRunId = "", options = {}) {
   const isDuplicate = Boolean(options.isDuplicate)
   const score = clampScore(row?.score)
   const executionConfidence = normalizeConfidence(row?.executionConfidence)
+  const eventType = normalizeFeedEventType(options.eventType) || (isDuplicate ? "duplicate" : "new")
+  const eventAnalysis =
+    options?.eventAnalysis && typeof options.eventAnalysis === "object" ? options.eventAnalysis : {}
+  const previousRow =
+    options?.previousRow && typeof options.previousRow === "object" ? options.previousRow : {}
   return {
     item_name: String(row?.itemName || "Tracked Item").trim(),
     market_hash_name: String(row?.itemName || "Tracked Item").trim(),
@@ -2961,7 +3329,18 @@ function buildFeedInsertRow(row = {}, scanRunId = "", options = {}) {
     scan_run_id: String(scanRunId || "").trim() || null,
     is_active: true,
     is_duplicate: isDuplicate,
-    metadata: toMetadataObject(row)
+    metadata: {
+      ...toMetadataObject(row),
+      event_type: eventType,
+      change_reasons: Array.isArray(eventAnalysis?.changeReasons) ? eventAnalysis.changeReasons : [],
+      previous_feed_id: String(previousRow?.id || "").trim() || null,
+      previous_detected_at: previousRow?.detected_at || previousRow?.detectedAt || null,
+      profit_delta_pct: toFiniteOrNull(eventAnalysis?.profitDeltaPercent),
+      spread_delta_pct: toFiniteOrNull(eventAnalysis?.spreadDelta),
+      score_delta: toFiniteOrNull(eventAnalysis?.scoreDelta),
+      confidence_delta_levels: toFiniteOrNull(eventAnalysis?.confidenceDelta),
+      liquidity_delta_pct: toFiniteOrNull(eventAnalysis?.liquidityDeltaPercent)
+    }
   }
 }
 
@@ -2981,12 +3360,100 @@ function toProfitDeltaPercent(currentProfit, previousProfit) {
   return Math.abs(current - previous) / denominator * 100
 }
 
-function isMateriallyNewOpportunity(current = {}, previous = {}) {
-  const profitDeltaPercent = toProfitDeltaPercent(current?.profit, previous?.profit)
-  const scoreDelta = Math.abs(
-    (toFiniteOrNull(current?.score) ?? 0) - (toFiniteOrNull(previous?.opportunity_score) ?? 0)
+function toAbsoluteDelta(currentValue, previousValue) {
+  const current = toFiniteOrNull(currentValue)
+  const previous = toFiniteOrNull(previousValue)
+  if (current == null || previous == null) return null
+  return Math.abs(current - previous)
+}
+
+function toPercentDelta(currentValue, previousValue, minBase = 1) {
+  const current = toFiniteOrNull(currentValue)
+  const previous = toFiniteOrNull(previousValue)
+  if (current == null || previous == null) return null
+  return Math.abs(current - previous) / Math.max(Math.abs(previous), minBase) * 100
+}
+
+function resolvePreviousLiquidityValue(previous = {}) {
+  return (
+    toFiniteOrNull(previous?.metadata?.liquidity_value) ??
+    toFiniteOrNull(previous?.metadata?.volume_7d) ??
+    toFiniteOrNull(previous?.liquidity_value) ??
+    toFiniteOrNull(previous?.volume_7d)
   )
-  return profitDeltaPercent >= MIN_PROFIT_CHANGE_PCT || scoreDelta >= MIN_SCORE_CHANGE
+}
+
+function classifyOpportunityFeedEvent(current = {}, previous = {}) {
+  const hasPrevious = Boolean(previous && Object.keys(previous).length)
+  if (!hasPrevious) {
+    return {
+      eventType: "new",
+      materiallyChanged: true,
+      changeReasons: ["new"],
+      profitDeltaPercent: Infinity,
+      spreadDelta: Infinity,
+      scoreDelta: Infinity,
+      confidenceDelta: Infinity,
+      liquidityDeltaPercent: Infinity
+    }
+  }
+
+  const profitDeltaPercent = toProfitDeltaPercent(current?.profit, previous?.profit)
+  const spreadDelta = toAbsoluteDelta(current?.spread, previous?.spread_pct)
+  const scoreDelta = toAbsoluteDelta(current?.score, previous?.opportunity_score)
+  const confidenceDelta = Math.abs(
+    confidenceRank(current?.executionConfidence) -
+      confidenceRank(previous?.execution_confidence || previous?.executionConfidence)
+  )
+  const previousLiquidityLabel = String(
+    previous?.liquidity_label || previous?.liquidityLabel || ""
+  )
+    .trim()
+    .toLowerCase()
+  const currentLiquidityLabel = String(current?.liquidityBand || current?.liquidityLabel || "")
+    .trim()
+    .toLowerCase()
+  const liquidityDeltaPercent = toPercentDelta(
+    current?.liquidity ?? current?.volume7d,
+    resolvePreviousLiquidityValue(previous),
+    1
+  )
+  const changeReasons = []
+
+  if (profitDeltaPercent >= MIN_PROFIT_CHANGE_PCT) {
+    changeReasons.push("profit")
+  }
+  if (spreadDelta != null && spreadDelta >= MIN_SPREAD_CHANGE_PCT) {
+    changeReasons.push("spread")
+  }
+  if (scoreDelta != null && scoreDelta >= MIN_SCORE_CHANGE) {
+    changeReasons.push("score")
+  }
+  if (confidenceDelta >= MIN_CONFIDENCE_CHANGE_LEVELS) {
+    changeReasons.push("confidence")
+  }
+  if (
+    currentLiquidityLabel !== previousLiquidityLabel ||
+    (liquidityDeltaPercent != null && liquidityDeltaPercent >= MIN_LIQUIDITY_CHANGE_PCT)
+  ) {
+    changeReasons.push("liquidity")
+  }
+
+  const reactivated = previous?.is_active === false
+  return {
+    eventType: reactivated ? "reactivated" : changeReasons.length ? "updated" : "duplicate",
+    materiallyChanged: reactivated || changeReasons.length > 0,
+    changeReasons,
+    profitDeltaPercent,
+    spreadDelta,
+    scoreDelta,
+    confidenceDelta,
+    liquidityDeltaPercent
+  }
+}
+
+function isMateriallyNewOpportunity(current = {}, previous = {}) {
+  return classifyOpportunityFeedEvent(current, previous).materiallyChanged
 }
 
 function mapFeedRowToApiRow(row = {}) {
@@ -3002,6 +3469,15 @@ function mapFeedRowToApiRow(row = {}) {
     scanRunId: String(row?.scan_run_id || "").trim() || null,
     isActive: Boolean(row?.is_active),
     isDuplicate: Boolean(row?.is_duplicate),
+    eventType: normalizeFeedEventType(metadata?.event_type) || (Boolean(row?.is_duplicate) ? "duplicate" : "new"),
+    changeReasons: Array.isArray(metadata?.change_reasons) ? metadata.change_reasons : [],
+    previousFeedId: String(metadata?.previous_feed_id || "").trim() || null,
+    previousDetectedAt: metadata?.previous_detected_at || null,
+    profitDeltaPercent: toFiniteOrNull(metadata?.profit_delta_pct),
+    spreadDelta: toFiniteOrNull(metadata?.spread_delta_pct),
+    scoreDelta: toFiniteOrNull(metadata?.score_delta),
+    confidenceDeltaLevels: toFiniteOrNull(metadata?.confidence_delta_levels),
+    liquidityDeltaPercent: toFiniteOrNull(metadata?.liquidity_delta_pct),
     itemId: Number(metadata?.item_id || 0) || null,
     itemName,
     itemCategory: normalizeItemCategory(row?.category, itemName),
@@ -3778,18 +4254,24 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
   )
   const includeNearEligibleInOpportunity = options?.includeNearEligibleInOpportunity !== false
 
-  const [curatedSeeds, fallbackSeeds] = await Promise.all([
+  const [curatedSeeds, matureCatalogSeeds, fallbackSeeds] = await Promise.all([
     loadCuratedUniverseSeeds().catch((err) => {
       console.error("[arbitrage-scanner] Curated universe load failed", err.message)
       return []
     }),
+    loadMatureCatalogUniverseSeeds(Math.max(HOT_MATURE_POOL_LIMIT, opportunityBatchSize * 4)).catch(
+      (err) => {
+        console.error("[arbitrage-scanner] Mature catalog seed load failed", err.message)
+        return []
+      }
+    ),
     loadFallbackUniverseSeeds().catch((err) => {
       console.error("[arbitrage-scanner] Fallback universe load failed", err.message)
       return []
     })
   ])
 
-  const mergedSeeds = mergeUniverseSeeds([curatedSeeds, fallbackSeeds]).map((seed) =>
+  const mergedSeeds = mergeUniverseSeeds([curatedSeeds, matureCatalogSeeds, fallbackSeeds]).map((seed) =>
     applyCatalogStateToSeed(seed, null)
   )
   const preMaturitySeeds = mergedSeeds.map((seed) => {
@@ -3832,7 +4314,7 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
   mergeDiscardStats(discardStats, selectedFilterResult.discardStats)
   mergeRejectedByItem(rejectedByItem, selectedFilterResult.rejectedByItem)
 
-  const ranked = selectedFilterResult.selectedSeeds
+  const roughRanked = selectedFilterResult.selectedSeeds
     .map((row) => ({
       ...row,
       ...computeLiquidityRank({
@@ -3859,76 +4341,55 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
     )
     .slice(0, PRE_COMPARE_UNIVERSE_LIMIT)
 
-  const layeredSelection = selectSeedsForLayeredScanning(ranked)
+  const signalHistoryByItem = await loadFeedSignalHistoryForItems(
+    roughRanked
+      .slice(0, Math.min(Math.max(HOT_MATURE_POOL_LIMIT, opportunityBatchSize * 6), PRE_COMPARE_UNIVERSE_LIMIT))
+      .map((row) => row?.marketHashName)
+  )
+  const ranked = roughRanked
+    .map((row) => {
+      const signalHistory =
+        signalHistoryByItem[normalizeMarketHashName(row?.marketHashName)] || null
+      return {
+        ...row,
+        signalHistory,
+        signalHistoryScore: Number(signalHistory?.score || 0)
+      }
+    })
+    .map((row) => ({
+      ...row,
+      layerPriority: computeLayerPriority(row)
+    }))
+    .sort(
+      (a, b) =>
+        Number(b.layerPriority || 0) - Number(a.layerPriority || 0) ||
+        Number(b.maturityScore || 0) - Number(a.maturityScore || 0) ||
+        Number(b.signalHistoryScore || 0) - Number(a.signalHistoryScore || 0) ||
+        Number(b.liquidityRank || 0) - Number(a.liquidityRank || 0) ||
+        sourceRank(b.universeSource) - sourceRank(a.universeSource) ||
+        Number(b.marketCoverageCount || 0) - Number(a.marketCoverageCount || 0) ||
+        Number(b.marketVolume7d || 0) - Number(a.marketVolume7d || 0)
+    )
+    .slice(0, PRE_COMPARE_UNIVERSE_LIMIT)
+
+  const layeredSelection = selectSeedsForLayeredScanning(ranked, {
+    opportunityTarget: opportunityBatchSize,
+    hotTarget: Math.max(
+      opportunityBatchSize - (includeNearEligibleInOpportunity ? OPPORTUNITY_NEAR_ELIGIBLE_LIMIT : 0),
+      0
+    ),
+    nearEligibleTarget: includeNearEligibleInOpportunity ? OPPORTUNITY_NEAR_ELIGIBLE_LIMIT : 0,
+    enrichmentTarget: enrichmentBatchSize
+  })
   const allRankedSeeds = Array.isArray(layeredSelection?.allRankedSeeds)
     ? layeredSelection.allRankedSeeds
     : ranked
-  const hotEligibleSeeds = allRankedSeeds.filter(
-    (row) =>
-      normalizeMaturityState(row?.maturityState) === MATURITY_STATES.ELIGIBLE &&
-      resolveScanLayerForMaturity(row) === SCAN_LAYERS.HOT
-  )
-  const nearEligibleWarmSeeds = allRankedSeeds.filter(
-    (row) =>
-      normalizeMaturityState(row?.maturityState) === MATURITY_STATES.NEAR_ELIGIBLE &&
-      resolveScanLayerForMaturity(row) === SCAN_LAYERS.WARM
-  )
-  const enrichmentCandidates = allRankedSeeds.filter((row) => {
-    const maturityState = normalizeMaturityState(row?.maturityState)
-    if (
-      maturityState === MATURITY_STATES.ENRICHING ||
-      maturityState === MATURITY_STATES.COLD ||
-      maturityState === MATURITY_STATES.NEAR_ELIGIBLE
-    ) {
-      return true
-    }
-    const candidateStatus = normalizeCatalogCandidateStatus(row?.candidateStatus)
-    return (
-      candidateStatus === CATALOG_CANDIDATE_STATUS.CANDIDATE ||
-      candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING ||
-      candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
-    )
-  })
-
-  const opportunitySeeds = []
-  const seenOpportunity = new Set()
-  const pushUniqueOpportunity = (seed = {}) => {
-    const name = normalizeMarketHashName(seed?.marketHashName)
-    if (!name || seenOpportunity.has(name) || opportunitySeeds.length >= opportunityBatchSize) {
-      return false
-    }
-    seenOpportunity.add(name)
-    opportunitySeeds.push(seed)
-    return true
-  }
-
-  for (const seed of hotEligibleSeeds) {
-    if (!pushUniqueOpportunity(seed)) break
-  }
-  if (includeNearEligibleInOpportunity && opportunitySeeds.length < opportunityBatchSize) {
-    const nearEligibleBudget = Math.min(
-      OPPORTUNITY_NEAR_ELIGIBLE_LIMIT,
-      opportunityBatchSize - opportunitySeeds.length
-    )
-    let addedNearEligible = 0
-    for (const seed of nearEligibleWarmSeeds) {
-      if (addedNearEligible >= nearEligibleBudget || opportunitySeeds.length >= opportunityBatchSize) {
-        break
-      }
-      if (pushUniqueOpportunity(seed)) {
-        addedNearEligible += 1
-      }
-    }
-  }
-
-  const enrichmentSeeds = []
-  const enrichmentSeen = new Set()
-  for (const seed of enrichmentCandidates) {
-    const name = normalizeMarketHashName(seed?.marketHashName)
-    if (!name || enrichmentSeen.has(name) || enrichmentSeeds.length >= enrichmentBatchSize) continue
-    enrichmentSeen.add(name)
-    enrichmentSeeds.push(seed)
-  }
+  const opportunitySeeds = Array.isArray(layeredSelection?.opportunitySeeds)
+    ? layeredSelection.opportunitySeeds.slice(0, opportunityBatchSize)
+    : []
+  const enrichmentSeeds = Array.isArray(layeredSelection?.enrichmentSeeds)
+    ? layeredSelection.enrichmentSeeds.slice(0, enrichmentBatchSize)
+    : []
 
   return {
     seeds: mode === SCANNER_TYPES.ENRICHMENT ? [] : opportunitySeeds,
@@ -4744,6 +5205,53 @@ function countRowsByCategory(rows = []) {
   return counts
 }
 
+function buildHotScanSummary({
+  layeredScanning = {},
+  opportunitySeeds = [],
+  selectedUniverseByCategory = {},
+  opportunitiesByCategory = {},
+  qualifiedItems = 0,
+  opportunitiesFound = 0,
+  persisted = {}
+} = {}) {
+  const hotUniverse =
+    layeredScanning?.hotUniverse && typeof layeredScanning.hotUniverse === "object"
+      ? layeredScanning.hotUniverse
+      : {}
+  const hotItemsByCategory = countRowsByCategory(
+    (Array.isArray(opportunitySeeds) ? opportunitySeeds : []).map((row) => ({
+      itemCategory: row?.itemCategory,
+      itemName: row?.marketHashName
+    }))
+  )
+  const hotUniverseByCategory = toScannerAuditCategoryCounts(hotUniverse?.itemsByCategory || {})
+  const queuedByCategory = toScannerAuditCategoryCounts(hotItemsByCategory)
+  const qualifiedByCategory = toScannerAuditCategoryCounts(selectedUniverseByCategory)
+  const foundByCategory = toScannerAuditCategoryCounts(opportunitiesByCategory)
+
+  return {
+    target: Number(layeredScanning?.opportunityTarget || opportunitySeeds.length || 0),
+    hotUniverseSize: Number(hotUniverse?.total || 0),
+    eligibleCount: Number(hotUniverse?.eligibleCount || 0),
+    nearEligibleCount: Number(hotUniverse?.nearEligibleCount || 0),
+    itemsQueued: Number(opportunitySeeds?.length || 0),
+    itemsQueuedByCategory: queuedByCategory,
+    qualifiedItems: Number(qualifiedItems || 0),
+    qualifiedItemsByCategory: qualifiedByCategory,
+    opportunitiesFound: Number(opportunitiesFound || 0),
+    opportunitiesByCategory: foundByCategory,
+    newOpportunitiesAdded: Number(persisted?.newCount || 0),
+    updatedOpportunities: Number(persisted?.updatedCount || 0),
+    reactivatedOpportunities: Number(persisted?.reactivatedCount || 0),
+    categoryContribution: {
+      hotUniverse: hotUniverseByCategory,
+      hotItems: queuedByCategory,
+      qualifiedItems: qualifiedByCategory,
+      opportunities: foundByCategory
+    }
+  }
+}
+
 function toRejectedCountByCategory(discardedReasonsByCategory = {}) {
   const counts = Object.fromEntries(
     Object.values(ITEM_CATEGORIES).map((category) => [category, 0])
@@ -4837,6 +5345,8 @@ function trackRiskyDecision(
 function buildScanProgressStats({
   universeTarget = 0,
   candidateItems = 0,
+  requestedItems = 0,
+  qualifiedItems = 0,
   scannedItems = 0,
   quoteRefresh = {},
   computeFromSavedQuotes = {}
@@ -4857,6 +5367,8 @@ function buildScanProgressStats({
   return {
     universeTarget: Number(universeTarget || 0),
     candidateItems: Number(candidateItems || 0),
+    requestedItems: Number(requestedItems || 0),
+    qualifiedItems: Number(qualifiedItems || 0),
     scannedItems: Number(scannedItems || 0),
     batchSize: SCAN_BATCH_SIZE,
     maxConcurrentMarketRequests: MAX_CONCURRENT_MARKET_REQUESTS,
@@ -5375,7 +5887,10 @@ function extendPerformanceAudit(
 
 async function runScanInternal(options = {}) {
   const forceRefresh = Boolean(options.forceRefresh)
-  const opportunityUniverseTarget = OPPORTUNITY_BATCH_SIZE
+  const opportunityUniverseTarget = Math.max(
+    Math.min(HOT_OPPORTUNITY_SCAN_TARGET, OPPORTUNITY_BATCH_SIZE),
+    1
+  )
   const scanStartedAt = Date.now()
   const stageDurationsMs = buildDefaultPerformanceStageDurations()
   let imageEnrichmentSummary = buildDefaultImageEnrichmentSummary()
@@ -5441,6 +5956,7 @@ async function runScanInternal(options = {}) {
       currency: "USD",
       summary: {
         scannedItems: 0,
+        qualifiedItems: 0,
         opportunities: 0,
         totalDetected: 0,
         universeSize: 0,
@@ -5452,6 +5968,7 @@ async function runScanInternal(options = {}) {
         topRejectedItems: toTopRejectedItems(rejectedByItem),
         rejectionReasonsByItem: toRejectionReasonsByItem(rejectedByItem),
         selectedUniverseByCategory: { ...emptyByCategory },
+        requestedUniverseByCategory: { ...emptyByCategory },
         opportunitiesByCategory: { ...emptyByCategory },
         staleDiagnostics,
         knifeGloveRejections: toKnifeGloveRejectionSummary({}),
@@ -5489,7 +6006,14 @@ async function runScanInternal(options = {}) {
         scanProgress: buildScanProgressStats({
           universeTarget: opportunityUniverseTarget,
           candidateItems: allLayeredSeeds.length,
+          requestedItems: universeSeeds.length,
+          qualifiedItems: 0,
           scannedItems: 0
+        }),
+        hotScan: buildHotScanSummary({
+          layeredScanning: layeredScanningSummary,
+          opportunitySeeds: universeSeeds,
+          qualifiedItems: 0
         }),
         highConfidence: 0,
         riskyEligible: 0
@@ -5521,6 +6045,7 @@ async function runScanInternal(options = {}) {
           warmLayerScanTarget: WARM_LAYER_SCAN_TARGET,
           coldLayerScanTarget: COLD_LAYER_SCAN_TARGET,
           opportunityScanTarget: opportunityUniverseTarget,
+          hotOpportunityScanTarget: HOT_OPPORTUNITY_SCAN_TARGET,
           enrichmentOnlyTarget: ENRICHMENT_BATCH_SIZE
         },
         quoteRefresh: {
@@ -5791,6 +6316,12 @@ async function runScanInternal(options = {}) {
       itemName: row?.inputItem?.marketHashName
     }))
   )
+  const requestedUniverseByCategory = countRowsByCategory(
+    universeSeeds.map((row) => ({
+      itemCategory: row?.itemCategory,
+      itemName: row?.marketHashName
+    }))
+  )
   const candidateUniverseByCategory = countRowsByCategory(
     allLayeredSeeds.map((row) => ({
       itemCategory: row?.itemCategory,
@@ -5814,9 +6345,19 @@ async function runScanInternal(options = {}) {
   const scanProgress = buildScanProgressStats({
     universeTarget: opportunityUniverseTarget,
     candidateItems: allLayeredSeeds.length,
-    scannedItems: selectedUniverse.length,
+    requestedItems: universeSeeds.length,
+    qualifiedItems: selectedUniverse.length,
+    scannedItems: universeSeeds.length,
     quoteRefresh: quoteRefreshSummary,
     computeFromSavedQuotes: comparisonFromSaved?.diagnostics || {}
+  })
+  const hotScan = buildHotScanSummary({
+    layeredScanning: layeredScanningSummary,
+    opportunitySeeds: universeSeeds,
+    selectedUniverseByCategory,
+    opportunitiesByCategory,
+    qualifiedItems: selectedUniverse.length,
+    opportunitiesFound: sortedRows.length
   })
   const generatedTs = Date.now()
   const payload = {
@@ -5827,10 +6368,11 @@ async function runScanInternal(options = {}) {
       .trim()
       .toUpperCase(),
     summary: {
-      scannedItems: selectedUniverse.length,
+      scannedItems: universeSeeds.length,
+      qualifiedItems: selectedUniverse.length,
       opportunities: highConfidenceCount,
       totalDetected: sortedRows.length,
-      universeSize: selectedUniverse.length,
+      universeSize: universeSeeds.length,
       universeTarget: opportunityUniverseTarget,
       candidateItems: allLayeredSeeds.length,
       discardedReasons,
@@ -5839,6 +6381,7 @@ async function runScanInternal(options = {}) {
       topRejectedItems: toTopRejectedItems(rejectedByItem),
       rejectionReasonsByItem: toRejectionReasonsByItem(rejectedByItem),
       selectedUniverseByCategory,
+      requestedUniverseByCategory,
       opportunitiesByCategory,
       staleDiagnostics,
       knifeGloveRejections,
@@ -5878,6 +6421,7 @@ async function runScanInternal(options = {}) {
       },
       sourceCatalog: effectiveSourceCatalogDiagnostics,
       scanProgress,
+      hotScan,
       highConfidence: highConfidenceCount,
       riskyEligible: riskyEligibleCount
     },
@@ -5902,14 +6446,15 @@ async function runScanInternal(options = {}) {
         scanTimeoutPerBatchMs: SCAN_TIMEOUT_PER_BATCH,
         imageEnrichBatchSize: IMAGE_ENRICH_BATCH_SIZE,
         imageEnrichConcurrency: IMAGE_ENRICH_CONCURRENCY,
-        imageEnrichTimeoutMs: IMAGE_ENRICH_TIMEOUT_MS,
-        highYieldCoreTarget: HIGH_YIELD_CORE_TARGET,
-        hotLayerScanTarget: HOT_LAYER_SCAN_TARGET,
-        warmLayerScanTarget: WARM_LAYER_SCAN_TARGET,
-        coldLayerScanTarget: COLD_LAYER_SCAN_TARGET,
-        opportunityScanTarget: opportunityUniverseTarget,
-        enrichmentOnlyTarget: ENRICHMENT_BATCH_SIZE
-      },
+          imageEnrichTimeoutMs: IMAGE_ENRICH_TIMEOUT_MS,
+          highYieldCoreTarget: HIGH_YIELD_CORE_TARGET,
+          hotLayerScanTarget: HOT_LAYER_SCAN_TARGET,
+          warmLayerScanTarget: WARM_LAYER_SCAN_TARGET,
+          coldLayerScanTarget: COLD_LAYER_SCAN_TARGET,
+          opportunityScanTarget: opportunityUniverseTarget,
+          hotOpportunityScanTarget: HOT_OPPORTUNITY_SCAN_TARGET,
+          enrichmentOnlyTarget: ENRICHMENT_BATCH_SIZE
+        },
       quoteRefresh: quoteRefreshSummary,
       computeFromSavedQuotes: comparisonFromSaved?.diagnostics || null,
       quoteSnapshot: quoteSnapshotSummary,
@@ -5991,7 +6536,7 @@ async function runEnrichmentInternal(options = {}) {
   const scannerInputs = await loadScannerInputs(discardStats, rejectedByItem, {
     mode: SCANNER_TYPES.ENRICHMENT,
     enrichmentBatchSize: ENRICHMENT_BATCH_SIZE,
-    opportunityBatchSize: OPPORTUNITY_BATCH_SIZE,
+    opportunityBatchSize: Math.max(Math.min(HOT_OPPORTUNITY_SCAN_TARGET, OPPORTUNITY_BATCH_SIZE), 1),
     includeNearEligibleInOpportunity: false
   })
   const inputHydrationMs = Date.now() - inputHydrationStartedAt
@@ -6006,7 +6551,7 @@ async function runEnrichmentInternal(options = {}) {
       : {
           totalRankedSeeds: allLayeredSeeds.length,
           coreUniverseSize: 0,
-          opportunityTarget: OPPORTUNITY_BATCH_SIZE,
+          opportunityTarget: Math.max(Math.min(HOT_OPPORTUNITY_SCAN_TARGET, OPPORTUNITY_BATCH_SIZE), 1),
           enrichmentTarget: ENRICHMENT_BATCH_SIZE,
           selectedForOpportunity: 0,
           selectedForEnrichment: enrichmentSeeds.length,
@@ -6087,15 +6632,36 @@ function normalizeLimit(value, fallback = DEFAULT_API_LIMIT, maxLimit = MAX_API_
 }
 
 function toOpportunityDiagnosticsSummary(scanPayload = {}, persistSummary = {}, trigger = "manual") {
+  const hotScanSummary =
+    scanPayload?.summary?.hotScan && typeof scanPayload.summary.hotScan === "object"
+      ? {
+          ...scanPayload.summary.hotScan,
+          newOpportunitiesAdded: Number(persistSummary?.newCount || 0),
+          updatedOpportunities: Number(persistSummary?.updatedCount || 0),
+          reactivatedOpportunities: Number(persistSummary?.reactivatedCount || 0)
+        }
+      : buildHotScanSummary({
+          layeredScanning:
+            scanPayload?.summary?.layeredScanning || scanPayload?.pipeline?.layeredScanning || {},
+          selectedUniverseByCategory: scanPayload?.summary?.selectedUniverseByCategory || {},
+          opportunitiesByCategory: scanPayload?.summary?.opportunitiesByCategory || {},
+          qualifiedItems: Number(scanPayload?.summary?.qualifiedItems || 0),
+          opportunitiesFound: Number(
+            scanPayload?.opportunities?.length || scanPayload?.summary?.totalDetected || 0
+          ),
+          persisted: persistSummary || {}
+        })
   return {
     scannerType: SCANNER_TYPES.OPPORTUNITY_SCAN,
     trigger: String(trigger || "manual"),
     generatedAt: scanPayload?.generatedAt || null,
     scannedItems: Number(scanPayload?.summary?.scannedItems || 0),
+    qualifiedItems: Number(scanPayload?.summary?.qualifiedItems || 0),
     opportunities: Number(scanPayload?.summary?.opportunities || 0),
+    opportunitiesFound: Number(scanPayload?.opportunities?.length || scanPayload?.summary?.totalDetected || 0),
     totalDetected: Number(scanPayload?.summary?.totalDetected || 0),
     universeSize: Number(scanPayload?.summary?.universeSize || 0),
-    universeTarget: Number(scanPayload?.summary?.universeTarget || OPPORTUNITY_BATCH_SIZE),
+    universeTarget: Number(scanPayload?.summary?.universeTarget || HOT_OPPORTUNITY_SCAN_TARGET),
     candidateItems: Number(scanPayload?.summary?.candidateItems || 0),
     discardedReasons: scanPayload?.summary?.discardedReasons || {},
     discardedReasonsByCategory: scanPayload?.summary?.discardedReasonsByCategory || {},
@@ -6103,6 +6669,7 @@ function toOpportunityDiagnosticsSummary(scanPayload = {}, persistSummary = {}, 
     topRejectedItems: scanPayload?.summary?.topRejectedItems || [],
     rejectionReasonsByItem: scanPayload?.summary?.rejectionReasonsByItem || [],
     selectedUniverseByCategory: scanPayload?.summary?.selectedUniverseByCategory || {},
+    requestedUniverseByCategory: scanPayload?.summary?.requestedUniverseByCategory || {},
     opportunitiesByCategory: scanPayload?.summary?.opportunitiesByCategory || {},
     staleDiagnostics: scanPayload?.summary?.staleDiagnostics || {},
     knifeGloveRejections: scanPayload?.summary?.knifeGloveRejections || {},
@@ -6119,6 +6686,7 @@ function toOpportunityDiagnosticsSummary(scanPayload = {}, persistSummary = {}, 
     sourceCatalog:
       scanPayload?.summary?.sourceCatalog || scanPayload?.pipeline?.sourceCatalog || {},
     scanProgress: scanPayload?.summary?.scanProgress || {},
+    hotScan: hotScanSummary,
     performanceAudit:
       scanPayload?.summary?.performanceAudit || scanPayload?.pipeline?.performanceAudit || {},
     highConfidence: Number(scanPayload?.summary?.highConfidence || 0),
@@ -6218,64 +6786,119 @@ async function appendOpportunitiesToFeed(rows = [], scanRunId = "") {
     return {
       candidates: 0,
       insertedCount: 0,
+      newCount: 0,
+      updatedCount: 0,
+      reactivatedCount: 0,
       duplicateSkipped: 0,
       duplicateInserted: 0,
+      replacedActiveCount: 0,
       ...retention
     }
   }
 
-  const dedupeCutoffIso = new Date(Date.now() - DUPLICATE_WINDOW_HOURS * 60 * 60 * 1000).toISOString()
+  const dedupeLookbackHours = Math.max(DUPLICATE_WINDOW_HOURS, SIGNAL_HISTORY_LOOKBACK_HOURS)
+  const dedupeCutoffIso = new Date(Date.now() - dedupeLookbackHours * 60 * 60 * 1000).toISOString()
   const recentRows = await arbitrageFeedRepo.getRecentRowsByItems({
     itemNames: candidates.map((row) => row.itemName),
     sinceIso: dedupeCutoffIso,
-    limit: 5000
+    limit: 10000
   })
 
   const latestBySignature = {}
+  const activeIdsBySignature = {}
   for (const row of recentRows) {
     const signature = buildDedupeSignature(row?.item_name, row?.buy_market, row?.sell_market)
-    if (!signature || latestBySignature[signature]) continue
-    latestBySignature[signature] = row
+    if (!signature) continue
+    if (!latestBySignature[signature]) {
+      latestBySignature[signature] = row
+    }
+    if (Boolean(row?.is_active)) {
+      if (!activeIdsBySignature[signature]) {
+        activeIdsBySignature[signature] = new Set()
+      }
+      if (String(row?.id || "").trim()) {
+        activeIdsBySignature[signature].add(String(row.id).trim())
+      }
+    }
   }
 
   const detectedAt = new Date().toISOString()
   const toInsert = []
+  const idsToDeactivate = new Set()
   let duplicateSkipped = 0
   let duplicateInserted = 0
+  let newCount = 0
+  let updatedCount = 0
+  let reactivatedCount = 0
   for (const row of candidates) {
     const signature = buildDedupeSignature(row?.itemName, row?.buyMarket, row?.sellMarket)
     const previous = latestBySignature[signature] || null
-    const materiallyNew = !previous || isMateriallyNewOpportunity(row, previous)
-    if (!materiallyNew && !INSERT_DUPLICATES) {
+    const eventAnalysis = classifyOpportunityFeedEvent(row, previous || {})
+    if (!eventAnalysis.materiallyChanged && !INSERT_DUPLICATES) {
       duplicateSkipped += 1
       continue
     }
 
-    const isDuplicate = !materiallyNew
+    const isDuplicate = eventAnalysis.eventType === "duplicate"
     if (isDuplicate) {
       duplicateInserted += 1
+    } else if (eventAnalysis.eventType === "new") {
+      newCount += 1
+    } else if (eventAnalysis.eventType === "updated") {
+      updatedCount += 1
+    } else if (eventAnalysis.eventType === "reactivated") {
+      reactivatedCount += 1
     }
+
+    if (!isDuplicate) {
+      for (const id of activeIdsBySignature[signature] || []) {
+        idsToDeactivate.add(id)
+      }
+    }
+
     toInsert.push(
       buildFeedInsertRow(row, scanRunId, {
         detectedAt,
-        isDuplicate
+        isDuplicate,
+        eventType: eventAnalysis.eventType,
+        eventAnalysis,
+        previousRow: previous
       })
     )
 
     latestBySignature[signature] = {
+      id: null,
       profit: row?.profit,
-      opportunity_score: row?.score
+      spread_pct: row?.spread,
+      opportunity_score: row?.score,
+      execution_confidence: row?.executionConfidence,
+      liquidity_label: row?.liquidityBand,
+      detected_at: detectedAt,
+      is_active: true,
+      is_duplicate: isDuplicate,
+      metadata: {
+        liquidity_value: row?.liquidity,
+        volume_7d: row?.volume7d,
+        event_type: eventAnalysis.eventType
+      }
     }
   }
 
   const insertedRows = toInsert.length ? await arbitrageFeedRepo.insertRows(toInsert) : []
+  const replacedActiveCount = idsToDeactivate.size
+    ? await arbitrageFeedRepo.markRowsInactiveByIds(Array.from(idsToDeactivate))
+    : 0
   const retention = await applyFeedRetention()
 
   return {
     candidates: candidates.length,
     insertedCount: insertedRows.length,
+    newCount,
+    updatedCount,
+    reactivatedCount,
     duplicateSkipped,
     duplicateInserted,
+    replacedActiveCount,
     ...retention
   }
 }
@@ -6325,7 +6948,7 @@ async function runOpportunityWithRunRecord(runRecord = {}, options = {}, state =
     const completedRun = await scannerRunRepo.markCompleted(runRecord?.id, {
       itemsScanned: Number(scanPayload?.summary?.scannedItems || 0),
       opportunitiesFound: Number(scanPayload?.opportunities?.length || 0),
-      newOpportunitiesAdded: Number(persistSummary?.insertedCount || 0),
+      newOpportunitiesAdded: Number(persistSummary?.newCount || 0),
       durationMs,
       diagnosticsSummary
     })
@@ -6991,11 +7614,12 @@ exports.getFeed = async (options = {}) => {
   const summary = {
     scannedItems:
       Number(diagnosticsSummary?.scannedItems || 0) || Number(latestCompleted?.items_scanned || 0),
+    qualifiedItems: Number(diagnosticsSummary?.qualifiedItems || 0),
     opportunities: mappedRows.length,
     totalDetected: Number(totalCount || mappedRows.length),
     activeOpportunities: Number(activeCount || 0),
     universeSize: Number(diagnosticsSummary?.universeSize || 0),
-    universeTarget: Number(diagnosticsSummary?.universeTarget || OPPORTUNITY_BATCH_SIZE),
+    universeTarget: Number(diagnosticsSummary?.universeTarget || HOT_OPPORTUNITY_SCAN_TARGET),
     candidateItems: Number(diagnosticsSummary?.candidateItems || 0),
     discardedReasons: diagnosticsSummary?.discardedReasons || {},
     discardedReasonsByCategory: diagnosticsSummary?.discardedReasonsByCategory || {},
@@ -7003,6 +7627,7 @@ exports.getFeed = async (options = {}) => {
     topRejectedItems: diagnosticsSummary?.topRejectedItems || [],
     rejectionReasonsByItem: diagnosticsSummary?.rejectionReasonsByItem || [],
     selectedUniverseByCategory: diagnosticsSummary?.selectedUniverseByCategory || {},
+    requestedUniverseByCategory: diagnosticsSummary?.requestedUniverseByCategory || {},
     opportunitiesByCategory: diagnosticsSummary?.opportunitiesByCategory || {},
     staleDiagnostics: diagnosticsSummary?.staleDiagnostics || {},
     knifeGloveRejections: diagnosticsSummary?.knifeGloveRejections || {},
@@ -7019,12 +7644,16 @@ exports.getFeed = async (options = {}) => {
     sourceCatalog:
       diagnosticsSummary?.sourceCatalog || diagnosticsSummary?.pipeline?.sourceCatalog || {},
     scanProgress: diagnosticsSummary?.scanProgress || {},
+    hotScan: diagnosticsSummary?.hotScan || {},
     performanceAudit:
       diagnosticsSummary?.performanceAudit || diagnosticsSummary?.pipeline?.performanceAudit || {},
     highConfidence: Number(diagnosticsSummary?.highConfidence || 0),
     riskyEligible: Number(diagnosticsSummary?.riskyEligible || 0),
     newOpportunitiesAdded:
-      Number(latestCompleted?.new_opportunities_added || diagnosticsSummary?.persisted?.insertedCount || 0),
+      Number(latestCompleted?.new_opportunities_added || diagnosticsSummary?.persisted?.newCount || 0),
+    updatedOpportunities: Number(diagnosticsSummary?.persisted?.updatedCount || 0),
+    reactivatedOpportunities: Number(diagnosticsSummary?.persisted?.reactivatedCount || 0),
+    signalEventsAdded: Number(diagnosticsSummary?.persisted?.insertedCount || 0),
     feedRetentionHours: FEED_RETENTION_HOURS,
     feedActiveLimit: FEED_ACTIVE_LIMIT,
     plan: {
@@ -7220,6 +7849,7 @@ exports.__testables = {
   buildApiOpportunityRow,
   buildFeedInsertRow,
   mapFeedRowToApiRow,
+  classifyOpportunityFeedEvent,
   isMateriallyNewOpportunity,
   isScannerRunOverdue,
   clampScore,
@@ -7232,6 +7862,7 @@ exports.__testables = {
   computeLayerPriority,
   selectSeedsForLayeredScanning,
   DEFAULT_UNIVERSE_LIMIT,
+  HOT_OPPORTUNITY_SCAN_TARGET,
   SCAN_BATCH_SIZE,
   MAX_CONCURRENT_MARKET_REQUESTS,
   SCAN_TIMEOUT_PER_BATCH

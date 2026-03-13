@@ -1,8 +1,8 @@
 import "./style.css";
 import "./responsive.css";
-import { injectSpeedInsights } from "@vercel/speed-insights";
 import { API_URL } from "./config";
 import { clearAuthToken, getAuthToken, withAuthHeaders } from "./authToken";
+import { initObservability } from "./observability";
 import {
   defaultCaseImage,
   defaultSkinImage,
@@ -36,7 +36,7 @@ import {
   shouldShowUpgradePrompt,
 } from "./planPermissions";
 const app = document.querySelector("#app");
-injectSpeedInsights();
+initObservability();
 
 const SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "UAH", "PLN", "CZK"];
 const CURRENCY_STORAGE_KEY = "cs2sa:selected_currency";

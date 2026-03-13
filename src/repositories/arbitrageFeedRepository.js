@@ -220,10 +220,11 @@ exports.getRecentRowsByItems = async (options = {}) => {
   let query = supabaseAdmin
     .from(TABLE)
     .select(
-      "id, item_name, buy_market, sell_market, profit, opportunity_score, detected_at, is_duplicate"
+      "id, item_name, category, buy_market, sell_market, profit, spread_pct, opportunity_score, execution_confidence, liquidity_label, detected_at, is_active, is_duplicate, metadata"
     )
     .in("item_name", itemNames)
     .order("detected_at", { ascending: false })
+    .order("id", { ascending: false })
     .limit(limit)
 
   if (sinceIso) {
@@ -235,6 +236,30 @@ exports.getRecentRowsByItems = async (options = {}) => {
     throw new AppError(error.message, 500)
   }
   return data || []
+}
+
+exports.markRowsInactiveByIds = async (ids = []) => {
+  const normalizedIds = Array.from(
+    new Set(
+      (Array.isArray(ids) ? ids : [])
+        .map((value) => normalizeText(value))
+        .filter(Boolean)
+    )
+  )
+  if (!normalizedIds.length) return 0
+
+  const { data, error } = await supabaseAdmin
+    .from(TABLE)
+    .update({ is_active: false })
+    .in("id", normalizedIds)
+    .eq("is_active", true)
+    .select("id")
+
+  if (error) {
+    throw new AppError(error.message, 500)
+  }
+
+  return Array.isArray(data) ? data.length : 0
 }
 
 exports.markInactiveOlderThan = async (cutoffIso) => {
