@@ -97,7 +97,7 @@ test("snapshot-driven liquidity helpers produce bounded values", () => {
 test("stale penalty increases with quote age", () => {
   const now = Date.now();
   const freshIso = new Date(now - 5 * 60 * 1000).toISOString();
-  const staleIso = new Date(now - 70 * 60 * 1000).toISOString();
+  const staleIso = new Date(now - 110 * 60 * 1000).toISOString();
 
   const fresh = resolveStaleDataPenalty(
     [
@@ -417,6 +417,7 @@ test("universe seed filter applies variant penalties without auto-rejecting Stat
 
 test("universe seed filter rejects stale snapshot seeds", () => {
   const discardStats = {};
+  const weaponSkinDiagnostics = {};
   const allowed = passesUniverseSeedFilters(
     {
       marketHashName: "AK-47 | Redline (Field-Tested)",
@@ -426,11 +427,39 @@ test("universe seed filter rejects stale snapshot seeds", () => {
       referencePrice: 15,
       marketVolume7d: 300
     },
-    discardStats
+    discardStats,
+    null,
+    { weaponSkinDiagnostics }
   );
 
   assert.equal(allowed, false);
   assert.equal(Number(discardStats.ignored_stale_data || 0) > 0, true);
+  assert.equal(Number(weaponSkinDiagnostics.hard_reject_stale || 0), 1);
+});
+
+test("universe seed filter forwards market-relevant stale weapon skins with a penalty", () => {
+  const discardStats = {};
+  const weaponSkinDiagnostics = {};
+  const allowed = passesUniverseSeedFilters(
+    {
+      marketHashName: "M4A1-S | Printstream (Field-Tested)",
+      itemCategory: "weapon_skin",
+      hasSnapshotData: true,
+      snapshotCapturedAt: new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString(),
+      quoteFetchedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+      referencePrice: 22,
+      marketVolume7d: 180,
+      marketCoverageCount: 2,
+      scanEligible: true
+    },
+    discardStats,
+    null,
+    { weaponSkinDiagnostics }
+  );
+
+  assert.equal(allowed, true);
+  assert.equal(Number(discardStats.ignored_stale_data || 0), 0);
+  assert.equal(Number(weaponSkinDiagnostics.stale_penalty_allowed_forward || 0), 1);
 });
 
 test("universe seed filter applies premium price floor for knives", () => {
@@ -627,6 +656,139 @@ test("risky weapon-skin evaluation forwards borderline low-value skins into spec
   );
 });
 
+test("risky weapon-skin evaluation applies aging penalty without hard rejection", () => {
+  const evaluation = computeRiskAdjustments({
+    opportunity: {
+      itemName: "USP-S | Printstream (Field-Tested)",
+      itemCategory: "weapon_skin",
+      buyPrice: 14,
+      profit: 1.9,
+      spreadPercent: 9.5,
+      marketCoverage: 2
+    },
+    liquidity: {
+      volume7d: 140
+    },
+    stale: {
+      selectedState: "aging",
+      usableMarkets: 2,
+      hasInsufficientUsableMarkets: false
+    },
+    inputItem: {
+      marketHashName: "USP-S | Printstream (Field-Tested)",
+      itemCategory: "weapon_skin",
+      referencePrice: 16,
+      hasSnapshotData: true,
+      snapshotCapturedAt: new Date(Date.now() - 70 * 60 * 1000).toISOString()
+    },
+    profile: {
+      name: "risky",
+      minPriceUsd: 3,
+      minProfitUsd: 0.75,
+      minSpreadPercent: 4,
+      minVolume7d: 40,
+      minMarketCoverage: 2,
+      allowMissingLiquidity: true
+    }
+  });
+
+  assert.equal(evaluation.passed, true);
+  assert.equal(evaluation.allowLowConfidencePath, false);
+  assert.equal(evaluation.staleForwardedTier, "risky");
+  assert.equal(
+    evaluation.diagnosticPenaltyKeys.includes("aging_penalty_allowed_forward"),
+    true
+  );
+});
+
+test("risky weapon-skin evaluation forwards strong stale skins into speculative", () => {
+  const evaluation = computeRiskAdjustments({
+    opportunity: {
+      itemName: "AK-47 | Redline (Field-Tested)",
+      itemCategory: "weapon_skin",
+      buyPrice: 18,
+      profit: 2.6,
+      spreadPercent: 14,
+      marketCoverage: 2
+    },
+    liquidity: {
+      volume7d: 140
+    },
+    stale: {
+      selectedState: "stale",
+      usableMarkets: 0,
+      hasInsufficientUsableMarkets: true
+    },
+    inputItem: {
+      marketHashName: "AK-47 | Redline (Field-Tested)",
+      itemCategory: "weapon_skin",
+      referencePrice: 20,
+      hasSnapshotData: true,
+      snapshotCapturedAt: new Date(Date.now() - 25 * 60 * 1000).toISOString()
+    },
+    profile: {
+      name: "risky",
+      minPriceUsd: 3,
+      minProfitUsd: 0.75,
+      minSpreadPercent: 4,
+      minVolume7d: 40,
+      minMarketCoverage: 2,
+      allowMissingLiquidity: true
+    }
+  });
+
+  assert.equal(evaluation.passed, true);
+  assert.equal(evaluation.speculativeEligible, true);
+  assert.equal(evaluation.allowLowConfidencePath, true);
+  assert.equal(evaluation.staleForwardedTier, "speculative");
+  assert.equal(
+    evaluation.diagnosticPenaltyKeys.includes("stale_penalty_allowed_forward"),
+    true
+  );
+});
+
+test("risky weapon-skin evaluation still rejects weak stale combinations", () => {
+  const evaluation = computeRiskAdjustments({
+    opportunity: {
+      itemName: "PP-Bizon | Facility Sketch (Field-Tested)",
+      itemCategory: "weapon_skin",
+      buyPrice: 4.2,
+      profit: 0.9,
+      spreadPercent: 4.5,
+      marketCoverage: 2
+    },
+    liquidity: {
+      volume7d: 35,
+      hasExtremeReferenceDeviation: true
+    },
+    stale: {
+      selectedState: "stale",
+      usableMarkets: 0,
+      hasInsufficientUsableMarkets: true
+    },
+    inputItem: {
+      marketHashName: "PP-Bizon | Facility Sketch (Field-Tested)",
+      itemCategory: "weapon_skin",
+      referencePrice: 4.4,
+      hasSnapshotData: true,
+      snapshotCapturedAt: new Date(Date.now() - 20 * 60 * 1000).toISOString()
+    },
+    profile: {
+      name: "risky",
+      minPriceUsd: 3,
+      minProfitUsd: 0.75,
+      minSpreadPercent: 4,
+      minVolume7d: 40,
+      minMarketCoverage: 2,
+      allowMissingLiquidity: true
+    }
+  });
+
+  assert.equal(evaluation.passed, false);
+  assert.equal(evaluation.primaryReason, "ignored_stale_data");
+  assert.equal(evaluation.diagnosticRejectionKey, "hard_reject_stale");
+});
+
 test("api row keeps high confidence when quotes are fresh and snapshot is only aging", () => {
   const originalNow = Date.now;
   Date.now = () => Date.parse("2026-03-13T12:00:00.000Z");
@@ -689,7 +851,7 @@ test("api row only downgrades high confidence one level for stale snapshots", ()
       inputItem: {
         skinId: 1003,
         hasSnapshotData: true,
-        snapshotCapturedAt: "2026-03-13T10:40:00.000Z"
+        snapshotCapturedAt: "2026-03-13T10:20:00.000Z"
       },
       liquidity: {
         liquidityScore: 70,
