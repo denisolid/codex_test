@@ -291,7 +291,7 @@ const OPPORTUNITY_BATCH_SIZE = Math.max(
 )
 const HOT_OPPORTUNITY_SCAN_TARGET = Math.max(
   Math.min(
-    Number(arbitrageHotOpportunityScanTarget || 96),
+    Number(arbitrageHotOpportunityScanTarget || 50),
     OPPORTUNITY_BATCH_SIZE,
     PRE_COMPARE_UNIVERSE_LIMIT
   ),
@@ -5870,6 +5870,32 @@ function buildScanProgressStats({
   }
 }
 
+function buildBatchSizingDiagnostics({
+  scannerType = SCANNER_TYPES.OPPORTUNITY_SCAN,
+  runDurationMs = 0,
+  scannedItems = 0,
+  qualifiedItems = 0,
+  opportunitiesFound = 0,
+  selectedItems = 0,
+  itemsUpdated = 0
+} = {}) {
+  return {
+    scannerType: String(scannerType || SCANNER_TYPES.OPPORTUNITY_SCAN),
+    configuredEnrichmentBatchSize: Number(ENRICHMENT_BATCH_SIZE || 0),
+    configuredOpportunityBatchCeiling: Number(OPPORTUNITY_BATCH_SIZE || 0),
+    configuredHotOpportunityScanTarget: Number(HOT_OPPORTUNITY_SCAN_TARGET || 0),
+    configuredOpportunityScanBatchSize: Number(
+      Math.max(Math.min(HOT_OPPORTUNITY_SCAN_TARGET, OPPORTUNITY_BATCH_SIZE), 1)
+    ),
+    runDurationMs: toAuditDurationMs(runDurationMs),
+    scannedItems: Number(scannedItems || 0),
+    qualifiedItems: Number(qualifiedItems || 0),
+    opportunitiesFound: Number(opportunitiesFound || 0),
+    selectedItems: Number(selectedItems || 0),
+    itemsUpdated: Number(itemsUpdated || 0)
+  }
+}
+
 function toAuditDurationMs(value) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return 0
@@ -6501,6 +6527,13 @@ async function runScanInternal(options = {}) {
           qualifiedItems: 0,
           scannedItems: 0
         }),
+        batchSizing: buildBatchSizingDiagnostics({
+          scannerType: SCANNER_TYPES.OPPORTUNITY_SCAN,
+          runDurationMs: Date.now() - scanStartedAt,
+          scannedItems: 0,
+          qualifiedItems: 0,
+          opportunitiesFound: 0
+        }),
         hotScan: buildHotScanSummary({
           layeredScanning: layeredScanningSummary,
           opportunitySeeds: universeSeeds,
@@ -6934,6 +6967,13 @@ async function runScanInternal(options = {}) {
       },
       sourceCatalog: effectiveSourceCatalogDiagnostics,
       scanProgress,
+      batchSizing: buildBatchSizingDiagnostics({
+        scannerType: SCANNER_TYPES.OPPORTUNITY_SCAN,
+        runDurationMs: Date.now() - scanStartedAt,
+        scannedItems: universeSeeds.length,
+        qualifiedItems: selectedUniverse.length,
+        opportunitiesFound: sortedRows.length
+      }),
       hotScan,
       highConfidence: highConfidenceCount,
       riskyEligible: riskyEligibleCount,
@@ -7108,7 +7148,13 @@ async function runEnrichmentInternal(options = {}) {
     snapshotWarmup: snapshotWarmupSummary,
     enrichmentPipeline: enrichmentPipelineSummary,
     rejectedByItem: toTopRejectedItems(rejectedByItem),
-    discardedReasons: normalizeDiscardStats(discardStats)
+    discardedReasons: normalizeDiscardStats(discardStats),
+    batchSizing: buildBatchSizingDiagnostics({
+      scannerType: SCANNER_TYPES.ENRICHMENT,
+      runDurationMs: Date.now() - runStartedAt,
+      selectedItems: enrichmentSeeds.length,
+      itemsUpdated: Number(enrichmentPipelineSummary?.enrichedItems || 0)
+    })
   }
 
   return {
@@ -7201,6 +7247,7 @@ function toOpportunityDiagnosticsSummary(scanPayload = {}, persistSummary = {}, 
     sourceCatalog:
       scanPayload?.summary?.sourceCatalog || scanPayload?.pipeline?.sourceCatalog || {},
     scanProgress: scanPayload?.summary?.scanProgress || {},
+    batchSizing: scanPayload?.summary?.batchSizing || {},
     hotScan: hotScanSummary,
     performanceAudit:
       scanPayload?.summary?.performanceAudit || scanPayload?.pipeline?.performanceAudit || {},
@@ -7234,6 +7281,7 @@ function toEnrichmentDiagnosticsSummary(enrichmentPayload = {}, trigger = "manua
     snapshotWarmup: summary?.snapshotWarmup || enrichmentPayload?.pipeline?.snapshotWarmup || {},
     enrichmentPipeline:
       summary?.enrichmentPipeline || enrichmentPayload?.pipeline?.enrichmentPipeline || {},
+    batchSizing: summary?.batchSizing || {},
     discardedReasons: summary?.discardedReasons || {},
     rejectedByItem: summary?.rejectedByItem || [],
     pipeline: enrichmentPayload?.pipeline || {}
@@ -8164,6 +8212,7 @@ exports.getFeed = async (options = {}) => {
     sourceCatalog:
       diagnosticsSummary?.sourceCatalog || diagnosticsSummary?.pipeline?.sourceCatalog || {},
     scanProgress: diagnosticsSummary?.scanProgress || {},
+    batchSizing: diagnosticsSummary?.batchSizing || {},
     hotScan: diagnosticsSummary?.hotScan || {},
     performanceAudit:
       diagnosticsSummary?.performanceAudit || diagnosticsSummary?.pipeline?.performanceAudit || {},

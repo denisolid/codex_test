@@ -196,7 +196,7 @@ module.exports = {
   arbitrageEnrichmentBatchSize: Number(
     process.env.ARBITRAGE_ENRICHMENT_BATCH_SIZE ||
       process.env.ARBITRAGE_ENRICHMENT_ONLY_TARGET ||
-      100
+      150
   ),
   arbitrageOpportunityBatchSize: Number(
     process.env.ARBITRAGE_OPPORTUNITY_BATCH_SIZE ||
@@ -259,7 +259,7 @@ module.exports = {
   arbitrageFeedActiveLimit: Number(process.env.ARBITRAGE_FEED_ACTIVE_LIMIT || 500),
   arbitrageDuplicateWindowHours: Number(process.env.ARBITRAGE_DUPLICATE_WINDOW_HOURS || 4),
   arbitrageHotOpportunityScanTarget: Number(
-    process.env.ARBITRAGE_HOT_OPPORTUNITY_SCAN_TARGET || 96
+    process.env.ARBITRAGE_HOT_OPPORTUNITY_SCAN_TARGET || 50
   ),
   arbitrageHotMaturePoolLimit: Number(process.env.ARBITRAGE_HOT_MATURE_POOL_LIMIT || 400),
   arbitrageMinProfitChangePct: Number(process.env.ARBITRAGE_MIN_PROFIT_CHANGE_PCT || 10),

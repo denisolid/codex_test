@@ -977,7 +977,7 @@ test("layered scanning prioritizes hot core and limits cold scan share", () => {
   const enrichmentLayers = selection?.diagnostics?.enrichment?.layers || {};
   const hotUniverse = selection?.diagnostics?.hotUniverse || {};
 
-  assert.equal(Number(selection?.coreSeeds?.length || 0) >= 50, true);
+  assert.equal(Number(selection?.coreSeeds?.length || 0) >= 25, true);
   assert.equal(Number(selection?.opportunitySeeds?.length || 0) > 0, true);
   assert.equal(Number(selection?.opportunitySeeds?.length || 0), HOT_OPPORTUNITY_SCAN_TARGET);
   assert.equal(Number(opportunityLayers.hot || 0) >= Number(opportunityLayers.cold || 0), true);
@@ -985,5 +985,5 @@ test("layered scanning prioritizes hot core and limits cold scan share", () => {
   assert.equal(Number(hotUniverse.nearEligibleCount || 0) > 0, true);
   assert.equal(Number(selection?.enrichmentSeeds?.length || 0) > 0, true);
   assert.equal(Number(enrichmentLayers.hot || 0), 0);
-  assert.equal(Number(selection?.enrichmentSeeds?.length || 0) <= 120, true);
+  assert.equal(Number(selection?.enrichmentSeeds?.length || 0) <= 150, true);
 });
