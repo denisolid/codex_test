@@ -145,8 +145,8 @@ const FRESHNESS_STATES = Object.freeze({
 
 const CATEGORY_STALE_RULES = Object.freeze({
   weapon_skin: Object.freeze({
-    freshMaxMinutes: 30,
-    agingMaxMinutes: 60,
+    freshMaxMinutes: 45,
+    agingMaxMinutes: 90,
     agingPenalty: 8,
     stalePenalty: 20
   }),
@@ -416,6 +416,7 @@ const WEAPON_SKIN_FALLBACK_MIN_REFERENCE_PRICE_USD = 4
 const WEAPON_SKIN_FALLBACK_MIN_PROFIT_USD = 0.9
 const WEAPON_SKIN_FALLBACK_MIN_SPREAD_PERCENT = 4
 const WEAPON_SKIN_FALLBACK_MAX_SPREAD_PERCENT = 140
+const WEAPON_SKIN_STALE_SNAPSHOT_HARD_REJECT_TTL_MULTIPLIER = 24
 const WEAPON_SKIN_MISSING_LIQUIDITY_PENALTY = 14
 const WEAPON_SKIN_LOW_VALUE_PENALTY = 9
 const WEAPON_SKIN_STATTRAK_VARIANT_PENALTY = 4
@@ -451,10 +452,15 @@ const DIAGNOSTIC_REASON_ALIAS = Object.freeze({
 const WEAPON_SKIN_FILTER_DIAGNOSTIC_KEYS = Object.freeze([
   "hard_reject_missing_liquidity",
   "penalty_missing_liquidity_allowed_forward",
+  "hard_reject_stale",
+  "stale_penalty_allowed_forward",
+  "aging_penalty_allowed_forward",
   "hard_reject_low_value",
   "penalty_low_value_allowed_forward",
   "stattrak_penalty",
   "souvenir_penalty",
+  "stale_forwarded_to_risky",
+  "stale_forwarded_to_speculative",
   "survived_into_risky",
   "survived_into_speculative"
 ])
@@ -1411,6 +1417,68 @@ function buildWeaponSkinSupportSignals({
   }
 }
 
+function evaluateWeaponSkinSeedFreshnessContext({
+  supportSignals = {},
+  snapshotFreshness = {},
+  quoteFreshnessState = FRESHNESS_STATES.STALE
+} = {}) {
+  const snapshotState = normalizeFreshnessState(snapshotFreshness?.state)
+  const quoteState = normalizeFreshnessState(quoteFreshnessState)
+  const hasStaleFreshness =
+    snapshotState === FRESHNESS_STATES.STALE || quoteState === FRESHNESS_STATES.STALE
+  const hasAgingFreshness =
+    !hasStaleFreshness &&
+    (snapshotState === FRESHNESS_STATES.AGING || quoteState === FRESHNESS_STATES.AGING)
+
+  if (!hasStaleFreshness && !hasAgingFreshness) {
+    return {
+      hardRejectStale: false,
+      penaltyKey: ""
+    }
+  }
+
+  if (hasAgingFreshness) {
+    return {
+      hardRejectStale: false,
+      penaltyKey: "aging_penalty_allowed_forward"
+    }
+  }
+
+  const snapshotAgeMinutes = toFiniteOrNull(snapshotFreshness?.ageMinutes)
+  const staleHardRejectMinutes =
+    Math.min(
+      Math.max(Number(marketSnapshotTtlMinutes || 30), 1) *
+        WEAPON_SKIN_STALE_SNAPSHOT_HARD_REJECT_TTL_MULTIPLIER,
+      24 * 60
+    )
+  const supportCount = countTrueValues([
+    supportSignals.hasCoverage,
+    supportSignals.hasNonTrivialPrice,
+    supportSignals.hasNameSignal,
+    supportSignals.hasUsefulVolume,
+    supportSignals.isUsefulCandidate,
+    quoteState !== FRESHNESS_STATES.STALE
+  ])
+  const weakCount = countTrueValues([
+    !supportSignals.hasCoverage,
+    !supportSignals.hasNonTrivialPrice,
+    !supportSignals.hasNameSignal,
+    !supportSignals.hasUsefulVolume && !supportSignals.isUsefulCandidate,
+    supportSignals.lowValuePattern,
+    quoteState === FRESHNESS_STATES.STALE
+  ])
+  const clearlyTooOld = snapshotAgeMinutes != null && snapshotAgeMinutes > staleHardRejectMinutes
+  const hardRejectStale =
+    (clearlyTooOld && quoteState === FRESHNESS_STATES.STALE && supportCount <= 4) ||
+    weakCount >= 5 ||
+    (weakCount >= 4 && supportCount <= 2)
+
+  return {
+    hardRejectStale,
+    penaltyKey: hardRejectStale ? "" : "stale_penalty_allowed_forward"
+  }
+}
+
 function evaluateWeaponSkinSeedFilters(inputItem = {}) {
   const referencePrice = toFiniteOrNull(inputItem?.referencePrice)
   const volume7d = toFiniteOrNull(inputItem?.marketVolume7d)
@@ -1472,12 +1540,24 @@ function evaluateWeaponSkinSeedFilters(inputItem = {}) {
   const hardRejectMissingLiquidity =
     false
   const penaltyMissingLiquidity = hasMissingLiquidityContext
+  const freshnessContext = hasMissingLiquidityContext
+    ? {
+        hardRejectStale: false,
+        penaltyKey: ""
+      }
+    : evaluateWeaponSkinSeedFreshnessContext({
+        supportSignals,
+        snapshotFreshness,
+        quoteFreshnessState
+      })
 
   return {
     hardRejectLowValue,
     penaltyLowValue,
     hardRejectMissingLiquidity,
     penaltyMissingLiquidity,
+    hardRejectStale: freshnessContext.hardRejectStale,
+    freshnessPenaltyKey: freshnessContext.penaltyKey,
     variantPenaltyKeys: [
       isStatTrakVariantName(inputItem?.marketHashName) ? "stattrak_penalty" : "",
       isSouvenirVariantName(inputItem?.marketHashName) ? "souvenir_penalty" : ""
@@ -2883,7 +2963,23 @@ function passesUniverseSeedFilters(
   }
 
   const snapshotFreshness = resolveSnapshotFreshnessState(inputItem, itemCategory)
-  if (
+  if (isWeaponSkin) {
+    if (weaponSkinFilter?.hardRejectStale) {
+      incrementReasonCounter(discardStats, "ignored_stale_data", itemCategory)
+      if (rejectedByItem) {
+        incrementItemReasonCounter(rejectedByItem, marketHashName, "ignored_stale_data", itemCategory)
+      }
+      incrementWeaponSkinFilterDiagnostic(weaponSkinDiagnostics, "hard_reject_stale", marketHashName)
+      return false
+    }
+    if (weaponSkinFilter?.freshnessPenaltyKey) {
+      incrementWeaponSkinFilterDiagnostic(
+        weaponSkinDiagnostics,
+        weaponSkinFilter.freshnessPenaltyKey,
+        marketHashName
+      )
+    }
+  } else if (
     snapshotFreshness.state === FRESHNESS_STATES.STALE &&
     snapshotFreshness.ageMinutes != null &&
     snapshotFreshness.ageMinutes > Math.max(Number(marketSnapshotTtlMinutes || 30), 1) * 12
@@ -3119,7 +3215,9 @@ function evaluateWeaponSkinRiskContext({
   isRiskyProfile = false,
   snapshotState = FRESHNESS_STATES.STALE,
   quoteFreshnessState = FRESHNESS_STATES.STALE,
-  referenceSignals = {}
+  referenceSignals = {},
+  stale = {},
+  depthSignals = {}
 } = {}) {
   const marketHashName = String(opportunity?.itemName || inputItem?.marketHashName || "").trim()
   const buyPrice = toFiniteOrNull(opportunity?.buyPrice)
@@ -3222,18 +3320,89 @@ function evaluateWeaponSkinRiskContext({
     supportSignals.hasNonTrivialPrice &&
     supportSignals.hasSaneSpread &&
     supportSignals.hasAcceptableReference
+  const usableMarketsAfterFreshness = Math.max(
+    Number(stale?.usableMarkets || marketCoverage || 0),
+    0
+  )
+  const hasInsufficientUsableMarkets = Boolean(stale?.hasInsufficientUsableMarkets)
+  const hasStaleFreshness =
+    normalizeFreshnessState(quoteFreshnessState) === FRESHNESS_STATES.STALE ||
+    normalizeFreshnessState(snapshotState) === FRESHNESS_STATES.STALE
+  const hasAgingFreshness =
+    !hasStaleFreshness &&
+    (
+      normalizeFreshnessState(quoteFreshnessState) === FRESHNESS_STATES.AGING ||
+      normalizeFreshnessState(snapshotState) === FRESHNESS_STATES.AGING
+    )
+  const staleSupportCount = countTrueValues([
+    supportSignals.hasCoverage,
+    supportSignals.hasNonTrivialPrice,
+    supportSignals.hasMeaningfulProfit,
+    supportSignals.hasSaneSpread,
+    supportSignals.hasAcceptableReference,
+    supportSignals.hasNameSignal || supportSignals.isUsefulCandidate,
+    supportSignals.hasUsefulVolume,
+    normalizeFreshnessState(snapshotState) !== FRESHNESS_STATES.STALE
+  ])
+  const staleWeakCount = countTrueValues([
+    marketCoverage < MIN_MARKET_COVERAGE,
+    !supportSignals.hasNonTrivialPrice,
+    !supportSignals.hasMeaningfulProfit,
+    !supportSignals.hasSaneSpread,
+    !supportSignals.hasAcceptableReference,
+    !supportSignals.hasNameSignal && !supportSignals.isUsefulCandidate && !supportSignals.hasUsefulVolume,
+    Boolean(depthSignals?.hasExtremeDepthGap),
+    Boolean(referenceSignals?.hasExtremeReferenceDeviation)
+  ])
+  const hasStrongStaleFallback =
+    supportSignals.hasCoverage &&
+    supportSignals.hasAcceptableReference &&
+    supportSignals.hasNonTrivialPrice &&
+    supportSignals.hasMeaningfulProfit &&
+    supportSignals.hasSaneSpread &&
+    staleSupportCount >= 5
+  const staleRejected =
+    hasStaleFreshness &&
+    (
+      Boolean(referenceSignals?.hasExtremeReferenceDeviation) ||
+      Boolean(depthSignals?.hasExtremeDepthGap) ||
+      staleWeakCount >= 5 ||
+      (
+        (hasInsufficientUsableMarkets || usableMarketsAfterFreshness < MIN_MARKET_COVERAGE) &&
+        !hasStrongStaleFallback
+      ) ||
+      (staleWeakCount >= 4 && staleSupportCount <= 3)
+    )
+  let staleForwardedTier = ""
+  if (!staleRejected && hasStaleFreshness && isRiskyProfile) {
+    penaltyKeys.push("stale_penalty_allowed_forward")
+    staleForwardedTier =
+      normalizeFreshnessState(quoteFreshnessState) === FRESHNESS_STATES.STALE
+        ? "speculative"
+        : "risky"
+  } else if (hasAgingFreshness && isRiskyProfile) {
+    penaltyKeys.push("aging_penalty_allowed_forward")
+    staleForwardedTier = "risky"
+  }
+  const uniquePenaltyKeys = Array.from(new Set(penaltyKeys))
 
   return {
     hardRejectLowValue,
-    penaltyKeys,
+    penaltyKeys: uniquePenaltyKeys,
     speculativeEligible:
       hasMissingLiquidityFallbackPath ||
       borderlineLowValueAllowedForward ||
-      variantSpeculativeAllowed,
+      variantSpeculativeAllowed ||
+      staleForwardedTier === "speculative",
     allowLowConfidencePath:
-      hasMissingLiquidityFallbackPath || borderlineLowValueAllowedForward || variantSpeculativeAllowed,
+      hasMissingLiquidityFallbackPath ||
+      borderlineLowValueAllowedForward ||
+      variantSpeculativeAllowed ||
+      staleForwardedTier === "speculative",
     missingLiquidityRejected: false,
-    missingLiquidityPenaltyApplied: volume7d == null && isRiskyProfile
+    missingLiquidityPenaltyApplied: volume7d == null && isRiskyProfile,
+    staleRejected,
+    staleForwardedTier
   }
 }
 
@@ -3290,7 +3459,9 @@ function computeRiskAdjustments({
           isRiskyProfile,
           snapshotState,
           quoteFreshnessState,
-          referenceSignals
+          referenceSignals,
+          stale,
+          depthSignals
         })
       : {
           hardRejectLowValue: false,
@@ -3298,7 +3469,9 @@ function computeRiskAdjustments({
           speculativeEligible: false,
           allowLowConfidencePath: false,
           missingLiquidityRejected: false,
-          missingLiquidityPenaltyApplied: false
+          missingLiquidityPenaltyApplied: false,
+          staleRejected: false,
+          staleForwardedTier: ""
         }
 
   if (profit == null || profit <= 0) {
@@ -3328,8 +3501,26 @@ function computeRiskAdjustments({
       penalty: 0
     }
   }
+  if (
+    itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+    isRiskyProfile &&
+    weaponSkinRiskContext.staleRejected
+  ) {
+    return {
+      passed: false,
+      primaryReason: "ignored_stale_data",
+      penalty: 0,
+      diagnosticRejectionKey: "hard_reject_stale"
+    }
+  }
   if (hasInsufficientUsableMarkets || usableMarketsAfterFreshness < MIN_MARKET_COVERAGE) {
-    return { passed: false, primaryReason: "ignored_stale_data", penalty: 0 }
+    const allowWeaponSkinStaleFallback =
+      itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+      isRiskyProfile &&
+      Boolean(weaponSkinRiskContext.staleForwardedTier)
+    if (!allowWeaponSkinStaleFallback) {
+      return { passed: false, primaryReason: "ignored_stale_data", penalty: 0 }
+    }
   }
   if (marketCoverage < Number(rules.minMarketCoverage || MIN_MARKET_COVERAGE)) {
     return { passed: false, primaryReason: "ignored_missing_markets", penalty: 0 }
@@ -3533,7 +3724,8 @@ function computeRiskAdjustments({
     penalty: round2(Math.max(penalty, 0)),
     diagnosticPenaltyKeys: weaponSkinRiskContext.penaltyKeys,
     speculativeEligible: weaponSkinRiskContext.speculativeEligible,
-    allowLowConfidencePath: weaponSkinRiskContext.allowLowConfidencePath
+    allowLowConfidencePath: weaponSkinRiskContext.allowLowConfidencePath,
+    staleForwardedTier: weaponSkinRiskContext.staleForwardedTier
   }
 }
 
@@ -6737,6 +6929,13 @@ async function runScanInternal(options = {}) {
       profile: riskyProfile
     })
     if (!riskyEvaluation.passed) {
+      if (itemCategory === ITEM_CATEGORIES.WEAPON_SKIN && riskyEvaluation?.diagnosticRejectionKey) {
+        incrementWeaponSkinFilterDiagnostic(
+          weaponSkinFilterDiagnostics,
+          riskyEvaluation.diagnosticRejectionKey,
+          itemName
+        )
+      }
       incrementReasonCounter(discardStats, riskyEvaluation.primaryReason, itemCategory)
       incrementItemReasonCounter(
         rejectedByItem,
@@ -6814,6 +7013,20 @@ async function runScanInternal(options = {}) {
     })
     if (itemCategory === ITEM_CATEGORIES.WEAPON_SKIN) {
       incrementWeaponSkinFilterDiagnostic(weaponSkinFilterDiagnostics, "survived_into_risky", itemName)
+      if (riskyEvaluation?.staleForwardedTier === "risky") {
+        incrementWeaponSkinFilterDiagnostic(
+          weaponSkinFilterDiagnostics,
+          "stale_forwarded_to_risky",
+          itemName
+        )
+      }
+      if (riskyEvaluation?.staleForwardedTier === "speculative") {
+        incrementWeaponSkinFilterDiagnostic(
+          weaponSkinFilterDiagnostics,
+          "stale_forwarded_to_speculative",
+          itemName
+        )
+      }
       if (speculativeEligible) {
         incrementWeaponSkinFilterDiagnostic(
           weaponSkinFilterDiagnostics,
