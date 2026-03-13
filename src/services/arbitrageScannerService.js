@@ -2872,12 +2872,12 @@ function evaluateNearEligibleRiskyScanReadiness(seed = {}) {
   const freshness = resolveCatalogSeedFreshnessContext(seed, itemCategory)
   const riskProfileBlocked = hasOpportunitySeedRiskProfileBlock(seed, progressionBlockers)
   const snapshotCapturedAt = normalizeTextValue(seed?.snapshotCapturedAt ?? seed?.snapshot_captured_at)
+  const hasCoverageForRisky = coverageCount >= 1
   const isRiskyLaneCandidate =
     (candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE ||
       candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE) &&
     (maturityState === MATURITY_STATES.NEAR_ELIGIBLE || maturityState === MATURITY_STATES.ELIGIBLE) &&
     progressionStatus !== SOURCE_CATALOG_PROGRESSION_STATUS.REJECTED
-  const hasCoverageForRisky = coverageCount >= 1
   const hasSnapshotPresence =
     Boolean(snapshotCapturedAt) && snapshotState !== SOURCE_CATALOG_SNAPSHOT_STATES.MISSING
   const borderlineStaleSnapshot = hasBorderlineStaleSnapshotForRiskySeed(seed, freshness, itemCategory)
@@ -2894,10 +2894,6 @@ function evaluateNearEligibleRiskyScanReadiness(seed = {}) {
   if (!isRiskyLaneCandidate) {
     blockingReasons.push("deferred_due_to_maturity")
   }
-  if (!hasCoverageForRisky) {
-    blockingReasons.push("deferred_near_eligible_insufficient_coverage")
-    blockingReasons.push("deferred_due_to_maturity")
-  }
   if (riskProfileBlocked) {
     blockingReasons.push("deferred_due_to_risk_profile")
   }
@@ -2909,6 +2905,9 @@ function evaluateNearEligibleRiskyScanReadiness(seed = {}) {
     softReasons.push("deferred_near_eligible_missing_snapshot")
   } else if (!hasUsableSnapshot || !freshness.usable) {
     softReasons.push("deferred_due_to_stale")
+  }
+  if (!hasCoverageForRisky) {
+    softReasons.push("deferred_near_eligible_insufficient_coverage")
   }
   if (!hasUsableReference) {
     softReasons.push("deferred_near_eligible_missing_reference")
