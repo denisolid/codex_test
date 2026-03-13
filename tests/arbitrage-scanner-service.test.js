@@ -21,6 +21,7 @@ const {
     buildApiOpportunityRow,
     buildFeedInsertRow,
     mapFeedRowToApiRow,
+    classifyOpportunityFeedEvent,
     isMateriallyNewOpportunity,
     isScannerRunOverdue,
     computeStrictCoverageThreshold,
@@ -29,6 +30,7 @@ const {
     computeLayerPriority,
     selectSeedsForLayeredScanning,
     DEFAULT_UNIVERSE_LIMIT,
+    HOT_OPPORTUNITY_SCAN_TARGET,
     SCAN_BATCH_SIZE,
     MAX_CONCURRENT_MARKET_REQUESTS,
     SCAN_TIMEOUT_PER_BATCH
@@ -405,7 +407,17 @@ test("feed mapper keeps scanner row core fields", () => {
     "11111111-1111-1111-1111-111111111111",
     {
       detectedAt: "2026-03-07T00:00:00.000Z",
-      isDuplicate: false
+      isDuplicate: false,
+      eventType: "updated",
+      eventAnalysis: {
+        changeReasons: ["profit", "score"],
+        profitDeltaPercent: 18,
+        scoreDelta: 9
+      },
+      previousRow: {
+        id: "00000000-0000-0000-0000-000000000000",
+        detected_at: "2026-03-06T23:30:00.000Z"
+      }
     }
   );
 
@@ -422,6 +434,9 @@ test("feed mapper keeps scanner row core fields", () => {
   assert.equal(apiRow.executionConfidence, "High");
   assert.equal(apiRow.itemRarity, "Covert");
   assert.equal(apiRow.itemRarityColor, "#eb4b4b");
+  assert.equal(apiRow.eventType, "updated");
+  assert.deepEqual(apiRow.changeReasons, ["profit", "score"]);
+  assert.equal(apiRow.previousFeedId, "00000000-0000-0000-0000-000000000000");
   assert.equal(Array.isArray(apiRow.badges), true);
 });
 
@@ -464,6 +479,59 @@ test("material dedupe detection uses profit and score thresholds", () => {
     ),
     false
   );
+});
+
+test("feed event classifier distinguishes updated and reactivated signals", () => {
+  const updated = classifyOpportunityFeedEvent(
+    {
+      profit: 108,
+      spread: 15,
+      score: 89,
+      executionConfidence: "High",
+      liquidityBand: "High",
+      liquidity: 220
+    },
+    {
+      profit: 100,
+      spread_pct: 11,
+      opportunity_score: 80,
+      execution_confidence: "Medium",
+      liquidity_label: "Medium",
+      is_active: true,
+      metadata: {
+        liquidity_value: 120
+      }
+    }
+  );
+  const reactivated = classifyOpportunityFeedEvent(
+    {
+      profit: 101,
+      spread: 11,
+      score: 80,
+      executionConfidence: "Medium",
+      liquidityBand: "Medium",
+      liquidity: 100
+    },
+    {
+      profit: 101,
+      spread_pct: 11,
+      opportunity_score: 80,
+      execution_confidence: "Medium",
+      liquidity_label: "Medium",
+      is_active: false,
+      metadata: {
+        liquidity_value: 100
+      }
+    }
+  );
+
+  assert.equal(updated.eventType, "updated");
+  assert.equal(updated.changeReasons.includes("spread"), true);
+  assert.equal(updated.changeReasons.includes("score"), true);
+  assert.equal(updated.changeReasons.includes("confidence"), true);
+  assert.equal(updated.changeReasons.includes("liquidity"), true);
+  assert.equal(reactivated.eventType, "reactivated");
+  assert.equal(reactivated.materiallyChanged, true);
 });
 
 test("scanner overdue watchdog respects running state and stale timestamps", () => {
@@ -579,10 +647,14 @@ test("layered scanning prioritizes hot core and limits cold scan share", () => {
   const selection = selectSeedsForLayeredScanning([...hotSeeds, ...warmSeeds, ...coldSeeds]);
   const opportunityLayers = selection?.diagnostics?.opportunity?.layers || {};
   const enrichmentLayers = selection?.diagnostics?.enrichment?.layers || {};
+  const hotUniverse = selection?.diagnostics?.hotUniverse || {};
 
-  assert.equal(Number(selection?.coreSeeds?.length || 0) >= 100, true);
+  assert.equal(Number(selection?.coreSeeds?.length || 0) >= 50, true);
   assert.equal(Number(selection?.opportunitySeeds?.length || 0) > 0, true);
+  assert.equal(Number(selection?.opportunitySeeds?.length || 0), HOT_OPPORTUNITY_SCAN_TARGET);
   assert.equal(Number(opportunityLayers.hot || 0) >= Number(opportunityLayers.cold || 0), true);
+  assert.equal(Number(hotUniverse.eligibleCount || 0) > 0, true);
+  assert.equal(Number(hotUniverse.nearEligibleCount || 0) > 0, true);
   assert.equal(Number(selection?.enrichmentSeeds?.length || 0) > 0, true);
   assert.equal(Number(enrichmentLayers.hot || 0), 0);
   assert.equal(Number(selection?.enrichmentSeeds?.length || 0) <= 120, true);

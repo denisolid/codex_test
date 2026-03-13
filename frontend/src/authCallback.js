@@ -1,11 +1,11 @@
 import "./style.css";
-import { injectSpeedInsights } from "@vercel/speed-insights";
 import { hasSupabaseConfig, supabase } from "./supabaseClient";
 import { API_URL } from "./config";
 import { setAuthToken, withAuthHeaders } from "./authToken";
+import { initObservability } from "./observability";
 
 const app = document.querySelector("#app");
-injectSpeedInsights();
+initObservability();
 
 function render(message, isError = false) {
   const roleAttr = isError

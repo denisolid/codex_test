@@ -258,8 +258,20 @@ module.exports = {
   arbitrageFeedRetentionHours: Number(process.env.ARBITRAGE_FEED_RETENTION_HOURS || 24),
   arbitrageFeedActiveLimit: Number(process.env.ARBITRAGE_FEED_ACTIVE_LIMIT || 500),
   arbitrageDuplicateWindowHours: Number(process.env.ARBITRAGE_DUPLICATE_WINDOW_HOURS || 4),
+  arbitrageHotOpportunityScanTarget: Number(
+    process.env.ARBITRAGE_HOT_OPPORTUNITY_SCAN_TARGET || 96
+  ),
+  arbitrageHotMaturePoolLimit: Number(process.env.ARBITRAGE_HOT_MATURE_POOL_LIMIT || 400),
   arbitrageMinProfitChangePct: Number(process.env.ARBITRAGE_MIN_PROFIT_CHANGE_PCT || 10),
   arbitrageMinScoreChange: Number(process.env.ARBITRAGE_MIN_SCORE_CHANGE || 8),
+  arbitrageMinSpreadChangePct: Number(process.env.ARBITRAGE_MIN_SPREAD_CHANGE_PCT || 3),
+  arbitrageMinLiquidityChangePct: Number(process.env.ARBITRAGE_MIN_LIQUIDITY_CHANGE_PCT || 20),
+  arbitrageMinConfidenceChangeLevels: Number(
+    process.env.ARBITRAGE_MIN_CONFIDENCE_CHANGE_LEVELS || 1
+  ),
+  arbitrageSignalHistoryLookbackHours: Number(
+    process.env.ARBITRAGE_SIGNAL_HISTORY_LOOKBACK_HOURS || 72
+  ),
   arbitrageInsertDuplicates:
     process.env.ARBITRAGE_INSERT_DUPLICATES == null
       ? false
