@@ -33,6 +33,9 @@ const {
     computeStrictCoverageThreshold,
     resolveMaturityStateForSeed,
     resolveScanLayerForMaturity,
+    resolveCatalogSeedFreshnessContext,
+    isOpportunityScanReadySeed,
+    summarizeSnapshotWarmupBacklog,
     computeLayerPriority,
     selectSeedsForLayeredScanning,
     DEFAULT_UNIVERSE_LIMIT,
@@ -1210,6 +1213,51 @@ test("seed maturity model maps ready items to hot layer", () => {
   assert.equal(computeLayerPriority({ ...maturity, itemCategory: "case" }) > 0, true);
 });
 
+test("seed maturity keeps fresh-quote near-eligible rows out of enriching", () => {
+  const maturity = resolveMaturityStateForSeed({
+    marketHashName: "AK-47 | Redline (Field-Tested)",
+    itemCategory: "weapon_skin",
+    candidateStatus: "near_eligible",
+    scanEligible: false,
+    hasSnapshotData: true,
+    snapshotCapturedAt: new Date(Date.now() - 80 * 60 * 1000).toISOString(),
+    snapshotStale: true,
+    quoteFetchedAt: new Date().toISOString(),
+    referencePrice: 11.2,
+    marketCoverageCount: 1,
+    marketVolume7d: 52,
+    liquidityRank: 61
+  });
+
+  assert.equal(maturity.maturityState, "near_eligible");
+  assert.equal(resolveScanLayerForMaturity(maturity), "warm");
+});
+
+test("opportunity readiness rejects rows that still need enrichment", () => {
+  const readyNearEligible = {
+    marketHashName: "AK-47 | Redline (Field-Tested)",
+    itemCategory: "weapon_skin",
+    maturityState: "near_eligible",
+    missingSnapshot: false,
+    missingReference: false,
+    hasSnapshotData: true,
+    snapshotCapturedAt: new Date(Date.now() - 40 * 60 * 1000).toISOString(),
+    snapshotStale: false,
+    quoteFetchedAt: new Date().toISOString()
+  };
+  const missingSnapshot = {
+    ...readyNearEligible,
+    marketHashName: "USP-S | Cortex (Field-Tested)",
+    missingSnapshot: true,
+    hasSnapshotData: false,
+    snapshotCapturedAt: null
+  };
+
+  assert.equal(resolveCatalogSeedFreshnessContext(readyNearEligible, "weapon_skin").usable, true);
+  assert.equal(isOpportunityScanReadySeed(readyNearEligible), true);
+  assert.equal(isOpportunityScanReadySeed(missingSnapshot), false);
+});
+
 test("layered scanning prioritizes hot core and limits cold scan share", () => {
   const hotSeeds = Array.from({ length: 180 }, (_, index) => ({
     marketHashName: `Hot Seed ${index}`,
@@ -1256,4 +1304,140 @@ test("layered scanning prioritizes hot core and limits cold scan share", () => {
   assert.equal(Number(selection?.enrichmentSeeds?.length || 0) > 0, true);
   assert.equal(Number(enrichmentLayers.hot || 0), 0);
   assert.equal(Number(selection?.enrichmentSeeds?.length || 0) <= 150, true);
+});
+
+test("snapshot warmup backlog can be deferred out of opportunity scan", () => {
+  const seeds = [
+    {
+      marketHashName: "AK-47 | Vulcan (Field-Tested)",
+      itemCategory: "weapon_skin",
+      skinId: 11,
+      hasSnapshotData: false,
+      snapshotStale: true,
+      maturityScore: 72,
+      enrichmentPriority: 64,
+      liquidityRank: 45
+    },
+    {
+      marketHashName: "Revolution Case",
+      itemCategory: "case",
+      skinId: 12,
+      hasSnapshotData: true,
+      snapshotStale: true,
+      maturityScore: 68,
+      enrichmentPriority: 48,
+      liquidityRank: 30
+    },
+    {
+      marketHashName: "Operation Breakout Case",
+      itemCategory: "case",
+      skinId: 13,
+      hasSnapshotData: true,
+      snapshotStale: false,
+      maturityScore: 84,
+      enrichmentPriority: 52,
+      liquidityRank: 28
+    }
+  ];
+
+  const backlog = summarizeSnapshotWarmupBacklog(seeds);
+
+  assert.equal(Number(backlog.freshSeedsBefore || 0), 1);
+  assert.equal(Number(backlog.missingSnapshotBacklog || 0), 1);
+  assert.equal(Number(backlog.warmupCandidates || 0), 2);
+  assert.equal(Number(backlog.warmupCandidatesByCategory.weapon_skin || 0), 1);
+  assert.equal(Number(backlog.warmupCandidatesByCategory.case || 0), 1);
+});
+
+test("layered scanning caps enriching backfill when mature opportunity supply is thin", () => {
+  const hotSeeds = Array.from({ length: 10 }, (_, index) => ({
+    marketHashName: `Limited Hot ${index}`,
+    itemCategory: "weapon_skin",
+    maturityState: "eligible",
+    maturityScore: 82,
+    liquidityRank: 60,
+    enrichmentPriority: 55,
+    scanLayer: "hot",
+    layerPriority: 120 - index
+  }));
+  const nearEligibleSeeds = Array.from({ length: 10 }, (_, index) => ({
+    marketHashName: `Limited Near ${index}`,
+    itemCategory: "case",
+    maturityState: "near_eligible",
+    maturityScore: 66,
+    liquidityRank: 44,
+    enrichmentPriority: 58,
+    scanLayer: "warm",
+    layerPriority: 90 - index
+  }));
+  const enrichingSeeds = Array.from({ length: 100 }, (_, index) => ({
+    marketHashName: `Limited Enriching ${index}`,
+    itemCategory: "weapon_skin",
+    maturityState: "enriching",
+    maturityScore: 48,
+    liquidityRank: 26,
+    enrichmentPriority: 72 - (index % 12),
+    scanLayer: "warm",
+    layerPriority: 65 - (index % 20)
+  }));
+
+  const selection = selectSeedsForLayeredScanning(
+    [...hotSeeds, ...nearEligibleSeeds, ...enrichingSeeds],
+    {
+      opportunityTarget: 50,
+      hotTarget: 20,
+      nearEligibleTarget: 20
+    }
+  );
+
+  assert.equal(Number(selection?.diagnostics?.selectedEnrichingForOpportunity || 0) <= 10, true);
+  assert.equal(Number(selection?.diagnostics?.matureOpportunityShortfall || 0) > 0, true);
+  assert.equal(Number(selection?.opportunitySeeds?.length || 0) < 50, true);
+});
+
+test("layered scanning can defer enrichment-needing rows from opportunity scan", () => {
+  const matureSeeds = Array.from({ length: 12 }, (_, index) => ({
+    marketHashName: `Ready ${index}`,
+    itemCategory: index % 2 === 0 ? "weapon_skin" : "case",
+    maturityState: index < 6 ? "eligible" : "near_eligible",
+    missingSnapshot: false,
+    missingReference: false,
+    hasSnapshotData: true,
+    snapshotCapturedAt: new Date().toISOString(),
+    snapshotStale: false,
+    quoteFetchedAt: new Date().toISOString(),
+    maturityScore: 80 - index,
+    liquidityRank: 50 - index,
+    enrichmentPriority: 60 - index,
+    scanLayer: index < 6 ? "hot" : "warm",
+    layerPriority: 120 - index
+  }));
+  const enrichingSeeds = Array.from({ length: 20 }, (_, index) => ({
+    marketHashName: `Needs Enrichment ${index}`,
+    itemCategory: "weapon_skin",
+    maturityState: "near_eligible",
+    missingSnapshot: true,
+    missingReference: false,
+    hasSnapshotData: false,
+    snapshotCapturedAt: null,
+    snapshotStale: true,
+    quoteFetchedAt: new Date().toISOString(),
+    maturityScore: 70 - (index % 5),
+    liquidityRank: 30,
+    enrichmentPriority: 55 - (index % 7),
+    scanLayer: "warm",
+    layerPriority: 90 - index
+  }));
+
+  const selection = selectSeedsForLayeredScanning([...matureSeeds, ...enrichingSeeds], {
+    opportunityTarget: 20,
+    hotTarget: 10,
+    nearEligibleTarget: 10,
+    opportunityFilter: isOpportunityScanReadySeed
+  });
+
+  assert.equal(Number(selection?.diagnostics?.matureOnlyOpportunitySelection || 0), 1);
+  assert.equal(Number(selection?.diagnostics?.deferredToEnrichmentItems || 0), 20);
+  assert.equal(Number(selection?.diagnostics?.selectedEnrichingForOpportunity || 0), 0);
+  assert.equal(Number(selection?.opportunitySeeds?.length || 0), 12);
 });

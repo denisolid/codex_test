@@ -147,6 +147,31 @@ test("candidate state separates enriching from strict eligible", () => {
   assert.equal(eligibleState.strictEligible, true)
 })
 
+test("candidate state promotes partial-ready rows to near-eligible when freshness is usable", () => {
+  const marketHashName = "AK-47 | Redline (Field-Tested)"
+  const category = normalizeCategory("weapon_skin", marketHashName)
+  const state = evaluateCandidateState({
+    marketHashName,
+    category,
+    tradable: true,
+    eligibility: { eligible: false, reason: "excludedWeakMarketCoverageItems" },
+    referencePrice: 10.8,
+    volume7d: 62,
+    marketCoverageCount: 1,
+    snapshot: { captured_at: new Date(Date.now() - 70 * 60 * 1000).toISOString() },
+    snapshotStale: true,
+    quoteFetchedAt: new Date().toISOString(),
+    liquidityRank: 58
+  })
+
+  assert.equal(normalizeCandidateStatus(state.candidateStatus), "near_eligible")
+  assert.equal(state.missingSnapshot, false)
+  assert.equal(state.freshnessState, "fresh")
+  assert.equal(Array.isArray(state.nearEligibleBlockers), true)
+  assert.equal(state.nearEligibleBlockers.length, 0)
+  assert.equal(state.eligibleBlockers.includes("market_coverage_insufficient"), true)
+})
+
 test("catalog maturity scoring distinguishes near-eligible from cold", () => {
   const nearEligible = computeCatalogMaturity({
     category: "case",
@@ -180,6 +205,22 @@ test("catalog maturity scoring distinguishes near-eligible from cold", () => {
   assert.equal(normalizeMaturityState(nearEligible.maturityState), "near_eligible")
   assert.equal(normalizeMaturityState(cold.maturityState), "cold")
   assert.equal(Number(nearEligible.maturityScore || 0) > Number(cold.maturityScore || 0), true)
+})
+
+test("source eligibility accepts usable quote freshness for mature rows", () => {
+  const category = normalizeCategory("weapon_skin")
+  const usableFreshness = evaluateEligibility({
+    category,
+    referencePrice: 9,
+    volume7d: 120,
+    marketCoverageCount: 3,
+    snapshotStale: true,
+    snapshotCapturedAt: new Date(Date.now() - 95 * 60 * 1000).toISOString(),
+    quoteFetchedAt: new Date().toISOString()
+  })
+
+  assert.equal(usableFreshness.eligible, true)
+  assert.equal(usableFreshness.reason, "")
 })
 
 test("skip recovery bypass triggers for collapsed legacy diagnostics", () => {
