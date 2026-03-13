@@ -9,7 +9,8 @@ const {
     getSpreadScore,
     getLiquidityScore,
     getStabilityScore,
-    getMarketScore
+    getMarketScore,
+    resolveExecutionConfidence
   }
 } = require("../src/services/arbitrageEngineService");
 
@@ -76,6 +77,25 @@ test("score helper buckets follow expected thresholds", () => {
   assert.equal(getStabilityScore(31), 20);
 
   assert.equal(getMarketScore("steam", "skinport"), 94);
+});
+
+test("resolveExecutionConfidence promotes strong standard setups at the new high boundary", () => {
+  const confidence = resolveExecutionConfidence({
+    volume7d: 180,
+    spreadPercent: 45,
+    marketScore: 82,
+    marketCoverage: 2,
+    depthFlags: [],
+    quoteAgeMinutes: 20,
+    snapshotStale: false,
+    itemCategory: "weapon_skin",
+    referenceDeviation: {
+      strong: false,
+      extreme: false
+    }
+  });
+
+  assert.equal(confidence, "High");
 });
 
 test("rankOpportunities applies filters and sort order", () => {
