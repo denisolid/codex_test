@@ -25,6 +25,11 @@ const {
     classifyOpportunityFeedEvent,
     isMateriallyNewOpportunity,
     isScannerRunOverdue,
+    buildRiskyProfileDiagnostics,
+    trackRiskyDecision,
+    trackRiskyBaselineOutcome,
+    trackRiskyBorderlinePromotion,
+    toRiskyProfileDiagnosticsSummary,
     computeStrictCoverageThreshold,
     resolveMaturityStateForSeed,
     resolveScanLayerForMaturity,
@@ -656,6 +661,91 @@ test("risky weapon-skin evaluation forwards borderline low-value skins into spec
   );
 });
 
+test("named risky weapon-skin profile admits borderline medium-liquidity candidates", () => {
+  const evaluation = computeRiskAdjustments({
+    opportunity: {
+      itemName: "AK-47 | Neon Rider (Field-Tested)",
+      itemCategory: "weapon_skin",
+      buyPrice: 4.2,
+      profit: 1.05,
+      spreadPercent: 4.9,
+      marketCoverage: 2
+    },
+    liquidity: {
+      volume7d: 30
+    },
+    stale: {
+      selectedState: "aging",
+      usableMarkets: 2,
+      hasInsufficientUsableMarkets: false
+    },
+    inputItem: {
+      marketHashName: "AK-47 | Neon Rider (Field-Tested)",
+      itemCategory: "weapon_skin",
+      referencePrice: 5,
+      hasSnapshotData: true,
+      snapshotCapturedAt: new Date(Date.now() - 25 * 60 * 1000).toISOString()
+    },
+    profile: {
+      name: "risky_weapon_skin",
+      minPriceUsd: 3,
+      minProfitUsd: 0.7,
+      minSpreadPercent: 3.75,
+      minVolume7d: 35,
+      minMarketCoverage: 2,
+      allowMissingLiquidity: false,
+      allowBorderlinePromotion: true
+    }
+  });
+
+  assert.equal(evaluation.passed, true);
+  assert.equal(
+    evaluation.borderlinePromotionKeys.includes("borderline_liquidity_promoted"),
+    true
+  );
+});
+
+test("risky weapon-skin evaluation still rejects weak medium-liquidity borderlines", () => {
+  const evaluation = computeRiskAdjustments({
+    opportunity: {
+      itemName: "AK-47 | Emerald Pinstripe (Field-Tested)",
+      itemCategory: "weapon_skin",
+      buyPrice: 4.1,
+      profit: 0.78,
+      spreadPercent: 4.4,
+      marketCoverage: 2
+    },
+    liquidity: {
+      volume7d: 20
+    },
+    stale: {
+      selectedState: "aging",
+      usableMarkets: 2,
+      hasInsufficientUsableMarkets: false
+    },
+    inputItem: {
+      marketHashName: "AK-47 | Emerald Pinstripe (Field-Tested)",
+      itemCategory: "weapon_skin",
+      referencePrice: 4.8,
+      hasSnapshotData: true,
+      snapshotCapturedAt: new Date(Date.now() - 20 * 60 * 1000).toISOString()
+    },
+    profile: {
+      name: "risky_weapon_skin",
+      minPriceUsd: 3,
+      minProfitUsd: 0.7,
+      minSpreadPercent: 3.75,
+      minVolume7d: 35,
+      minMarketCoverage: 2,
+      allowMissingLiquidity: false,
+      allowBorderlinePromotion: true
+    }
+  });
+
+  assert.equal(evaluation.passed, false);
+  assert.equal(evaluation.primaryReason, "ignored_low_liquidity");
+});
+
 test("risky weapon-skin evaluation applies aging penalty without hard rejection", () => {
   const evaluation = computeRiskAdjustments({
     opportunity: {
@@ -787,6 +877,24 @@ test("risky weapon-skin evaluation still rejects weak stale combinations", () =>
   assert.equal(evaluation.passed, false);
   assert.equal(evaluation.primaryReason, "ignored_stale_data");
   assert.equal(evaluation.diagnosticRejectionKey, "hard_reject_stale");
+});
+
+test("risky diagnostics summarize previous vs current thresholds and added admits", () => {
+  const diagnostics = buildRiskyProfileDiagnostics();
+  trackRiskyDecision(diagnostics, "weapon_skin", "attempted");
+  trackRiskyDecision(diagnostics, "weapon_skin", "accepted", "accepted_borderline_promotion");
+  trackRiskyBaselineOutcome(diagnostics, "weapon_skin", false);
+  trackRiskyBorderlinePromotion(diagnostics, "weapon_skin", ["borderline_liquidity_promoted"]);
+  trackRiskyDecision(diagnostics, "weapon_skin", "rejected", "ignored_low_liquidity");
+  diagnostics.weapon_skin.additionalAcceptedVsBaseline = 1;
+
+  const summary = toRiskyProfileDiagnosticsSummary(diagnostics);
+
+  assert.equal(summary.weapon_skin.previousProfile.minPriceUsd > summary.weapon_skin.profile.minPriceUsd, true);
+  assert.equal(summary.weapon_skin.previousProfile.minVolume7d > summary.weapon_skin.profile.minVolume7d, true);
+  assert.equal(summary.weapon_skin.additionalAcceptedVsBaseline, 1);
+  assert.equal(summary.weapon_skin.borderlinePromoted, 1);
+  assert.equal(summary.weapon_skin.topRejectedReasons[0].reason, "ignored_low_liquidity");
 });
 
 test("api row keeps high confidence when quotes are fresh and snapshot is only aging", () => {
