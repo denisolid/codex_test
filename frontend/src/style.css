@@ -2756,68 +2756,71 @@ button:disabled,
   animation: spin 0.8s linear infinite;
 }
 
-body.ui-sync-blocked .app-shell {
-  filter: blur(2px) saturate(0.9);
-  pointer-events: none;
-  user-select: none;
-}
-
 .ui-sync-blocker-overlay {
   position: fixed;
-  inset: 0;
+  right: 18px;
+  bottom: calc(env(safe-area-inset-bottom) + 18px);
   z-index: 430;
-  display: grid;
-  place-items: center;
-  padding: clamp(14px, 3vw, 28px);
-  background:
-    radial-gradient(
-      520px 260px at 20% 0%,
-      rgba(46, 139, 255, 0.2),
-      transparent 74%
-    ),
-    radial-gradient(
-      540px 260px at 84% 0%,
-      rgba(127, 93, 255, 0.18),
-      transparent 74%
-    ),
-    rgba(4, 8, 16, 0.62);
-  backdrop-filter: blur(8px) saturate(0.94);
+  width: min(340px, calc(100vw - 24px));
+  pointer-events: none;
 }
 
 .ui-sync-blocker-card {
-  width: min(360px, 94vw);
+  width: 100%;
   display: grid;
-  justify-items: center;
-  gap: 8px;
-  padding: 18px 20px;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
   border-radius: 14px;
   border: 1px solid rgba(137, 162, 214, 0.36);
   background: linear-gradient(
-    180deg,
+    128deg,
     rgba(11, 17, 30, 0.94),
-    rgba(9, 14, 24, 0.94)
+    rgba(9, 14, 24, 0.92)
   );
   box-shadow:
     0 18px 36px rgba(3, 7, 18, 0.56),
     0 0 0 1px rgba(82, 164, 255, 0.24);
-  text-align: center;
+  backdrop-filter: blur(12px) saturate(1.04);
 }
 
 .ui-sync-blocker-spinner {
-  width: 24px;
-  height: 24px;
+  width: 20px;
+  height: 20px;
   border-width: 3px;
+}
+
+.ui-sync-blocker-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
 }
 
 .ui-sync-blocker-card p {
   margin: 0;
   font-weight: 700;
   color: #eff6ff;
+  line-height: 1.2;
 }
 
 .ui-sync-blocker-card small {
+  display: block;
   color: #bfd2f3;
   font-size: 0.81rem;
+  line-height: 1.35;
+}
+
+@media (max-width: 720px) {
+  .ui-sync-blocker-overlay {
+    right: 12px;
+    bottom: calc(env(safe-area-inset-bottom) + 12px);
+    width: calc(100vw - 24px);
+  }
+
+  .ui-sync-blocker-card {
+    padding: 11px 12px;
+  }
 }
 
 .sync-note {

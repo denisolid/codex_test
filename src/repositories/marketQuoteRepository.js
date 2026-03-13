@@ -21,12 +21,40 @@ function toFiniteOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function toPositiveOrNull(value) {
+  const parsed = toFiniteOrNull(value)
+  return parsed != null && parsed > 0 ? parsed : null
+}
+
 function toIntegerOrNull(value, options = {}) {
   const parsed = toFiniteOrNull(value)
   if (parsed == null) return null
   const min = Number.isFinite(Number(options.min)) ? Number(options.min) : -Infinity
   const max = Number.isFinite(Number(options.max)) ? Number(options.max) : Infinity
   return Math.min(Math.max(Math.round(parsed), min), max)
+}
+
+function roundPrice(value, decimals = 4) {
+  const parsed = toPositiveOrNull(value)
+  if (parsed == null) return null
+  return Number(parsed.toFixed(decimals))
+}
+
+function resolveReferenceCandidate(row = {}) {
+  return (
+    roundPrice(row?.best_sell_net) ??
+    roundPrice(row?.best_sell) ??
+    roundPrice(row?.best_buy)
+  )
+}
+
+function resolveConservativeMedian(values = []) {
+  const sorted = (Array.isArray(values) ? values : [])
+    .map((value) => toPositiveOrNull(value))
+    .filter((value) => value != null)
+    .sort((a, b) => a - b)
+  if (!sorted.length) return null
+  return roundPrice(sorted[Math.floor((sorted.length - 1) / 2)])
 }
 
 function toJsonObject(value) {
@@ -116,7 +144,7 @@ exports.getLatestCoverageByItemNames = async (itemNames = []) => {
     const chunk = safeNames.slice(index, index + QUERY_BATCH_SIZE)
     const { data, error } = await supabaseAdmin
       .from(TABLE)
-      .select("item_name, market, volume_7d, fetched_at")
+      .select("item_name, market, best_buy, best_sell, best_sell_net, volume_7d, fetched_at")
       .in("item_name", chunk)
       .order("fetched_at", { ascending: false })
       .limit(50000)
@@ -144,7 +172,8 @@ exports.getLatestCoverageByItemNames = async (itemNames = []) => {
         marketCoverageCount: 0,
         markets: {},
         volume7dMax: null,
-        latestFetchedAt: null
+        latestFetchedAt: null,
+        referencePriceCandidates: []
       }
     }
     const bucket = coverageByItem[itemName]
@@ -159,6 +188,10 @@ exports.getLatestCoverageByItemNames = async (itemNames = []) => {
       bucket.volume7dMax =
         bucket.volume7dMax == null ? volume7d : Math.max(Number(bucket.volume7dMax), volume7d)
     }
+    const referenceCandidate = resolveReferenceCandidate(row)
+    if (referenceCandidate != null) {
+      bucket.referencePriceCandidates.push(referenceCandidate)
+    }
     const fetchedAt = normalizeText(row?.fetched_at)
     if (fetchedAt) {
       const nextTs = new Date(fetchedAt).getTime()
@@ -171,10 +204,26 @@ exports.getLatestCoverageByItemNames = async (itemNames = []) => {
     }
   }
 
-  return coverageByItem
+  return Object.fromEntries(
+    Object.entries(coverageByItem).map(([itemName, bucket]) => [
+      itemName,
+      {
+        marketCoverageCount: Number(bucket?.marketCoverageCount || 0),
+        markets: bucket?.markets || {},
+        volume7dMax: bucket?.volume7dMax == null ? null : Number(bucket.volume7dMax),
+        latestFetchedAt: bucket?.latestFetchedAt || null,
+        referencePriceMedian: resolveConservativeMedian(bucket?.referencePriceCandidates),
+        referencePriceCandidateCount: Array.isArray(bucket?.referencePriceCandidates)
+          ? bucket.referencePriceCandidates.length
+          : 0
+      }
+    ])
+  )
 }
 
 exports.__testables = {
   normalizeItemNames,
-  formatSupabaseError
+  formatSupabaseError,
+  resolveReferenceCandidate,
+  resolveConservativeMedian
 }
