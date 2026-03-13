@@ -91,19 +91,29 @@ exports.getFeed = asyncHandler(async (req, res) => {
 })
 
 exports.refreshFeed = asyncHandler(async (req, res) => {
+  const forceScanFromCatalog = req.body?.forceScanFromCatalog ?? req.body?.force_scan_from_catalog
+  const queryForceScanFromCatalog = req.query?.forceScanFromCatalog ?? req.query?.force_scan_from_catalog
+
   const result = await scannerService.triggerRefresh({
     userId: req.userId,
     trigger: req.body?.trigger || "manual",
-    forceRefresh: req.body?.forceRefresh
+    forceRefresh: req.body?.forceRefresh,
+    forceScanFromCatalog:
+      forceScanFromCatalog == null ? queryForceScanFromCatalog : forceScanFromCatalog
   })
 
   res.status(202).json(result)
 })
 
 exports.refreshFeedAdmin = asyncHandler(async (req, res) => {
+  const forceScanFromCatalog = req.body?.forceScanFromCatalog ?? req.body?.force_scan_from_catalog
+  const queryForceScanFromCatalog = req.query?.forceScanFromCatalog ?? req.query?.force_scan_from_catalog
+
   const result = await scannerService.triggerRefresh({
     trigger: req.body?.trigger || "admin_cron",
-    forceRefresh: req.body?.forceRefresh == null ? false : req.body.forceRefresh
+    forceRefresh: req.body?.forceRefresh == null ? false : req.body.forceRefresh,
+    forceScanFromCatalog:
+      forceScanFromCatalog == null ? queryForceScanFromCatalog : forceScanFromCatalog
   })
 
   res.status(202).json(result)
