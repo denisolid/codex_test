@@ -184,7 +184,7 @@ const SOURCE_CATALOG_QUOTA_RULES = Object.freeze({
 const SOURCE_QUALITY_RULES = Object.freeze({
   [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({
     minReferencePrice: 2,
-    minVolume7d: 45,
+    minVolume7d: 35,
     minMarketCoverage: 2
   }),
   [ITEM_CATEGORIES.CASE]: Object.freeze({
@@ -350,6 +350,19 @@ function buildPromotionReasonMap(initialValue = 0) {
 function buildPromotionReasonByCategoryMap(initialValue = 0) {
   return Object.fromEntries(
     SCANNER_SCOPE_CATEGORIES.map((category) => [category, buildPromotionReasonMap(initialValue)])
+  )
+}
+
+function buildFreshnessNumberMap(initialValue = 0) {
+  const initial = Number(initialValue || 0)
+  return Object.fromEntries(
+    Object.values(CATALOG_FRESHNESS_STATES).map((state) => [state, initial])
+  )
+}
+
+function buildFreshnessByCategoryMap(initialValue = 0) {
+  return Object.fromEntries(
+    SCANNER_SCOPE_CATEGORIES.map((category) => [category, buildFreshnessNumberMap(initialValue)])
   )
 }
 
@@ -521,6 +534,8 @@ function computeCatalogProgressContext({
     hasSnapshot: inferredSnapshotPresence
   })
   const hasReference = safeReferencePrice != null
+  const isWeaponSkin = normalizedCategory === ITEM_CATEGORIES.WEAPON_SKIN
+  const hasAnyCoverage = coverageCount >= 1
   const sufficientCoverage = coverageCount >= minCoverage
   const partialCoverage = coverageCount >= Math.max(1, Math.min(minCoverage - 1, minCoverage))
   const hasLiquidityContext = safeVolume7d != null
@@ -530,12 +545,12 @@ function computeCatalogProgressContext({
     hasReference &&
     safeReferencePrice >= Math.max(Number(rules.minReferencePrice || 1) * 0.9, 0.75)
   const hasUtilitySignal = Number(liquidityRank || 0) >= 28
-  const partialMarketSupport = partialCoverage || reasonableVolume
+  const partialMarketSupport = isWeaponSkin ? hasAnyCoverage : partialCoverage || reasonableVolume
   const nearEligibleSupportCount = countTrueValues([
     hasReference,
     freshness.usable,
     partialMarketSupport,
-    inferredSnapshotPresence || coverageCount >= 1 || freshness.hasQuoteFreshness,
+    inferredSnapshotPresence || hasAnyCoverage || freshness.hasQuoteFreshness,
     hasLiquidityContext || meaningfulReference || hasUtilitySignal
   ])
   const eligibleSupportCount = countTrueValues([
@@ -565,6 +580,9 @@ function computeCatalogProgressContext({
   }
   if (!partialMarketSupport) {
     nearEligibleBlockers.push("partial_market_support_missing")
+  }
+  if (isWeaponSkin && !hasAnyCoverage) {
+    nearEligibleBlockers.push("market_coverage_insufficient")
   }
   if (!sufficientCoverage) {
     eligibleBlockers.push("market_coverage_insufficient")
@@ -611,6 +629,7 @@ function computeCatalogProgressContext({
       hasReference &&
       freshness.usable &&
       partialMarketSupport &&
+      (!isWeaponSkin || hasAnyCoverage) &&
       nearEligibleSupportCount >= 3,
     canReachEligible:
       !eligibleBlockers.length &&
@@ -632,6 +651,62 @@ function computeCatalogProgressContext({
       ]) >= 2,
     hasStructuralReason
   }
+}
+
+function isUniverseBackfillReadyRow(row = {}) {
+  const candidateStatus = normalizeCandidateStatus(row?.candidate_status ?? row?.candidateStatus)
+  if (
+    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE ||
+    candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
+  ) {
+    return true
+  }
+  if (candidateStatus !== CATALOG_CANDIDATE_STATUS.ENRICHING) {
+    return false
+  }
+
+  const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
+  const category = normalizeCategory(row?.category, marketHashName)
+  const maturityState = normalizeMaturityState(
+    row?.maturity_state ?? row?.maturityState,
+    CATALOG_MATURITY_STATE.ENRICHING
+  )
+  if (!isScannerScopeCategory(category) || maturityState === CATALOG_MATURITY_STATE.COLD) {
+    return false
+  }
+
+  const referencePrice = toPositiveOrNull(row?.reference_price ?? row?.referencePrice)
+  const marketCoverageCount = Math.max(
+    Number((row?.market_coverage_count ?? row?.marketCoverageCount) || 0),
+    0
+  )
+  const volume7d = toPositiveOrNull(row?.volume_7d ?? row?.volume7d)
+  const snapshotCapturedAt = normalizeText(
+    row?.snapshot_captured_at || row?.snapshotCapturedAt
+  ) || null
+  const quoteFetchedAt = normalizeText(row?.quote_fetched_at || row?.quoteFetchedAt) || null
+  const snapshotStale =
+    row?.snapshot_stale == null ? !snapshotCapturedAt : Boolean(row.snapshot_stale)
+  const progress = computeCatalogProgressContext({
+    category,
+    referencePrice,
+    volume7d,
+    marketCoverageCount,
+    snapshotCapturedAt,
+    quoteFetchedAt,
+    snapshotStale,
+    hasSnapshot: !Boolean(row?.missing_snapshot),
+    liquidityRank: toFiniteOrNull(row?.liquidity_rank ?? row?.liquidityRank) ?? 0,
+    eligibilityReason: row?.eligibility_reason ?? row?.eligibilityReason
+  })
+
+  if (!progress.hasReference || !progress.freshness.usable) {
+    return false
+  }
+  if (category === ITEM_CATEGORIES.WEAPON_SKIN && marketCoverageCount <= 0) {
+    return false
+  }
+  return progress.hasMeaningfulProgress
 }
 
 function incrementPromotionReasons(counter = {}, reasons = [], category = "", byCategory = null) {
@@ -951,6 +1026,10 @@ function buildBaseDiagnostics() {
       stuckInEnrichingByReasonByCategory: buildPromotionReasonByCategoryMap(),
       blockedFromPromotionByReason: buildPromotionReasonMap(),
       blockedFromPromotionByReasonByCategory: buildPromotionReasonByCategoryMap(),
+      enrichingFreshnessByState: buildFreshnessNumberMap(),
+      enrichingFreshnessByStateByCategory: buildFreshnessByCategoryMap(),
+      nearEligibleFreshnessByState: buildFreshnessNumberMap(),
+      nearEligibleFreshnessByStateByCategory: buildFreshnessByCategoryMap(),
       excludedLowValueItems: 0,
       excludedLowLiquidityItems: 0,
       excludedWeakMarketCoverageItems: 0,
@@ -990,6 +1069,9 @@ function buildBaseDiagnostics() {
       selectedFromNearEligible: 0,
       selectedFromEnriching: 0,
       selectedFromCandidate: 0,
+      backfillReadyRows: 0,
+      backfillBlockedRows: 0,
+      backfillBlockedRowsByCategory: buildCategoryNumberMap(),
       candidateBackfillUsed: false,
       seedPromotionActive: false,
       fallbackToMaxEligible: false
@@ -1746,6 +1828,10 @@ async function enrichSourceCatalog() {
       stuckInEnrichingByReasonByCategory: buildPromotionReasonByCategoryMap(),
       blockedFromPromotionByReason: buildPromotionReasonMap(),
       blockedFromPromotionByReasonByCategory: buildPromotionReasonByCategoryMap(),
+      enrichingFreshnessByState: buildFreshnessNumberMap(),
+      enrichingFreshnessByStateByCategory: buildFreshnessByCategoryMap(),
+      nearEligibleFreshnessByState: buildFreshnessNumberMap(),
+      nearEligibleFreshnessByStateByCategory: buildFreshnessByCategoryMap(),
       candidateFunnelByCategory: buildEmptyCategoryCounter(),
       byCategory: buildEmptyCategoryCounter(),
       eligibleRowsByCategory: buildCategoryNumberMap(),
@@ -1803,6 +1889,10 @@ async function enrichSourceCatalog() {
   const stuckInEnrichingByReasonByCategory = buildPromotionReasonByCategoryMap()
   const blockedFromPromotionByReason = buildPromotionReasonMap()
   const blockedFromPromotionByReasonByCategory = buildPromotionReasonByCategoryMap()
+  const enrichingFreshnessByState = buildFreshnessNumberMap()
+  const enrichingFreshnessByStateByCategory = buildFreshnessByCategoryMap()
+  const nearEligibleFreshnessByState = buildFreshnessNumberMap()
+  const nearEligibleFreshnessByStateByCategory = buildFreshnessByCategoryMap()
   const updates = []
   const counts = {
     totalRows: rows.length,
@@ -1972,6 +2062,16 @@ async function enrichSourceCatalog() {
         category,
         stuckInEnrichingByReasonByCategory
       )
+      enrichingFreshnessByState[candidateState.freshnessState] =
+        Number(enrichingFreshnessByState[candidateState.freshnessState] || 0) + 1
+      enrichingFreshnessByStateByCategory[category][candidateState.freshnessState] =
+        Number(enrichingFreshnessByStateByCategory[category][candidateState.freshnessState] || 0) + 1
+    }
+    if (candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE) {
+      nearEligibleFreshnessByState[candidateState.freshnessState] =
+        Number(nearEligibleFreshnessByState[candidateState.freshnessState] || 0) + 1
+      nearEligibleFreshnessByStateByCategory[category][candidateState.freshnessState] =
+        Number(nearEligibleFreshnessByStateByCategory[category][candidateState.freshnessState] || 0) + 1
     }
     if (candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE) {
       incrementPromotionReasons(
@@ -2057,6 +2157,10 @@ async function enrichSourceCatalog() {
     stuckInEnrichingByReasonByCategory,
     blockedFromPromotionByReason,
     blockedFromPromotionByReasonByCategory,
+    enrichingFreshnessByState,
+    enrichingFreshnessByStateByCategory,
+    nearEligibleFreshnessByState,
+    nearEligibleFreshnessByStateByCategory,
     candidateFunnelByCategory: byCategory,
     byCategory,
     eligibleRowsByCategory,
@@ -2251,13 +2355,15 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
       ]
     })
   )
-  const nearEligibleRows = candidatePoolRows.filter(
+  const backfillReadyCandidatePoolRows = candidatePoolRows.filter(isUniverseBackfillReadyRow)
+  const backfillBlockedRows = candidatePoolRows.filter((row) => !isUniverseBackfillReadyRow(row))
+  const nearEligibleRows = backfillReadyCandidatePoolRows.filter(
     (row) => normalizeCandidateStatus(row?.candidate_status) === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
   )
-  const enrichingRows = candidatePoolRows.filter(
+  const enrichingRows = backfillReadyCandidatePoolRows.filter(
     (row) => normalizeCandidateStatus(row?.candidate_status) === CATALOG_CANDIDATE_STATUS.ENRICHING
   )
-  const candidateRows = candidatePoolRows.filter(
+  const candidateRows = backfillReadyCandidatePoolRows.filter(
     (row) => normalizeCandidateStatus(row?.candidate_status) === CATALOG_CANDIDATE_STATUS.CANDIDATE
   )
 
@@ -2337,13 +2443,16 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
     candidateRows: candidateRows.length,
     enrichingRows: enrichingRows.length,
     strictEligibleRows: strictEligibleRows.length,
-    fallbackTradableRows: candidatePoolRows.length,
+    fallbackTradableRows: backfillReadyCandidatePoolRows.length,
     selectedFromStrict,
     selectedFromEligible: selectedFromStrict,
     selectedFromNearEligible,
     selectedFromEnriching,
     selectedFromCandidate,
     selectedFromFallback,
+    backfillReadyRows: backfillReadyCandidatePoolRows.length,
+    backfillBlockedRows: backfillBlockedRows.length,
+    backfillBlockedRowsByCategory: countCatalogRowsByCategory(backfillBlockedRows),
     activeUniverseBuilt: normalizedUniverseRows.length,
     missingToTarget: Math.max(safeTarget - normalizedUniverseRows.length, 0),
     quotaTargetByCategory: quotas,
@@ -2457,6 +2566,17 @@ async function runPipeline(options = {}) {
       blockedFromPromotionByReasonByCategory:
         sourceCoverage?.blockedFromPromotionByReasonByCategory ||
         base.sourceCatalog.blockedFromPromotionByReasonByCategory,
+      enrichingFreshnessByState:
+        sourceCoverage?.enrichingFreshnessByState || base.sourceCatalog.enrichingFreshnessByState,
+      enrichingFreshnessByStateByCategory:
+        sourceCoverage?.enrichingFreshnessByStateByCategory ||
+        base.sourceCatalog.enrichingFreshnessByStateByCategory,
+      nearEligibleFreshnessByState:
+        sourceCoverage?.nearEligibleFreshnessByState ||
+        base.sourceCatalog.nearEligibleFreshnessByState,
+      nearEligibleFreshnessByStateByCategory:
+        sourceCoverage?.nearEligibleFreshnessByStateByCategory ||
+        base.sourceCatalog.nearEligibleFreshnessByStateByCategory,
       candidateFunnelByCategory:
         sourceCoverage?.candidateFunnelByCategory || base.sourceCatalog.candidateFunnelByCategory,
       eligibleRowsByCategory:
@@ -2631,6 +2751,7 @@ module.exports = {
     computeCatalogMaturity,
     evaluateCandidateState,
     evaluateEligibility,
+    isUniverseBackfillReadyRow,
     buildCategoryQuotas,
     buildSourceCatalogQuotas,
     resolveVolume7d,

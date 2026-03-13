@@ -1544,6 +1544,7 @@ function buildWeaponSkinSupportSignals({
   const name = String(marketHashName || "").trim()
   const prefix = extractWeaponPrefix(name)
   const pricePoint = toFiniteOrNull(executionPrice) ?? toFiniteOrNull(referencePrice)
+  const coverageCount = Math.max(Number(marketCoverage || 0), 0)
 
   return {
     lowValuePattern: isLowValueJunkName(name),
@@ -1558,7 +1559,15 @@ function buildWeaponSkinSupportSignals({
       toFiniteOrNull(spread) != null &&
       toFiniteOrNull(spread) >= WEAPON_SKIN_FALLBACK_MIN_SPREAD_PERCENT &&
       toFiniteOrNull(spread) <= WEAPON_SKIN_FALLBACK_MAX_SPREAD_PERCENT,
-    hasCoverage: Number(marketCoverage || 0) >= MIN_MARKET_COVERAGE,
+    coverageState:
+      coverageCount >= MIN_MARKET_COVERAGE
+        ? "normal"
+        : coverageCount >= 1
+          ? "borderline"
+          : "blocked",
+    hasAnyCoverage: coverageCount >= 1,
+    hasBorderlineCoverage: coverageCount === 1,
+    hasCoverage: coverageCount >= MIN_MARKET_COVERAGE,
     hasUsefulVolume:
       toFiniteOrNull(volume7d) != null &&
       toFiniteOrNull(volume7d) >= WEAPON_SKIN_CONTEXTUAL_LOW_VALUE_VOLUME_7D,
@@ -1570,6 +1579,30 @@ function buildWeaponSkinSupportSignals({
     hasAcceptableReference:
       !Boolean(hasStrongReferenceDeviation) && !Boolean(hasExtremeReferenceDeviation),
     isUsefulCandidate: Boolean(isUsefulCandidate)
+  }
+}
+
+function evaluateWeaponSkinLowValuePolicy({
+  weakSignals = [],
+  supportSignals = [],
+  allowForward = false,
+  hardRejectSupportMax = 1,
+  penaltySignals = []
+} = {}) {
+  const weakCount = countTrueValues(weakSignals)
+  const supportCount = countTrueValues(supportSignals)
+  const hardReject =
+    weakCount >= 5 ||
+    (weakCount >= 4 && supportCount <= Number(hardRejectSupportMax || 0) && !allowForward)
+  const penalty =
+    !hardReject &&
+    (weakCount >= 2 || countTrueValues(penaltySignals) > 0)
+
+  return {
+    weakCount,
+    supportCount,
+    hardReject,
+    penalty
   }
 }
 
@@ -1657,7 +1690,7 @@ function evaluateWeaponSkinSeedFilters(inputItem = {}) {
   const hasMissingLiquidityContext = !Boolean(inputItem?.hasSnapshotData)
   const veryLowPrice =
     referencePrice != null && referencePrice < WEAPON_SKIN_CONTEXTUAL_LOW_VALUE_PRICE_USD
-  const weakCoverage = marketCoverageCount < MIN_MARKET_COVERAGE
+  const weakCoverage = !supportSignals.hasAnyCoverage
   const weakVolume =
     volume7d != null &&
     volume7d < Number(UNIVERSE_MIN_VOLUME_7D_BY_CATEGORY[ITEM_CATEGORIES.WEAPON_SKIN] || 0)
@@ -1665,33 +1698,41 @@ function evaluateWeaponSkinSeedFilters(inputItem = {}) {
   const canForwardAsUsefulSkin =
     (supportSignals.hasCoverage && supportSignals.hasNonTrivialPrice) ||
     (supportSignals.hasCoverage && supportSignals.isUsefulCandidate) ||
+    (
+      supportSignals.hasBorderlineCoverage &&
+      supportSignals.hasNonTrivialPrice &&
+      (supportSignals.isUsefulCandidate || supportSignals.hasFreshData)
+    ) ||
     (supportSignals.hasNameSignal && supportSignals.hasNonTrivialPrice && supportSignals.isUsefulCandidate)
-  const lowValueWeakCount = countTrueValues([
-    supportSignals.lowValuePattern,
-    !supportSignals.hasNameSignal,
-    veryLowPrice,
-    weakCoverage,
-    weakUtility,
-    !supportSignals.hasFreshData
-  ])
-  const lowValueSupportCount = countTrueValues([
-    supportSignals.hasNameSignal,
-    supportSignals.hasNonTrivialPrice,
-    supportSignals.hasCoverage,
-    supportSignals.hasUsefulVolume,
-    supportSignals.hasFreshData,
-    supportSignals.isUsefulCandidate
-  ])
-  const hardRejectLowValue =
-    lowValueWeakCount >= 5 ||
-    (lowValueWeakCount >= 4 && lowValueSupportCount <= 1 && !canForwardAsUsefulSkin)
-  const penaltyLowValue =
-    !hardRejectLowValue &&
-    (lowValueWeakCount >= 2 ||
-      supportSignals.lowValuePattern ||
-      !supportSignals.hasNameSignal ||
-      veryLowPrice ||
-      weakUtility)
+  const lowValuePolicy = evaluateWeaponSkinLowValuePolicy({
+    weakSignals: [
+      supportSignals.lowValuePattern,
+      !supportSignals.hasNameSignal,
+      veryLowPrice,
+      weakCoverage,
+      weakUtility,
+      !supportSignals.hasFreshData
+    ],
+    supportSignals: [
+      supportSignals.hasNameSignal,
+      supportSignals.hasNonTrivialPrice,
+      supportSignals.hasAnyCoverage,
+      supportSignals.hasUsefulVolume,
+      supportSignals.hasFreshData,
+      supportSignals.isUsefulCandidate
+    ],
+    allowForward: canForwardAsUsefulSkin,
+    hardRejectSupportMax: 1,
+    penaltySignals: [
+      supportSignals.lowValuePattern,
+      !supportSignals.hasNameSignal,
+      veryLowPrice,
+      weakUtility,
+      weakVolume
+    ]
+  })
+  const hardRejectLowValue = lowValuePolicy.hardReject
+  const penaltyLowValue = lowValuePolicy.penalty
 
   const hardRejectMissingLiquidity =
     false
@@ -2299,13 +2340,15 @@ function resolveMaturityStateForSeed(seed = {}) {
     1
   )
   const partialCoverage = coverageCount >= Math.max(1, MIN_MARKET_COVERAGE - 1)
+  const hasMinimumCoverageForProgress =
+    itemCategory === ITEM_CATEGORIES.WEAPON_SKIN ? coverageCount >= 1 : partialCoverage
   const reasonableVolume =
     volume7d != null && volume7d >= Math.max(categoryVolumeFloor * 0.55, 18)
   const sufficientVolume = volume7d != null && volume7d >= categoryVolumeFloor
   const nearEligibleSupportCount = countTrueValues([
     !missingReference,
     freshness.usable,
-    partialCoverage || reasonableVolume,
+    hasMinimumCoverageForProgress || reasonableVolume,
     hasSnapshotData || coverageCount >= 1,
     !missingLiquidityContext || referencePrice != null
   ])
@@ -2341,7 +2384,7 @@ function resolveMaturityStateForSeed(seed = {}) {
     missingSignals <= 2 &&
     freshness.usable &&
     !missingReference &&
-    (partialCoverage || reasonableVolume) &&
+    (hasMinimumCoverageForProgress || (itemCategory !== ITEM_CATEGORIES.WEAPON_SKIN && reasonableVolume)) &&
     nearEligibleSupportCount >= 3
   ) {
     maturityState = MATURITY_STATES.NEAR_ELIGIBLE
@@ -2394,6 +2437,39 @@ function resolveMaturityStateForSeed(seed = {}) {
     structuralPenalty,
     freshnessState: freshness.state
   }
+}
+
+function isMinimumOpportunityBackfillReadySeed(seed = {}) {
+  const candidateStatus = normalizeCatalogCandidateStatus(
+    seed?.candidateStatus,
+    seed?.scanEligible ? CATALOG_CANDIDATE_STATUS.ELIGIBLE : CATALOG_CANDIDATE_STATUS.CANDIDATE
+  )
+  if (
+    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE ||
+    candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
+  ) {
+    return true
+  }
+  if (candidateStatus !== CATALOG_CANDIDATE_STATUS.ENRICHING) {
+    return false
+  }
+
+  const itemCategory = normalizeItemCategory(seed?.itemCategory, seed?.marketHashName)
+  const maturityState = normalizeMaturityState(seed?.maturityState)
+  if (maturityState === MATURITY_STATES.COLD) {
+    return false
+  }
+
+  const referencePrice = toFiniteOrNull(seed?.referencePrice)
+  const coverageCount = Math.max(Number(seed?.marketCoverageCount || 0), 0)
+  const freshness = resolveCatalogSeedFreshnessContext(seed, itemCategory)
+  if (referencePrice == null || !freshness.usable) {
+    return false
+  }
+  if (itemCategory === ITEM_CATEGORIES.WEAPON_SKIN && coverageCount <= 0) {
+    return false
+  }
+  return true
 }
 
 function resolveScanLayerForMaturity(seed = {}) {
@@ -2794,9 +2870,10 @@ async function loadMatureCatalogUniverseSeeds(limit = HOT_MATURE_POOL_LIMIT) {
     return []
   }
 
-  return buildSeedsFromCatalogRows([...(eligibleRows || []), ...(candidateRows || [])], {
+  const seeds = await buildSeedsFromCatalogRows([...(eligibleRows || []), ...(candidateRows || [])], {
     limit: safeLimit
   })
+  return seeds.filter(isMinimumOpportunityBackfillReadySeed)
 }
 
 function normalizeFeedEventType(value) {
@@ -3154,23 +3231,8 @@ function passesUniverseSeedFilters(
   }
 
   if (isWeaponSkin) {
-    if (weaponSkinFilter?.hardRejectLowValue) {
-      incrementReasonCounter(discardStats, "hard_reject_low_value", itemCategory)
-      if (rejectedByItem) {
-        incrementItemReasonCounter(
-          rejectedByItem,
-          marketHashName,
-          "hard_reject_low_value",
-          itemCategory
-        )
-      }
-      incrementWeaponSkinFilterDiagnostic(
-        weaponSkinDiagnostics,
-        "hard_reject_low_value",
-        marketHashName
-      )
-      return false
-    }
+    // The contextual low-value hard reject is handled above for low-signal skins.
+    // Do not reapply it globally here, or mature skins get filtered before enrichment can help.
     if (weaponSkinFilter?.penaltyLowValue) {
       incrementWeaponSkinFilterDiagnostic(
         weaponSkinDiagnostics,
@@ -3499,39 +3561,51 @@ function evaluateWeaponSkinRiskContext({
     spread != null && spread < WEAPON_SKIN_CONTEXTUAL_LOW_VALUE_SPREAD_PERCENT
   const lowUtility =
     (volume7d != null && volume7d < WEAPON_SKIN_CONTEXTUAL_LOW_VALUE_VOLUME_7D) ||
-    marketCoverage < MIN_MARKET_COVERAGE
+    supportSignals.coverageState === "blocked"
   const poorMarketRelevance =
-    !supportSignals.hasNameSignal && marketCoverage <= MIN_MARKET_COVERAGE
-  const lowValueWeakCount = countTrueValues([
-    lowPrice,
-    lowProfit,
-    weakSpread,
-    lowUtility,
-    poorMarketRelevance,
-    supportSignals.lowValuePattern
-  ])
-  const lowValueSupportCount = countTrueValues([
-    supportSignals.hasNameSignal,
-    supportSignals.hasNonTrivialPrice,
-    supportSignals.hasMeaningfulProfit,
-    supportSignals.hasSaneSpread,
-    supportSignals.hasCoverage,
-    supportSignals.hasAcceptableReference,
-    supportSignals.hasNonStaleQuotes
-  ])
-  const borderlineLowValueAllowedForward =
-    lowValueWeakCount >= 2 &&
+    !supportSignals.hasNameSignal &&
+    (!supportSignals.hasNonTrivialPrice || supportSignals.coverageState === "blocked")
+  const borderlineLowValueForwardCandidate =
     supportSignals.hasNonTrivialPrice &&
     supportSignals.hasMeaningfulProfit &&
     supportSignals.hasSaneSpread &&
     supportSignals.hasAcceptableReference &&
-    (supportSignals.hasCoverage || supportSignals.hasNameSignal)
-  const hardRejectLowValue =
-    lowValueWeakCount >= 5 ||
-    (lowValueWeakCount >= 4 && lowValueSupportCount <= 2 && !borderlineLowValueAllowedForward)
+    (supportSignals.hasAnyCoverage || supportSignals.hasNameSignal)
+  const lowValuePolicy = evaluateWeaponSkinLowValuePolicy({
+    weakSignals: [
+      lowPrice,
+      lowProfit,
+      weakSpread,
+      lowUtility,
+      poorMarketRelevance,
+      supportSignals.lowValuePattern
+    ],
+    supportSignals: [
+      supportSignals.hasNameSignal,
+      supportSignals.hasNonTrivialPrice,
+      supportSignals.hasMeaningfulProfit,
+      supportSignals.hasSaneSpread,
+      supportSignals.hasAnyCoverage,
+      supportSignals.hasAcceptableReference,
+      supportSignals.hasNonStaleQuotes
+    ],
+    allowForward: borderlineLowValueForwardCandidate,
+    hardRejectSupportMax: 2,
+    penaltySignals: [
+      supportSignals.lowValuePattern,
+      lowPrice,
+      lowProfit,
+      weakSpread,
+      lowUtility,
+      poorMarketRelevance
+    ]
+  })
+  const borderlineLowValueAllowedForward =
+    lowValuePolicy.weakCount >= 2 && borderlineLowValueForwardCandidate
+  const hardRejectLowValue = lowValuePolicy.hardReject
   const penaltyKeys = []
 
-  if (!hardRejectLowValue && borderlineLowValueAllowedForward) {
+  if (!hardRejectLowValue && borderlineLowValueAllowedForward && lowValuePolicy.penalty) {
     penaltyKeys.push("penalty_low_value_allowed_forward")
   }
   if (isStatTrakVariantName(marketHashName)) {
@@ -3640,6 +3714,7 @@ function evaluateWeaponSkinRiskContext({
   return {
     hardRejectLowValue,
     penaltyKeys: uniquePenaltyKeys,
+    hasMissingLiquidityFallbackPath,
     speculativeEligible:
       hasMissingLiquidityFallbackPath ||
       borderlineLowValueAllowedForward ||
@@ -3680,6 +3755,7 @@ function evaluateRiskyBorderlinePromotion({
       allowProfit: false,
       allowSpread: false,
       allowLiquidity: false,
+      allowCoverage: false,
       promotionKeys: []
     }
   }
@@ -3693,10 +3769,32 @@ function evaluateRiskyBorderlinePromotion({
   const minProfitUsd = Number(rules.minProfitUsd ?? profile?.minProfitUsd ?? 0)
   const minSpreadPercent = Number(rules.minSpreadPercent ?? profile?.minSpreadPercent ?? 0)
   const minVolume7d = Number(rules.minVolume7d ?? profile?.minVolume7d ?? 0)
+  const minMarketCoverage = Number(
+    rules.minMarketCoverage ?? profile?.minMarketCoverage ?? MIN_MARKET_COVERAGE
+  )
   const usableMarkets = Math.max(Number(stale?.usableMarkets || marketCoverage || 0), 0)
   const quoteState = normalizeFreshnessState(quoteFreshnessState)
   const snapshotFreshnessState = normalizeFreshnessState(snapshotState)
   const promotionKeys = []
+  const allowCoverage =
+    category === ITEM_CATEGORIES.WEAPON_SKIN &&
+    marketCoverage === 1 &&
+    usableMarkets >= 1 &&
+    buyPrice != null &&
+    buyPrice >= minPriceUsd &&
+    profit != null &&
+    profit >= minProfitUsd + Number(promotionRules?.minProfitBufferUsd || 0) &&
+    spread != null &&
+    spread >= minSpreadPercent + Number(promotionRules?.minSpreadBufferPercent || 0) &&
+    volume7d != null &&
+    volume7d >= minVolume7d &&
+    quoteState !== FRESHNESS_STATES.STALE &&
+    snapshotFreshnessState !== FRESHNESS_STATES.STALE &&
+    !Boolean(referenceSignals?.hasStrongReferenceDeviation) &&
+    !Boolean(referenceSignals?.hasExtremeReferenceDeviation) &&
+    !Boolean(depthSignals?.hasSuspiciousDepthGap) &&
+    !Boolean(depthSignals?.hasExtremeDepthGap) &&
+    !Boolean(stale?.hasInsufficientUsableMarkets)
 
   if (
     buyPrice == null ||
@@ -3704,8 +3802,8 @@ function evaluateRiskyBorderlinePromotion({
     profit == null ||
     profit <= 0 ||
     spread == null ||
-    marketCoverage < Number(rules.minMarketCoverage ?? profile?.minMarketCoverage ?? MIN_MARKET_COVERAGE) ||
-    usableMarkets < MIN_MARKET_COVERAGE ||
+    (marketCoverage < minMarketCoverage && !allowCoverage) ||
+    (usableMarkets < MIN_MARKET_COVERAGE && !allowCoverage) ||
     quoteState === FRESHNESS_STATES.STALE ||
     snapshotFreshnessState === FRESHNESS_STATES.STALE ||
     Boolean(referenceSignals?.hasStrongReferenceDeviation) ||
@@ -3718,6 +3816,7 @@ function evaluateRiskyBorderlinePromotion({
       allowProfit: false,
       allowSpread: false,
       allowLiquidity: false,
+      allowCoverage: false,
       promotionKeys
     }
   }
@@ -3750,11 +3849,13 @@ function evaluateRiskyBorderlinePromotion({
   if (allowProfit) promotionKeys.push("borderline_profit_promoted")
   if (allowSpread) promotionKeys.push("borderline_spread_promoted")
   if (allowLiquidity) promotionKeys.push("borderline_liquidity_promoted")
+  if (allowCoverage) promotionKeys.push("borderline_market_coverage_promoted")
 
   return {
     allowProfit,
     allowSpread,
     allowLiquidity,
+    allowCoverage,
     promotionKeys
   }
 }
@@ -3891,13 +3992,18 @@ function computeRiskAdjustments({
     const allowWeaponSkinStaleFallback =
       itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
       isRiskyProfile &&
-      Boolean(weaponSkinRiskContext.staleForwardedTier)
+      (Boolean(weaponSkinRiskContext.staleForwardedTier) || Boolean(borderlinePromotion.allowCoverage))
     if (!allowWeaponSkinStaleFallback) {
       return { passed: false, primaryReason: "ignored_stale_data", penalty: 0 }
     }
   }
-  if (marketCoverage < Number(rules.minMarketCoverage || MIN_MARKET_COVERAGE)) {
+  if (marketCoverage <= 0) {
     return { passed: false, primaryReason: "ignored_missing_markets", penalty: 0 }
+  }
+  if (marketCoverage < Number(rules.minMarketCoverage || MIN_MARKET_COVERAGE)) {
+    if (!borderlinePromotion.allowCoverage) {
+      return { passed: false, primaryReason: "ignored_missing_markets", penalty: 0 }
+    }
   }
 
   if (isPremiumCategory) {
@@ -3935,7 +4041,13 @@ function computeRiskAdjustments({
       return { passed: false, primaryReason: "ignored_low_liquidity", penalty: 0 }
     }
   } else if (volume7d == null) {
-    if (!profile.allowMissingLiquidity) {
+    const allowWeaponSkinMissingLiquidityFallback =
+      itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+      isRiskyProfile &&
+      Boolean(weaponSkinRiskContext.hasMissingLiquidityFallbackPath)
+    // Keep the category profile strict by default, but honor the existing
+    // evidence-based weapon-skin fallback when it is explicitly satisfied.
+    if (!profile.allowMissingLiquidity && !allowWeaponSkinMissingLiquidityFallback) {
       return { passed: false, primaryReason: "ignored_missing_liquidity_data", penalty: 0 }
     }
     if (weaponSkinRiskContext.missingLiquidityRejected) {
@@ -4081,6 +4193,9 @@ function computeRiskAdjustments({
       penalty += 4
     }
     if (borderlinePromotion.allowLiquidity) {
+      penalty += 5
+    }
+    if (borderlinePromotion.allowCoverage) {
       penalty += 5
     }
     if (
@@ -4962,61 +5077,6 @@ function collectDiscardReasonsFromOpportunity(
   }
 }
 
-function applyGuardFallbackReason(
-  opportunity = {},
-  liquidity = {},
-  discardStats = {},
-  rejectedByItem = null,
-  itemName = "",
-  itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
-) {
-  const rules = getCategoryScanRules(itemCategory, "risky")
-  const buyPrice = toFiniteOrNull(opportunity?.buyPrice)
-  const spread = toFiniteOrNull(opportunity?.spreadPercent ?? opportunity?.spread_pct)
-  const volume7d = toFiniteOrNull(liquidity?.volume7d)
-  const marketCoverage = Number(opportunity?.marketCoverage || 0)
-  const hasMissingDepth = Boolean(liquidity?.hasMissingDepth)
-  const hasBothDepthMissing = Boolean(liquidity?.buyDepthMissing) && Boolean(liquidity?.sellDepthMissing)
-  const hasSuspiciousDepthGap = Boolean(liquidity?.hasSuspiciousDepthGap)
-  const hasExtremeDepthGap = Boolean(liquidity?.hasExtremeDepthGap)
-  const referenceSignals = resolveReferenceSignals(opportunity, liquidity)
-  const isPremiumCategory = PREMIUM_ITEM_CATEGORIES.has(normalizeItemCategory(itemCategory))
-  const targetItemName = itemName || opportunity?.itemName
-  const record = (reason) => {
-    incrementReasonCounter(discardStats, reason, itemCategory)
-    if (rejectedByItem) {
-      incrementItemReasonCounter(rejectedByItem, targetItemName, reason, itemCategory)
-    }
-  }
-  if (buyPrice != null && buyPrice < Number(rules.minPriceUsd || MIN_EXECUTION_PRICE_USD)) {
-    record("ignored_execution_floor")
-  }
-  if (
-    (!isPremiumCategory && (volume7d == null || volume7d < Number(rules.minVolume7d || MIN_VOLUME_7D))) ||
-    (isPremiumCategory && volume7d != null && volume7d < PREMIUM_MIN_VOLUME_REJECT)
-  ) {
-    record("ignored_low_liquidity")
-  }
-  if (isPremiumCategory && volume7d == null && marketCoverage < PREMIUM_UNKNOWN_VOLUME_MIN_MARKET_COVERAGE) {
-    record("ignored_missing_markets")
-  }
-  if (spread != null && spread > Number(rules.maxSpreadPercent || MAX_SPREAD_PERCENT)) {
-    record("ignored_extreme_spread")
-  }
-  if (marketCoverage < Number(rules.minMarketCoverage || MIN_MARKET_COVERAGE)) {
-    record("ignored_missing_markets")
-  }
-  if (isPremiumCategory && referenceSignals.hasExtremeReferenceDeviation) {
-    record("ignored_reference_deviation")
-  }
-  if (
-    isPremiumCategory &&
-    (hasBothDepthMissing || hasMissingDepth || hasSuspiciousDepthGap || hasExtremeDepthGap)
-  ) {
-    record("ignored_missing_depth")
-  }
-}
-
 function createJobState() {
   return {
     latest: null,
@@ -5310,14 +5370,6 @@ async function reconcileStaleRunningRunsForType(
   }
 }
 
-async function reconcileStaleRunningRuns(nowMs = Date.now(), options = {}) {
-  return reconcileStaleRunningRunsForType(
-    SCANNER_TYPES.OPPORTUNITY_SCAN,
-    nowMs,
-    options
-  )
-}
-
 function mergeDiscardStats(target = {}, source = {}) {
   for (const [reason, count] of Object.entries(source || {})) {
     if (reason === "__byCategory") continue
@@ -5495,7 +5547,7 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
       ...row,
       ...computeLiquidityRank({
         volume7d: row.marketVolume7d,
-        marketCoverage: 2,
+        marketCoverage: Math.max(Number(row.marketCoverageCount || 0), 0),
         sevenDayChangePercent: row.sevenDayChangePercent,
         referencePrice: row.referencePrice,
         itemCategory: row.itemCategory
@@ -5821,7 +5873,9 @@ function mergeSeedWithSnapshot(seed = {}, snapshot = null) {
       toFiniteOrNull(snapshot?.lowest_listing_price) ??
       toFiniteOrNull(seed?.referencePrice)
   )
-  const marketVolume7d = toPositiveOrNull(resolveVolume7d(snapshot))
+  const marketVolume7d = toPositiveOrNull(
+    toFiniteOrNull(resolveVolume7d(snapshot)) ?? toFiniteOrNull(seed?.marketVolume7d)
+  )
   const hasUsableSnapshotLiquidity = referencePrice != null || marketVolume7d != null
 
   return {
@@ -5940,6 +5994,12 @@ function isOpportunityScanReadySeed(seed = {}) {
     return false
   }
   const itemCategory = normalizeItemCategory(seed?.itemCategory, seed?.marketHashName)
+  if (
+    itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+    Math.max(Number(seed?.marketCoverageCount || 0), 0) <= 0
+  ) {
+    return false
+  }
   const freshness = resolveCatalogSeedFreshnessContext(seed, itemCategory)
   return freshness.usable
 }
@@ -8826,14 +8886,6 @@ async function ensureScheduledJobHeartbeat(
   return Boolean(enqueue?.scanRunId)
 }
 
-async function ensureScheduledScanHeartbeat(statusHint = null, trigger = "watchdog") {
-  const opportunityStatus =
-    statusHint?.scannerType === SCANNER_TYPES.OPPORTUNITY_SCAN
-      ? statusHint
-      : statusHint?.jobs?.[SCANNER_TYPES.OPPORTUNITY_SCAN] || null
-  return ensureScheduledJobHeartbeat(SCANNER_TYPES.OPPORTUNITY_SCAN, opportunityStatus, trigger)
-}
-
 function parseIsoTimestampMs(value) {
   const text = String(value || "").trim()
   if (!text) return null
@@ -9377,7 +9429,9 @@ exports.__testables = {
   resolveScanLayerForMaturity,
   resolveCatalogSeedFreshnessContext,
   isOpportunityScanReadySeed,
+  isMinimumOpportunityBackfillReadySeed,
   summarizeSnapshotWarmupBacklog,
+  mergeSeedWithSnapshot,
   computeLayerPriority,
   selectSeedsForLayeredScanning,
   DEFAULT_UNIVERSE_LIMIT,

@@ -14,6 +14,7 @@ const {
     computeEnrichmentPriority,
     evaluateCandidateState,
     evaluateEligibility,
+    isUniverseBackfillReadyRow,
     normalizeCandidateStatus,
     normalizeMaturityState,
     normalizeCategory,
@@ -103,6 +104,20 @@ test("source eligibility rejects weak liquidity and coverage before universe bui
   assert.equal(normalizeCategory("", "Sport Gloves | Vice (Field-Tested)"), "")
 })
 
+test("source eligibility aligns weapon-skin liquidity floor with risky entry threshold", () => {
+  const category = normalizeCategory("weapon_skin")
+  const aligned = evaluateEligibility({
+    category,
+    referencePrice: 9,
+    volume7d: 36,
+    marketCoverageCount: 2,
+    snapshotStale: false
+  })
+
+  assert.equal(aligned.eligible, true)
+  assert.equal(aligned.reason, "")
+})
+
 test("candidate state separates enriching from strict eligible", () => {
   const category = normalizeCategory("case", "Revolution Case")
   const lowContextState = evaluateCandidateState({
@@ -170,6 +185,58 @@ test("candidate state promotes partial-ready rows to near-eligible when freshnes
   assert.equal(Array.isArray(state.nearEligibleBlockers), true)
   assert.equal(state.nearEligibleBlockers.length, 0)
   assert.equal(state.eligibleBlockers.includes("market_coverage_insufficient"), true)
+})
+
+test("candidate state keeps zero-coverage weapon skins in enriching", () => {
+  const marketHashName = "AK-47 | Redline (Field-Tested)"
+  const category = normalizeCategory("weapon_skin", marketHashName)
+  const state = evaluateCandidateState({
+    marketHashName,
+    category,
+    tradable: true,
+    eligibility: { eligible: false, reason: "excludedWeakMarketCoverageItems" },
+    referencePrice: 10.8,
+    volume7d: 62,
+    marketCoverageCount: 0,
+    snapshot: { captured_at: new Date().toISOString() },
+    snapshotStale: false,
+    quoteFetchedAt: new Date().toISOString(),
+    liquidityRank: 58
+  })
+
+  assert.equal(normalizeCandidateStatus(state.candidateStatus), "enriching")
+  assert.equal(state.nearEligibleBlockers.includes("market_coverage_insufficient"), true)
+})
+
+test("universe backfill blocks zero-coverage weapon-skin enriching rows", () => {
+  const recent = new Date().toISOString()
+  const blocked = isUniverseBackfillReadyRow({
+    market_hash_name: "AK-47 | Redline (Field-Tested)",
+    category: "weapon_skin",
+    candidate_status: "enriching",
+    maturity_state: "enriching",
+    reference_price: 12,
+    market_coverage_count: 0,
+    volume_7d: 80,
+    snapshot_captured_at: recent,
+    snapshot_stale: false,
+    quote_fetched_at: recent
+  })
+  const allowed = isUniverseBackfillReadyRow({
+    market_hash_name: "AK-47 | Redline (Field-Tested)",
+    category: "weapon_skin",
+    candidate_status: "enriching",
+    maturity_state: "enriching",
+    reference_price: 12,
+    market_coverage_count: 1,
+    volume_7d: 80,
+    snapshot_captured_at: recent,
+    snapshot_stale: false,
+    quote_fetched_at: recent
+  })
+
+  assert.equal(blocked, false)
+  assert.equal(allowed, true)
 })
 
 test("catalog maturity scoring distinguishes near-eligible from cold", () => {

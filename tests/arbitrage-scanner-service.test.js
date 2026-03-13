@@ -35,7 +35,9 @@ const {
     resolveScanLayerForMaturity,
     resolveCatalogSeedFreshnessContext,
     isOpportunityScanReadySeed,
+    isMinimumOpportunityBackfillReadySeed,
     summarizeSnapshotWarmupBacklog,
+    mergeSeedWithSnapshot,
     computeLayerPriority,
     selectSeedsForLayeredScanning,
     DEFAULT_UNIVERSE_LIMIT,
@@ -100,6 +102,29 @@ test("snapshot-driven liquidity helpers produce bounded values", () => {
   assert.equal(Number.isFinite(score), true);
   assert.equal(score >= 0 && score <= 100, true);
   assert.equal(volume7d, 119);
+});
+
+test("warmup merge preserves existing volume when refreshed snapshot lacks volume", () => {
+  const merged = mergeSeedWithSnapshot(
+    {
+      marketHashName: "AK-47 | Redline (Field-Tested)",
+      itemCategory: "weapon_skin",
+      referencePrice: 9.4,
+      marketVolume7d: 84,
+      hasSnapshotData: true,
+      snapshotStale: true
+    },
+    {
+      captured_at: new Date().toISOString(),
+      average_7d_price: 10.2,
+      lowest_listing_price: 9.9,
+      volume_24h: null
+    }
+  );
+
+  assert.equal(merged.marketVolume7d, 84);
+  assert.equal(merged.referencePrice, 10.2);
+  assert.equal(merged.hasSnapshotData, true);
 });
 
 test("stale penalty increases with quote age", () => {
@@ -379,6 +404,33 @@ test("universe seed filter keeps useful low-value-pattern skins with a penalty",
   assert.equal(Number(weaponSkinDiagnostics.penalty_low_value_allowed_forward || 0), 1);
 });
 
+test("universe seed filter keeps borderline-coverage weapon skins contextual", () => {
+  const discardStats = {};
+  const weaponSkinDiagnostics = {};
+  const recent = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const allowed = passesUniverseSeedFilters(
+    {
+      marketHashName: "P90 | Sand Spray (Factory New)",
+      itemCategory: "weapon_skin",
+      hasSnapshotData: true,
+      snapshotCapturedAt: recent,
+      snapshotStale: false,
+      referencePrice: 6.5,
+      marketVolume7d: 90,
+      marketCoverageCount: 1,
+      quoteFetchedAt: recent,
+      maturityState: "near_eligible"
+    },
+    discardStats,
+    null,
+    { weaponSkinDiagnostics }
+  );
+
+  assert.equal(allowed, true);
+  assert.equal(Number(discardStats.hard_reject_low_value || 0), 0);
+  assert.equal(Number(weaponSkinDiagnostics.penalty_low_value_allowed_forward || 0), 1);
+});
+
 test("universe seed filter applies variant penalties without auto-rejecting StatTrak or Souvenir", () => {
   const discardStats = {};
   const weaponSkinDiagnostics = {};
@@ -577,6 +629,106 @@ test("risky weapon-skin evaluation allows speculative fallback for missing liqui
     evaluation.diagnosticPenaltyKeys.includes("stattrak_penalty"),
     true
   );
+});
+
+test("named risky weapon-skin profile preserves evidence-based missing-liquidity fallback", () => {
+  const evaluation = computeRiskAdjustments({
+    opportunity: {
+      itemName: "StatTrak™ AK-47 | Redline (Field-Tested)",
+      itemCategory: "weapon_skin",
+      buyPrice: 12,
+      profit: 2.2,
+      spreadPercent: 14,
+      marketCoverage: 2
+    },
+    liquidity: {
+      volume7d: null
+    },
+    stale: {
+      selectedState: "fresh",
+      usableMarkets: 2,
+      hasInsufficientUsableMarkets: false
+    },
+    inputItem: {
+      marketHashName: "StatTrak™ AK-47 | Redline (Field-Tested)",
+      itemCategory: "weapon_skin",
+      referencePrice: 14,
+      hasSnapshotData: true,
+      snapshotCapturedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString()
+    },
+    profile: {
+      name: "risky_weapon_skin",
+      minPriceUsd: 3,
+      minProfitUsd: 0.7,
+      minSpreadPercent: 3.75,
+      minVolume7d: 35,
+      minMarketCoverage: 2,
+      minScore: 38,
+      allowMissingLiquidity: false,
+      allowMissingDepthWithPenalty: false,
+      allowBorderlinePromotion: true,
+      requireFreshData: false,
+      maxQuoteAgeMinutes: Infinity
+    }
+  });
+
+  assert.equal(evaluation.passed, true);
+  assert.equal(evaluation.speculativeEligible, true);
+  assert.equal(evaluation.allowLowConfidencePath, true);
+  assert.equal(
+    evaluation.diagnosticPenaltyKeys.includes("penalty_missing_liquidity_allowed_forward"),
+    true
+  );
+});
+
+test("named risky weapon-skin profile can promote borderline single-market coverage", () => {
+  const evaluation = computeRiskAdjustments({
+    opportunity: {
+      itemName: "AK-47 | Redline (Field-Tested)",
+      itemCategory: "weapon_skin",
+      buyPrice: 12,
+      profit: 2.2,
+      spreadPercent: 10,
+      marketCoverage: 1
+    },
+    liquidity: {
+      volume7d: 52
+    },
+    stale: {
+      selectedState: "fresh",
+      usableMarkets: 1,
+      hasInsufficientUsableMarkets: false
+    },
+    inputItem: {
+      marketHashName: "AK-47 | Redline (Field-Tested)",
+      itemCategory: "weapon_skin",
+      referencePrice: 14,
+      hasSnapshotData: true,
+      snapshotCapturedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+      marketCoverageCount: 1
+    },
+    profile: {
+      name: "risky_weapon_skin",
+      minPriceUsd: 3,
+      minProfitUsd: 0.7,
+      minSpreadPercent: 3.75,
+      minVolume7d: 35,
+      minMarketCoverage: 2,
+      minScore: 38,
+      allowMissingLiquidity: false,
+      allowMissingDepthWithPenalty: false,
+      allowBorderlinePromotion: true,
+      requireFreshData: false,
+      maxQuoteAgeMinutes: Infinity
+    }
+  });
+
+  assert.equal(evaluation.passed, true);
+  assert.equal(
+    evaluation.borderlinePromotionKeys.includes("borderline_market_coverage_promoted"),
+    true
+  );
+  assert.equal(Number(evaluation.penalty || 0) >= 5, true);
 });
 
 test("risky weapon-skin evaluation does not reject only because liquidity is missing", () => {
@@ -1243,7 +1395,8 @@ test("opportunity readiness rejects rows that still need enrichment", () => {
     hasSnapshotData: true,
     snapshotCapturedAt: new Date(Date.now() - 40 * 60 * 1000).toISOString(),
     snapshotStale: false,
-    quoteFetchedAt: new Date().toISOString()
+    quoteFetchedAt: new Date().toISOString(),
+    marketCoverageCount: 1
   };
   const missingSnapshot = {
     ...readyNearEligible,
@@ -1256,6 +1409,47 @@ test("opportunity readiness rejects rows that still need enrichment", () => {
   assert.equal(resolveCatalogSeedFreshnessContext(readyNearEligible, "weapon_skin").usable, true);
   assert.equal(isOpportunityScanReadySeed(readyNearEligible), true);
   assert.equal(isOpportunityScanReadySeed(missingSnapshot), false);
+});
+
+test("opportunity readiness blocks zero-coverage weapon skins and raw enriching backfill", () => {
+  const recent = new Date().toISOString();
+  const zeroCoverage = {
+    marketHashName: "AK-47 | Redline (Field-Tested)",
+    itemCategory: "weapon_skin",
+    candidateStatus: "near_eligible",
+    maturityState: "near_eligible",
+    missingSnapshot: false,
+    missingReference: false,
+    hasSnapshotData: true,
+    snapshotCapturedAt: recent,
+    snapshotStale: false,
+    quoteFetchedAt: recent,
+    referencePrice: 11.5,
+    marketCoverageCount: 0
+  };
+  const blockedEnriching = {
+    marketHashName: "AK-47 | Vulcan (Field-Tested)",
+    itemCategory: "weapon_skin",
+    candidateStatus: "enriching",
+    maturityState: "enriching",
+    missingSnapshot: false,
+    missingReference: false,
+    hasSnapshotData: true,
+    snapshotCapturedAt: recent,
+    snapshotStale: false,
+    quoteFetchedAt: recent,
+    referencePrice: 24,
+    marketCoverageCount: 0
+  };
+  const allowedEnriching = {
+    ...blockedEnriching,
+    marketHashName: "AK-47 | Bloodsport (Field-Tested)",
+    marketCoverageCount: 1
+  };
+
+  assert.equal(isOpportunityScanReadySeed(zeroCoverage), false);
+  assert.equal(isMinimumOpportunityBackfillReadySeed(blockedEnriching), false);
+  assert.equal(isMinimumOpportunityBackfillReadySeed(allowedEnriching), true);
 });
 
 test("layered scanning prioritizes hot core and limits cold scan share", () => {
@@ -1406,6 +1600,7 @@ test("layered scanning can defer enrichment-needing rows from opportunity scan",
     snapshotCapturedAt: new Date().toISOString(),
     snapshotStale: false,
     quoteFetchedAt: new Date().toISOString(),
+    marketCoverageCount: 2,
     maturityScore: 80 - index,
     liquidityRank: 50 - index,
     enrichmentPriority: 60 - index,

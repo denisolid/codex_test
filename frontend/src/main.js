@@ -3603,6 +3603,22 @@ function runUiTask(task) {
     });
 }
 
+function waitForUiPaint() {
+  if (
+    typeof window === "undefined" ||
+    typeof window.requestAnimationFrame !== "function"
+  ) {
+    return Promise.resolve();
+  }
+
+  // Let the browser paint the loading state before request work continues.
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(resolve);
+    });
+  });
+}
+
 function syncMarketCommissionFromElement(el) {
   if (!el) return;
   const value = String(el.value || "");
@@ -3956,6 +3972,8 @@ async function refreshCompareDrawerDataForItemSeed(itemSeed = {}) {
   state.compareDrawer.loading = true;
   state.compareDrawer.error = "";
   render();
+  await waitForUiPaint();
+  if (ticket !== compareDrawerRequestTicket) return;
 
   try {
     const comparisonPayload = await api("/market/compare", {
@@ -4079,6 +4097,8 @@ async function refreshCompareDrawerData(options = {}) {
   state.compareDrawer.loading = true;
   state.compareDrawer.error = "";
   render();
+  await waitForUiPaint();
+  if (ticket !== compareDrawerRequestTicket) return;
 
   try {
     const comparisonPayload = await api("/market/compare", {
@@ -4259,26 +4279,16 @@ function openCompareDrawerBySkinId(rawSkinId, triggerElement = null) {
     closePortfolioControlsDrawer({ restoreFocus: false });
   }
 
-  state.compareDrawer.open = true;
-  state.compareDrawer.focusPending = true;
-  state.compareDrawer.loading = false;
-  state.compareDrawer.error = "";
-  state.compareDrawer.skinId = skinId;
-  state.compareDrawer.payload = buildCompareDrawerSnapshotFromHolding(holding);
-  state.compareDrawer.marketHashName = String(
-    holding.marketHashName || `Skin #${skinId}`,
-  );
-  render();
-
+  const snapshot = buildCompareDrawerSnapshotFromHolding(holding);
   const hasPerMarket = Boolean(
-    state.compareDrawer.payload?.marketComparison?.perMarket &&
-    Array.isArray(state.compareDrawer.payload.marketComparison.perMarket) &&
-    state.compareDrawer.payload.marketComparison.perMarket.length,
+    snapshot?.marketComparison?.perMarket &&
+    Array.isArray(snapshot.marketComparison.perMarket) &&
+    snapshot.marketComparison.perMarket.length,
   );
   const hasCsfloatData = Boolean(
-    state.compareDrawer.payload?.marketComparison?.perMarket &&
-    Array.isArray(state.compareDrawer.payload.marketComparison.perMarket) &&
-    state.compareDrawer.payload.marketComparison.perMarket.some((row) => {
+    snapshot?.marketComparison?.perMarket &&
+    Array.isArray(snapshot.marketComparison.perMarket) &&
+    snapshot.marketComparison.perMarket.some((row) => {
       if (
         String(row?.source || "")
           .trim()
@@ -4290,8 +4300,20 @@ function openCompareDrawerBySkinId(rawSkinId, triggerElement = null) {
       );
     }),
   );
+  const needsLiveRefresh = !hasPerMarket || !hasCsfloatData;
 
-  if (!hasPerMarket || !hasCsfloatData) {
+  state.compareDrawer.open = true;
+  state.compareDrawer.focusPending = true;
+  state.compareDrawer.loading = needsLiveRefresh;
+  state.compareDrawer.error = "";
+  state.compareDrawer.skinId = skinId;
+  state.compareDrawer.payload = snapshot;
+  state.compareDrawer.marketHashName = String(
+    holding.marketHashName || `Skin #${skinId}`,
+  );
+  render();
+
+  if (needsLiveRefresh) {
     runUiTask(() =>
       refreshCompareDrawerData({ skinId, forceRefresh: !hasCsfloatData }),
     );
@@ -7209,6 +7231,7 @@ async function openInspectModalBySteamItemId(rawId) {
   clearError();
   const id = String(rawId ?? "").trim();
   if (!id) return;
+  const requestedSteamItemId = id;
   state.inspectedSteamItemId = id;
 
   state.inspectModal.open = true;
@@ -7220,10 +7243,23 @@ async function openInspectModalBySteamItemId(rawId) {
   state.inspectModal.marketInsight = null;
   state.inspectModal.exitWhatIf = createExitWhatIfState();
   render();
+  await waitForUiPaint();
+  if (
+    !state.inspectModal.open ||
+    state.inspectModal.steamItemId !== requestedSteamItemId
+  ) {
+    return;
+  }
 
   try {
     const payload = await fetchInspectionBundleBySteamItemId(id);
     if (!payload) return;
+    if (
+      !state.inspectModal.open ||
+      state.inspectModal.steamItemId !== requestedSteamItemId
+    ) {
+      return;
+    }
     state.marketTab.skinId = String(
       payload.skin?.id || state.marketTab.skinId || "",
     );
