@@ -2829,11 +2829,11 @@ function evaluateNearEligibleRiskyScanReadiness(seed = {}) {
   const freshness = resolveCatalogSeedFreshnessContext(seed, itemCategory)
   const riskProfileBlocked = hasOpportunitySeedRiskProfileBlock(seed, progressionBlockers)
   const snapshotCapturedAt = normalizeTextValue(seed?.snapshotCapturedAt ?? seed?.snapshot_captured_at)
-  const isNearEligibleWeaponSkin =
-    itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
-    candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE &&
-    progressionStatus === SOURCE_CATALOG_PROGRESSION_STATUS.BLOCKED_ELIGIBLE &&
-    (maturityState === MATURITY_STATES.NEAR_ELIGIBLE || maturityState === MATURITY_STATES.ELIGIBLE)
+  const isRiskyLaneCandidate =
+    (candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE ||
+      candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE) &&
+    (maturityState === MATURITY_STATES.NEAR_ELIGIBLE || maturityState === MATURITY_STATES.ELIGIBLE) &&
+    progressionStatus !== SOURCE_CATALOG_PROGRESSION_STATUS.REJECTED
   const hasCoverageForRisky = coverageCount >= 1
   const hasSnapshotPresence =
     Boolean(snapshotCapturedAt) && snapshotState !== SOURCE_CATALOG_SNAPSHOT_STATES.MISSING
@@ -2847,41 +2847,45 @@ function evaluateNearEligibleRiskyScanReadiness(seed = {}) {
     liquidityState === SOURCE_CATALOG_LIQUIDITY_STATES.READY ||
     liquidityState === SOURCE_CATALOG_LIQUIDITY_STATES.PARTIAL
 
-  const reasons = []
-  if (!isNearEligibleWeaponSkin) {
-    reasons.push("deferred_due_to_maturity")
+  const blockingReasons = []
+  if (!isRiskyLaneCandidate) {
+    blockingReasons.push("deferred_due_to_maturity")
   }
   if (!hasCoverageForRisky) {
-    reasons.push("deferred_near_eligible_insufficient_coverage")
-    reasons.push("deferred_due_to_maturity")
-  }
-  if (!hasSnapshotPresence) {
-    reasons.push("deferred_near_eligible_missing_snapshot")
-    reasons.push("deferred_due_to_maturity")
-  } else if (!hasUsableSnapshot || !freshness.usable) {
-    reasons.push("deferred_due_to_stale")
-  }
-  if (!hasUsableReference) {
-    reasons.push("deferred_near_eligible_missing_reference")
-    reasons.push("deferred_due_to_missing_reference")
+    blockingReasons.push("deferred_near_eligible_insufficient_coverage")
+    blockingReasons.push("deferred_due_to_maturity")
   }
   if (riskProfileBlocked) {
-    reasons.push("deferred_due_to_risk_profile")
+    blockingReasons.push("deferred_due_to_risk_profile")
   }
 
-  const normalizedPreLiquidityReasons = normalizeTextList(reasons)
+  // Missing snapshot/reference/liquidity are non-fatal at admission time.
+  // They are carried into risky scoring as penalties or risky classifications.
+  const softReasons = []
+  if (!hasSnapshotPresence) {
+    softReasons.push("deferred_near_eligible_missing_snapshot")
+  } else if (!hasUsableSnapshot || !freshness.usable) {
+    softReasons.push("deferred_due_to_stale")
+  }
+  if (!hasUsableReference) {
+    softReasons.push("deferred_near_eligible_missing_reference")
+    softReasons.push("deferred_due_to_missing_reference")
+  }
+
+  const normalizedPreLiquidityReasons = normalizeTextList(softReasons)
   if (!hasLiquidityReadyOrPartial) {
     if (!normalizedPreLiquidityReasons.length) {
-      reasons.push("deferred_near_eligible_liquidity_only")
+      softReasons.push("deferred_near_eligible_liquidity_only")
     }
-    reasons.push("deferred_due_to_missing_liquidity")
+    softReasons.push("deferred_due_to_missing_liquidity")
   }
 
-  const normalizedReasons = normalizeTextList(reasons)
+  const normalizedBlockingReasons = normalizeTextList(blockingReasons)
   return {
-    ready: normalizedReasons.length === 0,
-    reasons: normalizedReasons,
-    isRiskyScanReady: normalizedReasons.length === 0,
+    ready: normalizedBlockingReasons.length === 0,
+    reasons: normalizedBlockingReasons,
+    softReasons: normalizeTextList(softReasons),
+    isRiskyScanReady: normalizedBlockingReasons.length === 0,
     borderlineStaleSnapshot,
     hasUsableSnapshot,
     hasUsableReference,
@@ -3621,6 +3625,12 @@ function passesUniverseSeedFilters(
       : null
   const marketHashName = String(inputItem?.marketHashName || "").trim()
   const itemCategory = normalizeItemCategory(inputItem?.itemCategory, marketHashName)
+  const candidateStatus = resolveSeedCandidateStatus(inputItem)
+  const hasCatalogMatureStatus =
+    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE ||
+    candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
+  const hasCoverageSignal = Math.max(Number(inputItem?.marketCoverageCount || 0), 0) >= 1
+  const hasReferenceSignal = toFiniteOrNull(inputItem?.referencePrice) != null
   if (!marketHashName) return false
   const isWeaponSkin = itemCategory === ITEM_CATEGORIES.WEAPON_SKIN
   const weaponSkinFilter = isWeaponSkin ? evaluateWeaponSkinSeedFilters(inputItem) : null
@@ -3687,28 +3697,36 @@ function passesUniverseSeedFilters(
           marketHashName
         )
       }
-    } else if (!allowMissingSnapshotData) {
-      incrementReasonCounter(discardStats, "ignored_missing_liquidity_data", itemCategory)
-      if (rejectedByItem) {
-        incrementItemReasonCounter(
-          rejectedByItem,
-          marketHashName,
-          "ignored_missing_liquidity_data",
-          itemCategory
-        )
+    } else {
+      const hasHighSignalFallback = isHighSignalMissingSnapshotSeed(marketHashName, itemCategory)
+      const allowMatureCatalogFallback =
+        hasCatalogMatureStatus &&
+        hasCoverageSignal &&
+        (hasReferenceSignal || hasHighSignalFallback)
+      if (!allowMissingSnapshotData && !allowMatureCatalogFallback) {
+        incrementReasonCounter(discardStats, "ignored_missing_liquidity_data", itemCategory)
+        if (rejectedByItem) {
+          incrementItemReasonCounter(
+            rejectedByItem,
+            marketHashName,
+            "ignored_missing_liquidity_data",
+            itemCategory
+          )
+        }
+        return false
       }
-      return false
-    } else if (!isHighSignalMissingSnapshotSeed(marketHashName, itemCategory)) {
-      incrementReasonCounter(discardStats, "ignored_missing_liquidity_data", itemCategory)
-      if (rejectedByItem) {
-        incrementItemReasonCounter(
-          rejectedByItem,
-          marketHashName,
-          "ignored_missing_liquidity_data",
-          itemCategory
-        )
+      if (allowMissingSnapshotData && !allowMatureCatalogFallback && !hasHighSignalFallback) {
+        incrementReasonCounter(discardStats, "ignored_missing_liquidity_data", itemCategory)
+        if (rejectedByItem) {
+          incrementItemReasonCounter(
+            rejectedByItem,
+            marketHashName,
+            "ignored_missing_liquidity_data",
+            itemCategory
+          )
+        }
+        return false
       }
-      return false
     }
   }
 
@@ -3744,16 +3762,6 @@ function passesUniverseSeedFilters(
         marketHashName
       )
     }
-  } else if (
-    snapshotFreshness.state === FRESHNESS_STATES.STALE &&
-    snapshotFreshness.ageMinutes != null &&
-    snapshotFreshness.ageMinutes > Math.max(Number(marketSnapshotTtlMinutes || 30), 1) * 12
-  ) {
-    incrementReasonCounter(discardStats, "ignored_stale_data", itemCategory)
-    if (rejectedByItem) {
-      incrementItemReasonCounter(rejectedByItem, marketHashName, "ignored_stale_data", itemCategory)
-    }
-    return false
   }
 
   const referencePrice = toFiniteOrNull(inputItem?.referencePrice)
@@ -3773,19 +3781,7 @@ function passesUniverseSeedFilters(
     return false
   }
 
-  const volume7d = toFiniteOrNull(inputItem?.marketVolume7d)
-  const universeVolumeFloor = Number(
-    UNIVERSE_MIN_VOLUME_7D_BY_CATEGORY[itemCategory] ??
-      UNIVERSE_MIN_VOLUME_7D_BY_CATEGORY[ITEM_CATEGORIES.WEAPON_SKIN]
-  )
-  if (volume7d != null && volume7d < universeVolumeFloor) {
-    incrementReasonCounter(discardStats, "ignored_low_liquidity", itemCategory)
-    if (rejectedByItem) {
-      incrementItemReasonCounter(rejectedByItem, marketHashName, "ignored_low_liquidity", itemCategory)
-    }
-    return false
-  }
-
+  // Keep low-liquidity checks in post-computation risk policy so we can compare first.
   return true
 }
 
@@ -6943,7 +6939,7 @@ function selectTopUniverseItems(
     if (!inputItem) continue
     const itemCategory = normalizeItemCategory(inputItem?.itemCategory, name)
     const marketCoverage = countAvailableMarkets(comparisonItem?.perMarket)
-    if (marketCoverage < MIN_MARKET_COVERAGE) {
+    if (marketCoverage <= 0) {
       incrementReasonCounter(discardStats, "ignored_missing_markets", itemCategory)
       incrementItemReasonCounter(
         rejectedByItem,
