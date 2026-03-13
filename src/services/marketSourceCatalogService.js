@@ -826,7 +826,10 @@ function isUniverseBackfillReadyRow(row = {}) {
   ) {
     return true
   }
-  if (candidateStatus !== CATALOG_CANDIDATE_STATUS.ENRICHING) {
+  if (
+    candidateStatus !== CATALOG_CANDIDATE_STATUS.ENRICHING &&
+    candidateStatus !== CATALOG_CANDIDATE_STATUS.CANDIDATE
+  ) {
     return false
   }
 
@@ -867,12 +870,31 @@ function isUniverseBackfillReadyRow(row = {}) {
     eligibilityReason: row?.eligibility_reason ?? row?.eligibilityReason
   })
 
-  if (!progress.hasReference || !progress.freshness.usable) {
+  if (progress.hasStructuralReason) {
     return false
   }
-  if (category === ITEM_CATEGORIES.WEAPON_SKIN && marketCoverageCount <= 0) {
+  const hasCoverageForComparison = marketCoverageCount >= 1
+  if (!hasCoverageForComparison) {
     return false
   }
+  const hasSnapshotSignal =
+    Boolean(progress.inferredSnapshotPresence) || Boolean(progress.freshness?.hasQuoteFreshness)
+  if (!hasSnapshotSignal) {
+    return false
+  }
+  const hasReferenceOrSafeProxy =
+    (Boolean(progress.hasReference) &&
+      Boolean(progress.meaningfulReference || progress.freshness?.usable || progress.hasUtilitySignal)) ||
+    (hasCoverageForComparison &&
+      hasSnapshotSignal &&
+      Boolean(progress.hasLiquidityContext || progress.reasonableVolume || progress.hasUtilitySignal))
+  if (!hasReferenceOrSafeProxy) {
+    return false
+  }
+  if (candidateStatus === CATALOG_CANDIDATE_STATUS.CANDIDATE && !progress.hasMeaningfulProgress) {
+    return false
+  }
+
   return progress.hasMeaningfulProgress
 }
 
