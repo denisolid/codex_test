@@ -18,6 +18,7 @@ const {
     resolveLiquidityMetrics,
     passesUniverseSeedFilters,
     passesScannerGuards,
+    computeRiskAdjustments,
     buildApiOpportunityRow,
     buildFeedInsertRow,
     mapFeedRowToApiRow,
@@ -241,31 +242,41 @@ test("universe seed filter rejects items without snapshot liquidity context", ()
 
   assert.equal(allowed, false);
   assert.equal(
-    Number(discardStats.ignored_missing_liquidity_data || 0) > 0,
+    Number(discardStats.hard_reject_missing_liquidity || 0) > 0,
     true
   );
 });
 
-test("universe seed filter can allow missing snapshot data in fallback mode", () => {
+test("universe seed filter allows strong weapon skins with missing liquidity evidence", () => {
   const discardStats = {};
+  const weaponSkinDiagnostics = {};
+  const recent = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   const allowed = passesUniverseSeedFilters(
     {
-      marketHashName: "AK-47 | Redline (Field-Tested)",
+      marketHashName: "AK-47 | Bloodsport (Field-Tested)",
+      itemCategory: "weapon_skin",
       hasSnapshotData: false,
       snapshotStale: false,
-      referencePrice: null,
-      marketVolume7d: null
+      referencePrice: 16,
+      marketVolume7d: null,
+      marketCoverageCount: 2,
+      quoteFetchedAt: recent,
+      maturityState: "near_eligible"
     },
     discardStats,
     null,
-    { allowMissingSnapshotData: true }
+    { weaponSkinDiagnostics }
   );
 
   assert.equal(allowed, true);
-  assert.equal(Number(discardStats.ignored_missing_liquidity_data || 0), 0);
+  assert.equal(Number(discardStats.hard_reject_missing_liquidity || 0), 0);
+  assert.equal(
+    Number(weaponSkinDiagnostics.penalty_missing_liquidity_but_allowed || 0),
+    1
+  );
 });
 
-test("universe seed filter still rejects weak missing-snapshot skin seeds in fallback mode", () => {
+test("universe seed filter still rejects weak missing-snapshot skin seeds", () => {
   const discardStats = {};
   const allowed = passesUniverseSeedFilters(
     {
@@ -282,7 +293,7 @@ test("universe seed filter still rejects weak missing-snapshot skin seeds in fal
   );
 
   assert.equal(allowed, false);
-  assert.equal(Number(discardStats.ignored_low_value_universe || 0) > 0, true);
+  assert.equal(Number(discardStats.hard_reject_low_value || 0) > 0, true);
 });
 
 test("universe seed filter rejects low-value skin finish patterns before scan", () => {
@@ -300,7 +311,78 @@ test("universe seed filter rejects low-value skin finish patterns before scan", 
   );
 
   assert.equal(allowed, false);
-  assert.equal(Number(discardStats.ignored_low_value_universe || 0) > 0, true);
+  assert.equal(Number(discardStats.hard_reject_low_value || 0) > 0, true);
+});
+
+test("universe seed filter keeps useful low-value-pattern skins with a penalty", () => {
+  const discardStats = {};
+  const weaponSkinDiagnostics = {};
+  const recent = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const allowed = passesUniverseSeedFilters(
+    {
+      marketHashName: "P90 | Sand Spray (Factory New)",
+      itemCategory: "weapon_skin",
+      hasSnapshotData: true,
+      snapshotCapturedAt: recent,
+      snapshotStale: false,
+      referencePrice: 6.5,
+      marketVolume7d: 90,
+      marketCoverageCount: 2,
+      quoteFetchedAt: recent,
+      scanEligible: true
+    },
+    discardStats,
+    null,
+    { weaponSkinDiagnostics }
+  );
+
+  assert.equal(allowed, true);
+  assert.equal(Number(discardStats.hard_reject_low_value || 0), 0);
+  assert.equal(Number(weaponSkinDiagnostics.penalty_low_value_but_allowed || 0), 1);
+});
+
+test("universe seed filter applies variant penalties without auto-rejecting StatTrak or Souvenir", () => {
+  const discardStats = {};
+  const weaponSkinDiagnostics = {};
+  const recent = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+
+  const statTrakAllowed = passesUniverseSeedFilters(
+    {
+      marketHashName: "StatTrak™ AK-47 | Redline (Field-Tested)",
+      itemCategory: "weapon_skin",
+      hasSnapshotData: false,
+      snapshotStale: false,
+      referencePrice: 18,
+      marketVolume7d: null,
+      marketCoverageCount: 2,
+      quoteFetchedAt: recent,
+      maturityState: "near_eligible"
+    },
+    discardStats,
+    null,
+    { weaponSkinDiagnostics }
+  );
+  const souvenirAllowed = passesUniverseSeedFilters(
+    {
+      marketHashName: "Souvenir M4A1-S | Printstream (Field-Tested)",
+      itemCategory: "weapon_skin",
+      hasSnapshotData: false,
+      snapshotStale: false,
+      referencePrice: 22,
+      marketVolume7d: null,
+      marketCoverageCount: 2,
+      quoteFetchedAt: recent,
+      maturityState: "near_eligible"
+    },
+    discardStats,
+    null,
+    { weaponSkinDiagnostics }
+  );
+
+  assert.equal(statTrakAllowed, true);
+  assert.equal(souvenirAllowed, true);
+  assert.equal(Number(weaponSkinDiagnostics.variant_penalty_stattrak || 0), 1);
+  assert.equal(Number(weaponSkinDiagnostics.variant_penalty_souvenir || 0), 1);
 });
 
 test("universe seed filter rejects stale snapshot seeds", () => {
@@ -379,6 +461,177 @@ test("api row keeps required shape with clamped score", () => {
   assert.equal(typeof row.itemName, "string");
   assert.equal(typeof row.buyMarket, "string");
   assert.equal(typeof row.sellMarket, "string");
+});
+
+test("risky weapon-skin evaluation allows speculative fallback for missing liquidity", () => {
+  const evaluation = computeRiskAdjustments({
+    opportunity: {
+      itemName: "StatTrak™ AK-47 | Redline (Field-Tested)",
+      itemCategory: "weapon_skin",
+      buyPrice: 12,
+      profit: 2.2,
+      spreadPercent: 14,
+      marketCoverage: 2
+    },
+    liquidity: {
+      volume7d: null
+    },
+    stale: {
+      selectedState: "fresh",
+      usableMarkets: 2,
+      hasInsufficientUsableMarkets: false
+    },
+    inputItem: {
+      marketHashName: "StatTrak™ AK-47 | Redline (Field-Tested)",
+      itemCategory: "weapon_skin",
+      referencePrice: 14,
+      hasSnapshotData: true,
+      snapshotCapturedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString()
+    },
+    profile: {
+      name: "risky",
+      minPriceUsd: 3,
+      minProfitUsd: 0.75,
+      minSpreadPercent: 4,
+      minVolume7d: 40,
+      minMarketCoverage: 2,
+      allowMissingLiquidity: true
+    }
+  });
+
+  assert.equal(evaluation.passed, true);
+  assert.equal(evaluation.speculativeEligible, true);
+  assert.equal(evaluation.allowLowConfidencePath, true);
+  assert.equal(
+    evaluation.diagnosticPenaltyKeys.includes("penalty_missing_liquidity_but_allowed"),
+    true
+  );
+  assert.equal(
+    evaluation.diagnosticPenaltyKeys.includes("variant_penalty_stattrak"),
+    true
+  );
+});
+
+test("risky weapon-skin evaluation still rejects weak missing-liquidity candidates", () => {
+  const evaluation = computeRiskAdjustments({
+    opportunity: {
+      itemName: "Five-SeveN | Coolant (Minimal Wear)",
+      itemCategory: "weapon_skin",
+      buyPrice: 3.4,
+      profit: 0.85,
+      spreadPercent: 4.2,
+      marketCoverage: 2
+    },
+    liquidity: {
+      volume7d: null
+    },
+    stale: {
+      selectedState: "stale",
+      usableMarkets: 2,
+      hasInsufficientUsableMarkets: false
+    },
+    inputItem: {
+      marketHashName: "Five-SeveN | Coolant (Minimal Wear)",
+      itemCategory: "weapon_skin",
+      referencePrice: 3.6,
+      hasSnapshotData: true,
+      snapshotCapturedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString()
+    },
+    profile: {
+      name: "risky",
+      minPriceUsd: 3,
+      minProfitUsd: 0.75,
+      minSpreadPercent: 4,
+      minVolume7d: 40,
+      minMarketCoverage: 2,
+      allowMissingLiquidity: true
+    }
+  });
+
+  assert.equal(evaluation.passed, false);
+  assert.equal(evaluation.primaryReason, "hard_reject_missing_liquidity");
+});
+
+test("api row keeps high confidence when quotes are fresh and snapshot is only aging", () => {
+  const originalNow = Date.now;
+  Date.now = () => Date.parse("2026-03-13T12:00:00.000Z");
+
+  try {
+    const row = buildApiOpportunityRow({
+      opportunity: {
+        itemId: 1002,
+        itemName: "M4A1-S | Printstream (Field-Tested)",
+        buyMarket: "steam",
+        buyPrice: 100,
+        sellMarket: "skinport",
+        sellNet: 115,
+        profit: 15,
+        spreadPercent: 15,
+        opportunityScore: 91,
+        executionConfidence: "High"
+      },
+      inputItem: {
+        skinId: 1002,
+        hasSnapshotData: true,
+        snapshotCapturedAt: "2026-03-13T11:10:00.000Z"
+      },
+      liquidity: {
+        liquidityScore: 72,
+        volume7d: 240
+      },
+      stale: {
+        selectedState: "fresh",
+        state: "fresh",
+        penalty: 0
+      }
+    });
+
+    assert.equal(row.snapshotFreshnessState, "aging");
+    assert.equal(row.executionConfidence, "High");
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("api row only downgrades high confidence one level for stale snapshots", () => {
+  const originalNow = Date.now;
+  Date.now = () => Date.parse("2026-03-13T12:00:00.000Z");
+
+  try {
+    const row = buildApiOpportunityRow({
+      opportunity: {
+        itemId: 1003,
+        itemName: "USP-S | Kill Confirmed (Field-Tested)",
+        buyMarket: "steam",
+        buyPrice: 100,
+        sellMarket: "skinport",
+        sellNet: 114,
+        profit: 14,
+        spreadPercent: 14,
+        opportunityScore: 89,
+        executionConfidence: "High"
+      },
+      inputItem: {
+        skinId: 1003,
+        hasSnapshotData: true,
+        snapshotCapturedAt: "2026-03-13T10:40:00.000Z"
+      },
+      liquidity: {
+        liquidityScore: 70,
+        volume7d: 220
+      },
+      stale: {
+        selectedState: "fresh",
+        state: "fresh",
+        penalty: 0
+      }
+    });
+
+    assert.equal(row.snapshotFreshnessState, "stale");
+    assert.equal(row.executionConfidence, "Medium");
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test("feed mapper keeps scanner row core fields", () => {

@@ -40,6 +40,11 @@ const PREMIUM_REFERENCE_DEVIATION_PENALTY_RATIO = 1.8
 const PREMIUM_REFERENCE_DEVIATION_REJECT_RATIO = 2.5
 const PREMIUM_DEPTH_GAP_SUSPICIOUS_RATIO = 1.7
 const PREMIUM_DEPTH_GAP_EXTREME_RATIO = 2.4
+const STANDARD_HIGH_CONFIDENCE_VOLUME_RATIO = 0.9
+const STANDARD_HIGH_CONFIDENCE_MAX_SPREAD_PERCENT = 45
+const STANDARD_HIGH_CONFIDENCE_MIN_MARKET_SCORE = 82
+const PREMIUM_HIGH_CONFIDENCE_VOLUME_RATIO = 0.9
+const PREMIUM_HIGH_CONFIDENCE_MIN_MARKET_SCORE = 72
 
 const ITEM_CATEGORIES = Object.freeze({
   WEAPON_SKIN: "weapon_skin",
@@ -782,6 +787,16 @@ function resolveExecutionConfidence({
   const spreadRules = getCategorySpreadRules(itemCategory)
   const volume = toFiniteOrNull(volume7d)
   const spread = toFiniteOrNull(spreadPercent)
+  const standardHighVolumeFloor = Math.max(
+    Math.ceil(Number(liquidityRules.high || LIQUIDITY_VOLUME_HIGH) * STANDARD_HIGH_CONFIDENCE_VOLUME_RATIO),
+    Number(liquidityRules.pass || LIQUIDITY_VOLUME_PASS)
+  )
+  const premiumHighVolumeFloor = Math.max(
+    Math.ceil(
+      Number(liquidityRules.high || PREMIUM_LIQUIDITY_HIGH_MIN) * PREMIUM_HIGH_CONFIDENCE_VOLUME_RATIO
+    ),
+    Number(liquidityRules.medium || PREMIUM_LIQUIDITY_MEDIUM_MIN)
+  )
   const hasOutlierFlag = Array.isArray(depthFlags)
     ? depthFlags.some((flag) => flag === "BUY_OUTLIER_ADJUSTED" || flag === "SELL_OUTLIER_ADJUSTED")
     : false
@@ -820,14 +835,14 @@ function resolveExecutionConfidence({
       hasOutlierFlag || hasDepthGapSuspicious,
       stale,
       hasStrongReferenceDeviation,
-      marketScore < 75,
+      marketScore < PREMIUM_HIGH_CONFIDENCE_MIN_MARKET_SCORE,
       spread == null || spread > Number(spreadRules.max || PREMIUM_SPREAD_SANITY_MAX_PERCENT)
     ].filter(Boolean).length
 
     const depthGood = !missingDepth && !hasOutlierFlag && !hasDepthGapSuspicious && !hasDepthGapExtreme
     if (
       volume != null &&
-      volume >= Number(liquidityRules.high || PREMIUM_LIQUIDITY_HIGH_MIN) &&
+      volume >= premiumHighVolumeFloor &&
       Number(marketCoverage || 0) >= 2 &&
       depthGood &&
       !stale &&
@@ -850,12 +865,16 @@ function resolveExecutionConfidence({
 
   if (
     volume != null &&
-    volume > Number(liquidityRules.high || LIQUIDITY_VOLUME_HIGH) &&
+    volume >= standardHighVolumeFloor &&
     spread != null &&
-    spread < 40 &&
+    spread <= STANDARD_HIGH_CONFIDENCE_MAX_SPREAD_PERCENT &&
     !hasOutlierFlag &&
     !missingDepth &&
-    marketScore >= 85 &&
+    !hasDepthGapSuspicious &&
+    !hasDepthGapExtreme &&
+    !hasStrongReferenceDeviation &&
+    !hasExtremeReferenceDeviation &&
+    marketScore >= STANDARD_HIGH_CONFIDENCE_MIN_MARKET_SCORE &&
     !stale
   ) {
     return "High"
@@ -864,10 +883,12 @@ function resolveExecutionConfidence({
   let uncertainty = 0
   if (hasOutlierFlag) uncertainty += 1
   if (missingDepth) uncertainty += 1
+  if (hasDepthGapSuspicious || hasDepthGapExtreme) uncertainty += 1
   if (stale) uncertainty += 1
   if (spread == null || spread > 80 || spread < Number(spreadRules.min || MIN_SPREAD_PERCENT)) {
     uncertainty += 1
   }
+  if (hasStrongReferenceDeviation || hasExtremeReferenceDeviation) uncertainty += 1
   if (marketScore < 75) uncertainty += 1
 
   if (volume != null && volume >= Number(liquidityRules.pass || LIQUIDITY_VOLUME_PASS) && uncertainty <= 1) {

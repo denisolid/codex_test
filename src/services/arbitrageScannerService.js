@@ -408,12 +408,25 @@ const HIGH_SIGNAL_WEAPON_PREFIXES = Object.freeze(
     "MAC-10"
   ])
 )
+const WEAPON_SKIN_CONTEXTUAL_LOW_VALUE_PRICE_USD = 4
+const WEAPON_SKIN_CONTEXTUAL_LOW_VALUE_PROFIT_USD = 1
+const WEAPON_SKIN_CONTEXTUAL_LOW_VALUE_SPREAD_PERCENT = 5
+const WEAPON_SKIN_CONTEXTUAL_LOW_VALUE_VOLUME_7D = 60
+const WEAPON_SKIN_FALLBACK_MIN_REFERENCE_PRICE_USD = 4
+const WEAPON_SKIN_FALLBACK_MIN_PROFIT_USD = 0.9
+const WEAPON_SKIN_FALLBACK_MIN_SPREAD_PERCENT = 4
+const WEAPON_SKIN_FALLBACK_MAX_SPREAD_PERCENT = 140
+const WEAPON_SKIN_MISSING_LIQUIDITY_PENALTY = 14
+const WEAPON_SKIN_LOW_VALUE_PENALTY = 9
+const WEAPON_SKIN_STATTRAK_VARIANT_PENALTY = 4
+const WEAPON_SKIN_SOUVENIR_VARIANT_PENALTY = 4
 const KNOWN_BAD_IMAGE_HOSTS = Object.freeze(
   new Set(["example.com", "www.example.com"])
 )
 const DIAGNOSTIC_REASON_KEYS = Object.freeze([
   "ignored_execution_floor",
   "ignored_low_value_universe",
+  "hard_reject_low_value",
   "ignored_low_liquidity",
   "risky_low_price",
   "risky_low_profit",
@@ -426,6 +439,7 @@ const DIAGNOSTIC_REASON_KEYS = Object.freeze([
   "ignored_reference_deviation",
   "ignored_missing_markets",
   "ignored_missing_liquidity_data",
+  "hard_reject_missing_liquidity",
   "ignored_missing_depth",
   "ignored_low_score",
   "ignored_stale_data"
@@ -434,6 +448,16 @@ const DIAGNOSTIC_REASON_ALIAS = Object.freeze({
   ignored_low_price: "ignored_execution_floor",
   insufficient_market_data: "ignored_missing_markets"
 })
+const WEAPON_SKIN_FILTER_DIAGNOSTIC_KEYS = Object.freeze([
+  "hard_reject_missing_liquidity",
+  "penalty_missing_liquidity_but_allowed",
+  "hard_reject_low_value",
+  "penalty_low_value_but_allowed",
+  "variant_penalty_stattrak",
+  "variant_penalty_souvenir",
+  "risky_pass_count",
+  "speculative_pass_count"
+])
 
 const HARD_REJECTION_REASONS = Object.freeze(
   new Set([
@@ -1267,6 +1291,196 @@ function isHighSignalMissingSnapshotSeed(itemName = "", itemCategory = ITEM_CATE
     return true
   }
   return false
+}
+
+function countTrueValues(values = []) {
+  return (Array.isArray(values) ? values : []).reduce(
+    (sum, value) => sum + Number(Boolean(value)),
+    0
+  )
+}
+
+function isStatTrakVariantName(name = "") {
+  return /^stattrak[Ã¢â€žÂ¢\u2122]?\s*/i.test(String(name || "").trim())
+}
+
+function isSouvenirVariantName(name = "") {
+  return /^souvenir\s+/i.test(String(name || "").trim())
+}
+
+function buildWeaponSkinFilterDiagnostics() {
+  const diagnostics = Object.fromEntries(
+    WEAPON_SKIN_FILTER_DIAGNOSTIC_KEYS.map((key) => [key, 0])
+  )
+  diagnostics.__seen = {}
+  return diagnostics
+}
+
+function incrementWeaponSkinFilterDiagnostic(diagnostics = {}, key = "", itemName = "") {
+  const normalizedKey = String(key || "").trim()
+  if (!WEAPON_SKIN_FILTER_DIAGNOSTIC_KEYS.includes(normalizedKey)) return
+  if (!diagnostics || typeof diagnostics !== "object") return
+  if (!diagnostics.__seen || typeof diagnostics.__seen !== "object") {
+    diagnostics.__seen = {}
+  }
+  if (!diagnostics.__seen[normalizedKey]) {
+    diagnostics.__seen[normalizedKey] = {}
+  }
+
+  const normalizedItem =
+    normalizeMarketHashName(itemName) ||
+    String(itemName || "")
+      .trim()
+      .toLowerCase()
+  if (normalizedItem && diagnostics.__seen[normalizedKey][normalizedItem]) {
+    return
+  }
+  if (normalizedItem) {
+    diagnostics.__seen[normalizedKey][normalizedItem] = true
+  }
+  diagnostics[normalizedKey] = Number(diagnostics[normalizedKey] || 0) + 1
+}
+
+function toWeaponSkinFilterDiagnosticsSummary(diagnostics = {}) {
+  return Object.fromEntries(
+    WEAPON_SKIN_FILTER_DIAGNOSTIC_KEYS.map((key) => [key, Number(diagnostics?.[key] || 0)])
+  )
+}
+
+function resolveSeedQuoteFreshnessState(
+  inputItem = {},
+  itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
+) {
+  const ageMinutes = resolveQuoteAgeMinutes({ fetchedAt: inputItem?.quoteFetchedAt })
+  if (ageMinutes == null) return FRESHNESS_STATES.STALE
+  return resolveFreshnessState(ageMinutes, getCategoryStaleRules(itemCategory))
+}
+
+function buildWeaponSkinSupportSignals({
+  marketHashName = "",
+  referencePrice = null,
+  executionPrice = null,
+  profit = null,
+  spread = null,
+  volume7d = null,
+  marketCoverage = 0,
+  snapshotFreshnessState = FRESHNESS_STATES.STALE,
+  quoteFreshnessState = FRESHNESS_STATES.STALE,
+  hasStrongReferenceDeviation = false,
+  hasExtremeReferenceDeviation = false,
+  isUsefulCandidate = false
+} = {}) {
+  const name = String(marketHashName || "").trim()
+  const prefix = extractWeaponPrefix(name)
+  const pricePoint = toFiniteOrNull(executionPrice) ?? toFiniteOrNull(referencePrice)
+
+  return {
+    lowValuePattern: isLowValueJunkName(name),
+    hasNameSignal:
+      hasLiquidNameSignal(name) || HIGH_SIGNAL_WEAPON_PREFIXES.has(prefix),
+    hasNonTrivialPrice:
+      pricePoint != null && pricePoint >= WEAPON_SKIN_FALLBACK_MIN_REFERENCE_PRICE_USD,
+    hasMeaningfulProfit:
+      toFiniteOrNull(profit) != null &&
+      toFiniteOrNull(profit) >= WEAPON_SKIN_FALLBACK_MIN_PROFIT_USD,
+    hasSaneSpread:
+      toFiniteOrNull(spread) != null &&
+      toFiniteOrNull(spread) >= WEAPON_SKIN_FALLBACK_MIN_SPREAD_PERCENT &&
+      toFiniteOrNull(spread) <= WEAPON_SKIN_FALLBACK_MAX_SPREAD_PERCENT,
+    hasCoverage: Number(marketCoverage || 0) >= MIN_MARKET_COVERAGE,
+    hasUsefulVolume:
+      toFiniteOrNull(volume7d) != null &&
+      toFiniteOrNull(volume7d) >= WEAPON_SKIN_CONTEXTUAL_LOW_VALUE_VOLUME_7D,
+    hasFreshData:
+      normalizeFreshnessState(quoteFreshnessState) !== FRESHNESS_STATES.STALE ||
+      normalizeFreshnessState(snapshotFreshnessState) !== FRESHNESS_STATES.STALE,
+    hasNonStaleQuotes:
+      normalizeFreshnessState(quoteFreshnessState) !== FRESHNESS_STATES.STALE,
+    hasAcceptableReference:
+      !Boolean(hasStrongReferenceDeviation) && !Boolean(hasExtremeReferenceDeviation),
+    isUsefulCandidate: Boolean(isUsefulCandidate)
+  }
+}
+
+function evaluateWeaponSkinSeedFilters(inputItem = {}) {
+  const referencePrice = toFiniteOrNull(inputItem?.referencePrice)
+  const volume7d = toFiniteOrNull(inputItem?.marketVolume7d)
+  const marketCoverageCount = Math.max(Number(inputItem?.marketCoverageCount || 0), 0)
+  const snapshotFreshness = resolveSnapshotFreshnessState(inputItem, ITEM_CATEGORIES.WEAPON_SKIN)
+  const quoteFreshnessState = resolveSeedQuoteFreshnessState(inputItem, ITEM_CATEGORIES.WEAPON_SKIN)
+  const supportSignals = buildWeaponSkinSupportSignals({
+    marketHashName: inputItem?.marketHashName,
+    referencePrice,
+    volume7d,
+    marketCoverage: marketCoverageCount,
+    snapshotFreshnessState: snapshotFreshness?.state,
+    quoteFreshnessState,
+    isUsefulCandidate:
+      Boolean(inputItem?.scanEligible) ||
+      [MATURITY_STATES.ELIGIBLE, MATURITY_STATES.NEAR_ELIGIBLE].includes(
+        normalizeMaturityState(inputItem?.maturityState)
+      )
+  })
+  const hasMissingLiquidityContext = !Boolean(inputItem?.hasSnapshotData)
+  const veryLowPrice =
+    referencePrice != null && referencePrice < WEAPON_SKIN_CONTEXTUAL_LOW_VALUE_PRICE_USD
+  const weakCoverage = marketCoverageCount < MIN_MARKET_COVERAGE
+  const weakVolume =
+    volume7d != null &&
+    volume7d < Number(UNIVERSE_MIN_VOLUME_7D_BY_CATEGORY[ITEM_CATEGORIES.WEAPON_SKIN] || 0)
+  const weakUtility = !supportSignals.isUsefulCandidate && !supportSignals.hasUsefulVolume
+  const lowValueWeakCount = countTrueValues([
+    supportSignals.lowValuePattern,
+    !supportSignals.hasNameSignal,
+    veryLowPrice,
+    weakCoverage,
+    weakUtility,
+    !supportSignals.hasFreshData
+  ])
+  const lowValueSupportCount = countTrueValues([
+    supportSignals.hasNameSignal,
+    supportSignals.hasNonTrivialPrice,
+    supportSignals.hasCoverage,
+    supportSignals.hasUsefulVolume,
+    supportSignals.hasFreshData,
+    supportSignals.isUsefulCandidate
+  ])
+  const hardRejectLowValue =
+    lowValueWeakCount >= 4 || (lowValueWeakCount >= 3 && lowValueSupportCount <= 2)
+  const penaltyLowValue =
+    !hardRejectLowValue &&
+    (supportSignals.lowValuePattern || !supportSignals.hasNameSignal || veryLowPrice || weakUtility)
+
+  const missingLiquidityEvidenceCount = countTrueValues([
+    supportSignals.hasCoverage,
+    supportSignals.hasNonTrivialPrice,
+    supportSignals.hasNameSignal,
+    supportSignals.hasUsefulVolume,
+    supportSignals.hasFreshData,
+    supportSignals.isUsefulCandidate
+  ])
+  const missingLiquidityWeakCount = countTrueValues([
+    !supportSignals.hasCoverage,
+    referencePrice == null || referencePrice < WEAPON_SKIN_FALLBACK_MIN_REFERENCE_PRICE_USD,
+    !supportSignals.hasFreshData,
+    weakVolume && !supportSignals.isUsefulCandidate,
+    supportSignals.lowValuePattern
+  ])
+  const hardRejectMissingLiquidity =
+    hasMissingLiquidityContext &&
+    (missingLiquidityEvidenceCount < 3 || missingLiquidityWeakCount >= 4)
+  const penaltyMissingLiquidity = hasMissingLiquidityContext && !hardRejectMissingLiquidity
+
+  return {
+    hardRejectLowValue,
+    penaltyLowValue,
+    hardRejectMissingLiquidity,
+    penaltyMissingLiquidity,
+    variantPenaltyKeys: [
+      isStatTrakVariantName(inputItem?.marketHashName) ? "variant_penalty_stattrak" : "",
+      isSouvenirVariantName(inputItem?.marketHashName) ? "variant_penalty_souvenir" : ""
+    ].filter(Boolean)
+  }
 }
 
 function computeVolumeScore(volume7d, itemCategory = ITEM_CATEGORIES.WEAPON_SKIN) {
@@ -2539,10 +2753,17 @@ function passesUniverseSeedFilters(
   options = {}
 ) {
   const allowMissingSnapshotData = Boolean(options?.allowMissingSnapshotData)
+  const weaponSkinDiagnostics =
+    options?.weaponSkinDiagnostics && typeof options.weaponSkinDiagnostics === "object"
+      ? options.weaponSkinDiagnostics
+      : null
   const marketHashName = String(inputItem?.marketHashName || "").trim()
   const itemCategory = normalizeItemCategory(inputItem?.itemCategory, marketHashName)
   if (!marketHashName) return false
-  if (isLowValueJunkName(marketHashName)) {
+  const isWeaponSkin = itemCategory === ITEM_CATEGORIES.WEAPON_SKIN
+  const weaponSkinFilter = isWeaponSkin ? evaluateWeaponSkinSeedFilters(inputItem) : null
+
+  if (isLowValueJunkName(marketHashName) && !isWeaponSkin) {
     incrementReasonCounter(discardStats, "ignored_low_value_universe", itemCategory)
     if (rejectedByItem) {
       incrementItemReasonCounter(
@@ -2556,24 +2777,66 @@ function passesUniverseSeedFilters(
   }
 
   if (
-    itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+    isWeaponSkin &&
     !hasLiquidNameSignal(marketHashName) &&
-    !HIGH_SIGNAL_WEAPON_PREFIXES.has(extractWeaponPrefix(marketHashName))
+    !HIGH_SIGNAL_WEAPON_PREFIXES.has(extractWeaponPrefix(marketHashName)) &&
+    weaponSkinFilter?.hardRejectLowValue
   ) {
-    incrementReasonCounter(discardStats, "ignored_low_value_universe", itemCategory)
+    incrementReasonCounter(discardStats, "hard_reject_low_value", itemCategory)
     if (rejectedByItem) {
       incrementItemReasonCounter(
         rejectedByItem,
         marketHashName,
-        "ignored_low_value_universe",
+        "hard_reject_low_value",
         itemCategory
       )
     }
+    incrementWeaponSkinFilterDiagnostic(
+      weaponSkinDiagnostics,
+      "hard_reject_low_value",
+      marketHashName
+    )
     return false
   }
 
   if (!Boolean(inputItem?.hasSnapshotData)) {
-    if (!allowMissingSnapshotData) {
+    if (isWeaponSkin) {
+      if (weaponSkinFilter?.hardRejectMissingLiquidity) {
+        incrementReasonCounter(discardStats, "hard_reject_missing_liquidity", itemCategory)
+        if (rejectedByItem) {
+          incrementItemReasonCounter(
+            rejectedByItem,
+            marketHashName,
+            "hard_reject_missing_liquidity",
+            itemCategory
+          )
+        }
+        incrementWeaponSkinFilterDiagnostic(
+          weaponSkinDiagnostics,
+          "hard_reject_missing_liquidity",
+          marketHashName
+        )
+        return false
+      }
+      if (weaponSkinFilter?.penaltyMissingLiquidity) {
+        incrementWeaponSkinFilterDiagnostic(
+          weaponSkinDiagnostics,
+          "penalty_missing_liquidity_but_allowed",
+          marketHashName
+        )
+      }
+    } else if (!allowMissingSnapshotData) {
+      incrementReasonCounter(discardStats, "ignored_missing_liquidity_data", itemCategory)
+      if (rejectedByItem) {
+        incrementItemReasonCounter(
+          rejectedByItem,
+          marketHashName,
+          "ignored_missing_liquidity_data",
+          itemCategory
+        )
+      }
+      return false
+    } else if (!isHighSignalMissingSnapshotSeed(marketHashName, itemCategory)) {
       incrementReasonCounter(discardStats, "ignored_missing_liquidity_data", itemCategory)
       if (rejectedByItem) {
         incrementItemReasonCounter(
@@ -2585,18 +2848,35 @@ function passesUniverseSeedFilters(
       }
       return false
     }
+  }
 
-    if (!isHighSignalMissingSnapshotSeed(marketHashName, itemCategory)) {
-      incrementReasonCounter(discardStats, "ignored_missing_liquidity_data", itemCategory)
+  if (isWeaponSkin) {
+    if (weaponSkinFilter?.hardRejectLowValue) {
+      incrementReasonCounter(discardStats, "hard_reject_low_value", itemCategory)
       if (rejectedByItem) {
         incrementItemReasonCounter(
           rejectedByItem,
           marketHashName,
-          "ignored_missing_liquidity_data",
+          "hard_reject_low_value",
           itemCategory
         )
       }
+      incrementWeaponSkinFilterDiagnostic(
+        weaponSkinDiagnostics,
+        "hard_reject_low_value",
+        marketHashName
+      )
       return false
+    }
+    if (weaponSkinFilter?.penaltyLowValue) {
+      incrementWeaponSkinFilterDiagnostic(
+        weaponSkinDiagnostics,
+        "penalty_low_value_but_allowed",
+        marketHashName
+      )
+    }
+    for (const key of weaponSkinFilter?.variantPenaltyKeys || []) {
+      incrementWeaponSkinFilterDiagnostic(weaponSkinDiagnostics, key, marketHashName)
     }
   }
 
@@ -2617,7 +2897,7 @@ function passesUniverseSeedFilters(
   const universePriceFloor = Number(
     UNIVERSE_MIN_PRICE_FLOOR_BY_CATEGORY[itemCategory] ?? UNIVERSE_MIN_PRICE_FLOOR_BY_CATEGORY[ITEM_CATEGORIES.WEAPON_SKIN]
   )
-  if (referencePrice != null && referencePrice < universePriceFloor) {
+  if (!isWeaponSkin && referencePrice != null && referencePrice < universePriceFloor) {
     incrementReasonCounter(discardStats, "ignored_low_value_universe", itemCategory)
     if (rejectedByItem) {
       incrementItemReasonCounter(
@@ -2828,6 +3108,118 @@ function resolveReferenceSignals(opportunity = {}, liquidity = {}) {
   }
 }
 
+function evaluateWeaponSkinRiskContext({
+  opportunity = {},
+  liquidity = {},
+  inputItem = {},
+  profile = RISKY_SCAN_PROFILE,
+  rules = {},
+  isRiskyProfile = false,
+  snapshotState = FRESHNESS_STATES.STALE,
+  quoteFreshnessState = FRESHNESS_STATES.STALE,
+  referenceSignals = {}
+} = {}) {
+  const marketHashName = String(opportunity?.itemName || inputItem?.marketHashName || "").trim()
+  const buyPrice = toFiniteOrNull(opportunity?.buyPrice)
+  const referencePrice = toFiniteOrNull(opportunity?.referencePrice ?? inputItem?.referencePrice)
+  const profit = toFiniteOrNull(opportunity?.profit)
+  const spread = toFiniteOrNull(opportunity?.spreadPercent ?? opportunity?.spread_pct)
+  const volume7d = toFiniteOrNull(liquidity?.volume7d)
+  const marketCoverage = Number(opportunity?.marketCoverage || 0)
+  const supportSignals = buildWeaponSkinSupportSignals({
+    marketHashName,
+    referencePrice,
+    executionPrice: buyPrice,
+    profit,
+    spread,
+    volume7d,
+    marketCoverage,
+    snapshotFreshnessState: snapshotState,
+    quoteFreshnessState,
+    hasStrongReferenceDeviation: referenceSignals?.hasStrongReferenceDeviation,
+    hasExtremeReferenceDeviation: referenceSignals?.hasExtremeReferenceDeviation,
+    isUsefulCandidate:
+      marketCoverage >= MIN_MARKET_COVERAGE ||
+      (volume7d != null && volume7d >= Number(rules.minVolume7d || profile.minVolume7d || 0))
+  })
+  const lowPrice = buyPrice != null && buyPrice < WEAPON_SKIN_CONTEXTUAL_LOW_VALUE_PRICE_USD
+  const lowProfit = profit != null && profit < WEAPON_SKIN_CONTEXTUAL_LOW_VALUE_PROFIT_USD
+  const weakSpread =
+    spread != null && spread < WEAPON_SKIN_CONTEXTUAL_LOW_VALUE_SPREAD_PERCENT
+  const lowUtility =
+    (volume7d != null && volume7d < WEAPON_SKIN_CONTEXTUAL_LOW_VALUE_VOLUME_7D) ||
+    marketCoverage < MIN_MARKET_COVERAGE
+  const poorMarketRelevance =
+    !supportSignals.hasNameSignal && marketCoverage <= MIN_MARKET_COVERAGE
+  const lowValueWeakCount = countTrueValues([
+    lowPrice,
+    lowProfit,
+    weakSpread,
+    lowUtility,
+    poorMarketRelevance,
+    supportSignals.lowValuePattern
+  ])
+  const lowValueSupportCount = countTrueValues([
+    supportSignals.hasNameSignal,
+    supportSignals.hasNonTrivialPrice,
+    supportSignals.hasMeaningfulProfit,
+    supportSignals.hasSaneSpread,
+    supportSignals.hasCoverage,
+    supportSignals.hasAcceptableReference,
+    supportSignals.hasNonStaleQuotes
+  ])
+  const hardRejectLowValue =
+    lowValueWeakCount >= 4 || (lowValueWeakCount >= 3 && lowValueSupportCount <= 3)
+  const penaltyKeys = []
+
+  if (!hardRejectLowValue && lowValueWeakCount >= 2) {
+    penaltyKeys.push("penalty_low_value_but_allowed")
+  }
+  if (isStatTrakVariantName(marketHashName)) {
+    penaltyKeys.push("variant_penalty_stattrak")
+  }
+  if (isSouvenirVariantName(marketHashName)) {
+    penaltyKeys.push("variant_penalty_souvenir")
+  }
+
+  const fallbackEvidenceCount = countTrueValues([
+    supportSignals.hasCoverage,
+    supportSignals.hasAcceptableReference,
+    supportSignals.hasNonTrivialPrice,
+    supportSignals.hasMeaningfulProfit,
+    supportSignals.hasSaneSpread,
+    supportSignals.hasNonStaleQuotes
+  ])
+  const hasMissingLiquidityFallbackPath =
+    volume7d == null &&
+    isRiskyProfile &&
+    supportSignals.hasCoverage &&
+    supportSignals.hasAcceptableReference &&
+    supportSignals.hasNonTrivialPrice &&
+    supportSignals.hasMeaningfulProfit &&
+    supportSignals.hasSaneSpread &&
+    supportSignals.hasNonStaleQuotes &&
+    fallbackEvidenceCount >= 5
+  if (volume7d == null && isRiskyProfile && hasMissingLiquidityFallbackPath) {
+    penaltyKeys.push("penalty_missing_liquidity_but_allowed")
+  }
+
+  return {
+    hardRejectLowValue,
+    penaltyKeys,
+    speculativeEligible:
+      hasMissingLiquidityFallbackPath ||
+      penaltyKeys.includes("variant_penalty_stattrak") ||
+      penaltyKeys.includes("variant_penalty_souvenir"),
+    allowLowConfidencePath: hasMissingLiquidityFallbackPath,
+    missingLiquidityRejected:
+      volume7d == null &&
+      isRiskyProfile &&
+      !hasMissingLiquidityFallbackPath,
+    missingLiquidityPenaltyApplied: volume7d == null && hasMissingLiquidityFallbackPath
+  }
+}
+
 function computeRiskAdjustments({
   opportunity = {},
   liquidity = {},
@@ -2870,6 +3262,27 @@ function computeRiskAdjustments({
   )
   const depthSignals = resolveDepthSignals(opportunity, liquidity)
   const referenceSignals = resolveReferenceSignals(opportunity, liquidity)
+  const weaponSkinRiskContext =
+    itemCategory === ITEM_CATEGORIES.WEAPON_SKIN
+      ? evaluateWeaponSkinRiskContext({
+          opportunity,
+          liquidity,
+          inputItem,
+          profile,
+          rules,
+          isRiskyProfile,
+          snapshotState,
+          quoteFreshnessState,
+          referenceSignals
+        })
+      : {
+          hardRejectLowValue: false,
+          penaltyKeys: [],
+          speculativeEligible: false,
+          allowLowConfidencePath: false,
+          missingLiquidityRejected: false,
+          missingLiquidityPenaltyApplied: false
+        }
 
   if (profit == null || profit <= 0) {
     return { passed: false, primaryReason: "non_positive_profit", penalty: 0 }
@@ -2943,8 +3356,19 @@ function computeRiskAdjustments({
     if (!profile.allowMissingLiquidity) {
       return { passed: false, primaryReason: "ignored_missing_liquidity_data", penalty: 0 }
     }
+    if (weaponSkinRiskContext.missingLiquidityRejected) {
+      return { passed: false, primaryReason: "hard_reject_missing_liquidity", penalty: 0 }
+    }
   } else if (volume7d < Number(rules.minVolume7d || profile.minVolume7d || 0)) {
     return { passed: false, primaryReason: "ignored_low_liquidity", penalty: 0 }
+  }
+
+  if (
+    itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+    isRiskyProfile &&
+    weaponSkinRiskContext.hardRejectLowValue
+  ) {
+    return { passed: false, primaryReason: "hard_reject_low_value", penalty: 0 }
   }
 
   if (
@@ -3001,7 +3425,7 @@ function computeRiskAdjustments({
     } else if (volume7d < PREMIUM_MIN_VOLUME_MEDIUM) {
       penalty += 14
     } else if (volume7d < PREMIUM_MIN_VOLUME_HIGH) {
-      penalty += 7
+      penalty += 5
     }
 
     if (spread != null && spread > PREMIUM_SPREAD_HEAVY_PENALTY_PERCENT) {
@@ -3020,18 +3444,24 @@ function computeRiskAdjustments({
     if (quoteFreshnessState === FRESHNESS_STATES.STALE) {
       penalty += Number(getCategoryStaleRules(itemCategory).stalePenalty || 12) + 8
     } else if (quoteFreshnessState === FRESHNESS_STATES.AGING) {
-      penalty += Number(getCategoryStaleRules(itemCategory).agingPenalty || 4)
+      penalty += Math.max(Number(getCategoryStaleRules(itemCategory).agingPenalty || 4) - 1, 0)
     }
     if (hasSnapshotStale) {
       penalty += 8
     } else if (hasSnapshotAging) {
-      penalty += 4
+      penalty += 2
     }
   } else {
     if (volume7d == null) {
-      penalty += profile.allowMissingLiquidity ? 16 : 0
+      penalty +=
+        itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+        weaponSkinRiskContext.missingLiquidityPenaltyApplied
+          ? WEAPON_SKIN_MISSING_LIQUIDITY_PENALTY
+          : profile.allowMissingLiquidity
+            ? 16
+            : 0
     } else if (volume7d < Number(rules.minVolume7d || MIN_VOLUME_7D)) {
-      penalty += volume7d < 60 ? 14 : 8
+      penalty += volume7d < 60 ? 14 : 6
     }
 
     if (buyPrice < Number(rules.minPriceUsd || MIN_EXECUTION_PRICE_USD)) {
@@ -3043,12 +3473,12 @@ function computeRiskAdjustments({
     if (quoteFreshnessState === FRESHNESS_STATES.STALE) {
       penalty += Number(getCategoryStaleRules(itemCategory).stalePenalty || 20)
     } else if (quoteFreshnessState === FRESHNESS_STATES.AGING) {
-      penalty += Number(getCategoryStaleRules(itemCategory).agingPenalty || 8)
+      penalty += Math.max(Number(getCategoryStaleRules(itemCategory).agingPenalty || 8) - 2, 0)
     }
     if (hasSnapshotStale) {
       penalty += 10
     } else if (hasSnapshotAging) {
-      penalty += 5
+      penalty += 4
     }
     if (
       isRiskyProfile &&
@@ -3060,12 +3490,33 @@ function computeRiskAdjustments({
     if (isRiskyProfile && itemCategory === ITEM_CATEGORIES.WEAPON_SKIN && profit < 1.2) {
       penalty += 6
     }
+    if (
+      itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+      weaponSkinRiskContext.penaltyKeys.includes("penalty_low_value_but_allowed")
+    ) {
+      penalty += WEAPON_SKIN_LOW_VALUE_PENALTY
+    }
+    if (
+      itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+      weaponSkinRiskContext.penaltyKeys.includes("variant_penalty_stattrak")
+    ) {
+      penalty += WEAPON_SKIN_STATTRAK_VARIANT_PENALTY
+    }
+    if (
+      itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+      weaponSkinRiskContext.penaltyKeys.includes("variant_penalty_souvenir")
+    ) {
+      penalty += WEAPON_SKIN_SOUVENIR_VARIANT_PENALTY
+    }
   }
 
   return {
     passed: true,
     primaryReason: "",
-    penalty: round2(Math.max(penalty, 0))
+    penalty: round2(Math.max(penalty, 0)),
+    diagnosticPenaltyKeys: weaponSkinRiskContext.penaltyKeys,
+    speculativeEligible: weaponSkinRiskContext.speculativeEligible,
+    allowLowConfidencePath: weaponSkinRiskContext.allowLowConfidencePath
   }
 }
 
@@ -3073,6 +3524,12 @@ function normalizeConfidence(value) {
   const safe = String(value || "").trim().toLowerCase()
   if (safe === "high") return "High"
   if (safe === "medium") return "Medium"
+  return "Low"
+}
+
+function downgradeConfidenceOneLevel(value) {
+  const confidence = normalizeConfidence(value)
+  if (confidence === "High") return "Medium"
   return "Low"
 }
 
@@ -3092,10 +3549,16 @@ function downgradeConfidenceForStale(
   if (quoteState === FRESHNESS_STATES.FRESH && snapshotState === FRESHNESS_STATES.FRESH) {
     return confidence
   }
-  if (snapshotState === FRESHNESS_STATES.STALE && confidence === "High") return "Low"
-  if (confidence === "High") return "Medium"
-  if (confidence === "Medium") return "Low"
-  return "Low"
+  if (snapshotState === FRESHNESS_STATES.STALE) {
+    return downgradeConfidenceOneLevel(confidence)
+  }
+  if (quoteState === FRESHNESS_STATES.AGING) {
+    return confidence === "High" ? "Medium" : confidence
+  }
+  if (snapshotState === FRESHNESS_STATES.AGING) {
+    return confidence
+  }
+  return downgradeConfidenceOneLevel(confidence)
 }
 
 function normalizeBadges(rawBadges = []) {
@@ -4229,14 +4692,20 @@ function filterUniverseSeedsForScan(seeds = [], options = {}) {
   const seedList = Array.isArray(seeds) ? seeds : []
   const discardStats = {}
   const rejectedByItem = {}
+  const weaponSkinDiagnostics = buildWeaponSkinFilterDiagnostics()
+  const filterOptions = {
+    ...options,
+    weaponSkinDiagnostics
+  }
   const selectedSeeds = seedList.filter((row) =>
-    passesUniverseSeedFilters(row, discardStats, rejectedByItem, options)
+    passesUniverseSeedFilters(row, discardStats, rejectedByItem, filterOptions)
   )
 
   return {
     selectedSeeds,
     discardStats,
-    rejectedByItem
+    rejectedByItem,
+    weaponSkinDiagnostics
   }
 }
 
@@ -4395,6 +4864,8 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
     seeds: mode === SCANNER_TYPES.ENRICHMENT ? [] : opportunitySeeds,
     enrichmentSeeds,
     allSeeds: allRankedSeeds,
+    weaponSkinFilterDiagnostics:
+      selectedFilterResult?.weaponSkinDiagnostics || buildWeaponSkinFilterDiagnostics(),
     snapshotWarmup: toSnapshotWarmupSummary({
       ...snapshotWarmup,
       seedFilterMode,
@@ -5924,6 +6395,8 @@ async function runScanInternal(options = {}) {
     ? scannerInputs.enrichmentSeeds
     : []
   const allLayeredSeeds = Array.isArray(scannerInputs?.allSeeds) ? scannerInputs.allSeeds : universeSeeds
+  const weaponSkinFilterDiagnostics =
+    scannerInputs?.weaponSkinFilterDiagnostics || buildWeaponSkinFilterDiagnostics()
   const snapshotWarmupSummary = scannerInputs?.snapshotWarmup || toSnapshotWarmupSummary()
   const layeredScanningSummary =
     scannerInputs?.layeredScanning && typeof scannerInputs.layeredScanning === "object"
@@ -5972,6 +6445,7 @@ async function runScanInternal(options = {}) {
         opportunitiesByCategory: { ...emptyByCategory },
         staleDiagnostics,
         knifeGloveRejections: toKnifeGloveRejectionSummary({}),
+        weaponSkinFiltering: toWeaponSkinFilterDiagnosticsSummary(weaponSkinFilterDiagnostics),
         riskyProfileDiagnostics: buildRiskyProfileDiagnostics(),
         snapshotWarmup: snapshotWarmupSummary,
         imageEnrichment: imageEnrichmentSummary,
@@ -6016,7 +6490,8 @@ async function runScanInternal(options = {}) {
           qualifiedItems: 0
         }),
         highConfidence: 0,
-        riskyEligible: 0
+        riskyEligible: 0,
+        speculativeEligible: 0
       },
       opportunities: [],
       pipeline: {
@@ -6235,6 +6710,9 @@ async function runScanInternal(options = {}) {
       inputItem,
       profile: STRICT_SCAN_PROFILE
     })
+    for (const key of riskyEvaluation?.diagnosticPenaltyKeys || []) {
+      incrementWeaponSkinFilterDiagnostic(weaponSkinFilterDiagnostics, key, itemName)
+    }
 
     const apiRow = buildApiOpportunityRow({
       opportunity: enrichedOpportunity,
@@ -6246,6 +6724,8 @@ async function runScanInternal(options = {}) {
       isRiskyEligible: true,
       isHighConfidenceEligible: strictEvaluation.passed
     })
+    const speculativeEligible =
+      itemCategory === ITEM_CATEGORIES.WEAPON_SKIN && Boolean(riskyEvaluation?.speculativeEligible)
 
     const riskyFloor = getRiskyQualityFloor(itemCategory)
     if (Number(apiRow?.profit || 0) < Number(riskyFloor.minProfitUsd || 0)) {
@@ -6262,7 +6742,8 @@ async function runScanInternal(options = {}) {
     }
     if (
       itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
-      normalizeConfidence(apiRow?.executionConfidence) === "Low"
+      normalizeConfidence(apiRow?.executionConfidence) === "Low" &&
+      !Boolean(riskyEvaluation?.allowLowConfidencePath)
     ) {
       incrementReasonCounter(discardStats, "risky_low_confidence", itemCategory)
       incrementItemReasonCounter(rejectedByItem, itemName, "risky_low_confidence", itemCategory)
@@ -6278,8 +6759,19 @@ async function runScanInternal(options = {}) {
         .toLowerCase() !== "low"
     rows.push({
       ...apiRow,
-      isHighConfidenceEligible: highConfidenceEligible
+      isHighConfidenceEligible: highConfidenceEligible,
+      isSpeculativeEligible: speculativeEligible
     })
+    if (itemCategory === ITEM_CATEGORIES.WEAPON_SKIN) {
+      incrementWeaponSkinFilterDiagnostic(weaponSkinFilterDiagnostics, "risky_pass_count", itemName)
+      if (speculativeEligible) {
+        incrementWeaponSkinFilterDiagnostic(
+          weaponSkinFilterDiagnostics,
+          "speculative_pass_count",
+          itemName
+        )
+      }
+    }
     const premiumAcceptedWithMissingDepth =
       PREMIUM_ITEM_CATEGORIES.has(itemCategory) &&
       (
@@ -6290,7 +6782,9 @@ async function runScanInternal(options = {}) {
       riskyProfileDiagnostics,
       itemCategory,
       "accepted",
-      premiumAcceptedWithMissingDepth
+      speculativeEligible
+        ? "accepted_weapon_skin_speculative"
+        : premiumAcceptedWithMissingDepth
         ? "accepted_premium_missing_depth_tolerated"
         : PREMIUM_ITEM_CATEGORIES.has(itemCategory)
           ? "accepted_premium_profile"
@@ -6310,6 +6804,7 @@ async function runScanInternal(options = {}) {
         .toLowerCase() !== "low"
   ).length
   const riskyEligibleCount = sortedRows.filter((row) => Boolean(row?.isRiskyEligible)).length
+  const speculativeEligibleCount = sortedRows.filter((row) => Boolean(row?.isSpeculativeEligible)).length
   const selectedUniverseByCategory = countRowsByCategory(
     selectedUniverse.map((row) => ({
       itemCategory: row?.inputItem?.itemCategory,
@@ -6385,6 +6880,7 @@ async function runScanInternal(options = {}) {
       opportunitiesByCategory,
       staleDiagnostics,
       knifeGloveRejections,
+      weaponSkinFiltering: toWeaponSkinFilterDiagnosticsSummary(weaponSkinFilterDiagnostics),
       riskyProfileDiagnostics,
       snapshotWarmup: snapshotWarmupSummary,
       imageEnrichment: imageEnrichmentSummary,
@@ -6423,7 +6919,8 @@ async function runScanInternal(options = {}) {
       scanProgress,
       hotScan,
       highConfidence: highConfidenceCount,
-      riskyEligible: riskyEligibleCount
+      riskyEligible: riskyEligibleCount,
+      speculativeEligible: speculativeEligibleCount
     },
     opportunities: sortedRows,
     pipeline: {
@@ -6673,6 +7170,7 @@ function toOpportunityDiagnosticsSummary(scanPayload = {}, persistSummary = {}, 
     opportunitiesByCategory: scanPayload?.summary?.opportunitiesByCategory || {},
     staleDiagnostics: scanPayload?.summary?.staleDiagnostics || {},
     knifeGloveRejections: scanPayload?.summary?.knifeGloveRejections || {},
+    weaponSkinFiltering: scanPayload?.summary?.weaponSkinFiltering || {},
     riskyProfileDiagnostics: scanPayload?.summary?.riskyProfileDiagnostics || {},
     snapshotWarmup:
       scanPayload?.summary?.snapshotWarmup || scanPayload?.pipeline?.snapshotWarmup || {},
@@ -6691,6 +7189,7 @@ function toOpportunityDiagnosticsSummary(scanPayload = {}, persistSummary = {}, 
       scanPayload?.summary?.performanceAudit || scanPayload?.pipeline?.performanceAudit || {},
     highConfidence: Number(scanPayload?.summary?.highConfidence || 0),
     riskyEligible: Number(scanPayload?.summary?.riskyEligible || 0),
+    speculativeEligible: Number(scanPayload?.summary?.speculativeEligible || 0),
     pipeline: scanPayload?.pipeline || {},
     persisted: persistSummary || {}
   }
@@ -7531,6 +8030,7 @@ function resolveNoOpportunitiesReason(summary = {}, status = {}, opportunities =
     ignored_execution_floor: "Most candidates failed execution floor checks.",
     ignored_low_price: "Most candidates failed execution floor checks.",
     ignored_low_value_universe: "Most candidates were filtered as low-value universe items.",
+    hard_reject_low_value: "Most weapon skins were rejected as low-value across multiple weak signals.",
     ignored_low_liquidity: "Most candidates were rejected for low liquidity.",
     risky_low_price: "Most risky candidates were below category price floors.",
     risky_low_profit: "Most risky candidates had insufficient profit for their category.",
@@ -7543,6 +8043,8 @@ function resolveNoOpportunitiesReason(summary = {}, status = {}, opportunities =
     ignored_reference_deviation: "Most candidates failed reference deviation checks.",
     ignored_missing_markets: "Most candidates were missing enough market coverage.",
     ignored_missing_liquidity_data: "Most candidates were missing liquidity data.",
+    hard_reject_missing_liquidity:
+      "Most weapon skins were missing liquidity support and failed fallback evidence checks.",
     ignored_missing_depth: "Most candidates were rejected due to missing orderbook depth.",
     ignored_low_score: "Most candidates scored below profile thresholds.",
     ignored_stale_data: "Most candidates were rejected due to stale data."
@@ -7631,6 +8133,7 @@ exports.getFeed = async (options = {}) => {
     opportunitiesByCategory: diagnosticsSummary?.opportunitiesByCategory || {},
     staleDiagnostics: diagnosticsSummary?.staleDiagnostics || {},
     knifeGloveRejections: diagnosticsSummary?.knifeGloveRejections || {},
+    weaponSkinFiltering: diagnosticsSummary?.weaponSkinFiltering || {},
     riskyProfileDiagnostics: diagnosticsSummary?.riskyProfileDiagnostics || {},
     snapshotWarmup:
       diagnosticsSummary?.snapshotWarmup || diagnosticsSummary?.pipeline?.snapshotWarmup || {},
@@ -7649,6 +8152,7 @@ exports.getFeed = async (options = {}) => {
       diagnosticsSummary?.performanceAudit || diagnosticsSummary?.pipeline?.performanceAudit || {},
     highConfidence: Number(diagnosticsSummary?.highConfidence || 0),
     riskyEligible: Number(diagnosticsSummary?.riskyEligible || 0),
+    speculativeEligible: Number(diagnosticsSummary?.speculativeEligible || 0),
     newOpportunitiesAdded:
       Number(latestCompleted?.new_opportunities_added || diagnosticsSummary?.persisted?.newCount || 0),
     updatedOpportunities: Number(diagnosticsSummary?.persisted?.updatedCount || 0),
@@ -7846,6 +8350,7 @@ exports.__testables = {
   resolveLiquidityMetrics,
   passesUniverseSeedFilters,
   passesScannerGuards,
+  computeRiskAdjustments,
   buildApiOpportunityRow,
   buildFeedInsertRow,
   mapFeedRowToApiRow,
