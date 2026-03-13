@@ -197,6 +197,33 @@ const MATURITY_STATES = Object.freeze({
   NEAR_ELIGIBLE: "near_eligible",
   ELIGIBLE: "eligible"
 })
+const SOURCE_CATALOG_SNAPSHOT_STATES = Object.freeze({
+  MISSING: "missing_snapshot",
+  STALE: "stale_snapshot",
+  PARTIAL: "partial_snapshot",
+  READY: "snapshot_ready"
+})
+const SOURCE_CATALOG_REFERENCE_STATES = Object.freeze({
+  MISSING: "missing_reference",
+  SNAPSHOT: "snapshot_reference",
+  QUOTE: "quote_reference"
+})
+const SOURCE_CATALOG_LIQUIDITY_STATES = Object.freeze({
+  MISSING: "missing_liquidity",
+  PARTIAL: "partial_liquidity",
+  READY: "liquidity_ready"
+})
+const SOURCE_CATALOG_COVERAGE_STATES = Object.freeze({
+  MISSING: "missing_coverage",
+  INSUFFICIENT: "insufficient_coverage",
+  READY: "coverage_ready"
+})
+const SOURCE_CATALOG_PROGRESSION_STATUS = Object.freeze({
+  ELIGIBLE: "eligible",
+  BLOCKED_ELIGIBLE: "blocked_from_eligible",
+  BLOCKED_NEAR_ELIGIBLE: "blocked_from_near_eligible",
+  REJECTED: "rejected"
+})
 const SCAN_LAYERS = Object.freeze({
   HOT: "hot",
   WARM: "warm",
@@ -907,6 +934,24 @@ function toIsoStringOrNull(value) {
   const ts = new Date(text).getTime()
   if (!Number.isFinite(ts)) return null
   return new Date(ts).toISOString()
+}
+
+function normalizeTextValue(value) {
+  return String(value || "").trim()
+}
+
+function normalizeLowerText(value) {
+  return normalizeTextValue(value).toLowerCase()
+}
+
+function normalizeTextList(values = []) {
+  return Array.from(
+    new Set(
+      (Array.isArray(values) ? values : [])
+        .map((value) => normalizeLowerText(value))
+        .filter(Boolean)
+    )
+  )
 }
 
 function clampScore(value) {
@@ -2058,6 +2103,19 @@ function buildInputItemFromSkinAndSnapshot({
   )
     .trim()
     .toLowerCase()
+  const snapshotState = normalizeLowerText(catalogRow?.snapshot_state ?? catalogRow?.snapshotState) || null
+  const referenceState =
+    normalizeLowerText(catalogRow?.reference_state ?? catalogRow?.referenceState) || null
+  const liquidityState =
+    normalizeLowerText(catalogRow?.liquidity_state ?? catalogRow?.liquidityState) || null
+  const coverageState = normalizeLowerText(catalogRow?.coverage_state ?? catalogRow?.coverageState) || null
+  const progressionStatus =
+    normalizeLowerText(catalogRow?.progression_status ?? catalogRow?.progressionStatus) || null
+  const progressionBlockers = normalizeTextList(
+    catalogRow?.progression_blockers ?? catalogRow?.progressionBlockers
+  )
+  const invalidReason =
+    normalizeTextValue(catalogRow?.invalid_reason ?? catalogRow?.invalidReason) || null
 
   return {
     skinId: Number(skin?.id || 0) || null,
@@ -2091,7 +2149,14 @@ function buildInputItemFromSkinAndSnapshot({
     scanLayer,
     quoteFetchedAt: catalogRow?.quote_fetched_at || catalogRow?.quoteFetchedAt || null,
     eligibilityReason: eligibilityReason || null,
-    marketCoverageCount
+    marketCoverageCount,
+    snapshotState,
+    referenceState,
+    liquidityState,
+    coverageState,
+    progressionStatus,
+    progressionBlockers,
+    invalidReason
   }
 }
 
@@ -2248,7 +2313,17 @@ function applyCatalogStateToSeed(seed = {}, catalogRow = null) {
         .toLowerCase(),
       quoteFetchedAt: seed?.quoteFetchedAt || null,
       eligibilityReason: String(seed?.eligibilityReason || "").trim() || null,
-      marketCoverageCount: Math.max(Number(seed?.marketCoverageCount || 0), 0)
+      marketCoverageCount: Math.max(Number(seed?.marketCoverageCount || 0), 0),
+      snapshotState: normalizeLowerText(seed?.snapshotState ?? seed?.snapshot_state) || null,
+      referenceState: normalizeLowerText(seed?.referenceState ?? seed?.reference_state) || null,
+      liquidityState: normalizeLowerText(seed?.liquidityState ?? seed?.liquidity_state) || null,
+      coverageState: normalizeLowerText(seed?.coverageState ?? seed?.coverage_state) || null,
+      progressionStatus:
+        normalizeLowerText(seed?.progressionStatus ?? seed?.progression_status) || null,
+      progressionBlockers: normalizeTextList(
+        seed?.progressionBlockers ?? seed?.progression_blockers
+      ),
+      invalidReason: normalizeTextValue(seed?.invalidReason ?? seed?.invalid_reason) || null
     }
   }
 
@@ -2316,7 +2391,32 @@ function applyCatalogStateToSeed(seed = {}, catalogRow = null) {
       .toLowerCase(),
     quoteFetchedAt: catalogRow?.quote_fetched_at || catalogRow?.quoteFetchedAt || seed?.quoteFetchedAt || null,
     snapshotStale,
-    snapshotCapturedAt
+    snapshotCapturedAt,
+    snapshotState:
+      normalizeLowerText(catalogRow?.snapshot_state ?? catalogRow?.snapshotState ?? seed?.snapshotState) ||
+      null,
+    referenceState:
+      normalizeLowerText(catalogRow?.reference_state ?? catalogRow?.referenceState ?? seed?.referenceState) ||
+      null,
+    liquidityState:
+      normalizeLowerText(catalogRow?.liquidity_state ?? catalogRow?.liquidityState ?? seed?.liquidityState) ||
+      null,
+    coverageState:
+      normalizeLowerText(catalogRow?.coverage_state ?? catalogRow?.coverageState ?? seed?.coverageState) ||
+      null,
+    progressionStatus:
+      normalizeLowerText(
+        catalogRow?.progression_status ?? catalogRow?.progressionStatus ?? seed?.progressionStatus
+      ) || null,
+    progressionBlockers: normalizeTextList(
+      catalogRow?.progression_blockers ??
+        catalogRow?.progressionBlockers ??
+        seed?.progressionBlockers ??
+        seed?.progression_blockers
+    ),
+    invalidReason:
+      normalizeTextValue(catalogRow?.invalid_reason ?? catalogRow?.invalidReason ?? seed?.invalidReason) ||
+      null
   }
 }
 
@@ -2557,6 +2657,239 @@ function buildLayerDiagnostics(seeds = []) {
     layers,
     layersByCategory
   }
+}
+
+function buildOpportunityAdmissionDiagnostics() {
+  return {
+    universe_total: 0,
+    universe_eligible: 0,
+    universe_near_eligible: 0,
+    universe_blocked: 0,
+    scan_candidates_loaded: 0,
+    scan_candidates_deferred: 0,
+    scan_candidates_executed: 0,
+    deferred_due_to_missing_reference: 0,
+    deferred_due_to_missing_liquidity: 0,
+    deferred_due_to_stale: 0,
+    deferred_due_to_maturity: 0,
+    deferred_due_to_risk_profile: 0,
+    deferred_due_to_visibility_or_feed_floor: 0
+  }
+}
+
+function resolveSeedCandidateStatus(seed = {}) {
+  return normalizeCatalogCandidateStatus(
+    seed?.candidateStatus,
+    seed?.scanEligible ? CATALOG_CANDIDATE_STATUS.ELIGIBLE : CATALOG_CANDIDATE_STATUS.CANDIDATE
+  )
+}
+
+function resolveSeedSnapshotDiagnosticState(seed = {}) {
+  const explicit = normalizeLowerText(seed?.snapshotState ?? seed?.snapshot_state)
+  if (Object.values(SOURCE_CATALOG_SNAPSHOT_STATES).includes(explicit)) {
+    return explicit
+  }
+  const snapshotCapturedAt = seed?.snapshotCapturedAt ?? seed?.snapshot_captured_at
+  if (!normalizeTextValue(snapshotCapturedAt)) {
+    return SOURCE_CATALOG_SNAPSHOT_STATES.MISSING
+  }
+  if (Boolean(seed?.snapshotStale ?? seed?.snapshot_stale)) {
+    return SOURCE_CATALOG_SNAPSHOT_STATES.STALE
+  }
+  const hasReference = toFiniteOrNull(seed?.referencePrice ?? seed?.reference_price) != null
+  const hasLiquidity = toFiniteOrNull(seed?.marketVolume7d ?? seed?.volume_7d) != null
+  return hasReference && hasLiquidity
+    ? SOURCE_CATALOG_SNAPSHOT_STATES.READY
+    : SOURCE_CATALOG_SNAPSHOT_STATES.PARTIAL
+}
+
+function resolveSeedReferenceDiagnosticState(seed = {}) {
+  const explicit = normalizeLowerText(seed?.referenceState ?? seed?.reference_state)
+  if (Object.values(SOURCE_CATALOG_REFERENCE_STATES).includes(explicit)) {
+    return explicit
+  }
+  return toFiniteOrNull(seed?.referencePrice ?? seed?.reference_price) == null
+    ? SOURCE_CATALOG_REFERENCE_STATES.MISSING
+    : resolveSeedSnapshotDiagnosticState(seed) === SOURCE_CATALOG_SNAPSHOT_STATES.READY
+      ? SOURCE_CATALOG_REFERENCE_STATES.SNAPSHOT
+      : SOURCE_CATALOG_REFERENCE_STATES.QUOTE
+}
+
+function resolveSeedLiquidityDiagnosticState(seed = {}) {
+  const explicit = normalizeLowerText(seed?.liquidityState ?? seed?.liquidity_state)
+  if (Object.values(SOURCE_CATALOG_LIQUIDITY_STATES).includes(explicit)) {
+    return explicit
+  }
+  const volume7d = toFiniteOrNull(seed?.marketVolume7d ?? seed?.volume_7d)
+  const liquidityRank = toFiniteOrNull(seed?.liquidityRank ?? seed?.liquidity_rank) ?? 0
+  if (volume7d != null) return SOURCE_CATALOG_LIQUIDITY_STATES.READY
+  return liquidityRank > 0
+    ? SOURCE_CATALOG_LIQUIDITY_STATES.PARTIAL
+    : SOURCE_CATALOG_LIQUIDITY_STATES.MISSING
+}
+
+function resolveSeedCoverageDiagnosticState(seed = {}) {
+  const explicit = normalizeLowerText(seed?.coverageState ?? seed?.coverage_state)
+  if (Object.values(SOURCE_CATALOG_COVERAGE_STATES).includes(explicit)) {
+    return explicit
+  }
+  const coverageCount = Math.max(Number(seed?.marketCoverageCount || 0), 0)
+  if (coverageCount <= 0) return SOURCE_CATALOG_COVERAGE_STATES.MISSING
+  if (coverageCount < MIN_MARKET_COVERAGE) {
+    return SOURCE_CATALOG_COVERAGE_STATES.INSUFFICIENT
+  }
+  return SOURCE_CATALOG_COVERAGE_STATES.READY
+}
+
+function resolveSeedProgressionStatus(seed = {}, candidateStatus = resolveSeedCandidateStatus(seed)) {
+  const explicit = normalizeLowerText(seed?.progressionStatus ?? seed?.progression_status)
+  if (Object.values(SOURCE_CATALOG_PROGRESSION_STATUS).includes(explicit)) {
+    return explicit
+  }
+  if (candidateStatus === CATALOG_CANDIDATE_STATUS.REJECTED) {
+    return SOURCE_CATALOG_PROGRESSION_STATUS.REJECTED
+  }
+  if (candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE) {
+    return SOURCE_CATALOG_PROGRESSION_STATUS.ELIGIBLE
+  }
+  if (candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE) {
+    return SOURCE_CATALOG_PROGRESSION_STATUS.BLOCKED_ELIGIBLE
+  }
+  return SOURCE_CATALOG_PROGRESSION_STATUS.BLOCKED_NEAR_ELIGIBLE
+}
+
+function resolveSeedProgressionBlockers(seed = {}) {
+  return normalizeTextList(seed?.progressionBlockers ?? seed?.progression_blockers)
+}
+
+function hasOpportunitySeedRiskProfileBlock(seed = {}, progressionBlockers = []) {
+  const candidateStatus = resolveSeedCandidateStatus(seed)
+  if (candidateStatus === CATALOG_CANDIDATE_STATUS.REJECTED) {
+    return true
+  }
+  if (
+    progressionBlockers.includes("anti_fake_guard") ||
+    progressionBlockers.includes("structural_reason")
+  ) {
+    return true
+  }
+  const invalidReason = normalizeLowerText(seed?.invalidReason ?? seed?.invalid_reason)
+  if (invalidReason) {
+    return true
+  }
+  const eligibilityReason = normalizeLowerText(seed?.eligibilityReason ?? seed?.eligibility_reason)
+  return /(rejected|hard|outofscope|namepattern|unsupported)/.test(eligibilityReason)
+}
+
+function evaluateOpportunitySeedAdmission(seed = {}) {
+  const itemCategory = normalizeItemCategory(seed?.itemCategory, seed?.marketHashName)
+  const candidateStatus = resolveSeedCandidateStatus(seed)
+  const maturityState = normalizeMaturityState(seed?.maturityState)
+  const progressionStatus = resolveSeedProgressionStatus(seed, candidateStatus)
+  const progressionBlockers = resolveSeedProgressionBlockers(seed)
+  const coverageCount = Math.max(Number(seed?.marketCoverageCount || 0), 0)
+  const snapshotState = resolveSeedSnapshotDiagnosticState(seed)
+  const referenceState = resolveSeedReferenceDiagnosticState(seed)
+  const liquidityState = resolveSeedLiquidityDiagnosticState(seed)
+  const coverageState = resolveSeedCoverageDiagnosticState(seed)
+  const freshness = resolveCatalogSeedFreshnessContext(seed, itemCategory)
+  const riskProfileBlocked = hasOpportunitySeedRiskProfileBlock(seed, progressionBlockers)
+  const catalogApproved =
+    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE ||
+    candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
+  const maturityApproved =
+    maturityState === MATURITY_STATES.ELIGIBLE || maturityState === MATURITY_STATES.NEAR_ELIGIBLE
+  const hasSomeCoverage = coverageCount > 0
+  const allowPartialWeaponSkinPath =
+    itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+    candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE &&
+    progressionStatus === SOURCE_CATALOG_PROGRESSION_STATUS.BLOCKED_ELIGIBLE &&
+    maturityApproved &&
+    hasSomeCoverage &&
+    freshness.usable &&
+    !riskProfileBlocked
+
+  const reasons = []
+  if (!catalogApproved || !maturityApproved) {
+    reasons.push("deferred_due_to_maturity")
+  }
+  if (itemCategory === ITEM_CATEGORIES.WEAPON_SKIN && !hasSomeCoverage) {
+    reasons.push("deferred_due_to_maturity")
+  }
+  if (riskProfileBlocked) {
+    reasons.push("deferred_due_to_risk_profile")
+  }
+  if (!freshness.usable) {
+    reasons.push("deferred_due_to_stale")
+  }
+  if (!allowPartialWeaponSkinPath && referenceState === SOURCE_CATALOG_REFERENCE_STATES.MISSING) {
+    reasons.push("deferred_due_to_missing_reference")
+  }
+  if (!allowPartialWeaponSkinPath && liquidityState === SOURCE_CATALOG_LIQUIDITY_STATES.MISSING) {
+    reasons.push("deferred_due_to_missing_liquidity")
+  }
+  if (
+    !allowPartialWeaponSkinPath &&
+    snapshotState === SOURCE_CATALOG_SNAPSHOT_STATES.MISSING &&
+    freshness.usable
+  ) {
+    reasons.push("deferred_due_to_maturity")
+  }
+  if (
+    !allowPartialWeaponSkinPath &&
+    itemCategory !== ITEM_CATEGORIES.WEAPON_SKIN &&
+    coverageState !== SOURCE_CATALOG_COVERAGE_STATES.READY
+  ) {
+    reasons.push("deferred_due_to_maturity")
+  }
+
+  return {
+    ready: normalizeTextList(reasons).length === 0,
+    reasons: normalizeTextList(reasons),
+    allowPartialWeaponSkinPath,
+    candidateStatus,
+    maturityState,
+    snapshotState,
+    referenceState,
+    liquidityState,
+    coverageState,
+    progressionStatus,
+    progressionBlockers
+  }
+}
+
+function summarizeOpportunitySeedAdmissions(admissions = [], executedSeeds = []) {
+  const summary = buildOpportunityAdmissionDiagnostics()
+  summary.universe_total = Array.isArray(admissions) ? admissions.length : 0
+  summary.scan_candidates_executed = Array.isArray(executedSeeds) ? executedSeeds.length : 0
+
+  for (const entry of Array.isArray(admissions) ? admissions : []) {
+    const seed = entry?.row || {}
+    const admission = entry?.admission || evaluateOpportunitySeedAdmission(seed)
+    const candidateStatus = resolveSeedCandidateStatus(seed)
+    if (candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE) {
+      summary.universe_eligible += 1
+    } else if (candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE) {
+      summary.universe_near_eligible += 1
+    } else {
+      summary.universe_blocked += 1
+    }
+
+    if (admission.ready) {
+      summary.scan_candidates_loaded += 1
+      continue
+    }
+
+    summary.scan_candidates_deferred += 1
+    for (const reason of normalizeTextList(admission?.reasons)) {
+      if (summary[reason] == null) {
+        summary[reason] = 0
+      }
+      summary[reason] += 1
+    }
+  }
+
+  return summary
 }
 
 function dedupeSeedRows(rows = []) {
@@ -5600,8 +5933,22 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
     )
     .slice(0, PRE_COMPARE_UNIVERSE_LIMIT)
 
+  const opportunityAdmissions = isOpportunityMode
+    ? ranked.map((row) => ({
+        row,
+        admission: evaluateOpportunitySeedAdmission(row)
+      }))
+    : []
+  const opportunityAdmissionByName = new Map(
+    opportunityAdmissions.map(({ row, admission }) => [normalizeMarketHashName(row?.marketHashName), admission])
+  )
+  const resolveOpportunityAdmission = (row = {}) =>
+    opportunityAdmissionByName.get(normalizeMarketHashName(row?.marketHashName)) ||
+    evaluateOpportunitySeedAdmission(row)
   const deferredToEnrichmentRows = isOpportunityMode
-    ? ranked.filter((row) => !isOpportunityScanReadySeed(row))
+    ? opportunityAdmissions
+        .filter(({ admission }) => !admission?.ready)
+        .map(({ row }) => row)
     : []
   const deferredToEnrichmentByCategory = countRowsByCategory(
     deferredToEnrichmentRows.map((row) => ({
@@ -5618,7 +5965,7 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
     ),
     nearEligibleTarget: includeNearEligibleInOpportunity ? OPPORTUNITY_NEAR_ELIGIBLE_LIMIT : 0,
     enrichmentTarget: enrichmentBatchSize,
-    opportunityFilter: isOpportunityMode ? isOpportunityScanReadySeed : null,
+    opportunityFilter: isOpportunityMode ? (row) => resolveOpportunityAdmission(row).ready : null,
     opportunityDeferredRows: deferredToEnrichmentRows
   })
   const allRankedSeeds = Array.isArray(layeredSelection?.allRankedSeeds)
@@ -5630,11 +5977,15 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
   const enrichmentSeeds = Array.isArray(layeredSelection?.enrichmentSeeds)
     ? layeredSelection.enrichmentSeeds.slice(0, enrichmentBatchSize)
     : []
+  const scanAdmission = isOpportunityMode
+    ? summarizeOpportunitySeedAdmissions(opportunityAdmissions, opportunitySeeds)
+    : buildOpportunityAdmissionDiagnostics()
 
   return {
     seeds: mode === SCANNER_TYPES.ENRICHMENT ? [] : opportunitySeeds,
     enrichmentSeeds,
     allSeeds: allRankedSeeds,
+    scanAdmission,
     weaponSkinFilterDiagnostics:
       selectedFilterResult?.weaponSkinDiagnostics || buildWeaponSkinFilterDiagnostics(),
     snapshotWarmup: toSnapshotWarmupSummary({
@@ -5659,17 +6010,24 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
       selectedForOpportunity: opportunitySeeds.length,
       selectedForEnrichment: enrichmentSeeds.length
     }),
-    layeredScanning: layeredSelection.diagnostics || {
-      totalRankedSeeds: ranked.length,
-      coreUniverseSize: 0,
-      opportunityTarget: opportunityBatchSize,
-      enrichmentTarget: enrichmentBatchSize,
-      selectedForOpportunity: opportunitySeeds.length,
-      selectedForEnrichment: enrichmentSeeds.length,
-      allSeeds: buildLayerDiagnostics(ranked),
-      opportunity: buildLayerDiagnostics(opportunitySeeds),
-      enrichment: buildLayerDiagnostics(enrichmentSeeds)
-    }
+    layeredScanning:
+      layeredSelection.diagnostics && typeof layeredSelection.diagnostics === "object"
+        ? {
+            ...layeredSelection.diagnostics,
+            scanAdmission
+          }
+        : {
+            totalRankedSeeds: ranked.length,
+            coreUniverseSize: 0,
+            opportunityTarget: opportunityBatchSize,
+            enrichmentTarget: enrichmentBatchSize,
+            selectedForOpportunity: opportunitySeeds.length,
+            selectedForEnrichment: enrichmentSeeds.length,
+            allSeeds: buildLayerDiagnostics(ranked),
+            opportunity: buildLayerDiagnostics(opportunitySeeds),
+            enrichment: buildLayerDiagnostics(enrichmentSeeds),
+            scanAdmission
+          }
   }
 }
 
@@ -5983,25 +6341,7 @@ function summarizeSnapshotWarmupBacklog(seeds = []) {
 }
 
 function isOpportunityScanReadySeed(seed = {}) {
-  const maturityState = normalizeMaturityState(seed?.maturityState)
-  if (
-    maturityState !== MATURITY_STATES.ELIGIBLE &&
-    maturityState !== MATURITY_STATES.NEAR_ELIGIBLE
-  ) {
-    return false
-  }
-  if (Boolean(seed?.missingSnapshot) || Boolean(seed?.missingReference)) {
-    return false
-  }
-  const itemCategory = normalizeItemCategory(seed?.itemCategory, seed?.marketHashName)
-  if (
-    itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
-    Math.max(Number(seed?.marketCoverageCount || 0), 0) <= 0
-  ) {
-    return false
-  }
-  const freshness = resolveCatalogSeedFreshnessContext(seed, itemCategory)
-  return freshness.usable
+  return evaluateOpportunitySeedAdmission(seed).ready
 }
 
 async function refreshSeedSnapshotsIfNeeded(seeds = [], options = {}) {
@@ -7413,9 +7753,15 @@ async function runScanInternal(options = {}) {
   const weaponSkinFilterDiagnostics =
     scannerInputs?.weaponSkinFilterDiagnostics || buildWeaponSkinFilterDiagnostics()
   const snapshotWarmupSummary = scannerInputs?.snapshotWarmup || toSnapshotWarmupSummary()
+  const scanAdmissionSummary =
+    scannerInputs?.scanAdmission || buildOpportunityAdmissionDiagnostics()
   const layeredScanningSummary =
     scannerInputs?.layeredScanning && typeof scannerInputs.layeredScanning === "object"
-      ? scannerInputs.layeredScanning
+      ? {
+          ...scannerInputs.layeredScanning,
+          scanAdmission:
+            scannerInputs?.layeredScanning?.scanAdmission || scanAdmissionSummary
+        }
       : {
           totalRankedSeeds: universeSeeds.length,
           coreUniverseSize: 0,
@@ -7425,7 +7771,8 @@ async function runScanInternal(options = {}) {
           selectedForEnrichment: enrichmentSeeds.length,
           allSeeds: buildLayerDiagnostics(universeSeeds),
           opportunity: buildLayerDiagnostics(universeSeeds),
-          enrichment: buildLayerDiagnostics(enrichmentSeeds)
+          enrichment: buildLayerDiagnostics(enrichmentSeeds),
+          scanAdmission: scanAdmissionSummary
         }
   let enrichmentPipelineSummary = buildDefaultEnrichmentPipelineSummary()
   if (!universeSeeds.length) {
@@ -7466,6 +7813,7 @@ async function runScanInternal(options = {}) {
         snapshotWarmup: snapshotWarmupSummary,
         imageEnrichment: imageEnrichmentSummary,
         layeredScanning: layeredScanningSummary,
+        scanAdmission: scanAdmissionSummary,
         enrichmentPipeline: enrichmentPipelineSummary,
         maturity: {
           funnel: layeredScanningSummary?.allSeeds?.maturityFunnel || buildMaturityCounter(0),
@@ -7587,6 +7935,7 @@ async function runScanInternal(options = {}) {
         snapshotWarmup: snapshotWarmupSummary,
         imageEnrichment: imageEnrichmentSummary,
         layeredScanning: layeredScanningSummary,
+        scanAdmission: scanAdmissionSummary,
         enrichmentPipeline: enrichmentPipelineSummary,
         sourceCatalog: sourceCatalogDiagnostics
       }
@@ -7930,6 +8279,7 @@ async function runScanInternal(options = {}) {
       snapshotWarmup: snapshotWarmupSummary,
       imageEnrichment: imageEnrichmentSummary,
       layeredScanning: layeredScanningSummary,
+      scanAdmission: scanAdmissionSummary,
       enrichmentPipeline: enrichmentPipelineSummary,
       maturity: {
         funnel: layeredScanningSummary?.allSeeds?.maturityFunnel || buildMaturityCounter(0),
@@ -7962,6 +8312,7 @@ async function runScanInternal(options = {}) {
       },
       sourceCatalog: effectiveSourceCatalogDiagnostics,
       scanProgress,
+      scanAdmission: scanAdmissionSummary,
       batchSizing: buildBatchSizingDiagnostics({
         scannerType: SCANNER_TYPES.OPPORTUNITY_SCAN,
         runDurationMs: Date.now() - scanStartedAt,
@@ -8012,6 +8363,7 @@ async function runScanInternal(options = {}) {
       snapshotWarmup: snapshotWarmupSummary,
       imageEnrichment: imageEnrichmentSummary,
       layeredScanning: layeredScanningSummary,
+      scanAdmission: scanAdmissionSummary,
       enrichmentPipeline: enrichmentPipelineSummary,
       sourceCatalog: effectiveSourceCatalogDiagnostics
     }
@@ -9428,6 +9780,8 @@ exports.__testables = {
   resolveMaturityStateForSeed,
   resolveScanLayerForMaturity,
   resolveCatalogSeedFreshnessContext,
+  evaluateOpportunitySeedAdmission,
+  summarizeOpportunitySeedAdmissions,
   isOpportunityScanReadySeed,
   isMinimumOpportunityBackfillReadySeed,
   summarizeSnapshotWarmupBacklog,

@@ -34,6 +34,8 @@ const {
     resolveMaturityStateForSeed,
     resolveScanLayerForMaturity,
     resolveCatalogSeedFreshnessContext,
+    evaluateOpportunitySeedAdmission,
+    summarizeOpportunitySeedAdmissions,
     isOpportunityScanReadySeed,
     isMinimumOpportunityBackfillReadySeed,
     summarizeSnapshotWarmupBacklog,
@@ -1385,30 +1387,47 @@ test("seed maturity keeps fresh-quote near-eligible rows out of enriching", () =
   assert.equal(resolveScanLayerForMaturity(maturity), "warm");
 });
 
-test("opportunity readiness rejects rows that still need enrichment", () => {
+test("opportunity readiness allows safe partial weapon skins but blocks uncatalogued rows", () => {
+  const recent = new Date().toISOString();
   const readyNearEligible = {
     marketHashName: "AK-47 | Redline (Field-Tested)",
     itemCategory: "weapon_skin",
+    candidateStatus: "near_eligible",
     maturityState: "near_eligible",
     missingSnapshot: false,
     missingReference: false,
     hasSnapshotData: true,
-    snapshotCapturedAt: new Date(Date.now() - 40 * 60 * 1000).toISOString(),
+    snapshotCapturedAt: recent,
     snapshotStale: false,
-    quoteFetchedAt: new Date().toISOString(),
+    quoteFetchedAt: recent,
+    progressionStatus: "blocked_from_eligible",
     marketCoverageCount: 1
   };
-  const missingSnapshot = {
+  const partialButSafe = {
     ...readyNearEligible,
     marketHashName: "USP-S | Cortex (Field-Tested)",
     missingSnapshot: true,
+    missingReference: true,
     hasSnapshotData: false,
-    snapshotCapturedAt: null
+    snapshotCapturedAt: null,
+    snapshotState: "missing_snapshot",
+    referenceState: "missing_reference",
+    liquidityState: "missing_liquidity",
+    referencePrice: null,
+    marketVolume7d: null,
+    marketCoverageCount: 3
+  };
+  const uncataloguedPartial = {
+    ...partialButSafe,
+    marketHashName: "M4A1-S | Cyrex (Field-Tested)",
+    candidateStatus: "candidate",
+    progressionStatus: "blocked_from_near_eligible"
   };
 
   assert.equal(resolveCatalogSeedFreshnessContext(readyNearEligible, "weapon_skin").usable, true);
   assert.equal(isOpportunityScanReadySeed(readyNearEligible), true);
-  assert.equal(isOpportunityScanReadySeed(missingSnapshot), false);
+  assert.equal(isOpportunityScanReadySeed(partialButSafe), true);
+  assert.equal(isOpportunityScanReadySeed(uncataloguedPartial), false);
 });
 
 test("opportunity readiness blocks zero-coverage weapon skins and raw enriching backfill", () => {
@@ -1417,6 +1436,7 @@ test("opportunity readiness blocks zero-coverage weapon skins and raw enriching 
     marketHashName: "AK-47 | Redline (Field-Tested)",
     itemCategory: "weapon_skin",
     candidateStatus: "near_eligible",
+    progressionStatus: "blocked_from_eligible",
     maturityState: "near_eligible",
     missingSnapshot: false,
     missingReference: false,
@@ -1431,6 +1451,7 @@ test("opportunity readiness blocks zero-coverage weapon skins and raw enriching 
     marketHashName: "AK-47 | Vulcan (Field-Tested)",
     itemCategory: "weapon_skin",
     candidateStatus: "enriching",
+    progressionStatus: "blocked_from_near_eligible",
     maturityState: "enriching",
     missingSnapshot: false,
     missingReference: false,
@@ -1593,6 +1614,8 @@ test("layered scanning can defer enrichment-needing rows from opportunity scan",
   const matureSeeds = Array.from({ length: 12 }, (_, index) => ({
     marketHashName: `Ready ${index}`,
     itemCategory: index % 2 === 0 ? "weapon_skin" : "case",
+    candidateStatus: index < 6 ? "eligible" : "near_eligible",
+    progressionStatus: index < 6 ? "eligible" : "blocked_from_eligible",
     maturityState: index < 6 ? "eligible" : "near_eligible",
     missingSnapshot: false,
     missingReference: false,
@@ -1601,6 +1624,8 @@ test("layered scanning can defer enrichment-needing rows from opportunity scan",
     snapshotStale: false,
     quoteFetchedAt: new Date().toISOString(),
     marketCoverageCount: 2,
+    referencePrice: 12 + index,
+    marketVolume7d: 80 + index,
     maturityScore: 80 - index,
     liquidityRank: 50 - index,
     enrichmentPriority: 60 - index,
@@ -1610,6 +1635,8 @@ test("layered scanning can defer enrichment-needing rows from opportunity scan",
   const enrichingSeeds = Array.from({ length: 20 }, (_, index) => ({
     marketHashName: `Needs Enrichment ${index}`,
     itemCategory: "weapon_skin",
+    candidateStatus: "candidate",
+    progressionStatus: "blocked_from_near_eligible",
     maturityState: "near_eligible",
     missingSnapshot: true,
     missingReference: false,
@@ -1635,4 +1662,136 @@ test("layered scanning can defer enrichment-needing rows from opportunity scan",
   assert.equal(Number(selection?.diagnostics?.deferredToEnrichmentItems || 0), 20);
   assert.equal(Number(selection?.diagnostics?.selectedEnrichingForOpportunity || 0), 0);
   assert.equal(Number(selection?.opportunitySeeds?.length || 0), 12);
+});
+
+test("opportunity admission diagnostics explain universe-to-scan drop", () => {
+  const recent = new Date().toISOString();
+  const staleTs = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+  const readyPartialWeaponSkin = {
+    marketHashName: "AK-47 | Asiimov (Field-Tested)",
+    itemCategory: "weapon_skin",
+    candidateStatus: "near_eligible",
+    progressionStatus: "blocked_from_eligible",
+    maturityState: "near_eligible",
+    missingSnapshot: true,
+    missingReference: true,
+    hasSnapshotData: false,
+    snapshotCapturedAt: null,
+    snapshotState: "missing_snapshot",
+    referenceState: "missing_reference",
+    liquidityState: "missing_liquidity",
+    quoteFetchedAt: recent,
+    marketCoverageCount: 3,
+    referencePrice: null,
+    marketVolume7d: null
+  };
+  const blockedMissingReference = {
+    marketHashName: "Revolution Case",
+    itemCategory: "case",
+    candidateStatus: "near_eligible",
+    progressionStatus: "blocked_from_eligible",
+    maturityState: "near_eligible",
+    missingSnapshot: false,
+    missingReference: true,
+    hasSnapshotData: true,
+    snapshotCapturedAt: recent,
+    snapshotStale: false,
+    quoteFetchedAt: recent,
+    marketCoverageCount: 2,
+    referencePrice: null,
+    marketVolume7d: 220
+  };
+  const blockedMissingLiquidity = {
+    marketHashName: "Paris 2023 Legends Sticker Capsule",
+    itemCategory: "sticker_capsule",
+    candidateStatus: "near_eligible",
+    progressionStatus: "blocked_from_eligible",
+    maturityState: "near_eligible",
+    missingSnapshot: false,
+    missingReference: false,
+    hasSnapshotData: true,
+    snapshotCapturedAt: recent,
+    snapshotStale: false,
+    quoteFetchedAt: recent,
+    marketCoverageCount: 2,
+    referencePrice: 7.5,
+    marketVolume7d: null,
+    liquidityState: "missing_liquidity"
+  };
+  const blockedStale = {
+    marketHashName: "AWP | Neo-Noir (Field-Tested)",
+    itemCategory: "weapon_skin",
+    candidateStatus: "near_eligible",
+    progressionStatus: "blocked_from_eligible",
+    maturityState: "near_eligible",
+    missingSnapshot: false,
+    missingReference: false,
+    hasSnapshotData: true,
+    snapshotCapturedAt: staleTs,
+    snapshotStale: true,
+    quoteFetchedAt: staleTs,
+    marketCoverageCount: 2,
+    referencePrice: 18,
+    marketVolume7d: 90
+  };
+  const blockedRisk = {
+    marketHashName: "AK-47 | Case Hardened",
+    itemCategory: "weapon_skin",
+    candidateStatus: "near_eligible",
+    progressionStatus: "blocked_from_eligible",
+    maturityState: "near_eligible",
+    missingSnapshot: false,
+    missingReference: false,
+    hasSnapshotData: true,
+    snapshotCapturedAt: recent,
+    snapshotStale: false,
+    quoteFetchedAt: recent,
+    marketCoverageCount: 2,
+    referencePrice: 145,
+    marketVolume7d: 55,
+    invalidReason: "rejectedNamePattern"
+  };
+  const blockedMaturity = {
+    marketHashName: "USP-S | Printstream (Field-Tested)",
+    itemCategory: "weapon_skin",
+    candidateStatus: "enriching",
+    progressionStatus: "blocked_from_near_eligible",
+    maturityState: "enriching",
+    missingSnapshot: false,
+    missingReference: false,
+    hasSnapshotData: true,
+    snapshotCapturedAt: recent,
+    snapshotStale: false,
+    quoteFetchedAt: recent,
+    marketCoverageCount: 2,
+    referencePrice: 42,
+    marketVolume7d: 80
+  };
+
+  const admissions = [
+    readyPartialWeaponSkin,
+    blockedMissingReference,
+    blockedMissingLiquidity,
+    blockedStale,
+    blockedRisk,
+    blockedMaturity
+  ].map((row) => ({
+    row,
+    admission: evaluateOpportunitySeedAdmission(row)
+  }));
+  const summary = summarizeOpportunitySeedAdmissions(admissions, [readyPartialWeaponSkin]);
+
+  assert.equal(summary.universe_total, 6);
+  assert.equal(summary.universe_eligible, 0);
+  assert.equal(summary.universe_near_eligible, 5);
+  assert.equal(summary.universe_blocked, 1);
+  assert.equal(summary.scan_candidates_loaded, 1);
+  assert.equal(summary.scan_candidates_deferred, 5);
+  assert.equal(summary.scan_candidates_executed, 1);
+  assert.equal(summary.deferred_due_to_missing_reference, 1);
+  assert.equal(summary.deferred_due_to_missing_liquidity, 1);
+  assert.equal(summary.deferred_due_to_stale, 1);
+  assert.equal(summary.deferred_due_to_maturity, 1);
+  assert.equal(summary.deferred_due_to_risk_profile, 1);
+  assert.equal(summary.deferred_due_to_visibility_or_feed_floor, 0);
 });
