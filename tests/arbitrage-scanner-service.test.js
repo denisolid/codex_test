@@ -271,7 +271,7 @@ test("universe seed filter allows strong weapon skins with missing liquidity evi
   assert.equal(allowed, true);
   assert.equal(Number(discardStats.hard_reject_missing_liquidity || 0), 0);
   assert.equal(
-    Number(weaponSkinDiagnostics.penalty_missing_liquidity_but_allowed || 0),
+    Number(weaponSkinDiagnostics.penalty_missing_liquidity_allowed_forward || 0),
     1
   );
 });
@@ -338,7 +338,7 @@ test("universe seed filter keeps useful low-value-pattern skins with a penalty",
 
   assert.equal(allowed, true);
   assert.equal(Number(discardStats.hard_reject_low_value || 0), 0);
-  assert.equal(Number(weaponSkinDiagnostics.penalty_low_value_but_allowed || 0), 1);
+  assert.equal(Number(weaponSkinDiagnostics.penalty_low_value_allowed_forward || 0), 1);
 });
 
 test("universe seed filter applies variant penalties without auto-rejecting StatTrak or Souvenir", () => {
@@ -381,8 +381,8 @@ test("universe seed filter applies variant penalties without auto-rejecting Stat
 
   assert.equal(statTrakAllowed, true);
   assert.equal(souvenirAllowed, true);
-  assert.equal(Number(weaponSkinDiagnostics.variant_penalty_stattrak || 0), 1);
-  assert.equal(Number(weaponSkinDiagnostics.variant_penalty_souvenir || 0), 1);
+  assert.equal(Number(weaponSkinDiagnostics.stattrak_penalty || 0), 1);
+  assert.equal(Number(weaponSkinDiagnostics.souvenir_penalty || 0), 1);
 });
 
 test("universe seed filter rejects stale snapshot seeds", () => {
@@ -503,11 +503,11 @@ test("risky weapon-skin evaluation allows speculative fallback for missing liqui
   assert.equal(evaluation.speculativeEligible, true);
   assert.equal(evaluation.allowLowConfidencePath, true);
   assert.equal(
-    evaluation.diagnosticPenaltyKeys.includes("penalty_missing_liquidity_but_allowed"),
+    evaluation.diagnosticPenaltyKeys.includes("penalty_missing_liquidity_allowed_forward"),
     true
   );
   assert.equal(
-    evaluation.diagnosticPenaltyKeys.includes("variant_penalty_stattrak"),
+    evaluation.diagnosticPenaltyKeys.includes("stattrak_penalty"),
     true
   );
 });
@@ -550,6 +550,51 @@ test("risky weapon-skin evaluation still rejects weak missing-liquidity candidat
 
   assert.equal(evaluation.passed, false);
   assert.equal(evaluation.primaryReason, "hard_reject_missing_liquidity");
+});
+
+test("risky weapon-skin evaluation forwards borderline low-value skins into speculative", () => {
+  const evaluation = computeRiskAdjustments({
+    opportunity: {
+      itemName: "P90 | Sand Spray (Factory New)",
+      itemCategory: "weapon_skin",
+      buyPrice: 6.2,
+      profit: 1.35,
+      spreadPercent: 7.5,
+      marketCoverage: 2
+    },
+    liquidity: {
+      volume7d: 55
+    },
+    stale: {
+      selectedState: "fresh",
+      usableMarkets: 2,
+      hasInsufficientUsableMarkets: false
+    },
+    inputItem: {
+      marketHashName: "P90 | Sand Spray (Factory New)",
+      itemCategory: "weapon_skin",
+      referencePrice: 6.8,
+      hasSnapshotData: true,
+      snapshotCapturedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString()
+    },
+    profile: {
+      name: "risky",
+      minPriceUsd: 3,
+      minProfitUsd: 0.75,
+      minSpreadPercent: 4,
+      minVolume7d: 40,
+      minMarketCoverage: 2,
+      allowMissingLiquidity: true
+    }
+  });
+
+  assert.equal(evaluation.passed, true);
+  assert.equal(evaluation.speculativeEligible, true);
+  assert.equal(evaluation.allowLowConfidencePath, true);
+  assert.equal(
+    evaluation.diagnosticPenaltyKeys.includes("penalty_low_value_allowed_forward"),
+    true
+  );
 });
 
 test("api row keeps high confidence when quotes are fresh and snapshot is only aging", () => {

@@ -450,14 +450,22 @@ const DIAGNOSTIC_REASON_ALIAS = Object.freeze({
 })
 const WEAPON_SKIN_FILTER_DIAGNOSTIC_KEYS = Object.freeze([
   "hard_reject_missing_liquidity",
-  "penalty_missing_liquidity_but_allowed",
+  "penalty_missing_liquidity_allowed_forward",
   "hard_reject_low_value",
-  "penalty_low_value_but_allowed",
-  "variant_penalty_stattrak",
-  "variant_penalty_souvenir",
-  "risky_pass_count",
-  "speculative_pass_count"
+  "penalty_low_value_allowed_forward",
+  "stattrak_penalty",
+  "souvenir_penalty",
+  "survived_into_risky",
+  "survived_into_speculative"
 ])
+const WEAPON_SKIN_FILTER_DIAGNOSTIC_ALIAS = Object.freeze({
+  penalty_missing_liquidity_but_allowed: "penalty_missing_liquidity_allowed_forward",
+  penalty_low_value_but_allowed: "penalty_low_value_allowed_forward",
+  variant_penalty_stattrak: "stattrak_penalty",
+  variant_penalty_souvenir: "souvenir_penalty",
+  risky_pass_count: "survived_into_risky",
+  speculative_pass_count: "survived_into_speculative"
+})
 
 const HARD_REJECTION_REASONS = Object.freeze(
   new Set([
@@ -1317,7 +1325,8 @@ function buildWeaponSkinFilterDiagnostics() {
 }
 
 function incrementWeaponSkinFilterDiagnostic(diagnostics = {}, key = "", itemName = "") {
-  const normalizedKey = String(key || "").trim()
+  const normalizedKey =
+    WEAPON_SKIN_FILTER_DIAGNOSTIC_ALIAS[String(key || "").trim()] || String(key || "").trim()
   if (!WEAPON_SKIN_FILTER_DIAGNOSTIC_KEYS.includes(normalizedKey)) return
   if (!diagnostics || typeof diagnostics !== "object") return
   if (!diagnostics.__seen || typeof diagnostics.__seen !== "object") {
@@ -1429,6 +1438,10 @@ function evaluateWeaponSkinSeedFilters(inputItem = {}) {
     volume7d != null &&
     volume7d < Number(UNIVERSE_MIN_VOLUME_7D_BY_CATEGORY[ITEM_CATEGORIES.WEAPON_SKIN] || 0)
   const weakUtility = !supportSignals.isUsefulCandidate && !supportSignals.hasUsefulVolume
+  const canForwardAsUsefulSkin =
+    (supportSignals.hasCoverage && supportSignals.hasNonTrivialPrice) ||
+    (supportSignals.hasCoverage && supportSignals.isUsefulCandidate) ||
+    (supportSignals.hasNameSignal && supportSignals.hasNonTrivialPrice && supportSignals.isUsefulCandidate)
   const lowValueWeakCount = countTrueValues([
     supportSignals.lowValuePattern,
     !supportSignals.hasNameSignal,
@@ -1446,10 +1459,15 @@ function evaluateWeaponSkinSeedFilters(inputItem = {}) {
     supportSignals.isUsefulCandidate
   ])
   const hardRejectLowValue =
-    lowValueWeakCount >= 4 || (lowValueWeakCount >= 3 && lowValueSupportCount <= 2)
+    lowValueWeakCount >= 5 ||
+    (lowValueWeakCount >= 4 && lowValueSupportCount <= 1 && !canForwardAsUsefulSkin)
   const penaltyLowValue =
     !hardRejectLowValue &&
-    (supportSignals.lowValuePattern || !supportSignals.hasNameSignal || veryLowPrice || weakUtility)
+    (lowValueWeakCount >= 2 ||
+      supportSignals.lowValuePattern ||
+      !supportSignals.hasNameSignal ||
+      veryLowPrice ||
+      weakUtility)
 
   const missingLiquidityEvidenceCount = countTrueValues([
     supportSignals.hasCoverage,
@@ -1468,7 +1486,8 @@ function evaluateWeaponSkinSeedFilters(inputItem = {}) {
   ])
   const hardRejectMissingLiquidity =
     hasMissingLiquidityContext &&
-    (missingLiquidityEvidenceCount < 3 || missingLiquidityWeakCount >= 4)
+    !canForwardAsUsefulSkin &&
+    (missingLiquidityWeakCount >= 4 || (missingLiquidityWeakCount >= 3 && missingLiquidityEvidenceCount <= 1))
   const penaltyMissingLiquidity = hasMissingLiquidityContext && !hardRejectMissingLiquidity
 
   return {
@@ -1477,8 +1496,8 @@ function evaluateWeaponSkinSeedFilters(inputItem = {}) {
     hardRejectMissingLiquidity,
     penaltyMissingLiquidity,
     variantPenaltyKeys: [
-      isStatTrakVariantName(inputItem?.marketHashName) ? "variant_penalty_stattrak" : "",
-      isSouvenirVariantName(inputItem?.marketHashName) ? "variant_penalty_souvenir" : ""
+      isStatTrakVariantName(inputItem?.marketHashName) ? "stattrak_penalty" : "",
+      isSouvenirVariantName(inputItem?.marketHashName) ? "souvenir_penalty" : ""
     ].filter(Boolean)
   }
 }
@@ -2821,7 +2840,7 @@ function passesUniverseSeedFilters(
       if (weaponSkinFilter?.penaltyMissingLiquidity) {
         incrementWeaponSkinFilterDiagnostic(
           weaponSkinDiagnostics,
-          "penalty_missing_liquidity_but_allowed",
+          "penalty_missing_liquidity_allowed_forward",
           marketHashName
         )
       }
@@ -2871,7 +2890,7 @@ function passesUniverseSeedFilters(
     if (weaponSkinFilter?.penaltyLowValue) {
       incrementWeaponSkinFilterDiagnostic(
         weaponSkinDiagnostics,
-        "penalty_low_value_but_allowed",
+        "penalty_low_value_allowed_forward",
         marketHashName
       )
     }
@@ -3168,27 +3187,35 @@ function evaluateWeaponSkinRiskContext({
     supportSignals.hasAcceptableReference,
     supportSignals.hasNonStaleQuotes
   ])
+  const borderlineLowValueAllowedForward =
+    lowValueWeakCount >= 2 &&
+    supportSignals.hasNonTrivialPrice &&
+    supportSignals.hasMeaningfulProfit &&
+    supportSignals.hasSaneSpread &&
+    supportSignals.hasAcceptableReference &&
+    (supportSignals.hasCoverage || supportSignals.hasNameSignal)
   const hardRejectLowValue =
-    lowValueWeakCount >= 4 || (lowValueWeakCount >= 3 && lowValueSupportCount <= 3)
+    lowValueWeakCount >= 5 ||
+    (lowValueWeakCount >= 4 && lowValueSupportCount <= 2 && !borderlineLowValueAllowedForward)
   const penaltyKeys = []
 
-  if (!hardRejectLowValue && lowValueWeakCount >= 2) {
-    penaltyKeys.push("penalty_low_value_but_allowed")
+  if (!hardRejectLowValue && borderlineLowValueAllowedForward) {
+    penaltyKeys.push("penalty_low_value_allowed_forward")
   }
   if (isStatTrakVariantName(marketHashName)) {
-    penaltyKeys.push("variant_penalty_stattrak")
+    penaltyKeys.push("stattrak_penalty")
   }
   if (isSouvenirVariantName(marketHashName)) {
-    penaltyKeys.push("variant_penalty_souvenir")
+    penaltyKeys.push("souvenir_penalty")
   }
 
   const fallbackEvidenceCount = countTrueValues([
-    supportSignals.hasCoverage,
-    supportSignals.hasAcceptableReference,
-    supportSignals.hasNonTrivialPrice,
     supportSignals.hasMeaningfulProfit,
     supportSignals.hasSaneSpread,
-    supportSignals.hasNonStaleQuotes
+    supportSignals.hasNonStaleQuotes,
+    supportSignals.hasNameSignal,
+    supportSignals.isUsefulCandidate,
+    supportSignals.hasUsefulVolume
   ])
   const hasMissingLiquidityFallbackPath =
     volume7d == null &&
@@ -3196,22 +3223,32 @@ function evaluateWeaponSkinRiskContext({
     supportSignals.hasCoverage &&
     supportSignals.hasAcceptableReference &&
     supportSignals.hasNonTrivialPrice &&
-    supportSignals.hasMeaningfulProfit &&
-    supportSignals.hasSaneSpread &&
     supportSignals.hasNonStaleQuotes &&
-    fallbackEvidenceCount >= 5
+    fallbackEvidenceCount >= 2
   if (volume7d == null && isRiskyProfile && hasMissingLiquidityFallbackPath) {
-    penaltyKeys.push("penalty_missing_liquidity_but_allowed")
+    penaltyKeys.push("penalty_missing_liquidity_allowed_forward")
   }
+  const weakVariantSupport =
+    volume7d == null ||
+    !supportSignals.hasCoverage ||
+    !supportSignals.hasNonStaleQuotes ||
+    !supportSignals.hasAcceptableReference
+  const variantSpeculativeAllowed =
+    (penaltyKeys.includes("stattrak_penalty") || penaltyKeys.includes("souvenir_penalty")) &&
+    weakVariantSupport &&
+    supportSignals.hasNonTrivialPrice &&
+    supportSignals.hasSaneSpread &&
+    supportSignals.hasAcceptableReference
 
   return {
     hardRejectLowValue,
     penaltyKeys,
     speculativeEligible:
       hasMissingLiquidityFallbackPath ||
-      penaltyKeys.includes("variant_penalty_stattrak") ||
-      penaltyKeys.includes("variant_penalty_souvenir"),
-    allowLowConfidencePath: hasMissingLiquidityFallbackPath,
+      borderlineLowValueAllowedForward ||
+      variantSpeculativeAllowed,
+    allowLowConfidencePath:
+      hasMissingLiquidityFallbackPath || borderlineLowValueAllowedForward || variantSpeculativeAllowed,
     missingLiquidityRejected:
       volume7d == null &&
       isRiskyProfile &&
@@ -3492,19 +3529,19 @@ function computeRiskAdjustments({
     }
     if (
       itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
-      weaponSkinRiskContext.penaltyKeys.includes("penalty_low_value_but_allowed")
+      weaponSkinRiskContext.penaltyKeys.includes("penalty_low_value_allowed_forward")
     ) {
       penalty += WEAPON_SKIN_LOW_VALUE_PENALTY
     }
     if (
       itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
-      weaponSkinRiskContext.penaltyKeys.includes("variant_penalty_stattrak")
+      weaponSkinRiskContext.penaltyKeys.includes("stattrak_penalty")
     ) {
       penalty += WEAPON_SKIN_STATTRAK_VARIANT_PENALTY
     }
     if (
       itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
-      weaponSkinRiskContext.penaltyKeys.includes("variant_penalty_souvenir")
+      weaponSkinRiskContext.penaltyKeys.includes("souvenir_penalty")
     ) {
       penalty += WEAPON_SKIN_SOUVENIR_VARIANT_PENALTY
     }
@@ -6763,11 +6800,11 @@ async function runScanInternal(options = {}) {
       isSpeculativeEligible: speculativeEligible
     })
     if (itemCategory === ITEM_CATEGORIES.WEAPON_SKIN) {
-      incrementWeaponSkinFilterDiagnostic(weaponSkinFilterDiagnostics, "risky_pass_count", itemName)
+      incrementWeaponSkinFilterDiagnostic(weaponSkinFilterDiagnostics, "survived_into_risky", itemName)
       if (speculativeEligible) {
         incrementWeaponSkinFilterDiagnostic(
           weaponSkinFilterDiagnostics,
-          "speculative_pass_count",
+          "survived_into_speculative",
           itemName
         )
       }
