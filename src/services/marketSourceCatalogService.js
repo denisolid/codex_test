@@ -257,6 +257,37 @@ const BASE_EXCLUDED_REASON_COUNTER = Object.freeze({
   excludedStaleItems: 0,
   excludedMissingReferenceItems: 0
 })
+const CATALOG_PROMOTION_REASON_KEYS = Object.freeze([
+  "missing_reference",
+  "freshness_not_usable",
+  "partial_market_support_missing",
+  "market_coverage_insufficient",
+  "missing_snapshot",
+  "missing_liquidity_context",
+  "low_volume_context",
+  "structural_reason",
+  "candidate_not_ready"
+])
+const CATALOG_FRESHNESS_STATES = Object.freeze({
+  FRESH: "fresh",
+  AGING: "aging",
+  STALE: "stale",
+  MISSING: "missing"
+})
+const CATALOG_FRESHNESS_RULES = Object.freeze({
+  [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({
+    freshMaxMinutes: 45,
+    agingMaxMinutes: 120
+  }),
+  [ITEM_CATEGORIES.CASE]: Object.freeze({
+    freshMaxMinutes: 60,
+    agingMaxMinutes: 180
+  }),
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
+    freshMaxMinutes: 90,
+    agingMaxMinutes: 240
+  })
+})
 
 const BASE_INGEST_EXCLUDED_REASON_COUNTER = Object.freeze({
   excludedDuplicate: 0,
@@ -311,6 +342,17 @@ function buildMaturityByCategoryMap(initialValue = 0) {
   )
 }
 
+function buildPromotionReasonMap(initialValue = 0) {
+  const initial = Number(initialValue || 0)
+  return Object.fromEntries(CATALOG_PROMOTION_REASON_KEYS.map((reason) => [reason, initial]))
+}
+
+function buildPromotionReasonByCategoryMap(initialValue = 0) {
+  return Object.fromEntries(
+    SCANNER_SCOPE_CATEGORIES.map((category) => [category, buildPromotionReasonMap(initialValue)])
+  )
+}
+
 function normalizeCandidateStatus(value, fallback = CATALOG_CANDIDATE_STATUS.CANDIDATE) {
   const text = normalizeText(value).toLowerCase()
   if (CATALOG_CANDIDATE_STATUS_SET.has(text)) return text
@@ -355,6 +397,259 @@ function toPositiveOrNull(value) {
   const parsed = toFiniteOrNull(value)
   if (parsed == null) return null
   return parsed > 0 ? parsed : null
+}
+
+function countTrueValues(values = []) {
+  return (Array.isArray(values) ? values : []).reduce(
+    (sum, value) => sum + Number(Boolean(value)),
+    0
+  )
+}
+
+function toIsoStringOrNull(value) {
+  const text = normalizeText(value)
+  if (!text) return null
+  const parsed = new Date(text).getTime()
+  if (!Number.isFinite(parsed)) return null
+  return new Date(parsed).toISOString()
+}
+
+function resolveAgeMinutes(value) {
+  const iso = toIsoStringOrNull(value)
+  if (!iso) return null
+  const ageMinutes = (Date.now() - new Date(iso).getTime()) / (60 * 1000)
+  if (!Number.isFinite(ageMinutes) || ageMinutes < 0) return null
+  return Number(ageMinutes.toFixed(2))
+}
+
+function getCatalogFreshnessRules(category = ITEM_CATEGORIES.WEAPON_SKIN) {
+  const normalized = normalizeCategory(category)
+  return (
+    CATALOG_FRESHNESS_RULES[normalized] ||
+    CATALOG_FRESHNESS_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
+  )
+}
+
+function resolveCatalogFreshnessState(ageMinutes = null, rules = {}) {
+  const safeAge = toFiniteOrNull(ageMinutes)
+  if (safeAge == null || safeAge < 0) return CATALOG_FRESHNESS_STATES.MISSING
+  if (safeAge <= Number(rules.freshMaxMinutes || 0)) return CATALOG_FRESHNESS_STATES.FRESH
+  if (safeAge <= Number(rules.agingMaxMinutes || 0)) return CATALOG_FRESHNESS_STATES.AGING
+  return CATALOG_FRESHNESS_STATES.STALE
+}
+
+function resolveCatalogFreshnessContext({
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
+  snapshotCapturedAt = null,
+  quoteFetchedAt = null,
+  snapshotStale = true,
+  hasSnapshot = null
+} = {}) {
+  const rules = getCatalogFreshnessRules(category)
+  const snapshotAgeMinutes = resolveAgeMinutes(snapshotCapturedAt)
+  const quoteAgeMinutes = resolveAgeMinutes(quoteFetchedAt)
+  const hasSnapshotData =
+    hasSnapshot == null ? Boolean(snapshotCapturedAt) : Boolean(hasSnapshot)
+  const snapshotState =
+    snapshotAgeMinutes == null
+      ? hasSnapshotData
+        ? snapshotStale
+          ? CATALOG_FRESHNESS_STATES.STALE
+          : CATALOG_FRESHNESS_STATES.FRESH
+        : CATALOG_FRESHNESS_STATES.MISSING
+      : resolveCatalogFreshnessState(snapshotAgeMinutes, rules)
+  const quoteState = resolveCatalogFreshnessState(quoteAgeMinutes, rules)
+  const state =
+    snapshotState === CATALOG_FRESHNESS_STATES.FRESH || quoteState === CATALOG_FRESHNESS_STATES.FRESH
+      ? CATALOG_FRESHNESS_STATES.FRESH
+      : snapshotState === CATALOG_FRESHNESS_STATES.AGING ||
+          quoteState === CATALOG_FRESHNESS_STATES.AGING
+        ? CATALOG_FRESHNESS_STATES.AGING
+        : snapshotState === CATALOG_FRESHNESS_STATES.STALE ||
+            quoteState === CATALOG_FRESHNESS_STATES.STALE
+          ? CATALOG_FRESHNESS_STATES.STALE
+          : CATALOG_FRESHNESS_STATES.MISSING
+
+  return {
+    state,
+    snapshotState,
+    quoteState,
+    snapshotAgeMinutes,
+    quoteAgeMinutes,
+    hasSnapshotData,
+    hasQuoteFreshness: quoteAgeMinutes != null,
+    usable:
+      snapshotState === CATALOG_FRESHNESS_STATES.FRESH ||
+      snapshotState === CATALOG_FRESHNESS_STATES.AGING ||
+      quoteState === CATALOG_FRESHNESS_STATES.FRESH ||
+      quoteState === CATALOG_FRESHNESS_STATES.AGING,
+    strong:
+      snapshotState === CATALOG_FRESHNESS_STATES.FRESH ||
+      quoteState === CATALOG_FRESHNESS_STATES.FRESH
+  }
+}
+
+function computeCatalogProgressContext({
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
+  referencePrice = null,
+  volume7d = null,
+  marketCoverageCount = 0,
+  snapshotCapturedAt = null,
+  quoteFetchedAt = null,
+  snapshotStale = true,
+  hasSnapshot = null,
+  liquidityRank = 0,
+  eligibilityReason = ""
+} = {}) {
+  const normalizedCategory = normalizeCategory(category)
+  const rules =
+    SOURCE_QUALITY_RULES[normalizedCategory] || SOURCE_QUALITY_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
+  const minCoverage = Math.max(Number(rules.minMarketCoverage || 2), 1)
+  const minVolume = Math.max(Number(rules.minVolume7d || 1), 1)
+  const safeReferencePrice = toPositiveOrNull(referencePrice)
+  const safeVolume7d = toPositiveOrNull(volume7d)
+  const coverageCount = Math.max(Number(marketCoverageCount || 0), 0)
+  const inferredSnapshotPresence =
+    hasSnapshot == null
+      ? Boolean(snapshotCapturedAt) || (safeReferencePrice != null && snapshotStale === false)
+      : Boolean(hasSnapshot)
+  const freshness = resolveCatalogFreshnessContext({
+    category: normalizedCategory,
+    snapshotCapturedAt,
+    quoteFetchedAt,
+    snapshotStale,
+    hasSnapshot: inferredSnapshotPresence
+  })
+  const hasReference = safeReferencePrice != null
+  const sufficientCoverage = coverageCount >= minCoverage
+  const partialCoverage = coverageCount >= Math.max(1, Math.min(minCoverage - 1, minCoverage))
+  const hasLiquidityContext = safeVolume7d != null
+  const sufficientVolume = hasLiquidityContext && safeVolume7d >= minVolume
+  const reasonableVolume = hasLiquidityContext && safeVolume7d >= Math.max(minVolume * 0.55, 18)
+  const meaningfulReference =
+    hasReference &&
+    safeReferencePrice >= Math.max(Number(rules.minReferencePrice || 1) * 0.9, 0.75)
+  const hasUtilitySignal = Number(liquidityRank || 0) >= 28
+  const partialMarketSupport = partialCoverage || reasonableVolume
+  const nearEligibleSupportCount = countTrueValues([
+    hasReference,
+    freshness.usable,
+    partialMarketSupport,
+    inferredSnapshotPresence || coverageCount >= 1 || freshness.hasQuoteFreshness,
+    hasLiquidityContext || meaningfulReference || hasUtilitySignal
+  ])
+  const eligibleSupportCount = countTrueValues([
+    hasReference,
+    freshness.usable,
+    sufficientCoverage,
+    sufficientVolume,
+    inferredSnapshotPresence
+  ])
+  const hasStructuralReason = /\brejected|hard|outofscope|namepattern|unsupported\b/i.test(
+    String(eligibilityReason || "")
+  )
+  const nearEligibleBlockers = []
+  const eligibleBlockers = []
+
+  if (hasStructuralReason) {
+    nearEligibleBlockers.push("structural_reason")
+    eligibleBlockers.push("structural_reason")
+  }
+  if (!hasReference) {
+    nearEligibleBlockers.push("missing_reference")
+    eligibleBlockers.push("missing_reference")
+  }
+  if (!freshness.usable) {
+    nearEligibleBlockers.push("freshness_not_usable")
+    eligibleBlockers.push("freshness_not_usable")
+  }
+  if (!partialMarketSupport) {
+    nearEligibleBlockers.push("partial_market_support_missing")
+  }
+  if (!sufficientCoverage) {
+    eligibleBlockers.push("market_coverage_insufficient")
+  }
+  if (!inferredSnapshotPresence && coverageCount === 0 && !freshness.hasQuoteFreshness) {
+    nearEligibleBlockers.push("missing_snapshot")
+  }
+  if (!inferredSnapshotPresence) {
+    eligibleBlockers.push("missing_snapshot")
+  }
+  if (!hasLiquidityContext) {
+    if (coverageCount === 0 && !freshness.hasQuoteFreshness) {
+      nearEligibleBlockers.push("missing_liquidity_context")
+    }
+    eligibleBlockers.push("missing_liquidity_context")
+  } else if (!sufficientVolume) {
+    eligibleBlockers.push("low_volume_context")
+  }
+  if (!nearEligibleBlockers.length && nearEligibleSupportCount < 3) {
+    nearEligibleBlockers.push("candidate_not_ready")
+  }
+  if (!eligibleBlockers.length && eligibleSupportCount < 4) {
+    eligibleBlockers.push("candidate_not_ready")
+  }
+
+  return {
+    freshness,
+    inferredSnapshotPresence,
+    hasReference,
+    sufficientCoverage,
+    partialCoverage,
+    hasLiquidityContext,
+    sufficientVolume,
+    reasonableVolume,
+    partialMarketSupport,
+    meaningfulReference,
+    hasUtilitySignal,
+    nearEligibleSupportCount,
+    eligibleSupportCount,
+    nearEligibleBlockers,
+    eligibleBlockers,
+    canReachNearEligible:
+      !nearEligibleBlockers.length &&
+      hasReference &&
+      freshness.usable &&
+      partialMarketSupport &&
+      nearEligibleSupportCount >= 3,
+    canReachEligible:
+      !eligibleBlockers.length &&
+      hasReference &&
+      freshness.usable &&
+      sufficientCoverage &&
+      sufficientVolume &&
+      inferredSnapshotPresence &&
+      eligibleSupportCount >= 4,
+    hasMeaningfulProgress:
+      countTrueValues([
+        hasReference,
+        inferredSnapshotPresence,
+        freshness.usable,
+        partialCoverage,
+        reasonableVolume,
+        coverageCount > 0,
+        hasUtilitySignal
+      ]) >= 2,
+    hasStructuralReason
+  }
+}
+
+function incrementPromotionReasons(counter = {}, reasons = [], category = "", byCategory = null) {
+  const safeReasons = Array.isArray(reasons) ? reasons : []
+  const normalizedCategory = normalizeCategory(category)
+  for (const reason of safeReasons) {
+    if (!Object.prototype.hasOwnProperty.call(counter, reason)) continue
+    counter[reason] = Number(counter[reason] || 0) + 1
+    if (
+      byCategory &&
+      isScannerScopeCategory(normalizedCategory) &&
+      byCategory[normalizedCategory] &&
+      Object.prototype.hasOwnProperty.call(byCategory[normalizedCategory], reason)
+    ) {
+      byCategory[normalizedCategory][reason] =
+        Number(byCategory[normalizedCategory][reason] || 0) + 1
+    }
+  }
 }
 
 function hasExcludedNamePattern(name = "") {
@@ -652,6 +947,10 @@ function buildBaseDiagnostics() {
       promotedToNearEligibleByCategory: buildCategoryNumberMap(),
       promotedToEligibleByCategory: buildCategoryNumberMap(),
       demotedToEnrichingByCategory: buildCategoryNumberMap(),
+      stuckInEnrichingByReason: buildPromotionReasonMap(),
+      stuckInEnrichingByReasonByCategory: buildPromotionReasonByCategoryMap(),
+      blockedFromPromotionByReason: buildPromotionReasonMap(),
+      blockedFromPromotionByReasonByCategory: buildPromotionReasonByCategoryMap(),
       excludedLowValueItems: 0,
       excludedLowLiquidityItems: 0,
       excludedWeakMarketCoverageItems: 0,
@@ -1138,41 +1437,38 @@ function computeCatalogMaturity({
   volume7d = null,
   marketCoverageCount = 0,
   liquidityRank = 0,
-  eligibilityReason = ""
+  eligibilityReason = "",
+  snapshotCapturedAt = null,
+  quoteFetchedAt = null
 } = {}) {
   const normalizedCategory = normalizeCategory(category)
   const normalizedStatus = normalizeCandidateStatus(candidateStatus)
-  const rules =
-    SOURCE_QUALITY_RULES[normalizedCategory] || SOURCE_QUALITY_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
-
   const missingSignals =
     Number(Boolean(missingSnapshot)) +
     Number(Boolean(missingReference)) +
     Number(Boolean(missingMarketCoverage)) +
     Number(Boolean(missingLiquidityContext))
-  const hasReference = referencePrice != null
-  const hasCoverage = Number(marketCoverageCount || 0) >= Number(rules.minMarketCoverage || 2)
-  const hasReasonableVolume =
-    volume7d != null && Number(volume7d || 0) >= Math.max(Number(rules.minVolume7d || 40) * 0.6, 20)
-  const hasStructuralReason = /\brejected|hard|outofscope|namepattern|unsupported\b/i.test(
-    String(eligibilityReason || "")
-  )
+  const progress = computeCatalogProgressContext({
+    category: normalizedCategory,
+    referencePrice,
+    volume7d,
+    marketCoverageCount,
+    snapshotCapturedAt,
+    quoteFetchedAt,
+    snapshotStale,
+    hasSnapshot: !missingSnapshot,
+    liquidityRank,
+    eligibilityReason
+  })
 
   let maturityState = CATALOG_MATURITY_STATE.COLD
-  if (
-    normalizedStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
-    !snapshotStale &&
-    missingSignals === 0
-  ) {
+  if (normalizedStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE && progress.canReachEligible) {
     maturityState = CATALOG_MATURITY_STATE.ELIGIBLE
   } else if (
     (normalizedStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE ||
       normalizedStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE ||
       normalizedStatus === CATALOG_CANDIDATE_STATUS.ENRICHING) &&
-    missingSignals <= 1 &&
-    !snapshotStale &&
-    hasReference &&
-    (hasCoverage || hasReasonableVolume)
+    progress.canReachNearEligible
   ) {
     maturityState = CATALOG_MATURITY_STATE.NEAR_ELIGIBLE
   } else if (
@@ -1181,7 +1477,7 @@ function computeCatalogMaturity({
     normalizedStatus === CATALOG_CANDIDATE_STATUS.CANDIDATE
   ) {
     maturityState =
-      missingSignals >= 3
+      missingSignals >= 3 && !progress.hasMeaningfulProgress
         ? CATALOG_MATURITY_STATE.COLD
         : CATALOG_MATURITY_STATE.ENRICHING
   }
@@ -1200,19 +1496,36 @@ function computeCatalogMaturity({
       : normalizedCategory === ITEM_CATEGORIES.STICKER_CAPSULE
         ? 6
         : 0
-  const freshnessBoost = snapshotStale ? -8 : 8
-  const referenceBoost = hasReference ? Math.min(Number(referencePrice || 0), 12) : -8
+  const freshnessBoost =
+    progress.freshness.state === CATALOG_FRESHNESS_STATES.FRESH
+      ? 8
+      : progress.freshness.state === CATALOG_FRESHNESS_STATES.AGING
+        ? 3
+        : progress.freshness.state === CATALOG_FRESHNESS_STATES.STALE
+          ? -6
+          : -10
+  const referenceBoost = progress.hasReference ? Math.min(Number(referencePrice || 0), 12) : -8
   const coverageBoost = Math.min(Math.max(Number(marketCoverageCount || 0), 0) * 3, 15)
   const volumeBoost =
     volume7d == null
       ? -6
       : Math.min(
-          (Number(volume7d || 0) / Math.max(Number(rules.minVolume7d || 1), 1)) * 12,
+          (Number(volume7d || 0) /
+            Math.max(
+              Number(
+                (
+                  SOURCE_QUALITY_RULES[normalizedCategory] ||
+                  SOURCE_QUALITY_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
+                ).minVolume7d || 1
+              ),
+              1
+            )) *
+            12,
           16
         )
   const liquidityBoost = Math.min(Number(liquidityRank || 0) * 0.1, 10)
   const missingPenalty = missingSignals * 6
-  const structuralPenalty = hasStructuralReason ? 12 : 0
+  const structuralPenalty = progress.hasStructuralReason ? 12 : 0
   const score = Math.max(
     Math.min(
       baseScore +
@@ -1233,7 +1546,8 @@ function computeCatalogMaturity({
     maturityState: normalizeMaturityState(maturityState),
     maturityScore: Number(score.toFixed(2)),
     missingSignals,
-    hasStructuralReason
+    hasStructuralReason: progress.hasStructuralReason,
+    freshnessState: progress.freshness.state
   }
 }
 
@@ -1247,20 +1561,35 @@ function evaluateCandidateState({
   marketCoverageCount = 0,
   snapshot = null,
   snapshotStale = true,
-  liquidityRank = 0
+  liquidityRank = 0,
+  quoteFetchedAt = null
 } = {}) {
   const normalizedCategory = normalizeCategory(category, marketHashName)
   const hardFloor = Number(
     SOURCE_CANDIDATE_HARD_FLOOR[normalizedCategory] ??
       SOURCE_CANDIDATE_HARD_FLOOR[ITEM_CATEGORIES.WEAPON_SKIN]
   )
-  const missingSnapshot = !snapshot || snapshotStale
+  const snapshotCapturedAt = normalizeText(snapshot?.captured_at) || null
+  const hasSnapshot = Boolean(snapshot) && Boolean(snapshotCapturedAt)
+  const missingSnapshot = !hasSnapshot
   const missingReference = referencePrice == null
   const rules =
     SOURCE_QUALITY_RULES[normalizedCategory] || SOURCE_QUALITY_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
   const missingMarketCoverage =
     Number(marketCoverageCount || 0) < Number(rules.minMarketCoverage || 0)
   const missingLiquidityContext = volume7d == null
+  const progress = computeCatalogProgressContext({
+    category: normalizedCategory,
+    referencePrice,
+    volume7d,
+    marketCoverageCount,
+    snapshotCapturedAt,
+    quoteFetchedAt,
+    snapshotStale,
+    hasSnapshot: Boolean(snapshot),
+    liquidityRank,
+    eligibilityReason: eligibility?.reason
+  })
 
   let rejectedReason = ""
   if (!tradable) {
@@ -1280,9 +1609,9 @@ function evaluateCandidateState({
     candidateStatus = CATALOG_CANDIDATE_STATUS.REJECTED
   } else if (strictEligible) {
     candidateStatus = CATALOG_CANDIDATE_STATUS.ELIGIBLE
-  } else if (!missingSnapshot && !missingReference && !missingMarketCoverage) {
+  } else if (progress.canReachNearEligible) {
     candidateStatus = CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
-  } else if (missingSnapshot || missingReference || missingMarketCoverage || missingLiquidityContext) {
+  } else if (progress.hasMeaningfulProgress || missingReference || missingMarketCoverage || missingLiquidityContext) {
     candidateStatus = CATALOG_CANDIDATE_STATUS.ENRICHING
   }
 
@@ -1290,18 +1619,10 @@ function evaluateCandidateState({
     candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE
       ? ""
       : rejectedReason ||
-        (missingSnapshot
-          ? "missing_snapshot"
-          : missingReference
-            ? "missing_reference"
-            : missingMarketCoverage
-              ? "missing_market_coverage"
-              : missingLiquidityContext
-                ? "missing_liquidity_context"
-                : strictReason ||
-                  (candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
-                    ? "near_eligible"
-                    : "candidate_not_ready"))
+        strictReason ||
+        (candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
+          ? progress.eligibleBlockers[0] || "near_eligible"
+          : progress.nearEligibleBlockers[0] || "candidate_not_ready")
 
   const enrichmentPriority = computeEnrichmentPriority({
     candidateStatus,
@@ -1327,7 +1648,9 @@ function evaluateCandidateState({
     volume7d,
     marketCoverageCount,
     liquidityRank,
-    eligibilityReason
+    eligibilityReason,
+    snapshotCapturedAt,
+    quoteFetchedAt
   })
 
   return {
@@ -1342,12 +1665,30 @@ function evaluateCandidateState({
     enrichmentPriority,
     maturityState: maturity.maturityState,
     maturityScore: maturity.maturityScore,
-    missingSignals: maturity.missingSignals
+    missingSignals: maturity.missingSignals,
+    freshnessState: progress.freshness.state,
+    nearEligibleBlockers: progress.nearEligibleBlockers,
+    eligibleBlockers: progress.eligibleBlockers
   }
 }
 
-function evaluateEligibility({ category, referencePrice, volume7d, marketCoverageCount, snapshotStale }) {
+function evaluateEligibility({
+  category,
+  referencePrice,
+  volume7d,
+  marketCoverageCount,
+  snapshotStale,
+  snapshotCapturedAt = null,
+  quoteFetchedAt = null
+}) {
   const rules = SOURCE_QUALITY_RULES[category] || SOURCE_QUALITY_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
+  const freshness = resolveCatalogFreshnessContext({
+    category,
+    snapshotCapturedAt,
+    quoteFetchedAt,
+    snapshotStale,
+    hasSnapshot: Boolean(snapshotCapturedAt) || (referencePrice != null && snapshotStale === false)
+  })
 
   if (!isScannerScopeCategory(category)) {
     return { eligible: false, reason: "excludedOutOfScopeCategory" }
@@ -1362,7 +1703,7 @@ function evaluateEligibility({ category, referencePrice, volume7d, marketCoverag
   if (Number(marketCoverageCount || 0) < Number(rules.minMarketCoverage || 0)) {
     return { eligible: false, reason: "excludedWeakMarketCoverageItems" }
   }
-  if (snapshotStale) {
+  if (!freshness.usable) {
     return { eligible: false, reason: "excludedStaleItems" }
   }
 
@@ -1401,6 +1742,10 @@ async function enrichSourceCatalog() {
       promotedToNearEligibleByCategory: buildCategoryNumberMap(),
       promotedToEligibleByCategory: buildCategoryNumberMap(),
       demotedToEnrichingByCategory: buildCategoryNumberMap(),
+      stuckInEnrichingByReason: buildPromotionReasonMap(),
+      stuckInEnrichingByReasonByCategory: buildPromotionReasonByCategoryMap(),
+      blockedFromPromotionByReason: buildPromotionReasonMap(),
+      blockedFromPromotionByReasonByCategory: buildPromotionReasonByCategoryMap(),
       candidateFunnelByCategory: buildEmptyCategoryCounter(),
       byCategory: buildEmptyCategoryCounter(),
       eligibleRowsByCategory: buildCategoryNumberMap(),
@@ -1454,6 +1799,10 @@ async function enrichSourceCatalog() {
   const candidateFunnel = buildStatusNumberMap()
   const maturityFunnel = buildMaturityNumberMap()
   const maturityFunnelByCategory = buildMaturityByCategoryMap()
+  const stuckInEnrichingByReason = buildPromotionReasonMap()
+  const stuckInEnrichingByReasonByCategory = buildPromotionReasonByCategoryMap()
+  const blockedFromPromotionByReason = buildPromotionReasonMap()
+  const blockedFromPromotionByReasonByCategory = buildPromotionReasonByCategoryMap()
   const updates = []
   const counts = {
     totalRows: rows.length,
@@ -1509,13 +1858,17 @@ async function enrichSourceCatalog() {
     const volume7d = resolveVolume7d(snapshot, quoteCoverage)
     const marketCoverageCount = Math.max(Number(quoteCoverage?.marketCoverageCount || 0), 0)
     const snapshotStale = snapshot ? isSnapshotStale(snapshot) : true
+    const snapshotCapturedAt = normalizeText(snapshot?.captured_at) || null
+    const quoteFetchedAt = normalizeText(quoteCoverage?.latestFetchedAt) || null
 
     const eligibility = evaluateEligibility({
       category,
       referencePrice,
       volume7d,
       marketCoverageCount,
-      snapshotStale
+      snapshotStale,
+      snapshotCapturedAt,
+      quoteFetchedAt
     })
 
     const liquidityRank = computeSourceLiquidityScore({
@@ -1535,7 +1888,8 @@ async function enrichSourceCatalog() {
       marketCoverageCount,
       snapshot,
       snapshotStale,
-      liquidityRank
+      liquidityRank,
+      quoteFetchedAt
     })
     const previousCandidateStatus = normalizeCandidateStatus(
       row?.candidate_status ?? row?.candidateStatus,
@@ -1611,6 +1965,29 @@ async function enrichSourceCatalog() {
     if (candidateState.missingMarketCoverage) {
       byCategory[category].missingMarketCoverage += 1
     }
+    if (candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING) {
+      incrementPromotionReasons(
+        stuckInEnrichingByReason,
+        candidateState.nearEligibleBlockers,
+        category,
+        stuckInEnrichingByReasonByCategory
+      )
+    }
+    if (candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE) {
+      incrementPromotionReasons(
+        blockedFromPromotionByReason,
+        candidateState.eligibleBlockers,
+        category,
+        blockedFromPromotionByReasonByCategory
+      )
+    } else if (candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING) {
+      incrementPromotionReasons(
+        blockedFromPromotionByReason,
+        candidateState.nearEligibleBlockers,
+        category,
+        blockedFromPromotionByReasonByCategory
+      )
+    }
     if (eligibility.reason) {
       if (Object.prototype.hasOwnProperty.call(counts, eligibility.reason)) {
         counts[eligibility.reason] += 1
@@ -1625,7 +2002,6 @@ async function enrichSourceCatalog() {
             ? candidateState.eligibilityReason
             : eligibility.reason || candidateState.eligibilityReason || "candidate_not_ready"
         ) || "candidate_not_ready"
-    const quoteFetchedAt = normalizeText(quoteCoverage?.latestFetchedAt) || null
     const scanLayer = resolveScanLayerForMaturityState(maturityState)
 
     updates.push({
@@ -1677,6 +2053,10 @@ async function enrichSourceCatalog() {
     promotedToNearEligibleByCategory,
     promotedToEligibleByCategory,
     demotedToEnrichingByCategory,
+    stuckInEnrichingByReason,
+    stuckInEnrichingByReasonByCategory,
+    blockedFromPromotionByReason,
+    blockedFromPromotionByReasonByCategory,
     candidateFunnelByCategory: byCategory,
     byCategory,
     eligibleRowsByCategory,
@@ -1764,7 +2144,7 @@ function normalizeCatalogCandidateRows(rows = [], selectionTier = "") {
       )
       const missingSnapshot =
         row?.missing_snapshot == null
-          ? !snapshotCapturedAt || snapshotStale
+          ? !snapshotCapturedAt
           : Boolean(row.missing_snapshot)
       const missingReference =
         row?.missing_reference == null
@@ -2066,6 +2446,17 @@ async function runPipeline(options = {}) {
       demotedToEnrichingByCategory:
         sourceCoverage?.demotedToEnrichingByCategory ||
         base.sourceCatalog.demotedToEnrichingByCategory,
+      stuckInEnrichingByReason:
+        sourceCoverage?.stuckInEnrichingByReason || base.sourceCatalog.stuckInEnrichingByReason,
+      stuckInEnrichingByReasonByCategory:
+        sourceCoverage?.stuckInEnrichingByReasonByCategory ||
+        base.sourceCatalog.stuckInEnrichingByReasonByCategory,
+      blockedFromPromotionByReason:
+        sourceCoverage?.blockedFromPromotionByReason ||
+        base.sourceCatalog.blockedFromPromotionByReason,
+      blockedFromPromotionByReasonByCategory:
+        sourceCoverage?.blockedFromPromotionByReasonByCategory ||
+        base.sourceCatalog.blockedFromPromotionByReasonByCategory,
       candidateFunnelByCategory:
         sourceCoverage?.candidateFunnelByCategory || base.sourceCatalog.candidateFunnelByCategory,
       eligibleRowsByCategory:

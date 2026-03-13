@@ -1210,6 +1210,26 @@ test("seed maturity model maps ready items to hot layer", () => {
   assert.equal(computeLayerPriority({ ...maturity, itemCategory: "case" }) > 0, true);
 });
 
+test("seed maturity keeps fresh-quote near-eligible rows out of enriching", () => {
+  const maturity = resolveMaturityStateForSeed({
+    marketHashName: "AK-47 | Redline (Field-Tested)",
+    itemCategory: "weapon_skin",
+    candidateStatus: "near_eligible",
+    scanEligible: false,
+    hasSnapshotData: true,
+    snapshotCapturedAt: new Date(Date.now() - 80 * 60 * 1000).toISOString(),
+    snapshotStale: true,
+    quoteFetchedAt: new Date().toISOString(),
+    referencePrice: 11.2,
+    marketCoverageCount: 1,
+    marketVolume7d: 52,
+    liquidityRank: 61
+  });
+
+  assert.equal(maturity.maturityState, "near_eligible");
+  assert.equal(resolveScanLayerForMaturity(maturity), "warm");
+});
+
 test("layered scanning prioritizes hot core and limits cold scan share", () => {
   const hotSeeds = Array.from({ length: 180 }, (_, index) => ({
     marketHashName: `Hot Seed ${index}`,
@@ -1256,4 +1276,50 @@ test("layered scanning prioritizes hot core and limits cold scan share", () => {
   assert.equal(Number(selection?.enrichmentSeeds?.length || 0) > 0, true);
   assert.equal(Number(enrichmentLayers.hot || 0), 0);
   assert.equal(Number(selection?.enrichmentSeeds?.length || 0) <= 150, true);
+});
+
+test("layered scanning caps enriching backfill when mature opportunity supply is thin", () => {
+  const hotSeeds = Array.from({ length: 10 }, (_, index) => ({
+    marketHashName: `Limited Hot ${index}`,
+    itemCategory: "weapon_skin",
+    maturityState: "eligible",
+    maturityScore: 82,
+    liquidityRank: 60,
+    enrichmentPriority: 55,
+    scanLayer: "hot",
+    layerPriority: 120 - index
+  }));
+  const nearEligibleSeeds = Array.from({ length: 10 }, (_, index) => ({
+    marketHashName: `Limited Near ${index}`,
+    itemCategory: "case",
+    maturityState: "near_eligible",
+    maturityScore: 66,
+    liquidityRank: 44,
+    enrichmentPriority: 58,
+    scanLayer: "warm",
+    layerPriority: 90 - index
+  }));
+  const enrichingSeeds = Array.from({ length: 100 }, (_, index) => ({
+    marketHashName: `Limited Enriching ${index}`,
+    itemCategory: "weapon_skin",
+    maturityState: "enriching",
+    maturityScore: 48,
+    liquidityRank: 26,
+    enrichmentPriority: 72 - (index % 12),
+    scanLayer: "warm",
+    layerPriority: 65 - (index % 20)
+  }));
+
+  const selection = selectSeedsForLayeredScanning(
+    [...hotSeeds, ...nearEligibleSeeds, ...enrichingSeeds],
+    {
+      opportunityTarget: 50,
+      hotTarget: 20,
+      nearEligibleTarget: 20
+    }
+  );
+
+  assert.equal(Number(selection?.diagnostics?.selectedEnrichingForOpportunity || 0) <= 10, true);
+  assert.equal(Number(selection?.diagnostics?.matureOpportunityShortfall || 0) > 0, true);
+  assert.equal(Number(selection?.opportunitySeeds?.length || 0) < 50, true);
 });

@@ -1138,6 +1138,42 @@ function resolveSnapshotFreshnessState(inputItem = {}, itemCategory = ITEM_CATEG
   }
 }
 
+function resolveCatalogSeedFreshnessContext(
+  inputItem = {},
+  itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
+) {
+  const rules = getCategoryStaleRules(itemCategory)
+  const snapshotFreshnessBase = resolveSnapshotFreshnessState(inputItem, itemCategory)
+  const snapshotState =
+    snapshotFreshnessBase.ageMinutes == null && Boolean(inputItem?.hasSnapshotData)
+      ? Boolean(inputItem?.snapshotStale)
+        ? FRESHNESS_STATES.STALE
+        : FRESHNESS_STATES.FRESH
+      : snapshotFreshnessBase.state
+  const snapshotFreshness = {
+    ...snapshotFreshnessBase,
+    state: snapshotState
+  }
+  const quoteAgeMinutes = resolveQuoteAgeMinutes({ fetchedAt: inputItem?.quoteFetchedAt })
+  const quoteState = resolveFreshnessState(quoteAgeMinutes, rules)
+  const state =
+    snapshotFreshness.state === FRESHNESS_STATES.FRESH || quoteState === FRESHNESS_STATES.FRESH
+      ? FRESHNESS_STATES.FRESH
+      : snapshotFreshness.state === FRESHNESS_STATES.AGING || quoteState === FRESHNESS_STATES.AGING
+        ? FRESHNESS_STATES.AGING
+        : FRESHNESS_STATES.STALE
+
+  return {
+    state,
+    usable:
+      snapshotFreshness.state !== FRESHNESS_STATES.STALE ||
+      quoteState !== FRESHNESS_STATES.STALE,
+    snapshotFreshness,
+    quoteState,
+    quoteAgeMinutes
+  }
+}
+
 function hasUsableQuotePrice(quote = {}) {
   const hasGross = Number.isFinite(Number(quote?.grossPrice)) && Number(quote.grossPrice) > 0
   const hasNet =
@@ -1951,7 +1987,7 @@ function buildInputItemFromSkinAndSnapshot({
   )
   const missingSnapshot =
     catalogRow?.missing_snapshot == null
-      ? !hasSnapshotData || snapshotStale
+      ? !hasSnapshotData
       : Boolean(catalogRow.missing_snapshot)
   const missingReference =
     catalogRow?.missing_reference == null
@@ -2189,7 +2225,7 @@ function applyCatalogStateToSeed(seed = {}, catalogRow = null) {
   const snapshotCapturedAt = catalogRow?.snapshot_captured_at || seed?.snapshotCapturedAt || null
   const missingSnapshot =
     catalogRow?.missing_snapshot == null
-      ? !Boolean(seed?.hasSnapshotData) || snapshotStale
+      ? !Boolean(seed?.hasSnapshotData)
       : Boolean(catalogRow.missing_snapshot)
   const missingReference =
     catalogRow?.missing_reference == null ? referencePrice == null : Boolean(catalogRow.missing_reference)
@@ -2250,14 +2286,29 @@ function resolveMaturityStateForSeed(seed = {}) {
     seed?.scanEligible ? CATALOG_CANDIDATE_STATUS.ELIGIBLE : CATALOG_CANDIDATE_STATUS.CANDIDATE
   )
   const hasSnapshotData = Boolean(seed?.hasSnapshotData)
-  const snapshotStale = Boolean(seed?.snapshotStale)
   const referencePrice = toFiniteOrNull(seed?.referencePrice)
   const coverageCount = Math.max(Number(seed?.marketCoverageCount || 0), 0)
   const volume7d = toFiniteOrNull(seed?.marketVolume7d)
-  const missingSnapshot = Boolean(seed?.missingSnapshot) || !hasSnapshotData || snapshotStale
+  const missingSnapshot = Boolean(seed?.missingSnapshot) || !hasSnapshotData
   const missingReference = Boolean(seed?.missingReference) || referencePrice == null
   const missingCoverage = Boolean(seed?.missingMarketCoverage) || coverageCount < MIN_MARKET_COVERAGE
   const missingLiquidityContext = volume7d == null
+  const freshness = resolveCatalogSeedFreshnessContext(seed, itemCategory)
+  const categoryVolumeFloor = Math.max(
+    Number(UNIVERSE_MIN_VOLUME_7D_BY_CATEGORY[itemCategory] || 20),
+    1
+  )
+  const partialCoverage = coverageCount >= Math.max(1, MIN_MARKET_COVERAGE - 1)
+  const reasonableVolume =
+    volume7d != null && volume7d >= Math.max(categoryVolumeFloor * 0.55, 18)
+  const sufficientVolume = volume7d != null && volume7d >= categoryVolumeFloor
+  const nearEligibleSupportCount = countTrueValues([
+    !missingReference,
+    freshness.usable,
+    partialCoverage || reasonableVolume,
+    hasSnapshotData || coverageCount >= 1,
+    !missingLiquidityContext || referencePrice != null
+  ])
   const missingSignals =
     Number(missingSnapshot) +
     Number(missingReference) +
@@ -2277,25 +2328,27 @@ function resolveMaturityStateForSeed(seed = {}) {
   if (
     candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
     hasSnapshotData &&
-    !snapshotStale &&
+    freshness.usable &&
     !missingReference &&
-    !missingCoverage
+    !missingCoverage &&
+    sufficientVolume
   ) {
     maturityState = MATURITY_STATES.ELIGIBLE
   } else if (
     (candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE ||
       candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE ||
       candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING) &&
-    missingSignals <= 1 &&
-    !snapshotStale &&
+    missingSignals <= 2 &&
+    freshness.usable &&
     !missingReference &&
-    (coverageCount >= 1 || (volume7d != null && volume7d >= 20))
+    (partialCoverage || reasonableVolume) &&
+    nearEligibleSupportCount >= 3
   ) {
     maturityState = MATURITY_STATES.NEAR_ELIGIBLE
   } else if (
     candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE ||
     candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING ||
-    (candidateStatus === CATALOG_CANDIDATE_STATUS.CANDIDATE && missingSignals <= 2)
+    (candidateStatus === CATALOG_CANDIDATE_STATUS.CANDIDATE && nearEligibleSupportCount >= 2)
   ) {
     maturityState = MATURITY_STATES.ENRICHING
   }
@@ -2308,7 +2361,12 @@ function resolveMaturityStateForSeed(seed = {}) {
         : maturityState === MATURITY_STATES.ENRICHING
           ? 46
           : 24
-  const freshnessBoost = snapshotStale ? -8 : 8
+  const freshnessBoost =
+    freshness.state === FRESHNESS_STATES.FRESH
+      ? 8
+      : freshness.state === FRESHNESS_STATES.AGING
+        ? 3
+        : -8
   const referenceBoost = referencePrice == null ? -8 : Math.min(referencePrice, 12)
   const coverageBoost = Math.min(coverageCount * 3, 15)
   const volumeBoost =
@@ -2333,7 +2391,8 @@ function resolveMaturityStateForSeed(seed = {}) {
     maturityScore,
     missingSignals,
     candidateStatus,
-    structuralPenalty
+    structuralPenalty,
+    freshnessState: freshness.state
   }
 }
 
@@ -2491,6 +2550,7 @@ function selectSeedsForLayeredScanning(seeds = [], options = {}) {
     (row) => normalizeMaturityState(row?.maturityState) !== MATURITY_STATES.NEAR_ELIGIBLE
   )
   const hotUniverse = rankLayerRows([...byLayer[SCAN_LAYERS.HOT], ...nearEligibleWarmSeeds])
+  const enrichingOpportunityBackfillLimit = Math.max(Math.round(opportunityTarget * 0.2), 8)
 
   const addFromLayer = (rows = [], limit = 0) => {
     const maxItems = Math.max(Number(limit || 0), 0)
@@ -2510,15 +2570,13 @@ function selectSeedsForLayeredScanning(seeds = [], options = {}) {
   const existingCore = coreSeeds.length
   addFromLayer(byLayer[SCAN_LAYERS.HOT], Math.max(hotTarget - existingCore, 0))
   addFromLayer(nearEligibleWarmSeeds, nearEligibleTarget)
-  addFromLayer(enrichingWarmSeeds, Math.max(opportunityTarget - opportunitySeeds.length, 0))
-
-  const fallbackOrder = [
-    ...byLayer[SCAN_LAYERS.HOT],
-    ...nearEligibleWarmSeeds,
-    ...enrichingWarmSeeds,
-    ...byLayer[SCAN_LAYERS.COLD]
-  ]
-  addFromLayer(fallbackOrder, Math.max(opportunityTarget - opportunitySeeds.length, 0))
+  addFromLayer(
+    enrichingWarmSeeds,
+    Math.min(
+      Math.max(opportunityTarget - opportunitySeeds.length, 0),
+      enrichingOpportunityBackfillLimit
+    )
+  )
 
   const enrichmentSeeds = []
   const enrichmentSeen = new Set()
@@ -2550,9 +2608,20 @@ function selectSeedsForLayeredScanning(seeds = [], options = {}) {
       opportunityTarget,
       hotTarget,
       nearEligibleTarget,
+      enrichingOpportunityBackfillLimit,
       enrichmentTarget,
       selectedForOpportunity: opportunitySeeds.length,
       selectedForEnrichment: enrichmentSeeds.length,
+      matureOpportunityShortfall: Math.max(opportunityTarget - opportunitySeeds.length, 0),
+      selectedEligibleForOpportunity: opportunitySeeds.filter(
+        (row) => normalizeMaturityState(row?.maturityState) === MATURITY_STATES.ELIGIBLE
+      ).length,
+      selectedNearEligibleForOpportunity: opportunitySeeds.filter(
+        (row) => normalizeMaturityState(row?.maturityState) === MATURITY_STATES.NEAR_ELIGIBLE
+      ).length,
+      selectedEnrichingForOpportunity: opportunitySeeds.filter(
+        (row) => normalizeMaturityState(row?.maturityState) === MATURITY_STATES.ENRICHING
+      ).length,
       hotUniverse: {
         total: hotUniverse.length,
         eligibleCount: byLayer[SCAN_LAYERS.HOT].length,
