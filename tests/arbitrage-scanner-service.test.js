@@ -227,24 +227,26 @@ test("scanner guards enforce spread/profit/liquidity thresholds", () => {
   );
 });
 
-test("universe seed filter rejects items without snapshot liquidity context", () => {
+test("universe seed filter forwards missing-liquidity weapon skins with a penalty", () => {
   const discardStats = {};
+  const weaponSkinDiagnostics = {};
   const allowed = passesUniverseSeedFilters(
     {
       marketHashName: "AK-47 | Redline (Field-Tested)",
+      itemCategory: "weapon_skin",
       hasSnapshotData: false,
       snapshotStale: false,
       referencePrice: null,
       marketVolume7d: null
     },
-    discardStats
+    discardStats,
+    null,
+    { weaponSkinDiagnostics }
   );
 
-  assert.equal(allowed, false);
-  assert.equal(
-    Number(discardStats.hard_reject_missing_liquidity || 0) > 0,
-    true
-  );
+  assert.equal(allowed, true);
+  assert.equal(Number(discardStats.hard_reject_missing_liquidity || 0), 0);
+  assert.equal(Number(weaponSkinDiagnostics.penalty_missing_liquidity_allowed_forward || 0), 1);
 });
 
 test("universe seed filter allows strong weapon skins with missing liquidity evidence", () => {
@@ -540,7 +542,7 @@ test("risky weapon-skin evaluation allows speculative fallback for missing liqui
   );
 });
 
-test("risky weapon-skin evaluation still rejects weak missing-liquidity candidates", () => {
+test("risky weapon-skin evaluation does not reject only because liquidity is missing", () => {
   const evaluation = computeRiskAdjustments({
     opportunity: {
       itemName: "Five-SeveN | Coolant (Minimal Wear)",
@@ -577,7 +579,7 @@ test("risky weapon-skin evaluation still rejects weak missing-liquidity candidat
   });
 
   assert.equal(evaluation.passed, false);
-  assert.equal(evaluation.primaryReason, "hard_reject_missing_liquidity");
+  assert.equal(evaluation.primaryReason, "hard_reject_low_value");
 });
 
 test("risky weapon-skin evaluation forwards borderline low-value skins into speculative", () => {
