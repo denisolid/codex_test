@@ -288,6 +288,33 @@ const CATALOG_FRESHNESS_RULES = Object.freeze({
     agingMaxMinutes: 240
   })
 })
+const SNAPSHOT_DIAGNOSTIC_STATES = Object.freeze({
+  MISSING: "missing_snapshot",
+  PARTIAL: "partial_snapshot",
+  STALE: "stale_snapshot",
+  READY: "snapshot_ready"
+})
+const REFERENCE_DIAGNOSTIC_STATES = Object.freeze({
+  MISSING: "missing_reference",
+  SNAPSHOT: "snapshot_reference",
+  QUOTE: "quote_reference"
+})
+const LIQUIDITY_DIAGNOSTIC_STATES = Object.freeze({
+  MISSING: "missing_liquidity",
+  PARTIAL: "partial_liquidity",
+  READY: "liquidity_ready"
+})
+const COVERAGE_DIAGNOSTIC_STATES = Object.freeze({
+  MISSING: "missing_coverage",
+  INSUFFICIENT: "insufficient_coverage",
+  READY: "coverage_ready"
+})
+const PROGRESSION_DIAGNOSTIC_STATUS = Object.freeze({
+  ELIGIBLE: "eligible",
+  BLOCKED_ELIGIBLE: "blocked_from_eligible",
+  BLOCKED_NEAR_ELIGIBLE: "blocked_from_near_eligible",
+  REJECTED: "rejected"
+})
 
 const BASE_INGEST_EXCLUDED_REASON_COUNTER = Object.freeze({
   excludedDuplicate: 0,
@@ -419,6 +446,16 @@ function countTrueValues(values = []) {
   )
 }
 
+function uniqueTextList(values = []) {
+  return Array.from(
+    new Set(
+      (Array.isArray(values) ? values : [])
+        .map((value) => normalizeText(value))
+        .filter(Boolean)
+    )
+  )
+}
+
 function toIsoStringOrNull(value) {
   const text = normalizeText(value)
   if (!text) return null
@@ -502,6 +539,99 @@ function resolveCatalogFreshnessContext({
   }
 }
 
+function resolveCoverageDiagnosticState(coverageCount = 0, minCoverage = 2) {
+  const normalizedCoverage = Math.max(Number(coverageCount || 0), 0)
+  if (normalizedCoverage <= 0) return COVERAGE_DIAGNOSTIC_STATES.MISSING
+  if (normalizedCoverage < Math.max(Number(minCoverage || 0), 1)) {
+    return COVERAGE_DIAGNOSTIC_STATES.INSUFFICIENT
+  }
+  return COVERAGE_DIAGNOSTIC_STATES.READY
+}
+
+function resolveReferenceDiagnosticState({
+  referencePrice = null,
+  snapshotHasPriceSignal = false
+} = {}) {
+  if (toPositiveOrNull(referencePrice) == null) {
+    return REFERENCE_DIAGNOSTIC_STATES.MISSING
+  }
+  return snapshotHasPriceSignal
+    ? REFERENCE_DIAGNOSTIC_STATES.SNAPSHOT
+    : REFERENCE_DIAGNOSTIC_STATES.QUOTE
+}
+
+function resolveLiquidityDiagnosticState({
+  hasLiquidityContext = false,
+  sufficientVolume = false,
+  reasonableVolume = false,
+  hasUtilitySignal = false,
+  liquidityRank = 0
+} = {}) {
+  if (sufficientVolume) return LIQUIDITY_DIAGNOSTIC_STATES.READY
+  if (hasLiquidityContext || reasonableVolume || hasUtilitySignal || Number(liquidityRank || 0) > 0) {
+    return LIQUIDITY_DIAGNOSTIC_STATES.PARTIAL
+  }
+  return LIQUIDITY_DIAGNOSTIC_STATES.MISSING
+}
+
+function resolveSnapshotDiagnosticState({
+  snapshotCapturedAt = null,
+  snapshotStale = false,
+  snapshotComplete = false
+} = {}) {
+  if (!normalizeText(snapshotCapturedAt)) return SNAPSHOT_DIAGNOSTIC_STATES.MISSING
+  if (snapshotStale) return SNAPSHOT_DIAGNOSTIC_STATES.STALE
+  if (!snapshotComplete) return SNAPSHOT_DIAGNOSTIC_STATES.PARTIAL
+  return SNAPSHOT_DIAGNOSTIC_STATES.READY
+}
+
+function buildProgressionBlockers({
+  candidateStatus = CATALOG_CANDIDATE_STATUS.CANDIDATE,
+  rejectedReason = "",
+  progress = {},
+  snapshotState = SNAPSHOT_DIAGNOSTIC_STATES.MISSING,
+  referenceState = REFERENCE_DIAGNOSTIC_STATES.MISSING,
+  liquidityState = LIQUIDITY_DIAGNOSTIC_STATES.MISSING,
+  coverageState = COVERAGE_DIAGNOSTIC_STATES.MISSING,
+  snapshotIncomplete = false
+} = {}) {
+  if (candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE) return []
+
+  const blockers = []
+  if (rejectedReason || progress.hasStructuralReason) {
+    blockers.push("anti_fake_guard")
+  }
+  if (snapshotState === SNAPSHOT_DIAGNOSTIC_STATES.MISSING) {
+    blockers.push(SNAPSHOT_DIAGNOSTIC_STATES.MISSING)
+  } else if (snapshotState === SNAPSHOT_DIAGNOSTIC_STATES.STALE) {
+    blockers.push(SNAPSHOT_DIAGNOSTIC_STATES.STALE)
+  }
+  if (snapshotIncomplete) {
+    blockers.push(SNAPSHOT_DIAGNOSTIC_STATES.PARTIAL)
+  }
+  if (referenceState === REFERENCE_DIAGNOSTIC_STATES.MISSING) {
+    blockers.push(REFERENCE_DIAGNOSTIC_STATES.MISSING)
+  }
+  if (liquidityState === LIQUIDITY_DIAGNOSTIC_STATES.MISSING) {
+    blockers.push(LIQUIDITY_DIAGNOSTIC_STATES.MISSING)
+  } else if (liquidityState === LIQUIDITY_DIAGNOSTIC_STATES.PARTIAL) {
+    blockers.push(LIQUIDITY_DIAGNOSTIC_STATES.PARTIAL)
+  }
+  if (coverageState !== COVERAGE_DIAGNOSTIC_STATES.READY) {
+    blockers.push(COVERAGE_DIAGNOSTIC_STATES.INSUFFICIENT)
+  }
+
+  const targetBlockers =
+    candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
+      ? progress.eligibleBlockers
+      : progress.nearEligibleBlockers
+  if (Array.isArray(targetBlockers) && targetBlockers.includes("candidate_not_ready")) {
+    blockers.push("candidate_not_ready")
+  }
+
+  return uniqueTextList(blockers)
+}
+
 function computeCatalogProgressContext({
   category = ITEM_CATEGORIES.WEAPON_SKIN,
   referencePrice = null,
@@ -512,7 +642,9 @@ function computeCatalogProgressContext({
   snapshotStale = true,
   hasSnapshot = null,
   liquidityRank = 0,
-  eligibilityReason = ""
+  eligibilityReason = "",
+  snapshotHasPriceSignal = false,
+  snapshotHasLiquiditySignal = false
 } = {}) {
   const normalizedCategory = normalizeCategory(category)
   const rules =
@@ -546,6 +678,16 @@ function computeCatalogProgressContext({
     safeReferencePrice >= Math.max(Number(rules.minReferencePrice || 1) * 0.9, 0.75)
   const hasUtilitySignal = Number(liquidityRank || 0) >= 28
   const partialMarketSupport = isWeaponSkin ? hasAnyCoverage : partialCoverage || reasonableVolume
+  const hasStructuralReason = /\brejected|hard|outofscope|namepattern|unsupported\b/i.test(
+    String(eligibilityReason || "")
+  )
+  const weaponSkinCoverageLedNearEligible =
+    isWeaponSkin &&
+    !hasReference &&
+    !hasStructuralReason &&
+    hasAnyCoverage &&
+    freshness.usable &&
+    (coverageCount >= minCoverage || hasLiquidityContext || hasUtilitySignal)
   const nearEligibleSupportCount = countTrueValues([
     hasReference,
     freshness.usable,
@@ -560,9 +702,6 @@ function computeCatalogProgressContext({
     sufficientVolume,
     inferredSnapshotPresence
   ])
-  const hasStructuralReason = /\brejected|hard|outofscope|namepattern|unsupported\b/i.test(
-    String(eligibilityReason || "")
-  )
   const nearEligibleBlockers = []
   const eligibleBlockers = []
 
@@ -570,8 +709,10 @@ function computeCatalogProgressContext({
     nearEligibleBlockers.push("structural_reason")
     eligibleBlockers.push("structural_reason")
   }
-  if (!hasReference) {
+  if (!hasReference && !weaponSkinCoverageLedNearEligible) {
     nearEligibleBlockers.push("missing_reference")
+  }
+  if (!hasReference) {
     eligibleBlockers.push("missing_reference")
   }
   if (!freshness.usable) {
@@ -620,16 +761,17 @@ function computeCatalogProgressContext({
     partialMarketSupport,
     meaningfulReference,
     hasUtilitySignal,
+    weaponSkinCoverageLedNearEligible,
     nearEligibleSupportCount,
     eligibleSupportCount,
     nearEligibleBlockers,
     eligibleBlockers,
     canReachNearEligible:
       !nearEligibleBlockers.length &&
-      hasReference &&
       freshness.usable &&
       partialMarketSupport &&
       (!isWeaponSkin || hasAnyCoverage) &&
+      (hasReference || weaponSkinCoverageLedNearEligible) &&
       nearEligibleSupportCount >= 3,
     canReachEligible:
       !eligibleBlockers.length &&
@@ -649,7 +791,30 @@ function computeCatalogProgressContext({
         coverageCount > 0,
         hasUtilitySignal
       ]) >= 2,
-    hasStructuralReason
+    hasStructuralReason,
+    coverageState: resolveCoverageDiagnosticState(coverageCount, minCoverage),
+    referenceState: resolveReferenceDiagnosticState({
+      referencePrice: safeReferencePrice,
+      snapshotHasPriceSignal
+    }),
+    liquidityState: resolveLiquidityDiagnosticState({
+      hasLiquidityContext,
+      sufficientVolume,
+      reasonableVolume,
+      hasUtilitySignal,
+      liquidityRank
+    }),
+    snapshotState: resolveSnapshotDiagnosticState({
+      snapshotCapturedAt,
+      snapshotStale: Boolean(snapshotStale) && Boolean(snapshotCapturedAt),
+      snapshotComplete:
+        Boolean(snapshotCapturedAt) &&
+        Boolean(snapshotHasPriceSignal) &&
+        Boolean(snapshotHasLiquiditySignal)
+    }),
+    snapshotIncomplete:
+      Boolean(snapshotCapturedAt) &&
+      (!Boolean(snapshotHasPriceSignal) || !Boolean(snapshotHasLiquiditySignal))
   }
 }
 
@@ -685,8 +850,10 @@ function isUniverseBackfillReadyRow(row = {}) {
     row?.snapshot_captured_at || row?.snapshotCapturedAt
   ) || null
   const quoteFetchedAt = normalizeText(row?.quote_fetched_at || row?.quoteFetchedAt) || null
+  const missingSnapshot =
+    row?.missing_snapshot == null ? !snapshotCapturedAt : Boolean(row.missing_snapshot)
   const snapshotStale =
-    row?.snapshot_stale == null ? !snapshotCapturedAt : Boolean(row.snapshot_stale)
+    row?.snapshot_stale == null ? false : Boolean(row.snapshot_stale)
   const progress = computeCatalogProgressContext({
     category,
     referencePrice,
@@ -695,7 +862,7 @@ function isUniverseBackfillReadyRow(row = {}) {
     snapshotCapturedAt,
     quoteFetchedAt,
     snapshotStale,
-    hasSnapshot: !Boolean(row?.missing_snapshot),
+    hasSnapshot: !missingSnapshot,
     liquidityRank: toFiniteOrNull(row?.liquidity_rank ?? row?.liquidityRank) ?? 0,
     eligibilityReason: row?.eligibility_reason ?? row?.eligibilityReason
   })
@@ -1652,6 +1819,10 @@ function evaluateCandidateState({
       SOURCE_CANDIDATE_HARD_FLOOR[ITEM_CATEGORIES.WEAPON_SKIN]
   )
   const snapshotCapturedAt = normalizeText(snapshot?.captured_at) || null
+  const snapshotHasPriceSignal =
+    toPositiveOrNull(snapshot?.average_7d_price) != null ||
+    toPositiveOrNull(snapshot?.lowest_listing_price) != null
+  const snapshotHasLiquiditySignal = toPositiveOrNull(snapshot?.volume_24h) != null
   const hasSnapshot = Boolean(snapshot) && Boolean(snapshotCapturedAt)
   const missingSnapshot = !hasSnapshot
   const missingReference = referencePrice == null
@@ -1660,6 +1831,7 @@ function evaluateCandidateState({
   const missingMarketCoverage =
     Number(marketCoverageCount || 0) < Number(rules.minMarketCoverage || 0)
   const missingLiquidityContext = volume7d == null
+  const effectiveSnapshotStale = Boolean(snapshotCapturedAt) && Boolean(snapshotStale)
   const progress = computeCatalogProgressContext({
     category: normalizedCategory,
     referencePrice,
@@ -1667,10 +1839,12 @@ function evaluateCandidateState({
     marketCoverageCount,
     snapshotCapturedAt,
     quoteFetchedAt,
-    snapshotStale,
-    hasSnapshot: Boolean(snapshot),
+    snapshotStale: effectiveSnapshotStale,
+    hasSnapshot,
     liquidityRank,
-    eligibilityReason: eligibility?.reason
+    eligibilityReason: eligibility?.reason,
+    snapshotHasPriceSignal,
+    snapshotHasLiquiditySignal
   })
 
   let rejectedReason = ""
@@ -1705,6 +1879,24 @@ function evaluateCandidateState({
         (candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
           ? progress.eligibleBlockers[0] || "near_eligible"
           : progress.nearEligibleBlockers[0] || "candidate_not_ready")
+  const progressionStatus =
+    candidateStatus === CATALOG_CANDIDATE_STATUS.REJECTED
+      ? PROGRESSION_DIAGNOSTIC_STATUS.REJECTED
+      : candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE
+        ? PROGRESSION_DIAGNOSTIC_STATUS.ELIGIBLE
+        : candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
+          ? PROGRESSION_DIAGNOSTIC_STATUS.BLOCKED_ELIGIBLE
+          : PROGRESSION_DIAGNOSTIC_STATUS.BLOCKED_NEAR_ELIGIBLE
+  const progressionBlockers = buildProgressionBlockers({
+    candidateStatus,
+    rejectedReason,
+    progress,
+    snapshotState: progress.snapshotState,
+    referenceState: progress.referenceState,
+    liquidityState: progress.liquidityState,
+    coverageState: progress.coverageState,
+    snapshotIncomplete: progress.snapshotIncomplete
+  })
 
   const enrichmentPriority = computeEnrichmentPriority({
     candidateStatus,
@@ -1716,7 +1908,7 @@ function evaluateCandidateState({
     missingSnapshot,
     missingReference,
     missingMarketCoverage,
-    snapshotStale
+    snapshotStale: effectiveSnapshotStale
   })
   const maturity = computeCatalogMaturity({
     category: normalizedCategory,
@@ -1725,7 +1917,7 @@ function evaluateCandidateState({
     missingReference,
     missingMarketCoverage,
     missingLiquidityContext,
-    snapshotStale,
+    snapshotStale: effectiveSnapshotStale,
     referencePrice,
     volume7d,
     marketCoverageCount,
@@ -1750,7 +1942,14 @@ function evaluateCandidateState({
     missingSignals: maturity.missingSignals,
     freshnessState: progress.freshness.state,
     nearEligibleBlockers: progress.nearEligibleBlockers,
-    eligibleBlockers: progress.eligibleBlockers
+    eligibleBlockers: progress.eligibleBlockers,
+    snapshotState: progress.snapshotState,
+    referenceState: progress.referenceState,
+    liquidityState: progress.liquidityState,
+    coverageState: progress.coverageState,
+    progressionStatus,
+    progressionBlockers,
+    antiFakeBlocked: Boolean(rejectedReason) || progress.hasStructuralReason
   }
 }
 
@@ -1942,13 +2141,21 @@ async function enrichSourceCatalog() {
     const skinId = Number(skinsByName[marketHashName]?.id || 0)
     const snapshot = skinId > 0 ? snapshotsBySkinId[skinId] || null : null
     const quoteCoverage = quoteCoverageByItem[marketHashName] || {}
-    const referencePrice = toPositiveOrNull(
+    const categoryRules =
+      SOURCE_QUALITY_RULES[category] || SOURCE_QUALITY_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
+    const snapshotCapturedAt = normalizeText(snapshot?.captured_at) || null
+    const snapshotReferencePrice = toPositiveOrNull(
       toFiniteOrNull(snapshot?.average_7d_price) ?? toFiniteOrNull(snapshot?.lowest_listing_price)
     )
-    const volume7d = resolveVolume7d(snapshot, quoteCoverage)
     const marketCoverageCount = Math.max(Number(quoteCoverage?.marketCoverageCount || 0), 0)
-    const snapshotStale = snapshot ? isSnapshotStale(snapshot) : true
-    const snapshotCapturedAt = normalizeText(snapshot?.captured_at) || null
+    const quoteReferencePrice =
+      marketCoverageCount >= Math.max(Number(categoryRules.minMarketCoverage || 2), 2) &&
+      Number(quoteCoverage?.referencePriceCandidateCount || 0) >= 2
+        ? toPositiveOrNull(quoteCoverage?.referencePriceMedian)
+        : null
+    const referencePrice = snapshotReferencePrice ?? quoteReferencePrice
+    const volume7d = resolveVolume7d(snapshot, quoteCoverage)
+    const snapshotStale = snapshotCapturedAt ? isSnapshotStale(snapshot) : false
     const quoteFetchedAt = normalizeText(quoteCoverage?.latestFetchedAt) || null
 
     const eligibility = evaluateEligibility({
@@ -2125,8 +2332,14 @@ async function enrichSourceCatalog() {
       liquidity_rank: liquidityRank,
       volume_7d: volume7d,
       snapshot_stale: snapshotStale,
-      snapshot_captured_at: snapshot?.captured_at || null,
+      snapshot_captured_at: snapshotCapturedAt,
       quote_fetched_at: quoteFetchedAt,
+      snapshot_state: candidateState.snapshotState,
+      reference_state: candidateState.referenceState,
+      liquidity_state: candidateState.liquidityState,
+      coverage_state: candidateState.coverageState,
+      progression_status: candidateState.progressionStatus,
+      progression_blockers: scanEligible ? [] : candidateState.progressionBlockers,
       invalid_reason: invalidReason,
       source_tag: normalizeText(row?.source_tag || row?.sourceTag) || "curated_seed",
       is_active: row?.is_active == null ? true : Boolean(row.is_active),
@@ -2298,11 +2511,24 @@ function normalizeCatalogCandidateRows(rows = [], selectionTier = "") {
         maturity_state: maturityState,
         maturity_score: toFiniteOrNull(row?.maturity_score ?? row?.maturityScore) ?? 0,
         scan_layer: normalizeText(row?.scan_layer || row?.scanLayer) || resolveScanLayerForMaturityState(maturityState),
-        liquidity_rank: toFiniteOrNull(row?.liquidity_rank) ?? 0,
+        liquidity_rank: toFiniteOrNull(row?.liquidity_rank ?? row?.liquidityRank) ?? 0,
         market_coverage_count: marketCoverageCount,
-        volume_7d: Math.max(Number(row?.volume_7d || 0), 0),
-        reference_price: referencePrice ?? 0,
+        volume_7d: toFiniteOrNull(row?.volume_7d ?? row?.volume7d),
+        reference_price: referencePrice,
+        snapshot_stale: snapshotStale,
+        snapshot_captured_at: snapshotCapturedAt || null,
         quote_fetched_at: normalizeText(row?.quote_fetched_at || row?.quoteFetchedAt) || null,
+        snapshot_state: normalizeText(row?.snapshot_state || row?.snapshotState) || null,
+        reference_state: normalizeText(row?.reference_state || row?.referenceState) || null,
+        liquidity_state: normalizeText(row?.liquidity_state || row?.liquidityState) || null,
+        coverage_state: normalizeText(row?.coverage_state || row?.coverageState) || null,
+        progression_status:
+          normalizeText(row?.progression_status || row?.progressionStatus) || null,
+        progression_blockers: Array.isArray(row?.progression_blockers)
+          ? row.progression_blockers.map((value) => normalizeText(value)).filter(Boolean)
+          : Array.isArray(row?.progressionBlockers)
+            ? row.progressionBlockers.map((value) => normalizeText(value)).filter(Boolean)
+            : [],
         selectionTier: tier,
         selectionTierRank: resolveTierRank(tier)
       }

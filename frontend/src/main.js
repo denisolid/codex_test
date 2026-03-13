@@ -1922,10 +1922,6 @@ function syncEmailOnboardingStateFromProfile() {
   }
 }
 
-function isGlobalUiBlocked() {
-  return Boolean(state.syncingInventory);
-}
-
 function syncBodyUiLocks() {
   document.body.classList.toggle(
     "mobile-drawer-open",
@@ -1947,7 +1943,6 @@ function syncBodyUiLocks() {
     "tx-edit-modal-open",
     Boolean(state.txEditModal.open),
   );
-  document.body.classList.toggle("ui-sync-blocked", isGlobalUiBlocked());
   syncBodyScrollLock();
 }
 
@@ -1957,8 +1952,7 @@ function hasBlockingOverlayOpen() {
     state.portfolioControls.open ||
     state.inspectModal.open ||
     state.compareDrawer.open ||
-    state.txEditModal.open ||
-    isGlobalUiBlocked(),
+    state.txEditModal.open,
   );
 }
 
@@ -14361,11 +14355,13 @@ function renderSessionBoot() {
 function renderGlobalSyncOverlay() {
   if (!state.syncingInventory) return "";
   return `
-    <div class="ui-sync-blocker-overlay" role="status" aria-live="polite" aria-busy="true">
+    <div class="ui-sync-blocker-overlay" role="status" aria-live="polite" aria-busy="true" aria-atomic="true">
       <div class="ui-sync-blocker-card">
         <span class="spinner ui-sync-blocker-spinner" aria-hidden="true"></span>
-        <p>Syncing inventory...</p>
-        <small>Please wait while we refresh your items and prices.</small>
+        <div class="ui-sync-blocker-copy">
+          <p>Syncing inventory...</p>
+          <small>Please wait while we refresh your items and prices.</small>
+        </div>
       </div>
     </div>
   `;

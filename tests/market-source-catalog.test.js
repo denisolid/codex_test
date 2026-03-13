@@ -12,6 +12,7 @@ const {
     buildSourceCatalogQuotas,
     computeCatalogMaturity,
     computeEnrichmentPriority,
+    computeSourceLiquidityScore,
     evaluateCandidateState,
     evaluateEligibility,
     isUniverseBackfillReadyRow,
@@ -21,6 +22,9 @@ const {
     shouldBypassSkipForRecovery
   }
 } = require("../src/services/marketSourceCatalogService")
+const {
+  __testables: { resolveConservativeMedian }
+} = require("../src/repositories/marketQuoteRepository")
 
 test("source catalog seed expands with scanner-scope categories only", () => {
   assert.equal(Array.isArray(sourceSeed), true)
@@ -187,6 +191,65 @@ test("candidate state promotes partial-ready rows to near-eligible when freshnes
   assert.equal(state.eligibleBlockers.includes("market_coverage_insufficient"), true)
 })
 
+test("candidate state promotes safe covered weapon skins without reference into near-eligible", () => {
+  const marketHashName = "AK-47 | Slate (Field-Tested)"
+  const category = normalizeCategory("weapon_skin", marketHashName)
+  const liquidityRank = computeSourceLiquidityScore({
+    category,
+    referencePrice: null,
+    volume7d: null,
+    marketCoverage: 3,
+    snapshotStale: false
+  })
+  const state = evaluateCandidateState({
+    marketHashName,
+    category,
+    tradable: true,
+    eligibility: { eligible: false, reason: "excludedMissingReferenceItems" },
+    referencePrice: null,
+    volume7d: null,
+    marketCoverageCount: 3,
+    snapshot: null,
+    snapshotStale: false,
+    quoteFetchedAt: new Date().toISOString(),
+    liquidityRank
+  })
+
+  assert.equal(normalizeCandidateStatus(state.candidateStatus), "near_eligible")
+  assert.equal(state.snapshotState, "missing_snapshot")
+  assert.equal(state.referenceState, "missing_reference")
+  assert.equal(state.liquidityState, "partial_liquidity")
+  assert.equal(state.coverageState, "coverage_ready")
+  assert.equal(state.progressionStatus, "blocked_from_eligible")
+  assert.equal(state.progressionBlockers.includes("missing_reference"), true)
+})
+
+test("candidate state surfaces partial snapshot diagnostics for incomplete snapshot rows", () => {
+  const marketHashName = "M4A4 | Neo-Noir (Field-Tested)"
+  const category = normalizeCategory("weapon_skin", marketHashName)
+  const state = evaluateCandidateState({
+    marketHashName,
+    category,
+    tradable: true,
+    eligibility: { eligible: false, reason: "excludedLowLiquidityItems" },
+    referencePrice: 14.5,
+    volume7d: null,
+    marketCoverageCount: 2,
+    snapshot: {
+      captured_at: new Date().toISOString(),
+      average_7d_price: 14.5
+    },
+    snapshotStale: false,
+    quoteFetchedAt: new Date().toISOString(),
+    liquidityRank: 42
+  })
+
+  assert.equal(state.snapshotState, "partial_snapshot")
+  assert.equal(state.progressionBlockers.includes("partial_snapshot"), true)
+  assert.equal(state.progressionBlockers.includes("missing_liquidity"), false)
+  assert.equal(state.progressionBlockers.includes("partial_liquidity"), true)
+})
+
 test("candidate state keeps zero-coverage weapon skins in enriching", () => {
   const marketHashName = "AK-47 | Redline (Field-Tested)"
   const category = normalizeCategory("weapon_skin", marketHashName)
@@ -288,6 +351,12 @@ test("source eligibility accepts usable quote freshness for mature rows", () => 
 
   assert.equal(usableFreshness.eligible, true)
   assert.equal(usableFreshness.reason, "")
+})
+
+test("quote reference fallback uses a conservative median", () => {
+  assert.equal(resolveConservativeMedian([8.4, 7.8, 9.2]), 8.4)
+  assert.equal(resolveConservativeMedian([8.4, 7.8]), 7.8)
+  assert.equal(resolveConservativeMedian([]), null)
 })
 
 test("skip recovery bypass triggers for collapsed legacy diagnostics", () => {
