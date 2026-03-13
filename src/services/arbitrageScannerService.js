@@ -2732,6 +2732,15 @@ function buildOpportunityAdmissionDiagnostics() {
   }
 }
 
+function resolveForceScanFromCatalog(options = {}) {
+  return normalizeBoolean(
+    options?.forceScanFromCatalog ??
+      options?.force_scan_from_catalog ??
+      options?.rescueMode ??
+      options?.rescue_mode
+  )
+}
+
 function resolveSeedCandidateStatus(seed = {}) {
   return normalizeCatalogCandidateStatus(
     seed?.candidateStatus,
@@ -2953,9 +2962,7 @@ function evaluateOpportunitySeedAdmission(seed = {}, options = {}) {
   const liquidityState = resolveSeedLiquidityDiagnosticState(seed)
   const coverageState = resolveSeedCoverageDiagnosticState(seed)
   const freshness = resolveCatalogSeedFreshnessContext(seed, itemCategory)
-  const forceScanFromCatalog = normalizeBoolean(
-    options?.forceScanFromCatalog ?? options?.force_scan_from_catalog
-  )
+  const forceScanFromCatalog = resolveForceScanFromCatalog(options)
   const riskProfileBlocked = hasOpportunitySeedRiskProfileBlock(seed, progressionBlockers)
   const catalogApproved =
     candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE ||
@@ -3012,8 +3019,9 @@ function evaluateOpportunitySeedAdmission(seed = {}, options = {}) {
   }
 
   if (forceScanFromCatalog) {
+    const isHardRiskBlock = riskProfileBlocked
     const rescueReasons = normalizeTextList([
-      riskProfileBlocked ? "deferred_due_to_risk_profile" : "",
+      isHardRiskBlock ? "deferred_due_to_risk_profile" : "",
       coverageCount < 1 ? "deferred_near_eligible_insufficient_coverage" : "",
       snapshotState === SOURCE_CATALOG_SNAPSHOT_STATES.MISSING
         ? "deferred_due_to_missing_snapshot"
@@ -3070,9 +3078,7 @@ function evaluateOpportunitySeedAdmission(seed = {}, options = {}) {
 }
 
 function summarizeOpportunitySeedAdmissions(admissions = [], executedSeeds = [], options = {}) {
-  const forceScanFromCatalog = normalizeBoolean(
-    options?.forceScanFromCatalog ?? options?.force_scan_from_catalog
-  )
+  const forceScanFromCatalog = resolveForceScanFromCatalog(options)
   const summary = buildOpportunityAdmissionDiagnostics()
   summary.rescue_mode_enabled = Boolean(forceScanFromCatalog)
   summary.universe_total = Array.isArray(admissions) ? admissions.length : 0
@@ -3186,6 +3192,7 @@ function rankLayerRows(rows = []) {
 
 function selectSeedsForLayeredScanning(seeds = [], options = {}) {
   const ranked = rankLayerRows(seeds)
+  const forceScanFromCatalog = resolveForceScanFromCatalog(options)
   const opportunityFilter =
     typeof options?.opportunityFilter === "function" ? options.opportunityFilter : null
   const opportunityCandidates = opportunityFilter ? ranked.filter(opportunityFilter) : ranked
@@ -3236,10 +3243,16 @@ function selectSeedsForLayeredScanning(seeds = [], options = {}) {
   const coreSeeds = byLayer[SCAN_LAYERS.HOT].slice(0, Math.min(HIGH_YIELD_CORE_TARGET, hotTarget))
   const selectedNames = new Set(coreSeeds.map((row) => normalizeMarketHashName(row?.marketHashName)))
   const opportunitySeeds = [...coreSeeds]
-  const nearEligibleWarmSeeds = byLayer[SCAN_LAYERS.WARM].filter(
+  const opportunityWarmLayer = forceScanFromCatalog
+    ? rankLayerRows([
+      ...byLayer[SCAN_LAYERS.WARM],
+      ...byLayer[SCAN_LAYERS.COLD]
+    ])
+    : byLayer[SCAN_LAYERS.WARM]
+  const nearEligibleWarmSeeds = opportunityWarmLayer.filter(
     (row) => normalizeMaturityState(row?.maturityState) === MATURITY_STATES.NEAR_ELIGIBLE
   )
-  const enrichingWarmSeeds = byLayer[SCAN_LAYERS.WARM].filter(
+  const enrichingWarmSeeds = opportunityWarmLayer.filter(
     (row) => normalizeMaturityState(row?.maturityState) !== MATURITY_STATES.NEAR_ELIGIBLE
   )
   const hotUniverse = rankLayerRows([...byLayer[SCAN_LAYERS.HOT], ...nearEligibleWarmSeeds])
@@ -3442,7 +3455,8 @@ async function buildSeedsFromCatalogRows(rows = [], options = {}) {
     .filter(Boolean)
 }
 
-async function loadMatureCatalogUniverseSeeds(limit = HOT_MATURE_POOL_LIMIT) {
+async function loadMatureCatalogUniverseSeeds(limit = HOT_MATURE_POOL_LIMIT, options = {}) {
+  const forceScanFromCatalog = resolveForceScanFromCatalog(options)
   const safeLimit = Math.max(Math.round(Number(limit || HOT_MATURE_POOL_LIMIT)), 0)
   if (!safeLimit) return []
 
@@ -3476,7 +3490,7 @@ async function loadMatureCatalogUniverseSeeds(limit = HOT_MATURE_POOL_LIMIT) {
   const seeds = await buildSeedsFromCatalogRows([...(eligibleRows || []), ...(candidateRows || [])], {
     limit: safeLimit
   })
-  return seeds.filter(isMinimumOpportunityBackfillReadySeed)
+  return forceScanFromCatalog ? seeds : seeds.filter(isMinimumOpportunityBackfillReadySeed)
 }
 
 function normalizeFeedEventType(value) {
@@ -3736,9 +3750,7 @@ function passesUniverseSeedFilters(
   options = {}
 ) {
   const allowMissingSnapshotData = Boolean(options?.allowMissingSnapshotData)
-  const forceScanFromCatalog = normalizeBoolean(
-    options?.forceScanFromCatalog ?? options?.force_scan_from_catalog
-  )
+  const forceScanFromCatalog = resolveForceScanFromCatalog(options)
   const weaponSkinDiagnostics =
     options?.weaponSkinDiagnostics && typeof options.weaponSkinDiagnostics === "object"
       ? options.weaponSkinDiagnostics
@@ -6062,9 +6074,7 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
     1
   )
   const includeNearEligibleInOpportunity = options?.includeNearEligibleInOpportunity !== false
-  const forceScanFromCatalog = normalizeBoolean(
-    options?.forceScanFromCatalog ?? options?.force_scan_from_catalog
-  )
+  const forceScanFromCatalog = resolveForceScanFromCatalog(options)
   const enableSnapshotWarmup =
     options?.enableSnapshotWarmup == null
       ? mode === SCANNER_TYPES.ENRICHMENT
@@ -6075,7 +6085,10 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
       console.error("[arbitrage-scanner] Curated universe load failed", err.message)
       return []
     }),
-    loadMatureCatalogUniverseSeeds(Math.max(HOT_MATURE_POOL_LIMIT, opportunityBatchSize * 4)).catch(
+    loadMatureCatalogUniverseSeeds(
+      Math.max(HOT_MATURE_POOL_LIMIT, opportunityBatchSize * 4),
+      { forceScanFromCatalog }
+    ).catch(
       (err) => {
         console.error("[arbitrage-scanner] Mature catalog seed load failed", err.message)
         return []
@@ -6138,7 +6151,7 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
     })
     seedFilterMode = "allow_missing_snapshot_data"
   } else if (!isOpportunityMode && strictFilterResult.selectedSeeds.length < strictCoverageThreshold) {
-    const relaxedFilterResult = filterUniverseSeedsForScan(hydratedSeeds, {
+  const relaxedFilterResult = filterUniverseSeedsForScan(hydratedSeeds, {
       allowMissingSnapshotData: true,
       forceScanFromCatalog
     })
@@ -6152,6 +6165,7 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
   } else if (isOpportunityMode) {
     seedFilterMode = "strict_mature_only"
   }
+  const bypassAdmissionFilter = isOpportunityMode && forceScanFromCatalog
 
   mergeDiscardStats(discardStats, selectedFilterResult.discardStats)
   mergeRejectedByItem(rejectedByItem, selectedFilterResult.rejectedByItem)
@@ -6249,7 +6263,10 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
     ),
     nearEligibleTarget: includeNearEligibleInOpportunity ? OPPORTUNITY_NEAR_ELIGIBLE_LIMIT : 0,
     enrichmentTarget: enrichmentBatchSize,
-    opportunityFilter: isOpportunityMode ? (row) => resolveOpportunityAdmission(row).ready : null,
+    opportunityFilter: isOpportunityMode
+      ? (row) => (bypassAdmissionFilter ? true : resolveOpportunityAdmission(row).ready)
+      : null,
+    forceScanFromCatalog,
     opportunityDeferredRows: deferredToEnrichmentRows
   })
   const allRankedSeeds = Array.isArray(layeredSelection?.allRankedSeeds)
@@ -7994,9 +8011,7 @@ function extendPerformanceAudit(
 
 async function runScanInternal(options = {}) {
   const forceRefresh = Boolean(options.forceRefresh)
-  const forceScanFromCatalog = normalizeBoolean(
-    options?.forceScanFromCatalog ?? options?.force_scan_from_catalog
-  )
+  const forceScanFromCatalog = resolveForceScanFromCatalog(options)
   const opportunityUniverseTarget = Math.max(
     Math.min(OPPORTUNITY_BATCH_SIZE, PRE_COMPARE_UNIVERSE_LIMIT),
     1
@@ -9107,9 +9122,7 @@ async function appendOpportunitiesToFeed(rows = [], scanRunId = "") {
 async function runOpportunityWithRunRecord(runRecord = {}, options = {}, state = scannerState) {
   const trigger = String(options.trigger || "manual")
   const forceRefresh = Boolean(options.forceRefresh)
-  const forceScanFromCatalog = normalizeBoolean(
-    options?.forceScanFromCatalog ?? options?.force_scan_from_catalog
-  )
+  const forceScanFromCatalog = resolveForceScanFromCatalog(options)
   const runStartedAt = Date.now()
   try {
     const scanPayload = await runWithTimeout(
@@ -9909,9 +9922,7 @@ exports.triggerRefresh = async (options = {}) => {
   const planContext = await resolvePlanContext(options)
   enforceManualRefreshCooldown(planContext?.userId, planContext?.entitlements, Date.now())
   const forceRefresh = options.forceRefresh == null ? true : normalizeBoolean(options.forceRefresh)
-  const forceScanFromCatalog = normalizeBoolean(
-    options?.forceScanFromCatalog ?? options?.force_scan_from_catalog
-  )
+  const forceScanFromCatalog = resolveForceScanFromCatalog(options)
   const requestedJobType = String(options.jobType || "").trim().toLowerCase()
   const trigger = String(options.trigger || "manual")
   const runOpportunity = !requestedJobType || requestedJobType === SCANNER_TYPES.OPPORTUNITY_SCAN
