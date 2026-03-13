@@ -2665,15 +2665,26 @@ function buildOpportunityAdmissionDiagnostics() {
     universe_eligible: 0,
     universe_near_eligible: 0,
     universe_blocked: 0,
+    near_eligible_total: 0,
+    near_eligible_scanable: 0,
+    near_eligible_blocked: 0,
     scan_candidates_loaded: 0,
     scan_candidates_deferred: 0,
     scan_candidates_executed: 0,
+    risky_scan_ready_loaded: 0,
+    risky_scan_ready_executed: 0,
     deferred_due_to_missing_reference: 0,
     deferred_due_to_missing_liquidity: 0,
     deferred_due_to_stale: 0,
     deferred_due_to_maturity: 0,
     deferred_due_to_risk_profile: 0,
-    deferred_due_to_visibility_or_feed_floor: 0
+    deferred_due_to_visibility_or_feed_floor: 0,
+    deferred_near_eligible_missing_reference: 0,
+    deferred_near_eligible_missing_snapshot: 0,
+    deferred_near_eligible_insufficient_coverage: 0,
+    deferred_near_eligible_liquidity_only: 0,
+    executed_from_strict_eligible: 0,
+    executed_from_near_eligible: 0
   }
 }
 
@@ -2762,6 +2773,30 @@ function resolveSeedProgressionBlockers(seed = {}) {
   return normalizeTextList(seed?.progressionBlockers ?? seed?.progression_blockers)
 }
 
+function hasUsableRiskyReferenceSeed(seed = {}) {
+  const referenceState = resolveSeedReferenceDiagnosticState(seed)
+  const referencePrice = toPositiveOrNull(seed?.referencePrice ?? seed?.reference_price)
+  return referencePrice != null && referenceState !== SOURCE_CATALOG_REFERENCE_STATES.MISSING
+}
+
+function hasBorderlineStaleSnapshotForRiskySeed(
+  seed = {},
+  freshness = {},
+  itemCategory = ITEM_CATEGORIES.WEAPON_SKIN
+) {
+  if (resolveSeedSnapshotDiagnosticState(seed) !== SOURCE_CATALOG_SNAPSHOT_STATES.STALE) {
+    return false
+  }
+  if (normalizeFreshnessState(freshness?.quoteState) === FRESHNESS_STATES.STALE) {
+    return false
+  }
+  const snapshotAgeMinutes = resolveSnapshotAgeMinutes(seed)
+  const rules = getCategoryStaleRules(itemCategory)
+  const agingMaxMinutes = Math.max(Number(rules?.agingMaxMinutes || 0), 1)
+  const borderlineMaxMinutes = Math.max(Math.round(agingMaxMinutes * 1.5), agingMaxMinutes + 20, 60)
+  return snapshotAgeMinutes != null && snapshotAgeMinutes <= borderlineMaxMinutes
+}
+
 function hasOpportunitySeedRiskProfileBlock(seed = {}, progressionBlockers = []) {
   const candidateStatus = resolveSeedCandidateStatus(seed)
   if (candidateStatus === CATALOG_CANDIDATE_STATUS.REJECTED) {
@@ -2779,6 +2814,84 @@ function hasOpportunitySeedRiskProfileBlock(seed = {}, progressionBlockers = [])
   }
   const eligibilityReason = normalizeLowerText(seed?.eligibilityReason ?? seed?.eligibility_reason)
   return /(rejected|hard|outofscope|namepattern|unsupported)/.test(eligibilityReason)
+}
+
+function evaluateNearEligibleRiskyScanReadiness(seed = {}) {
+  const itemCategory = normalizeItemCategory(seed?.itemCategory, seed?.marketHashName)
+  const candidateStatus = resolveSeedCandidateStatus(seed)
+  const maturityState = normalizeMaturityState(seed?.maturityState)
+  const progressionStatus = resolveSeedProgressionStatus(seed, candidateStatus)
+  const progressionBlockers = resolveSeedProgressionBlockers(seed)
+  const coverageCount = Math.max(Number(seed?.marketCoverageCount || 0), 0)
+  const snapshotState = resolveSeedSnapshotDiagnosticState(seed)
+  const referenceState = resolveSeedReferenceDiagnosticState(seed)
+  const liquidityState = resolveSeedLiquidityDiagnosticState(seed)
+  const freshness = resolveCatalogSeedFreshnessContext(seed, itemCategory)
+  const riskProfileBlocked = hasOpportunitySeedRiskProfileBlock(seed, progressionBlockers)
+  const snapshotCapturedAt = normalizeTextValue(seed?.snapshotCapturedAt ?? seed?.snapshot_captured_at)
+  const isNearEligibleWeaponSkin =
+    itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+    candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE &&
+    progressionStatus === SOURCE_CATALOG_PROGRESSION_STATUS.BLOCKED_ELIGIBLE &&
+    (maturityState === MATURITY_STATES.NEAR_ELIGIBLE || maturityState === MATURITY_STATES.ELIGIBLE)
+  const hasCoverageForRisky = coverageCount >= 1
+  const hasSnapshotPresence =
+    Boolean(snapshotCapturedAt) && snapshotState !== SOURCE_CATALOG_SNAPSHOT_STATES.MISSING
+  const borderlineStaleSnapshot = hasBorderlineStaleSnapshotForRiskySeed(seed, freshness, itemCategory)
+  const hasUsableSnapshot =
+    snapshotState === SOURCE_CATALOG_SNAPSHOT_STATES.READY ||
+    snapshotState === SOURCE_CATALOG_SNAPSHOT_STATES.PARTIAL ||
+    borderlineStaleSnapshot
+  const hasUsableReference = hasUsableRiskyReferenceSeed(seed)
+  const hasLiquidityReadyOrPartial =
+    liquidityState === SOURCE_CATALOG_LIQUIDITY_STATES.READY ||
+    liquidityState === SOURCE_CATALOG_LIQUIDITY_STATES.PARTIAL
+
+  const reasons = []
+  if (!isNearEligibleWeaponSkin) {
+    reasons.push("deferred_due_to_maturity")
+  }
+  if (!hasCoverageForRisky) {
+    reasons.push("deferred_near_eligible_insufficient_coverage")
+    reasons.push("deferred_due_to_maturity")
+  }
+  if (!hasSnapshotPresence) {
+    reasons.push("deferred_near_eligible_missing_snapshot")
+    reasons.push("deferred_due_to_maturity")
+  } else if (!hasUsableSnapshot || !freshness.usable) {
+    reasons.push("deferred_due_to_stale")
+  }
+  if (!hasUsableReference) {
+    reasons.push("deferred_near_eligible_missing_reference")
+    reasons.push("deferred_due_to_missing_reference")
+  }
+  if (riskProfileBlocked) {
+    reasons.push("deferred_due_to_risk_profile")
+  }
+
+  const normalizedPreLiquidityReasons = normalizeTextList(reasons)
+  if (!hasLiquidityReadyOrPartial) {
+    if (!normalizedPreLiquidityReasons.length) {
+      reasons.push("deferred_near_eligible_liquidity_only")
+    }
+    reasons.push("deferred_due_to_missing_liquidity")
+  }
+
+  const normalizedReasons = normalizeTextList(reasons)
+  return {
+    ready: normalizedReasons.length === 0,
+    reasons: normalizedReasons,
+    isRiskyScanReady: normalizedReasons.length === 0,
+    borderlineStaleSnapshot,
+    hasUsableSnapshot,
+    hasUsableReference,
+    hasLiquidityReadyOrPartial,
+    snapshotState,
+    referenceState,
+    liquidityState,
+    progressionStatus,
+    progressionBlockers
+  }
 }
 
 function evaluateOpportunitySeedAdmission(seed = {}) {
@@ -2799,21 +2912,15 @@ function evaluateOpportunitySeedAdmission(seed = {}) {
     candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
   const maturityApproved =
     maturityState === MATURITY_STATES.ELIGIBLE || maturityState === MATURITY_STATES.NEAR_ELIGIBLE
-  const hasSomeCoverage = coverageCount > 0
-  const allowPartialWeaponSkinPath =
-    itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
-    candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE &&
-    progressionStatus === SOURCE_CATALOG_PROGRESSION_STATUS.BLOCKED_ELIGIBLE &&
-    maturityApproved &&
-    hasSomeCoverage &&
+  const strictReady =
+    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
+    maturityState === MATURITY_STATES.ELIGIBLE &&
     freshness.usable &&
     !riskProfileBlocked
+  const riskyScanReadiness = evaluateNearEligibleRiskyScanReadiness(seed)
 
   const reasons = []
   if (!catalogApproved || !maturityApproved) {
-    reasons.push("deferred_due_to_maturity")
-  }
-  if (itemCategory === ITEM_CATEGORIES.WEAPON_SKIN && !hasSomeCoverage) {
     reasons.push("deferred_due_to_maturity")
   }
   if (riskProfileBlocked) {
@@ -2822,31 +2929,54 @@ function evaluateOpportunitySeedAdmission(seed = {}) {
   if (!freshness.usable) {
     reasons.push("deferred_due_to_stale")
   }
-  if (!allowPartialWeaponSkinPath && referenceState === SOURCE_CATALOG_REFERENCE_STATES.MISSING) {
+  if (candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE && referenceState === SOURCE_CATALOG_REFERENCE_STATES.MISSING) {
     reasons.push("deferred_due_to_missing_reference")
   }
-  if (!allowPartialWeaponSkinPath && liquidityState === SOURCE_CATALOG_LIQUIDITY_STATES.MISSING) {
-    reasons.push("deferred_due_to_missing_liquidity")
-  }
   if (
-    !allowPartialWeaponSkinPath &&
-    snapshotState === SOURCE_CATALOG_SNAPSHOT_STATES.MISSING &&
-    freshness.usable
+    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
+    snapshotState === SOURCE_CATALOG_SNAPSHOT_STATES.MISSING
   ) {
     reasons.push("deferred_due_to_maturity")
   }
   if (
-    !allowPartialWeaponSkinPath &&
+    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
+    liquidityState === SOURCE_CATALOG_LIQUIDITY_STATES.MISSING
+  ) {
+    reasons.push("deferred_due_to_missing_liquidity")
+  }
+  if (
+    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
+    itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+    coverageCount < MIN_MARKET_COVERAGE
+  ) {
+    reasons.push("deferred_due_to_maturity")
+  }
+  if (candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE) {
+    reasons.push(...riskyScanReadiness.reasons)
+  } else if (
+    candidateStatus !== CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
     itemCategory !== ITEM_CATEGORIES.WEAPON_SKIN &&
     coverageState !== SOURCE_CATALOG_COVERAGE_STATES.READY
   ) {
     reasons.push("deferred_due_to_maturity")
   }
 
+  const normalizedReasons = strictReady
+    ? []
+    : riskyScanReadiness.ready
+      ? []
+      : normalizeTextList(reasons)
+
   return {
-    ready: normalizeTextList(reasons).length === 0,
-    reasons: normalizeTextList(reasons),
-    allowPartialWeaponSkinPath,
+    ready: strictReady || riskyScanReadiness.ready,
+    reasons: normalizedReasons,
+    isStrictExecutionReady: strictReady,
+    isRiskyScanReady: riskyScanReadiness.ready,
+    executionLane: strictReady
+      ? "strict_eligible"
+      : riskyScanReadiness.ready
+        ? "near_eligible_risky"
+        : "blocked",
     candidateStatus,
     maturityState,
     snapshotState,
@@ -2854,7 +2984,8 @@ function evaluateOpportunitySeedAdmission(seed = {}) {
     liquidityState,
     coverageState,
     progressionStatus,
-    progressionBlockers
+    progressionBlockers,
+    riskyScanReadiness
   }
 }
 
@@ -2871,6 +3002,13 @@ function summarizeOpportunitySeedAdmissions(admissions = [], executedSeeds = [])
       summary.universe_eligible += 1
     } else if (candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE) {
       summary.universe_near_eligible += 1
+      summary.near_eligible_total += 1
+      if (Boolean(admission?.isRiskyScanReady)) {
+        summary.near_eligible_scanable += 1
+        summary.risky_scan_ready_loaded += 1
+      } else {
+        summary.near_eligible_blocked += 1
+      }
     } else {
       summary.universe_blocked += 1
     }
@@ -2886,6 +3024,17 @@ function summarizeOpportunitySeedAdmissions(admissions = [], executedSeeds = [])
         summary[reason] = 0
       }
       summary[reason] += 1
+    }
+  }
+
+  for (const seed of Array.isArray(executedSeeds) ? executedSeeds : []) {
+    const admission = evaluateOpportunitySeedAdmission(seed)
+    if (Boolean(admission?.isStrictExecutionReady)) {
+      summary.executed_from_strict_eligible += 1
+    }
+    if (Boolean(admission?.isRiskyScanReady)) {
+      summary.executed_from_near_eligible += 1
+      summary.risky_scan_ready_executed += 1
     }
   }
 
