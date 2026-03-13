@@ -276,6 +276,34 @@ test("universe seed filter allows strong weapon skins with missing liquidity evi
   );
 });
 
+test("universe seed filter forwards borderline missing-liquidity weapon skins with a penalty", () => {
+  const discardStats = {};
+  const weaponSkinDiagnostics = {};
+  const allowed = passesUniverseSeedFilters(
+    {
+      marketHashName: "P250 | See Ya Later (Field-Tested)",
+      itemCategory: "weapon_skin",
+      hasSnapshotData: false,
+      snapshotStale: false,
+      referencePrice: 7,
+      marketVolume7d: null,
+      marketCoverageCount: 2,
+      quoteFetchedAt: null,
+      maturityState: "enriching"
+    },
+    discardStats,
+    null,
+    { weaponSkinDiagnostics }
+  );
+
+  assert.equal(allowed, true);
+  assert.equal(Number(discardStats.hard_reject_missing_liquidity || 0), 0);
+  assert.equal(
+    Number(weaponSkinDiagnostics.penalty_missing_liquidity_allowed_forward || 0),
+    1
+  );
+});
+
 test("universe seed filter still rejects weak missing-snapshot skin seeds", () => {
   const discardStats = {};
   const allowed = passesUniverseSeedFilters(
