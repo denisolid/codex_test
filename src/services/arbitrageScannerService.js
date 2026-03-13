@@ -2550,7 +2550,10 @@ function isMinimumOpportunityBackfillReadySeed(seed = {}) {
   ) {
     return true
   }
-  if (candidateStatus !== CATALOG_CANDIDATE_STATUS.ENRICHING) {
+  if (
+    candidateStatus !== CATALOG_CANDIDATE_STATUS.ENRICHING &&
+    candidateStatus !== CATALOG_CANDIDATE_STATUS.CANDIDATE
+  ) {
     return false
   }
 
@@ -2560,15 +2563,46 @@ function isMinimumOpportunityBackfillReadySeed(seed = {}) {
     return false
   }
 
+  const progressionBlockers = resolveSeedProgressionBlockers(seed)
+  if (hasOpportunitySeedRiskProfileBlock(seed, progressionBlockers)) {
+    return false
+  }
+
   const referencePrice = toFiniteOrNull(seed?.referencePrice)
   const coverageCount = Math.max(Number(seed?.marketCoverageCount || 0), 0)
   const freshness = resolveCatalogSeedFreshnessContext(seed, itemCategory)
-  if (referencePrice == null || !freshness.usable) {
+  if (coverageCount <= 0) {
     return false
   }
-  if (itemCategory === ITEM_CATEGORIES.WEAPON_SKIN && coverageCount <= 0) {
+  const snapshotCapturedAt = normalizeTextValue(seed?.snapshotCapturedAt ?? seed?.snapshot_captured_at)
+  const hasSnapshotSignal =
+    Boolean(seed?.hasSnapshotData) || Boolean(snapshotCapturedAt) || freshness.hasQuoteFreshness
+  if (!hasSnapshotSignal) {
     return false
   }
+
+  const volume7d = toFiniteOrNull(seed?.marketVolume7d ?? seed?.volume_7d)
+  const liquidityRank = toFiniteOrNull(seed?.liquidityRank ?? seed?.liquidity_rank) ?? 0
+  const hasLiquidityProxy = volume7d != null || liquidityRank >= 28
+  const hasReferenceOrSafeProxy =
+    referencePrice != null || (coverageCount >= 1 && hasSnapshotSignal && hasLiquidityProxy)
+  if (!hasReferenceOrSafeProxy) {
+    return false
+  }
+
+  if (candidateStatus === CATALOG_CANDIDATE_STATUS.CANDIDATE) {
+    const supportCount = countTrueValues([
+      referencePrice != null,
+      freshness.usable,
+      hasSnapshotSignal,
+      hasLiquidityProxy,
+      coverageCount >= MIN_MARKET_COVERAGE
+    ])
+    if (supportCount < 2) {
+      return false
+    }
+  }
+
   return true
 }
 
@@ -2662,6 +2696,8 @@ function buildLayerDiagnostics(seeds = []) {
 function buildOpportunityAdmissionDiagnostics() {
   return {
     universe_total: 0,
+    universe_loaded_for_scan: 0,
+    universe_deferred_before_scan: 0,
     universe_eligible: 0,
     universe_near_eligible: 0,
     universe_blocked: 0,
@@ -2671,20 +2707,27 @@ function buildOpportunityAdmissionDiagnostics() {
     scan_candidates_loaded: 0,
     scan_candidates_deferred: 0,
     scan_candidates_executed: 0,
+    scan_candidates_from_strict_eligible: 0,
+    scan_candidates_from_risky_ready: 0,
     risky_scan_ready_loaded: 0,
     risky_scan_ready_executed: 0,
     deferred_due_to_missing_reference: 0,
+    deferred_due_to_missing_snapshot: 0,
     deferred_due_to_missing_liquidity: 0,
     deferred_due_to_stale: 0,
     deferred_due_to_maturity: 0,
     deferred_due_to_risk_profile: 0,
+    deferred_due_to_feed_visibility: 0,
     deferred_due_to_visibility_or_feed_floor: 0,
     deferred_near_eligible_missing_reference: 0,
     deferred_near_eligible_missing_snapshot: 0,
     deferred_near_eligible_insufficient_coverage: 0,
     deferred_near_eligible_liquidity_only: 0,
     executed_from_strict_eligible: 0,
-    executed_from_near_eligible: 0
+    executed_from_near_eligible: 0,
+    skins_scanned_count: 0,
+    cases_scanned_count: 0,
+    capsules_scanned_count: 0
   }
 }
 
@@ -3019,6 +3062,11 @@ function summarizeOpportunitySeedAdmissions(admissions = [], executedSeeds = [])
 
     if (admission.ready) {
       summary.scan_candidates_loaded += 1
+      if (Boolean(admission?.isStrictExecutionReady)) {
+        summary.scan_candidates_from_strict_eligible += 1
+      } else if (Boolean(admission?.isRiskyScanReady)) {
+        summary.scan_candidates_from_risky_ready += 1
+      }
       continue
     }
 
@@ -3028,10 +3076,31 @@ function summarizeOpportunitySeedAdmissions(admissions = [], executedSeeds = [])
         summary[reason] = 0
       }
       summary[reason] += 1
+      if (
+        reason === "deferred_due_to_missing_snapshot" ||
+        reason === "deferred_near_eligible_missing_snapshot"
+      ) {
+        summary.deferred_due_to_missing_snapshot += 1
+      }
+      if (
+        reason === "deferred_due_to_feed_visibility" ||
+        reason === "deferred_due_to_visibility_or_feed_floor"
+      ) {
+        summary.deferred_due_to_feed_visibility += 1
+      }
     }
   }
 
   for (const seed of Array.isArray(executedSeeds) ? executedSeeds : []) {
+    const itemCategory = normalizeItemCategory(seed?.itemCategory, seed?.marketHashName)
+    if (itemCategory === ITEM_CATEGORIES.WEAPON_SKIN) {
+      summary.skins_scanned_count += 1
+    } else if (itemCategory === ITEM_CATEGORIES.CASE) {
+      summary.cases_scanned_count += 1
+    } else if (itemCategory === ITEM_CATEGORIES.STICKER_CAPSULE) {
+      summary.capsules_scanned_count += 1
+    }
+
     const admission = evaluateOpportunitySeedAdmission(seed)
     if (Boolean(admission?.isStrictExecutionReady)) {
       summary.executed_from_strict_eligible += 1
@@ -3040,6 +3109,17 @@ function summarizeOpportunitySeedAdmissions(admissions = [], executedSeeds = [])
       summary.executed_from_near_eligible += 1
       summary.risky_scan_ready_executed += 1
     }
+  }
+
+  summary.universe_loaded_for_scan = Number(summary.scan_candidates_loaded || 0)
+  summary.universe_deferred_before_scan = Number(summary.scan_candidates_deferred || 0)
+  if (summary.deferred_due_to_missing_snapshot <= 0) {
+    summary.deferred_due_to_missing_snapshot = Number(summary.deferred_near_eligible_missing_snapshot || 0)
+  }
+  if (summary.deferred_due_to_feed_visibility <= 0) {
+    summary.deferred_due_to_feed_visibility = Number(
+      summary.deferred_due_to_visibility_or_feed_floor || 0
+    )
   }
 
   return summary
@@ -3747,13 +3827,21 @@ function passesUniverseSeedFilters(
 
   const snapshotFreshness = resolveSnapshotFreshnessState(inputItem, itemCategory)
   if (isWeaponSkin) {
-    if (weaponSkinFilter?.hardRejectStale) {
+    const coverageCount = Math.max(Number(inputItem?.marketCoverageCount || 0), 0)
+    if (weaponSkinFilter?.hardRejectStale && coverageCount <= 0) {
       incrementReasonCounter(discardStats, "ignored_stale_data", itemCategory)
       if (rejectedByItem) {
         incrementItemReasonCounter(rejectedByItem, marketHashName, "ignored_stale_data", itemCategory)
       }
       incrementWeaponSkinFilterDiagnostic(weaponSkinDiagnostics, "hard_reject_stale", marketHashName)
       return false
+    }
+    if (weaponSkinFilter?.hardRejectStale) {
+      incrementWeaponSkinFilterDiagnostic(
+        weaponSkinDiagnostics,
+        "stale_penalty_allowed_forward",
+        marketHashName
+      )
     }
     if (weaponSkinFilter?.freshnessPenaltyKey) {
       incrementWeaponSkinFilterDiagnostic(
@@ -7331,9 +7419,7 @@ function buildBatchSizingDiagnostics({
     configuredEnrichmentBatchSize: Number(ENRICHMENT_BATCH_SIZE || 0),
     configuredOpportunityBatchCeiling: Number(OPPORTUNITY_BATCH_SIZE || 0),
     configuredHotOpportunityScanTarget: Number(HOT_OPPORTUNITY_SCAN_TARGET || 0),
-    configuredOpportunityScanBatchSize: Number(
-      Math.max(Math.min(HOT_OPPORTUNITY_SCAN_TARGET, OPPORTUNITY_BATCH_SIZE), 1)
-    ),
+    configuredOpportunityScanBatchSize: Number(Math.max(OPPORTUNITY_BATCH_SIZE, 1)),
     runDurationMs: toAuditDurationMs(runDurationMs),
     scannedItems: Number(scannedItems || 0),
     qualifiedItems: Number(qualifiedItems || 0),
@@ -7858,7 +7944,7 @@ function extendPerformanceAudit(
 async function runScanInternal(options = {}) {
   const forceRefresh = Boolean(options.forceRefresh)
   const opportunityUniverseTarget = Math.max(
-    Math.min(HOT_OPPORTUNITY_SCAN_TARGET, OPPORTUNITY_BATCH_SIZE),
+    Math.min(OPPORTUNITY_BATCH_SIZE, PRE_COMPARE_UNIVERSE_LIMIT),
     1
   )
   const scanStartedAt = Date.now()

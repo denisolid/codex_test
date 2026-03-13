@@ -302,6 +302,39 @@ test("universe backfill blocks zero-coverage weapon-skin enriching rows", () => 
   assert.equal(allowed, true)
 })
 
+test("universe backfill allows candidate rows with safe reference proxy but blocks empty proxies", () => {
+  const recent = new Date().toISOString()
+  const allowedCandidate = isUniverseBackfillReadyRow({
+    market_hash_name: "CS20 Case",
+    category: "case",
+    candidate_status: "candidate",
+    maturity_state: "enriching",
+    reference_price: null,
+    market_coverage_count: 1,
+    volume_7d: 120,
+    snapshot_captured_at: recent,
+    snapshot_stale: false,
+    quote_fetched_at: recent,
+    liquidity_rank: 44
+  })
+  const blockedCandidate = isUniverseBackfillReadyRow({
+    market_hash_name: "CS20 Case",
+    category: "case",
+    candidate_status: "candidate",
+    maturity_state: "enriching",
+    reference_price: null,
+    market_coverage_count: 1,
+    volume_7d: null,
+    snapshot_captured_at: null,
+    snapshot_stale: true,
+    quote_fetched_at: null,
+    liquidity_rank: 0
+  })
+
+  assert.equal(allowedCandidate, true)
+  assert.equal(blockedCandidate, false)
+})
+
 test("catalog maturity scoring distinguishes near-eligible from cold", () => {
   const nearEligible = computeCatalogMaturity({
     category: "case",
