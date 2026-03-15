@@ -341,8 +341,9 @@ test("universe seed filter forwards borderline missing-liquidity weapon skins wi
   );
 });
 
-test("universe seed filter still rejects weak missing-snapshot skin seeds", () => {
+test("universe seed filter forwards weak missing-snapshot skin seeds with penalties", () => {
   const discardStats = {};
+  const weaponSkinDiagnostics = {};
   const allowed = passesUniverseSeedFilters(
     {
       marketHashName: "Five-SeveN | Coolant (Minimal Wear)",
@@ -354,15 +355,21 @@ test("universe seed filter still rejects weak missing-snapshot skin seeds", () =
     },
     discardStats,
     null,
-    { allowMissingSnapshotData: true }
+    { weaponSkinDiagnostics }
   );
 
-  assert.equal(allowed, false);
-  assert.equal(Number(discardStats.hard_reject_low_value || 0) > 0, true);
+  assert.equal(allowed, true);
+  assert.equal(Number(discardStats.hard_reject_missing_liquidity || 0), 0);
+  assert.equal(Number(discardStats.hard_reject_low_value || 0), 0);
+  assert.equal(
+    Number(weaponSkinDiagnostics.penalty_missing_liquidity_allowed_forward || 0),
+    1
+  );
 });
 
-test("universe seed filter rejects low-value skin finish patterns before scan", () => {
+test("universe seed filter forwards low-value skin finish patterns with penalties", () => {
   const discardStats = {};
+  const weaponSkinDiagnostics = {};
   const allowed = passesUniverseSeedFilters(
     {
       marketHashName: "P90 | Sand Spray (Well-Worn)",
@@ -372,11 +379,14 @@ test("universe seed filter rejects low-value skin finish patterns before scan", 
       referencePrice: 2.2,
       marketVolume7d: 80
     },
-    discardStats
+    discardStats,
+    null,
+    { weaponSkinDiagnostics }
   );
 
-  assert.equal(allowed, false);
-  assert.equal(Number(discardStats.hard_reject_low_value || 0) > 0, true);
+  assert.equal(allowed, true);
+  assert.equal(Number(discardStats.hard_reject_low_value || 0), 0);
+  assert.equal(Number(weaponSkinDiagnostics.penalty_low_value_allowed_forward || 0), 1);
 });
 
 test("universe seed filter keeps useful low-value-pattern skins with a penalty", () => {
@@ -477,7 +487,7 @@ test("universe seed filter applies variant penalties without auto-rejecting Stat
   assert.equal(Number(weaponSkinDiagnostics.souvenir_penalty || 0), 1);
 });
 
-test("universe seed filter rejects stale snapshot seeds", () => {
+test("universe seed filter forwards stale snapshot seeds with penalties", () => {
   const discardStats = {};
   const weaponSkinDiagnostics = {};
   const allowed = passesUniverseSeedFilters(
@@ -494,9 +504,9 @@ test("universe seed filter rejects stale snapshot seeds", () => {
     { weaponSkinDiagnostics }
   );
 
-  assert.equal(allowed, false);
-  assert.equal(Number(discardStats.ignored_stale_data || 0) > 0, true);
-  assert.equal(Number(weaponSkinDiagnostics.hard_reject_stale || 0), 1);
+  assert.equal(allowed, true);
+  assert.equal(Number(discardStats.ignored_stale_data || 0), 0);
+  assert.equal(Number(weaponSkinDiagnostics.stale_penalty_allowed_forward || 0), 1);
 });
 
 test("universe seed filter forwards market-relevant stale weapon skins with a penalty", () => {
@@ -524,7 +534,7 @@ test("universe seed filter forwards market-relevant stale weapon skins with a pe
   assert.equal(Number(weaponSkinDiagnostics.stale_penalty_allowed_forward || 0), 1);
 });
 
-test("universe seed filter applies premium price floor for knives", () => {
+test("universe seed filter does not hard-reject premium categories on reference price floors", () => {
   const discardStats = {};
   const allowed = passesUniverseSeedFilters(
     {
@@ -538,8 +548,8 @@ test("universe seed filter applies premium price floor for knives", () => {
     discardStats
   );
 
-  assert.equal(allowed, false);
-  assert.equal(Number(discardStats.ignored_low_value_universe || 0) > 0, true);
+  assert.equal(allowed, true);
+  assert.equal(Number(discardStats.ignored_low_value_universe || 0), 0);
 });
 
 test("api row keeps required shape with clamped score", () => {
@@ -769,8 +779,14 @@ test("risky weapon-skin evaluation does not reject only because liquidity is mis
     }
   });
 
-  assert.equal(evaluation.passed, false);
-  assert.equal(evaluation.primaryReason, "hard_reject_low_value");
+  assert.equal(evaluation.passed, true);
+  assert.equal(evaluation.speculativeEligible, true);
+  assert.equal(evaluation.allowLowConfidencePath, true);
+  assert.equal(
+    evaluation.diagnosticPenaltyKeys.includes("penalty_low_value_allowed_forward"),
+    true
+  );
+  assert.equal(Number(evaluation.penalty || 0) >= 30, true);
 });
 
 test("risky weapon-skin evaluation forwards borderline low-value skins into speculative", () => {
@@ -1387,7 +1403,7 @@ test("seed maturity keeps fresh-quote near-eligible rows out of enriching", () =
   assert.equal(resolveScanLayerForMaturity(maturity), "warm");
 });
 
-test("opportunity readiness allows safe partial weapon skins but blocks uncatalogued rows", () => {
+test("opportunity readiness allows safe partial weapon skins (including uncatalogued rows)", () => {
   const recent = new Date().toISOString();
   const readyNearEligible = {
     marketHashName: "AK-47 | Redline (Field-Tested)",
@@ -1427,10 +1443,10 @@ test("opportunity readiness allows safe partial weapon skins but blocks uncatalo
   assert.equal(resolveCatalogSeedFreshnessContext(readyNearEligible, "weapon_skin").usable, true);
   assert.equal(isOpportunityScanReadySeed(readyNearEligible), true);
   assert.equal(isOpportunityScanReadySeed(partialButSafe), true);
-  assert.equal(isOpportunityScanReadySeed(uncataloguedPartial), false);
+  assert.equal(isOpportunityScanReadySeed(uncataloguedPartial), true);
 });
 
-test("opportunity readiness blocks zero-coverage weapon skins and raw enriching backfill", () => {
+test("opportunity readiness forwards zero-coverage weapon skins and still flags enriching backfill readiness separately", () => {
   const recent = new Date().toISOString();
   const zeroCoverage = {
     marketHashName: "AK-47 | Redline (Field-Tested)",
@@ -1468,7 +1484,7 @@ test("opportunity readiness blocks zero-coverage weapon skins and raw enriching 
     marketCoverageCount: 1
   };
 
-  assert.equal(isOpportunityScanReadySeed(zeroCoverage), false);
+  assert.equal(isOpportunityScanReadySeed(zeroCoverage), true);
   assert.equal(isMinimumOpportunityBackfillReadySeed(blockedEnriching), false);
   assert.equal(isMinimumOpportunityBackfillReadySeed(allowedEnriching), true);
 });
@@ -1564,7 +1580,7 @@ test("snapshot warmup backlog can be deferred out of opportunity scan", () => {
   assert.equal(Number(backlog.warmupCandidatesByCategory.case || 0), 1);
 });
 
-test("layered scanning caps enriching backfill when mature opportunity supply is thin", () => {
+test("layered scanning fills opportunity target with enriching backfill when mature supply is thin", () => {
   const hotSeeds = Array.from({ length: 10 }, (_, index) => ({
     marketHashName: `Limited Hot ${index}`,
     itemCategory: "weapon_skin",
@@ -1605,12 +1621,12 @@ test("layered scanning caps enriching backfill when mature opportunity supply is
     }
   );
 
-  assert.equal(Number(selection?.diagnostics?.selectedEnrichingForOpportunity || 0) <= 10, true);
-  assert.equal(Number(selection?.diagnostics?.matureOpportunityShortfall || 0) > 0, true);
-  assert.equal(Number(selection?.opportunitySeeds?.length || 0) < 50, true);
+  assert.equal(Number(selection?.diagnostics?.selectedEnrichingForOpportunity || 0) > 0, true);
+  assert.equal(Number(selection?.diagnostics?.matureOpportunityShortfall || 0), 0);
+  assert.equal(Number(selection?.opportunitySeeds?.length || 0), 50);
 });
 
-test("layered scanning can defer enrichment-needing rows from opportunity scan", () => {
+test("layered scanning can include enrichment-needing rows in opportunity scan", () => {
   const matureSeeds = Array.from({ length: 12 }, (_, index) => ({
     marketHashName: `Ready ${index}`,
     itemCategory: index % 2 === 0 ? "weapon_skin" : "case",
@@ -1659,12 +1675,12 @@ test("layered scanning can defer enrichment-needing rows from opportunity scan",
   });
 
   assert.equal(Number(selection?.diagnostics?.matureOnlyOpportunitySelection || 0), 1);
-  assert.equal(Number(selection?.diagnostics?.deferredToEnrichmentItems || 0), 20);
+  assert.equal(Number(selection?.diagnostics?.deferredToEnrichmentItems || 0), 0);
   assert.equal(Number(selection?.diagnostics?.selectedEnrichingForOpportunity || 0), 0);
-  assert.equal(Number(selection?.opportunitySeeds?.length || 0), 12);
+  assert.equal(Number(selection?.opportunitySeeds?.length || 0), 20);
 });
 
-test("opportunity admission diagnostics explain universe-to-scan drop", () => {
+test("opportunity admission diagnostics report scan states and reasons", () => {
   const recent = new Date().toISOString();
   const staleTs = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
   const readyPartialWeaponSkin = {
@@ -1785,13 +1801,18 @@ test("opportunity admission diagnostics explain universe-to-scan drop", () => {
   assert.equal(summary.universe_eligible, 0);
   assert.equal(summary.universe_near_eligible, 5);
   assert.equal(summary.universe_blocked, 1);
-  assert.equal(summary.scan_candidates_loaded, 4);
-  assert.equal(summary.scan_candidates_deferred, 2);
+  assert.equal(summary.scan_candidates_loaded, 5);
+  assert.equal(summary.scan_candidates_deferred, 1);
   assert.equal(summary.scan_candidates_executed, 1);
-  assert.equal(summary.deferred_due_to_missing_reference, 0);
-  assert.equal(summary.deferred_due_to_missing_liquidity, 0);
-  assert.equal(summary.deferred_due_to_stale, 0);
-  assert.equal(summary.deferred_due_to_maturity, 1);
-  assert.equal(summary.deferred_due_to_risk_profile, 1);
-  assert.equal(summary.deferred_due_to_visibility_or_feed_floor, 0);
+
+  assert.equal(summary.scan_states.scan_now, 1);
+  assert.equal(summary.scan_states.scan_with_penalties, 3);
+  assert.equal(summary.scan_states.speculative_candidate, 1);
+  assert.equal(summary.scan_states.hard_reject, 1);
+
+  assert.equal(summary.penalty_reasons.missing_reference, 1);
+  assert.equal(summary.penalty_reasons.missing_liquidity, 1);
+  assert.equal(summary.penalty_reasons.stale_data, 1);
+  assert.equal(summary.speculative_reasons.multiple_missing_signals, 1);
+  assert.equal(summary.hard_reject_reasons.structural_or_antifake_block, 1);
 });

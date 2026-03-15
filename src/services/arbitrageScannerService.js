@@ -229,6 +229,12 @@ const SCAN_LAYERS = Object.freeze({
   WARM: "warm",
   COLD: "cold"
 })
+const SCAN_STATES = Object.freeze({
+  SCAN_NOW: "scan_now",
+  SCAN_WITH_PENALTIES: "scan_with_penalties",
+  SPECULATIVE_CANDIDATE: "speculative_candidate",
+  HARD_REJECT: "hard_reject"
+})
 const SCANNER_AUDIT_CATEGORIES = Object.freeze([
   ITEM_CATEGORIES.WEAPON_SKIN,
   ITEM_CATEGORIES.CASE,
@@ -2272,6 +2278,17 @@ function buildLayerByCategoryCounter(initialValue = 0) {
   )
 }
 
+function buildScanStateCounter(initialValue = 0) {
+  const initial = Number(initialValue || 0)
+  return Object.fromEntries(Object.values(SCAN_STATES).map((state) => [state, initial]))
+}
+
+function buildScanStateByCategoryCounter(initialValue = 0) {
+  return Object.fromEntries(
+    SCANNER_AUDIT_CATEGORIES.map((category) => [category, buildScanStateCounter(initialValue)])
+  )
+}
+
 function normalizeCatalogRowsByMarketHashName(rows = []) {
   const map = {}
   for (const row of Array.isArray(rows) ? rows : []) {
@@ -2728,7 +2745,30 @@ function buildOpportunityAdmissionDiagnostics() {
     executed_from_near_eligible: 0,
     skins_scanned_count: 0,
     cases_scanned_count: 0,
-    capsules_scanned_count: 0
+    capsules_scanned_count: 0,
+
+    scan_states: buildScanStateCounter(0),
+    scan_states_by_category: buildScanStateByCategoryCounter(0),
+    penalty_reasons: {},
+    speculative_reasons: {},
+    hard_reject_reasons: {},
+    penalty_reasons_by_category: Object.fromEntries(SCANNER_AUDIT_CATEGORIES.map((category) => [category, {}])),
+    speculative_reasons_by_category: Object.fromEntries(
+      SCANNER_AUDIT_CATEGORIES.map((category) => [category, {}])
+    ),
+    hard_reject_reasons_by_category: Object.fromEntries(
+      SCANNER_AUDIT_CATEGORIES.map((category) => [category, {}])
+    ),
+    penalty_top_reasons: [],
+    speculative_top_reasons: [],
+    hard_reject_top_reasons: [],
+    penalty_top_reasons_by_category: Object.fromEntries(SCANNER_AUDIT_CATEGORIES.map((category) => [category, []])),
+    speculative_top_reasons_by_category: Object.fromEntries(
+      SCANNER_AUDIT_CATEGORIES.map((category) => [category, []])
+    ),
+    hard_reject_top_reasons_by_category: Object.fromEntries(
+      SCANNER_AUDIT_CATEGORIES.map((category) => [category, []])
+    )
   }
 }
 
@@ -2964,107 +3004,116 @@ function evaluateOpportunitySeedAdmission(seed = {}, options = {}) {
   const freshness = resolveCatalogSeedFreshnessContext(seed, itemCategory)
   const forceScanFromCatalog = resolveForceScanFromCatalog(options)
   const riskProfileBlocked = hasOpportunitySeedRiskProfileBlock(seed, progressionBlockers)
-  const catalogApproved =
-    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE ||
-    candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
-  const maturityApproved =
-    maturityState === MATURITY_STATES.ELIGIBLE || maturityState === MATURITY_STATES.NEAR_ELIGIBLE
-  const strictReady =
-    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
-    maturityState === MATURITY_STATES.ELIGIBLE &&
-    freshness.usable &&
-    !riskProfileBlocked
-  const riskyScanReadiness = evaluateNearEligibleRiskyScanReadiness(seed)
 
-  const reasons = []
-  if (!catalogApproved || !maturityApproved) {
-    reasons.push("deferred_due_to_maturity")
-  }
-  if (riskProfileBlocked) {
-    reasons.push("deferred_due_to_risk_profile")
-  }
-  if (!freshness.usable) {
-    reasons.push("deferred_due_to_stale")
-  }
-  if (candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE && referenceState === SOURCE_CATALOG_REFERENCE_STATES.MISSING) {
-    reasons.push("deferred_due_to_missing_reference")
-  }
-  if (
-    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
-    snapshotState === SOURCE_CATALOG_SNAPSHOT_STATES.MISSING
-  ) {
-    reasons.push("deferred_due_to_maturity")
-  }
-  if (
-    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
-    liquidityState === SOURCE_CATALOG_LIQUIDITY_STATES.MISSING
-  ) {
-    reasons.push("deferred_due_to_missing_liquidity")
-  }
-  if (
-    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
-    itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
-    coverageCount < MIN_MARKET_COVERAGE
-  ) {
-    reasons.push("deferred_due_to_maturity")
-  }
-  if (candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE) {
-    reasons.push(...riskyScanReadiness.reasons)
-  } else if (
-    candidateStatus !== CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
-    itemCategory !== ITEM_CATEGORIES.WEAPON_SKIN &&
-    coverageState !== SOURCE_CATALOG_COVERAGE_STATES.READY
-  ) {
-    reasons.push("deferred_due_to_maturity")
-  }
+  const penaltyReasons = []
+  const speculativeReasons = []
+  const scanFlags = []
 
-  if (forceScanFromCatalog) {
-    const isHardRiskBlock = riskProfileBlocked
-    const rescueReasons = normalizeTextList([
-      isHardRiskBlock ? "deferred_due_to_risk_profile" : "",
-      coverageCount < 1 ? "deferred_near_eligible_insufficient_coverage" : "",
-      snapshotState === SOURCE_CATALOG_SNAPSHOT_STATES.MISSING
-        ? "deferred_due_to_missing_snapshot"
-        : "",
-      referenceState === SOURCE_CATALOG_REFERENCE_STATES.MISSING
-        ? "deferred_due_to_missing_reference"
-        : ""
+  const missingSnapshot = snapshotState === SOURCE_CATALOG_SNAPSHOT_STATES.MISSING
+  const missingReference = referenceState === SOURCE_CATALOG_REFERENCE_STATES.MISSING
+  const missingLiquidity = liquidityState === SOURCE_CATALOG_LIQUIDITY_STATES.MISSING
+  const weakCoverage = coverageState !== SOURCE_CATALOG_COVERAGE_STATES.READY
+  const agingData = freshness.state === FRESHNESS_STATES.AGING
+  const staleData = !freshness.usable || freshness.state === FRESHNESS_STATES.STALE
+
+  const weaponSkinSeedFilters =
+    itemCategory === ITEM_CATEGORIES.WEAPON_SKIN ? evaluateWeaponSkinSeedFilters(seed) : null
+  const lowValueFlag =
+    itemCategory === ITEM_CATEGORIES.WEAPON_SKIN
+      ? Boolean(weaponSkinSeedFilters?.penaltyLowValue || weaponSkinSeedFilters?.hardRejectLowValue)
+      : (() => {
+          const referencePrice = toFiniteOrNull(seed?.referencePrice)
+          const floor = Number(
+            UNIVERSE_MIN_PRICE_FLOOR_BY_CATEGORY[itemCategory] ??
+              UNIVERSE_MIN_PRICE_FLOOR_BY_CATEGORY[ITEM_CATEGORIES.WEAPON_SKIN]
+          )
+          return referencePrice != null && referencePrice > 0 && referencePrice < floor
+        })()
+
+  if (missingSnapshot) penaltyReasons.push("missing_snapshot")
+  if (missingReference) penaltyReasons.push("missing_reference")
+  if (missingLiquidity) penaltyReasons.push("missing_liquidity")
+  if (weakCoverage) penaltyReasons.push("weak_coverage")
+  if (agingData) penaltyReasons.push("aging_data")
+  if (staleData) penaltyReasons.push("stale_data")
+  if (lowValueFlag) penaltyReasons.push("low_value_flag")
+
+  if (penaltyReasons.length) {
+    scanFlags.push("needs_enrichment")
+  }
+  if (missingLiquidity) scanFlags.push("missing_liquidity")
+  if (agingData || staleData) scanFlags.push("aging_data")
+  if (lowValueFlag) scanFlags.push("low_value_flag")
+
+  let scanState = SCAN_STATES.SCAN_NOW
+  let hardRejectReason = null
+
+  if (progressionStatus === SOURCE_CATALOG_PROGRESSION_STATUS.REJECTED || riskProfileBlocked) {
+    scanState = SCAN_STATES.HARD_REJECT
+    hardRejectReason = riskProfileBlocked ? "structural_or_antifake_block" : "progression_rejected"
+  } else {
+    const evidenceCount = countTrueValues([
+      coverageCount >= 1,
+      snapshotState !== SOURCE_CATALOG_SNAPSHOT_STATES.MISSING,
+      referenceState !== SOURCE_CATALOG_REFERENCE_STATES.MISSING,
+      liquidityState !== SOURCE_CATALOG_LIQUIDITY_STATES.MISSING,
+      freshness.usable
+    ])
+    const hasAnyEvidence =
+      coverageCount >= 1 ||
+      snapshotState !== SOURCE_CATALOG_SNAPSHOT_STATES.MISSING ||
+      referenceState !== SOURCE_CATALOG_REFERENCE_STATES.MISSING ||
+      (toFiniteOrNull(seed?.liquidityRank) ?? 0) > 0
+
+    const missingCriticalCount = countTrueValues([
+      missingSnapshot,
+      missingReference,
+      missingLiquidity,
+      coverageCount < 1
     ])
 
-    return {
-      ready: rescueReasons.length === 0,
-      reasons: rescueReasons,
-      isStrictExecutionReady: false,
-      isRiskyScanReady: rescueReasons.length === 0,
-      executionLane: rescueReasons.length === 0 ? "near_eligible_risky" : "blocked",
-      candidateStatus,
-      maturityState,
-      snapshotState,
-      referenceState,
-      liquidityState,
-      coverageState,
-      progressionStatus,
-      progressionBlockers,
-      riskyScanReadiness
+    if (!hasAnyEvidence || evidenceCount <= 1) {
+      scanState = SCAN_STATES.SPECULATIVE_CANDIDATE
+      speculativeReasons.push(!hasAnyEvidence ? "insufficient_market_evidence" : "thin_market_evidence")
+    } else if (missingCriticalCount >= 3) {
+      scanState = SCAN_STATES.SPECULATIVE_CANDIDATE
+      speculativeReasons.push("multiple_missing_signals")
+    } else if (penaltyReasons.length) {
+      scanState = SCAN_STATES.SCAN_WITH_PENALTIES
+    } else {
+      scanState = SCAN_STATES.SCAN_NOW
     }
   }
 
-  const normalizedReasons = strictReady
-    ? []
-    : riskyScanReadiness.ready
-      ? []
-      : normalizeTextList(reasons)
+  const riskyScanReadiness = evaluateNearEligibleRiskyScanReadiness(seed)
+  const ready = scanState !== SCAN_STATES.HARD_REJECT
+  const isStrictExecutionReady = ready && scanState === SCAN_STATES.SCAN_NOW
+  const isRiskyScanReady = ready && scanState === SCAN_STATES.SCAN_WITH_PENALTIES
+  const isSpeculativeScanReady = ready && scanState === SCAN_STATES.SPECULATIVE_CANDIDATE
+
+  if (forceScanFromCatalog && scanState === SCAN_STATES.HARD_REJECT) {
+    // Rescue mode never bypasses structural/anti-fake blocks.
+    hardRejectReason = hardRejectReason || "structural_or_antifake_block"
+  }
 
   return {
-    ready: strictReady || riskyScanReadiness.ready,
-    reasons: normalizedReasons,
-    isStrictExecutionReady: strictReady,
-    isRiskyScanReady: riskyScanReadiness.ready,
-    executionLane: strictReady
-      ? "strict_eligible"
-      : riskyScanReadiness.ready
-        ? "near_eligible_risky"
-        : "blocked",
+    ready,
+    reasons: ready ? [] : normalizeTextList([hardRejectReason || "hard_reject"]),
+    scanState,
+    hardRejectReason,
+    penaltyReasons: normalizeTextList(penaltyReasons),
+    speculativeReasons: normalizeTextList(speculativeReasons),
+    scanFlags: normalizeTextList(scanFlags),
+    isStrictExecutionReady,
+    isRiskyScanReady,
+    isSpeculativeScanReady,
+    executionLane: !ready
+      ? "blocked"
+      : scanState === SCAN_STATES.SCAN_NOW
+        ? "scan_now"
+        : scanState === SCAN_STATES.SCAN_WITH_PENALTIES
+          ? "scan_with_penalties"
+          : "speculative_candidate",
     candidateStatus,
     maturityState,
     snapshotState,
@@ -3087,6 +3136,20 @@ function summarizeOpportunitySeedAdmissions(admissions = [], executedSeeds = [],
   for (const entry of Array.isArray(admissions) ? admissions : []) {
     const seed = entry?.row || {}
     const admission = entry?.admission || evaluateOpportunitySeedAdmission(seed, { forceScanFromCatalog })
+    const itemCategory = normalizeItemCategory(seed?.itemCategory, seed?.marketHashName)
+    const scanState = normalizeLowerText(admission?.scanState)
+    if (summary.scan_states && Object.prototype.hasOwnProperty.call(summary.scan_states, scanState)) {
+      summary.scan_states[scanState] += 1
+      if (
+        summary.scan_states_by_category &&
+        SCANNER_AUDIT_CATEGORIES.includes(itemCategory) &&
+        summary.scan_states_by_category[itemCategory] &&
+        Object.prototype.hasOwnProperty.call(summary.scan_states_by_category[itemCategory], scanState)
+      ) {
+        summary.scan_states_by_category[itemCategory][scanState] += 1
+      }
+    }
+
     const candidateStatus = resolveSeedCandidateStatus(seed)
     if (candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE) {
       summary.universe_eligible += 1
@@ -3110,27 +3173,48 @@ function summarizeOpportunitySeedAdmissions(admissions = [], executedSeeds = [],
       } else if (Boolean(admission?.isRiskyScanReady)) {
         summary.scan_candidates_from_risky_ready += 1
       }
+
+      if (scanState === SCAN_STATES.SCAN_WITH_PENALTIES) {
+        for (const reason of normalizeTextList(admission?.penaltyReasons)) {
+          summary.penalty_reasons[reason] = Number(summary.penalty_reasons[reason] || 0) + 1
+          if (
+            SCANNER_AUDIT_CATEGORIES.includes(itemCategory) &&
+            summary.penalty_reasons_by_category &&
+            summary.penalty_reasons_by_category[itemCategory]
+          ) {
+            summary.penalty_reasons_by_category[itemCategory][reason] =
+              Number(summary.penalty_reasons_by_category[itemCategory][reason] || 0) + 1
+          }
+        }
+      } else if (scanState === SCAN_STATES.SPECULATIVE_CANDIDATE) {
+        for (const reason of normalizeTextList(admission?.speculativeReasons)) {
+          summary.speculative_reasons[reason] = Number(summary.speculative_reasons[reason] || 0) + 1
+          if (
+            SCANNER_AUDIT_CATEGORIES.includes(itemCategory) &&
+            summary.speculative_reasons_by_category &&
+            summary.speculative_reasons_by_category[itemCategory]
+          ) {
+            summary.speculative_reasons_by_category[itemCategory][reason] =
+              Number(summary.speculative_reasons_by_category[itemCategory][reason] || 0) + 1
+          }
+        }
+      }
       continue
     }
 
     summary.scan_candidates_deferred += 1
-    for (const reason of normalizeTextList(admission?.reasons)) {
-      if (summary[reason] == null) {
-        summary[reason] = 0
-      }
-      summary[reason] += 1
-      if (
-        reason === "deferred_due_to_missing_snapshot" ||
-        reason === "deferred_near_eligible_missing_snapshot"
-      ) {
-        summary.deferred_due_to_missing_snapshot += 1
-      }
-      if (
-        reason === "deferred_due_to_feed_visibility" ||
-        reason === "deferred_due_to_visibility_or_feed_floor"
-      ) {
-        summary.deferred_due_to_feed_visibility += 1
-      }
+    const hardRejectReason =
+      normalizeLowerText(admission?.hardRejectReason) ||
+      normalizeTextList(admission?.reasons)[0] ||
+      "hard_reject"
+    summary.hard_reject_reasons[hardRejectReason] = Number(summary.hard_reject_reasons[hardRejectReason] || 0) + 1
+    if (
+      SCANNER_AUDIT_CATEGORIES.includes(itemCategory) &&
+      summary.hard_reject_reasons_by_category &&
+      summary.hard_reject_reasons_by_category[itemCategory]
+    ) {
+      summary.hard_reject_reasons_by_category[itemCategory][hardRejectReason] =
+        Number(summary.hard_reject_reasons_by_category[itemCategory][hardRejectReason] || 0) + 1
     }
   }
 
@@ -3165,6 +3249,30 @@ function summarizeOpportunitySeedAdmissions(admissions = [], executedSeeds = [],
     )
   }
 
+  summary.penalty_top_reasons = toTopReasonCounts(summary.penalty_reasons, 8)
+  summary.speculative_top_reasons = toTopReasonCounts(summary.speculative_reasons, 8)
+  summary.hard_reject_top_reasons = toTopReasonCounts(summary.hard_reject_reasons, 8)
+  for (const category of SCANNER_AUDIT_CATEGORIES) {
+    if (summary.penalty_top_reasons_by_category && summary.penalty_reasons_by_category) {
+      summary.penalty_top_reasons_by_category[category] = toTopReasonCounts(
+        summary.penalty_reasons_by_category[category],
+        5
+      )
+    }
+    if (summary.speculative_top_reasons_by_category && summary.speculative_reasons_by_category) {
+      summary.speculative_top_reasons_by_category[category] = toTopReasonCounts(
+        summary.speculative_reasons_by_category[category],
+        5
+      )
+    }
+    if (summary.hard_reject_top_reasons_by_category && summary.hard_reject_reasons_by_category) {
+      summary.hard_reject_top_reasons_by_category[category] = toTopReasonCounts(
+        summary.hard_reject_reasons_by_category[category],
+        5
+      )
+    }
+  }
+
   return summary
 }
 
@@ -3192,7 +3300,6 @@ function rankLayerRows(rows = []) {
 
 function selectSeedsForLayeredScanning(seeds = [], options = {}) {
   const ranked = rankLayerRows(seeds)
-  const forceScanFromCatalog = resolveForceScanFromCatalog(options)
   const opportunityFilter =
     typeof options?.opportunityFilter === "function" ? options.opportunityFilter : null
   const opportunityCandidates = opportunityFilter ? ranked.filter(opportunityFilter) : ranked
@@ -3243,12 +3350,10 @@ function selectSeedsForLayeredScanning(seeds = [], options = {}) {
   const coreSeeds = byLayer[SCAN_LAYERS.HOT].slice(0, Math.min(HIGH_YIELD_CORE_TARGET, hotTarget))
   const selectedNames = new Set(coreSeeds.map((row) => normalizeMarketHashName(row?.marketHashName)))
   const opportunitySeeds = [...coreSeeds]
-  const opportunityWarmLayer = forceScanFromCatalog
-    ? rankLayerRows([
-      ...byLayer[SCAN_LAYERS.WARM],
-      ...byLayer[SCAN_LAYERS.COLD]
-    ])
-    : byLayer[SCAN_LAYERS.WARM]
+  const opportunityWarmLayer = rankLayerRows([
+    ...byLayer[SCAN_LAYERS.WARM],
+    ...byLayer[SCAN_LAYERS.COLD]
+  ])
   const nearEligibleWarmSeeds = opportunityWarmLayer.filter(
     (row) => normalizeMaturityState(row?.maturityState) === MATURITY_STATES.NEAR_ELIGIBLE
   )
@@ -3256,7 +3361,7 @@ function selectSeedsForLayeredScanning(seeds = [], options = {}) {
     (row) => normalizeMaturityState(row?.maturityState) !== MATURITY_STATES.NEAR_ELIGIBLE
   )
   const hotUniverse = rankLayerRows([...byLayer[SCAN_LAYERS.HOT], ...nearEligibleWarmSeeds])
-  const enrichingOpportunityBackfillLimit = Math.max(Math.round(opportunityTarget * 0.2), 8)
+  const enrichingOpportunityBackfillLimit = Math.max(opportunityTarget, 0)
 
   const addFromLayer = (rows = [], limit = 0) => {
     const maxItems = Math.max(Number(limit || 0), 0)
@@ -3274,8 +3379,10 @@ function selectSeedsForLayeredScanning(seeds = [], options = {}) {
   }
 
   const existingCore = coreSeeds.length
-  addFromLayer(byLayer[SCAN_LAYERS.HOT], Math.max(hotTarget - existingCore, 0))
-  addFromLayer(nearEligibleWarmSeeds, nearEligibleTarget)
+  const addedHot = addFromLayer(byLayer[SCAN_LAYERS.HOT], Math.max(hotTarget - existingCore, 0))
+  const hotShortfall = Math.max(hotTarget - (existingCore + addedHot), 0)
+  // If hot supply is thin, keep opportunity_scan productive by backfilling from warm/cold.
+  addFromLayer(nearEligibleWarmSeeds, nearEligibleTarget + hotShortfall)
   addFromLayer(
     enrichingWarmSeeds,
     Math.min(
@@ -3283,6 +3390,9 @@ function selectSeedsForLayeredScanning(seeds = [], options = {}) {
       enrichingOpportunityBackfillLimit
     )
   )
+  if (opportunitySeeds.length < opportunityTarget) {
+    addFromLayer(opportunityWarmLayer, Math.max(opportunityTarget - opportunitySeeds.length, 0))
+  }
 
   const enrichmentSeeds = []
   const enrichmentSeen = new Set()
@@ -3456,7 +3566,6 @@ async function buildSeedsFromCatalogRows(rows = [], options = {}) {
 }
 
 async function loadMatureCatalogUniverseSeeds(limit = HOT_MATURE_POOL_LIMIT, options = {}) {
-  const forceScanFromCatalog = resolveForceScanFromCatalog(options)
   const safeLimit = Math.max(Math.round(Number(limit || HOT_MATURE_POOL_LIMIT)), 0)
   if (!safeLimit) return []
 
@@ -3478,7 +3587,8 @@ async function loadMatureCatalogUniverseSeeds(limit = HOT_MATURE_POOL_LIMIT, opt
         categories,
         candidateStatuses: [
           CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE,
-          CATALOG_CANDIDATE_STATUS.ENRICHING
+          CATALOG_CANDIDATE_STATUS.ENRICHING,
+          CATALOG_CANDIDATE_STATUS.CANDIDATE
         ]
       })
     ])
@@ -3490,7 +3600,7 @@ async function loadMatureCatalogUniverseSeeds(limit = HOT_MATURE_POOL_LIMIT, opt
   const seeds = await buildSeedsFromCatalogRows([...(eligibleRows || []), ...(candidateRows || [])], {
     limit: safeLimit
   })
-  return forceScanFromCatalog ? seeds : seeds.filter(isMinimumOpportunityBackfillReadySeed)
+  return seeds
 }
 
 function normalizeFeedEventType(value) {
@@ -3749,7 +3859,6 @@ function passesUniverseSeedFilters(
   rejectedByItem = null,
   options = {}
 ) {
-  const allowMissingSnapshotData = Boolean(options?.allowMissingSnapshotData)
   const forceScanFromCatalog = resolveForceScanFromCatalog(options)
   const weaponSkinDiagnostics =
     options?.weaponSkinDiagnostics && typeof options.weaponSkinDiagnostics === "object"
@@ -3757,12 +3866,6 @@ function passesUniverseSeedFilters(
       : null
   const marketHashName = String(inputItem?.marketHashName || "").trim()
   const itemCategory = normalizeItemCategory(inputItem?.itemCategory, marketHashName)
-  const candidateStatus = resolveSeedCandidateStatus(inputItem)
-  const hasCatalogMatureStatus =
-    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE ||
-    candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
-  const hasCoverageSignal = Math.max(Number(inputItem?.marketCoverageCount || 0), 0) >= 1
-  const hasReferenceSignal = toFiniteOrNull(inputItem?.referencePrice) != null
   if (!marketHashName) return false
   const isWeaponSkin = itemCategory === ITEM_CATEGORIES.WEAPON_SKIN
   const weaponSkinFilter = isWeaponSkin ? evaluateWeaponSkinSeedFilters(inputItem) : null
@@ -3787,21 +3890,12 @@ function passesUniverseSeedFilters(
     !HIGH_SIGNAL_WEAPON_PREFIXES.has(extractWeaponPrefix(marketHashName)) &&
     weaponSkinFilter?.hardRejectLowValue
   ) {
-    incrementReasonCounter(discardStats, "hard_reject_low_value", itemCategory)
-    if (rejectedByItem) {
-      incrementItemReasonCounter(
-        rejectedByItem,
-        marketHashName,
-        "hard_reject_low_value",
-        itemCategory
-      )
-    }
+    // Low-value is handled as a penalty/scan-state downgrade; do not hard-reject at universe admission.
     incrementWeaponSkinFilterDiagnostic(
       weaponSkinDiagnostics,
-      "hard_reject_low_value",
+      "penalty_low_value_allowed_forward",
       marketHashName
     )
-    return false
   }
 
   if (!Boolean(inputItem?.hasSnapshotData) && !forceScanFromCatalog) {
@@ -3831,35 +3925,7 @@ function passesUniverseSeedFilters(
         )
       }
     } else {
-      const hasHighSignalFallback = isHighSignalMissingSnapshotSeed(marketHashName, itemCategory)
-      const allowMatureCatalogFallback =
-        hasCatalogMatureStatus &&
-        hasCoverageSignal &&
-        (hasReferenceSignal || hasHighSignalFallback)
-      if (!allowMissingSnapshotData && !allowMatureCatalogFallback) {
-        incrementReasonCounter(discardStats, "ignored_missing_liquidity_data", itemCategory)
-        if (rejectedByItem) {
-          incrementItemReasonCounter(
-            rejectedByItem,
-            marketHashName,
-            "ignored_missing_liquidity_data",
-            itemCategory
-          )
-        }
-        return false
-      }
-      if (allowMissingSnapshotData && !allowMatureCatalogFallback && !hasHighSignalFallback) {
-        incrementReasonCounter(discardStats, "ignored_missing_liquidity_data", itemCategory)
-        if (rejectedByItem) {
-          incrementItemReasonCounter(
-            rejectedByItem,
-            marketHashName,
-            "ignored_missing_liquidity_data",
-            itemCategory
-          )
-        }
-        return false
-      }
+      // Missing snapshot data should downgrade scan state, not block scanning outright.
     }
   }
 
@@ -3880,15 +3946,6 @@ function passesUniverseSeedFilters(
 
   const snapshotFreshness = resolveSnapshotFreshnessState(inputItem, itemCategory)
   if (isWeaponSkin) {
-    const coverageCount = Math.max(Number(inputItem?.marketCoverageCount || 0), 0)
-    if (!forceScanFromCatalog && weaponSkinFilter?.hardRejectStale && coverageCount <= 0) {
-      incrementReasonCounter(discardStats, "ignored_stale_data", itemCategory)
-      if (rejectedByItem) {
-        incrementItemReasonCounter(rejectedByItem, marketHashName, "ignored_stale_data", itemCategory)
-      }
-      incrementWeaponSkinFilterDiagnostic(weaponSkinDiagnostics, "hard_reject_stale", marketHashName)
-      return false
-    }
     if (weaponSkinFilter?.hardRejectStale) {
       incrementWeaponSkinFilterDiagnostic(
         weaponSkinDiagnostics,
@@ -3910,16 +3967,7 @@ function passesUniverseSeedFilters(
     UNIVERSE_MIN_PRICE_FLOOR_BY_CATEGORY[itemCategory] ?? UNIVERSE_MIN_PRICE_FLOOR_BY_CATEGORY[ITEM_CATEGORIES.WEAPON_SKIN]
   )
   if (!forceScanFromCatalog && !isWeaponSkin && referencePrice != null && referencePrice < universePriceFloor) {
-    incrementReasonCounter(discardStats, "ignored_low_value_universe", itemCategory)
-    if (rejectedByItem) {
-      incrementItemReasonCounter(
-        rejectedByItem,
-        marketHashName,
-        "ignored_low_value_universe",
-        itemCategory
-      )
-    }
-    return false
+    // Low-value floors are handled as penalties/risk downgrades; do not block scanning at admission time.
   }
 
   // Keep low-liquidity checks in post-computation risk policy so we can compare first.
@@ -4224,7 +4272,10 @@ function evaluateWeaponSkinRiskContext({
   const hardRejectLowValue = lowValuePolicy.hardReject
   const penaltyKeys = []
 
-  if (!hardRejectLowValue && borderlineLowValueAllowedForward && lowValuePolicy.penalty) {
+  if (hardRejectLowValue) {
+    // Previously a hard block; now treated as a speculative/penalized path so scanning stays productive.
+    penaltyKeys.push("penalty_low_value_allowed_forward")
+  } else if (borderlineLowValueAllowedForward && lowValuePolicy.penalty) {
     penaltyKeys.push("penalty_low_value_allowed_forward")
   }
   if (isStatTrakVariantName(marketHashName)) {
@@ -4337,11 +4388,13 @@ function evaluateWeaponSkinRiskContext({
     speculativeEligible:
       hasMissingLiquidityFallbackPath ||
       borderlineLowValueAllowedForward ||
+      hardRejectLowValue ||
       variantSpeculativeAllowed ||
       staleForwardedTier === "speculative",
     allowLowConfidencePath:
       hasMissingLiquidityFallbackPath ||
       borderlineLowValueAllowedForward ||
+      hardRejectLowValue ||
       variantSpeculativeAllowed ||
       staleForwardedTier === "speculative",
     missingLiquidityRejected: false,
@@ -4683,7 +4736,7 @@ function computeRiskAdjustments({
     isRiskyProfile &&
     weaponSkinRiskContext.hardRejectLowValue
   ) {
-    return { passed: false, primaryReason: "hard_reject_low_value", penalty: 0 }
+    // Low-value concerns should downgrade/penalize rather than block scanning.
   }
 
   if (
@@ -4822,6 +4875,10 @@ function computeRiskAdjustments({
       weaponSkinRiskContext.penaltyKeys.includes("penalty_low_value_allowed_forward")
     ) {
       penalty += WEAPON_SKIN_LOW_VALUE_PENALTY
+      if (weaponSkinRiskContext.hardRejectLowValue) {
+        // Heavier penalty for the "would-have-been hard reject" low-value path.
+        penalty += 12
+      }
     }
     if (
       itemCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
@@ -6165,7 +6222,6 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
   } else if (isOpportunityMode) {
     seedFilterMode = "strict_mature_only"
   }
-  const bypassAdmissionFilter = isOpportunityMode && forceScanFromCatalog
 
   mergeDiscardStats(discardStats, selectedFilterResult.discardStats)
   mergeRejectedByItem(rejectedByItem, selectedFilterResult.rejectedByItem)
@@ -6264,7 +6320,7 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
     nearEligibleTarget: includeNearEligibleInOpportunity ? OPPORTUNITY_NEAR_ELIGIBLE_LIMIT : 0,
     enrichmentTarget: enrichmentBatchSize,
     opportunityFilter: isOpportunityMode
-      ? (row) => (bypassAdmissionFilter ? true : resolveOpportunityAdmission(row).ready)
+      ? (row) => resolveOpportunityAdmission(row).ready
       : null,
     forceScanFromCatalog,
     opportunityDeferredRows: deferredToEnrichmentRows
@@ -9713,12 +9769,12 @@ function resolveNoOpportunitiesReason(summary = {}, status = {}, opportunities =
       return {
         code: "insufficient_catalog_coverage",
         count: missingToTarget,
-        message: `Universe build is short by ${missingToTarget} item(s) due to insufficient eligible source catalog coverage.`
+        message: `Universe build is short by ${missingToTarget} item(s) due to insufficient scannable source catalog coverage.`
       }
     }
     return {
       code: "no_items_scanned",
-      message: "No universe items were eligible for scan in the latest run."
+      message: "No universe items were scannable in the latest run."
     }
   }
 
