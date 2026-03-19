@@ -37,6 +37,20 @@ function normalizeLimit(value, fallback = 100) {
   return Math.min(Math.max(Math.round(parsed), 1), MAX_LIMIT)
 }
 
+function normalizeOffset(value, fallback = 0) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(Math.max(Math.round(parsed), 0), 500000)
+}
+
+function normalizeIso(value) {
+  const text = normalizeText(value)
+  if (!text) return ""
+  const ts = new Date(text).getTime()
+  if (!Number.isFinite(ts)) return ""
+  return new Date(ts).toISOString()
+}
+
 function toJsonObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {}
@@ -135,6 +149,8 @@ exports.insertRows = async (rows = []) => {
 
 exports.listFeed = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 100)
+  const offset = normalizeOffset(options.offset, 0)
+  const sinceIso = normalizeIso(options.sinceIso)
   const includeInactive = Boolean(options.includeInactive)
   const category = normalizeCategory(options.category)
   const minScore = toFiniteOrNull(options.minScore)
@@ -146,10 +162,13 @@ exports.listFeed = async (options = {}) => {
     .select(FEED_SELECT_FIELDS)
     .order("detected_at", { ascending: false })
     .order("id", { ascending: false })
-    .limit(limit)
+    .range(offset, offset + limit - 1)
 
   if (!includeInactive) {
     query = query.eq("is_active", true)
+  }
+  if (sinceIso) {
+    query = query.gte("detected_at", sinceIso)
   }
   if (category) {
     query = query.eq("category", category)
@@ -174,6 +193,7 @@ exports.listFeed = async (options = {}) => {
 }
 
 exports.countFeed = async (options = {}) => {
+  const sinceIso = normalizeIso(options.sinceIso)
   const includeInactive = Boolean(options.includeInactive)
   const category = normalizeCategory(options.category)
   const minScore = toFiniteOrNull(options.minScore)
@@ -183,6 +203,9 @@ exports.countFeed = async (options = {}) => {
   let query = supabaseAdmin.from(TABLE).select("id", { count: "exact", head: true })
   if (!includeInactive) {
     query = query.eq("is_active", true)
+  }
+  if (sinceIso) {
+    query = query.gte("detected_at", sinceIso)
   }
   if (category) {
     query = query.eq("category", category)

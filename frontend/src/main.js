@@ -59,6 +59,8 @@ const GLOBAL_OPPORTUNITY_COUNTDOWN_TICK_MS = 1000;
 const GLOBAL_OPPORTUNITY_STALE_MULTIPLIER = 2;
 const GLOBAL_OPPORTUNITY_STALE_MIN_MS = 8 * 60 * 1000;
 const GLOBAL_OPPORTUNITY_FORCE_COOLDOWN_MS = 90 * 1000;
+const GLOBAL_OPPORTUNITY_PAGE_SIZE = 100;
+const GLOBAL_OPPORTUNITY_HISTORY_HOURS = 24;
 const HISTORY_RANGE_OPTIONS = [7, 30, 90, 180];
 const ACCOUNT_SECTION_IDS = [
   "profile",
@@ -987,7 +989,19 @@ function createGlobalOpportunitiesState() {
     showRisky: true,
     showOlder: false,
     category: "all",
+    page: 1,
+    pageSize: GLOBAL_OPPORTUNITY_PAGE_SIZE,
+    historyHours: GLOBAL_OPPORTUNITY_HISTORY_HOURS,
     summary: null,
+    pagination: {
+      page: 1,
+      pageSize: GLOBAL_OPPORTUNITY_PAGE_SIZE,
+      totalCount: 0,
+      totalPages: 1,
+      hasPrevPage: false,
+      hasNextPage: false,
+      historyHours: GLOBAL_OPPORTUNITY_HISTORY_HOURS,
+    },
     status: null,
     pendingScanRunId: "",
     lastAutoForceAt: null,
@@ -2911,7 +2925,12 @@ function scheduleGlobalOpportunitiesFollowUpPoll(
     if (!state.authenticated) return;
     if (state.activeTab !== "opportunities") return;
     if (state.globalOpportunities?.loading) return;
-    runUiTask(() => refreshGlobalOpportunities({ silent: true, limit: 100 }));
+    runUiTask(() =>
+      refreshGlobalOpportunities({
+        silent: true,
+        limit: GLOBAL_OPPORTUNITY_PAGE_SIZE,
+      }),
+    );
   }, Math.max(Number(delayMs || 0), 1000));
 }
 
@@ -4399,7 +4418,7 @@ async function handleTabSwitch(tab) {
       runUiTask(() =>
         refreshGlobalOpportunities({
           silent: true,
-          limit: 100,
+          limit: GLOBAL_OPPORTUNITY_PAGE_SIZE,
           force: shouldAutoForceGlobalRefresh(state.globalOpportunities),
         }),
       );
@@ -5124,7 +5143,36 @@ function onAppClick(event) {
 
   if (button?.matches("#global-opportunities-refresh-btn")) {
     event.preventDefault();
-    runUiTask(() => refreshGlobalOpportunities({ force: true, limit: 100 }));
+    runUiTask(() =>
+      refreshGlobalOpportunities({
+        force: true,
+        limit: GLOBAL_OPPORTUNITY_PAGE_SIZE,
+      }),
+    );
+    return;
+  }
+
+  if (button?.matches(".global-opportunities-page-btn")) {
+    event.preventDefault();
+    if (state.globalOpportunities?.loading) return;
+    const pagination =
+      state.globalOpportunities?.pagination &&
+      typeof state.globalOpportunities.pagination === "object"
+        ? state.globalOpportunities.pagination
+        : null;
+    const totalPages = Math.max(Number(pagination?.totalPages || 1), 1);
+    const page = clampInt(button.getAttribute("data-page"), 1, totalPages);
+    if (page === clampInt(state.globalOpportunities?.page || 1, 1, totalPages)) {
+      return;
+    }
+    runUiTask(() =>
+      refreshGlobalOpportunities({
+        silent: true,
+        force: false,
+        page,
+        limit: Number(state.globalOpportunities?.pageSize || GLOBAL_OPPORTUNITY_PAGE_SIZE),
+      }),
+    );
     return;
   }
 
@@ -5197,6 +5245,15 @@ function onAppClick(event) {
       return;
     }
     openCompareDrawerMarketTarget(compareUrl, skinId);
+    return;
+  }
+
+  if (button?.matches(".opportunity-market-action-btn")) {
+    event.preventDefault();
+    openCompareDrawerMarketTarget(
+      button.getAttribute("data-market-url"),
+      button.getAttribute("data-skin-id"),
+    );
     return;
   }
 
@@ -5691,11 +5748,13 @@ function onAppChange(event) {
       target instanceof HTMLInputElement ? Boolean(target.checked) : false;
     const showRisky = !showHighConfidenceOnly;
     state.globalOpportunities.showRisky = showRisky;
+    state.globalOpportunities.page = 1;
     runUiTask(() =>
       refreshGlobalOpportunities({
         force: true,
-        limit: 100,
+        limit: GLOBAL_OPPORTUNITY_PAGE_SIZE,
         showRisky,
+        page: 1,
       }),
     );
     return;
@@ -5714,11 +5773,13 @@ function onAppChange(event) {
     const checked =
       target instanceof HTMLInputElement ? Boolean(target.checked) : false;
     state.globalOpportunities.showOlder = checked;
+    state.globalOpportunities.page = 1;
     runUiTask(() =>
       refreshGlobalOpportunities({
         force: false,
-        limit: 100,
+        limit: GLOBAL_OPPORTUNITY_PAGE_SIZE,
         showOlder: checked,
+        page: 1,
       }),
     );
     return;
@@ -5750,11 +5811,13 @@ function onAppChange(event) {
     } else {
       state.globalOpportunities.category = "all";
     }
+    state.globalOpportunities.page = 1;
     runUiTask(() =>
       refreshGlobalOpportunities({
         force: true,
-        limit: 100,
+        limit: GLOBAL_OPPORTUNITY_PAGE_SIZE,
         category: state.globalOpportunities.category,
+        page: 1,
       }),
     );
     return;
@@ -7067,7 +7130,7 @@ async function updatePlanTier(planTier) {
       followUpTasks.push(
         refreshGlobalOpportunities({
           silent: true,
-          limit: 100,
+          limit: GLOBAL_OPPORTUNITY_PAGE_SIZE,
           force: false,
         }),
       );
@@ -7406,18 +7469,38 @@ async function refreshMarketOpportunities(options = {}) {
 async function refreshGlobalOpportunities(options = {}) {
   const {
     silent = false,
-    limit = 100,
+    limit = GLOBAL_OPPORTUNITY_PAGE_SIZE,
     force = false,
     showRisky = null,
     category = null,
     showOlder = null,
+    page = null,
+    historyHours = null,
   } =
     options;
   const scanner = state.globalOpportunities || createGlobalOpportunitiesState();
   const entitlements = getProfileEntitlements();
   const advancedFiltersEnabled = canUseAdvancedFilters(entitlements);
   const visibleFeedLimit = Math.max(Number(entitlements.visibleFeedLimit || 100), 1);
+  const requestedPageSize = Math.min(
+    Math.max(Number(limit || scanner.pageSize || GLOBAL_OPPORTUNITY_PAGE_SIZE), 1),
+    visibleFeedLimit,
+  );
+  const requestedPage = Math.max(
+    Math.round(Number(page == null ? scanner.page || 1 : page) || 1),
+    1,
+  );
+  const requestedHistoryHours = clampInt(
+    historyHours == null
+      ? scanner.historyHours || GLOBAL_OPPORTUNITY_HISTORY_HOURS
+      : historyHours,
+    1,
+    168,
+  );
   state.globalOpportunities = scanner;
+  scanner.pageSize = requestedPageSize;
+  scanner.page = requestedPage;
+  scanner.historyHours = requestedHistoryHours;
   if (!advancedFiltersEnabled) {
     scanner.showRisky = true;
     scanner.showOlder = false;
@@ -7477,7 +7560,9 @@ async function refreshGlobalOpportunities(options = {}) {
     }
 
     const feedQuery = buildQuery({
-      limit: Math.min(Math.max(Number(limit || 100), 1), visibleFeedLimit),
+      limit: requestedPageSize,
+      page: requestedPage,
+      historyHours: requestedHistoryHours,
       showRisky: scanner.showRisky ? "1" : "",
       includeOlder: scanner.showOlder ? "1" : "",
       category:
@@ -7526,6 +7611,50 @@ async function refreshGlobalOpportunities(options = {}) {
     scanner.seenFeedIds = Array.from(seenFeedIds).slice(-5000);
     scanner.summary = feedPayload?.summary || null;
     scanner.status = statusPayload || null;
+    const payloadPagination =
+      feedPayload?.pagination && typeof feedPayload.pagination === "object"
+        ? feedPayload.pagination
+        : {};
+    const resolvedPageSize = Math.min(
+      Math.max(Number(payloadPagination.pageSize || requestedPageSize), 1),
+      visibleFeedLimit,
+    );
+    const resolvedHistoryHours = clampInt(
+      payloadPagination.historyHours || requestedHistoryHours,
+      1,
+      168,
+    );
+    const totalCount = Math.max(
+      Number(
+        payloadPagination.totalCount ??
+          scanner.summary?.totalDetected ??
+          incomingRows.length,
+      ),
+      0,
+    );
+    const totalPages = Math.max(
+      Number(payloadPagination.totalPages || Math.ceil(totalCount / resolvedPageSize) || 1),
+      1,
+    );
+    const resolvedPage = clampInt(payloadPagination.page || requestedPage, 1, totalPages);
+    scanner.page = resolvedPage;
+    scanner.pageSize = resolvedPageSize;
+    scanner.historyHours = resolvedHistoryHours;
+    scanner.pagination = {
+      page: resolvedPage,
+      pageSize: resolvedPageSize,
+      totalCount,
+      totalPages,
+      hasPrevPage:
+        payloadPagination.hasPrevPage == null
+          ? resolvedPage > 1
+          : Boolean(payloadPagination.hasPrevPage),
+      hasNextPage:
+        payloadPagination.hasNextPage == null
+          ? resolvedPage < totalPages
+          : Boolean(payloadPagination.hasNextPage),
+      historyHours: resolvedHistoryHours,
+    };
     if (String(scanner.status?.currentStatus || "").toLowerCase() !== "running") {
       scanner.pendingScanRunId = "";
     } else if (pendingScanRunId || scanner.pendingScanRunId) {
@@ -12505,14 +12634,20 @@ function renderMarketTab() {
               const updatedLabel = scanner.generatedAt
                 ? `Updated ${formatRelativeTime(scanner.generatedAt)}`
                 : "Updated recently";
-              const inspectUrl =
-                String(row?.buyUrl || row?.sellUrl || "").trim() ||
+              const buyUrl =
+                String(row?.buyUrl || "").trim() ||
+                buildSteamListingUrlByName(marketHashName);
+              const sellUrl =
+                String(row?.sellUrl || "").trim() ||
                 buildSteamListingUrlByName(marketHashName);
               const compareUrl =
                 String(row?.sellUrl || row?.buyUrl || "").trim() ||
                 buildSteamListingUrlByName(marketHashName);
-              const hasInspectTarget = Boolean(
-                itemId > 0 || inspectUrl || marketHashName,
+              const hasBuyTarget = Boolean(
+                itemId > 0 || buyUrl || marketHashName,
+              );
+              const hasSellTarget = Boolean(
+                itemId > 0 || sellUrl || marketHashName,
               );
               const hasCompareTarget = Boolean(
                 itemId > 0 || compareUrl || marketHashName,
@@ -12556,12 +12691,30 @@ function renderMarketTab() {
                       formatMarketSourceLabel(row?.buyMarket),
                     )}</strong>
                     <small>${formatMoney(row?.buyPrice, opportunityCurrency)}</small>
+                    <button
+                      type="button"
+                      class="ghost-btn opportunity-market-action-btn opportunity-buy-action-btn"
+                      data-market-url="${escapeHtml(buyUrl)}"
+                      data-skin-id="${escapeHtml(String(itemId || ""))}"
+                      ${hasBuyTarget ? "" : "disabled"}
+                    >
+                      Buy
+                    </button>
                   </td>
                   <td class="opportunity-metric-cell">
                     <strong class="opportunity-metric-value">${escapeHtml(
                       formatMarketSourceLabel(row?.sellMarket),
                     )}</strong>
                     <small>${formatMoney(row?.sellNet, opportunityCurrency)}</small>
+                    <button
+                      type="button"
+                      class="ghost-btn opportunity-market-action-btn opportunity-sell-action-btn"
+                      data-market-url="${escapeHtml(sellUrl)}"
+                      data-skin-id="${escapeHtml(String(itemId || ""))}"
+                      ${hasSellTarget ? "" : "disabled"}
+                    >
+                      Sell
+                    </button>
                   </td>
                   <td class="opportunity-metric-cell opportunity-metric-profit-cell">
                     <strong class="opportunity-metric-value opportunity-profit-value positive">${formatSignedMoney(
@@ -12613,15 +12766,6 @@ function renderMarketTab() {
                     }
                   </td>
                   <td class="actions-cell">
-                    <button
-                      type="button"
-                      class="ghost-btn opportunity-inspect-btn"
-                      data-skin-id="${escapeHtml(String(itemId || ""))}"
-                      data-inspect-url="${escapeHtml(inspectUrl)}"
-                      ${hasInspectTarget ? "" : "disabled"}
-                    >
-                      Inspect
-                    </button>
                     <button
                       type="button"
                       class="ghost-btn opportunity-compare-btn"
@@ -12962,6 +13106,68 @@ function renderGlobalOpportunitiesTab() {
   const discardReasonRows = Object.entries(summary?.discardedReasons || {})
     .filter(([, count]) => Number(count || 0) > 0)
     .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0));
+  const pagination =
+    scanner.pagination && typeof scanner.pagination === "object"
+      ? scanner.pagination
+      : {};
+  const historyHours = clampInt(
+    pagination.historyHours ||
+      summary?.historyWindowHours ||
+      scanner.historyHours ||
+      GLOBAL_OPPORTUNITY_HISTORY_HOURS,
+    1,
+    168,
+  );
+  const pageSize = Math.max(
+    Number(pagination.pageSize || scanner.pageSize || GLOBAL_OPPORTUNITY_PAGE_SIZE),
+    1,
+  );
+  const totalCount = Math.max(
+    Number(
+      pagination.totalCount ??
+        summary?.totalDetected ??
+        rows.length,
+    ),
+    0,
+  );
+  const totalPages = Math.max(
+    Number(pagination.totalPages || Math.ceil(totalCount / pageSize) || 1),
+    1,
+  );
+  const page = clampInt(pagination.page || scanner.page || 1, 1, totalPages);
+  const pageStart = totalCount > 0 ? (page - 1) * pageSize + 1 : 0;
+  const pageEnd = totalCount > 0 ? Math.min((page - 1) * pageSize + rows.length, totalCount) : 0;
+  const hasPrevPage = pagination.hasPrevPage == null ? page > 1 : Boolean(pagination.hasPrevPage);
+  const hasNextPage =
+    pagination.hasNextPage == null ? page < totalPages : Boolean(pagination.hasNextPage);
+  const paginationMarkup =
+    totalCount > 0
+      ? `<div class="pagination-bar">
+          <button
+            type="button"
+            class="ghost-btn global-opportunities-page-btn"
+            data-page="${Math.max(page - 1, 1)}"
+            ${scanner.loading || !hasPrevPage ? "disabled" : ""}
+          >
+            Previous ${formatNumber(pageSize, 0)}
+          </button>
+          <span>Page ${formatNumber(page, 0)} / ${formatNumber(totalPages, 0)} (${formatNumber(
+            pageStart,
+            0,
+          )}-${formatNumber(pageEnd, 0)} of ${formatNumber(totalCount, 0)} in last ${formatNumber(
+            historyHours,
+            0,
+          )}h)</span>
+          <button
+            type="button"
+            class="ghost-btn global-opportunities-page-btn"
+            data-page="${Math.min(page + 1, totalPages)}"
+            ${scanner.loading || !hasNextPage ? "disabled" : ""}
+          >
+            Next ${formatNumber(pageSize, 0)}
+          </button>
+        </div>`
+      : "";
 
   const showTableSkeleton = scanner.loading && !rows.length;
   const tableMarkup = rows.length
@@ -13101,18 +13307,24 @@ function renderGlobalOpportunitiesTab() {
               ];
               const fallbackImage =
                 itemCategory === "case" ? defaultCaseImage : defaultSkinImage;
-              const inspectUrl =
-                String(row?.buyUrl || row?.sellUrl || "").trim() ||
+              const buyUrl =
+                String(row?.buyUrl || "").trim() ||
+                buildSteamListingUrlByName(row?.itemName);
+              const sellUrl =
+                String(row?.sellUrl || "").trim() ||
                 buildSteamListingUrlByName(row?.itemName);
               const compareUrl =
                 String(row?.sellUrl || row?.buyUrl || "").trim() ||
                 buildSteamListingUrlByName(row?.itemName);
-              const hasInspectTarget = Boolean(
-                itemId > 0 || inspectUrl || marketHashName,
-              );
-              const hasCompareTarget = Boolean(
-                itemId > 0 || compareUrl || marketHashName,
-              );
+              const hasBuyTarget =
+                !lockedPreview &&
+                Boolean(itemId > 0 || buyUrl || marketHashName);
+              const hasSellTarget =
+                !lockedPreview &&
+                Boolean(itemId > 0 || sellUrl || marketHashName);
+              const hasCompareTarget =
+                !lockedPreview &&
+                Boolean(itemId > 0 || compareUrl || marketHashName);
               const hiddenValueMarkup =
                 '<span class="premium-value-blur" aria-hidden="true">••••</span>';
               const buyMarketLabel = lockedPreview
@@ -13197,12 +13409,30 @@ function renderGlobalOpportunitiesTab() {
                       buyMarketLabel,
                     )}</strong>
                     <small>${buyPriceLabel}</small>
+                    <button
+                      type="button"
+                      class="ghost-btn opportunity-market-action-btn opportunity-buy-action-btn"
+                      data-market-url="${escapeHtml(buyUrl)}"
+                      data-skin-id="${escapeHtml(String(itemId || ""))}"
+                      ${hasBuyTarget ? "" : "disabled"}
+                    >
+                      Buy
+                    </button>
                   </td>
                   <td class="opportunity-metric-cell">
                     <strong class="opportunity-metric-value">${escapeHtml(
                       sellMarketLabel,
                     )}</strong>
                     <small>${sellNetLabel}</small>
+                    <button
+                      type="button"
+                      class="ghost-btn opportunity-market-action-btn opportunity-sell-action-btn"
+                      data-market-url="${escapeHtml(sellUrl)}"
+                      data-skin-id="${escapeHtml(String(itemId || ""))}"
+                      ${hasSellTarget ? "" : "disabled"}
+                    >
+                      Sell
+                    </button>
                   </td>
                   <td class="opportunity-metric-cell opportunity-metric-profit-cell">
                     <strong class="opportunity-metric-value opportunity-profit-value ${lockedPreview ? "warning" : "positive"}">${profitLabel}</strong>
@@ -13261,15 +13491,6 @@ function renderGlobalOpportunitiesTab() {
                           </button>
                         `
                         : `
-                          <button
-                            type="button"
-                            class="ghost-btn opportunity-inspect-btn"
-                            data-skin-id="${escapeHtml(String(itemId || ""))}"
-                            data-inspect-url="${escapeHtml(inspectUrl)}"
-                            ${hasInspectTarget ? "" : "disabled"}
-                          >
-                            Inspect
-                          </button>
                           <button
                             type="button"
                             class="ghost-btn opportunity-compare-btn"
@@ -13374,7 +13595,10 @@ function renderGlobalOpportunitiesTab() {
           ? `Scanned ${formatNumber(summary.scannedItems || 0, 0)} items in the latest run. Showing ${formatNumber(
               rows.length,
               0,
-            )} ${showRisky ? "opportunities" : "high-quality opportunities"} from feed history.`
+            )} of ${formatNumber(totalCount, 0)} ${showRisky ? "opportunities" : "high-quality opportunities"} from the last ${formatNumber(
+              historyHours,
+              0,
+            )}h feed history (page ${formatNumber(page, 0)}/${formatNumber(totalPages, 0)}).`
           : "Waiting for scanner summary."
       }
       ${generatedLabel} Active opportunities: ${escapeHtml(
@@ -13533,6 +13757,7 @@ function renderGlobalOpportunitiesTab() {
         : ""
     }
     ${tableMarkup}
+    ${paginationMarkup}
   `;
 
   return `
@@ -14728,7 +14953,12 @@ function renderApp() {
     !state.globalOpportunities.loading &&
     !state.globalOpportunities.loaded
   ) {
-    runUiTask(() => refreshGlobalOpportunities({ silent: true, limit: 100 }));
+    runUiTask(() =>
+      refreshGlobalOpportunities({
+        silent: true,
+        limit: GLOBAL_OPPORTUNITY_PAGE_SIZE,
+      }),
+    );
   }
 
   if (
@@ -15050,7 +15280,7 @@ document.addEventListener("visibilitychange", () => {
   runUiTask(() =>
     refreshGlobalOpportunities({
       silent: true,
-      limit: 100,
+      limit: GLOBAL_OPPORTUNITY_PAGE_SIZE,
       force: shouldAutoForceGlobalRefresh(state.globalOpportunities),
     }),
   );
@@ -15064,7 +15294,7 @@ setInterval(() => {
   runUiTask(() =>
     refreshGlobalOpportunities({
       silent: true,
-      limit: 100,
+      limit: GLOBAL_OPPORTUNITY_PAGE_SIZE,
       force: shouldAutoForceGlobalRefresh(state.globalOpportunities),
     }),
   );
@@ -15079,4 +15309,3 @@ bootstrapSession().catch(() => {
   steamSyncHintRequestedAfterSteamLogin = false;
   render();
 });
-

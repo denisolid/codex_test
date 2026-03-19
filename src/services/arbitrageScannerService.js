@@ -51,6 +51,8 @@ const {
 const MAX_API_LIMIT = 200
 const DEFAULT_API_LIMIT = 100
 const MAX_FEED_LIMIT = 500
+const DEFAULT_HISTORY_WINDOW_HOURS = 24
+const MAX_HISTORY_WINDOW_HOURS = 168
 const MANUAL_REFRESH_TRACKER_MAX = 4000
 const LEGACY_SCANNER_TYPE = "global_arbitrage"
 const SCANNER_RUN_RETENTION_HOURS = 24
@@ -119,6 +121,23 @@ function normalizeLimit(value, fallback = DEFAULT_API_LIMIT, max = MAX_API_LIMIT
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
   return Math.min(Math.max(Math.round(parsed), 1), max)
+}
+
+function normalizePage(value, fallback = 1) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(Math.round(parsed), 1)
+}
+
+function normalizeHistoryHours(value, fallback = DEFAULT_HISTORY_WINDOW_HOURS) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(Math.max(Math.round(parsed), 1), MAX_HISTORY_WINDOW_HOURS)
+}
+
+function buildSinceIso(hours, nowMs = Date.now()) {
+  const safeHours = normalizeHistoryHours(hours, DEFAULT_HISTORY_WINDOW_HOURS)
+  return new Date(nowMs - safeHours * 60 * 60 * 1000).toISOString()
 }
 
 function normalizeCategoryFilter(value) {
@@ -1079,6 +1098,9 @@ exports.getFeed = async (options = {}) => {
   const requestedLimit = normalizeLimit(options.limit, DEFAULT_API_LIMIT, MAX_FEED_LIMIT)
   const visibleFeedLimit = Math.max(Number(planConfig?.visibleFeedLimit || MAX_FEED_LIMIT), 1)
   const limit = Math.min(requestedLimit, visibleFeedLimit)
+  const requestedPage = normalizePage(options.page, 1)
+  const requestedHistoryHours = normalizeHistoryHours(options.historyHours, DEFAULT_HISTORY_WINDOW_HOURS)
+  const historySinceIso = buildSinceIso(requestedHistoryHours)
 
   const requestedShowRisky =
     options.showRisky == null ? true : normalizeBoolean(options.showRisky)
@@ -1088,31 +1110,39 @@ exports.getFeed = async (options = {}) => {
   const includeOlder = advancedFiltersEnabled ? requestedIncludeOlder : false
   const categoryFilter = advancedFiltersEnabled ? requestedCategory : "all"
 
-  const [feedRows, totalCount, activeCount, status] = await Promise.all([
-    arbitrageFeedRepo.listFeed({
-      limit,
-      includeInactive: includeOlder,
-      category: categoryFilter === "all" ? "" : categoryFilter,
-      minScore: 0,
-      excludeLowConfidence: false,
-      highConfidenceOnly: !showRisky
-    }),
+  const [totalCount, activeCount, status] = await Promise.all([
     arbitrageFeedRepo.countFeed({
       includeInactive: includeOlder,
       category: categoryFilter === "all" ? "" : categoryFilter,
       minScore: 0,
       excludeLowConfidence: false,
-      highConfidenceOnly: !showRisky
+      highConfidenceOnly: !showRisky,
+      sinceIso: historySinceIso
     }),
     arbitrageFeedRepo.countFeed({
       includeInactive: false,
       category: categoryFilter === "all" ? "" : categoryFilter,
       minScore: 0,
       excludeLowConfidence: false,
-      highConfidenceOnly: !showRisky
+      highConfidenceOnly: !showRisky,
+      sinceIso: historySinceIso
     }),
     getScannerStatusInternal()
   ])
+  const totalPages = Math.max(Math.ceil(Number(totalCount || 0) / limit), 1)
+  const page = Math.min(requestedPage, totalPages)
+  const offset = (page - 1) * limit
+
+  const feedRows = await arbitrageFeedRepo.listFeed({
+    limit,
+    offset,
+    includeInactive: includeOlder,
+    category: categoryFilter === "all" ? "" : categoryFilter,
+    minScore: 0,
+    excludeLowConfidence: false,
+    highConfidenceOnly: !showRisky,
+    sinceIso: historySinceIso
+  })
 
   let mappedRows = (feedRows || []).map((row) => mapFeedRowToApiRow(row))
   mappedRows = await enrichRowsWithSkinMetadata(mappedRows)
@@ -1147,10 +1177,14 @@ exports.getFeed = async (options = {}) => {
     signalEventsAdded: Number(diagnostics?.persisted?.insertedCount || 0),
     feedRetentionHours: FEED_RETENTION_HOURS,
     feedActiveLimit: FEED_ACTIVE_LIMIT,
+    historyWindowHours: requestedHistoryHours,
     plan: {
       planTier: planContext?.planTier || "free",
       requestedLimit,
       appliedLimit: limit,
+      requestedPage,
+      appliedPage: page,
+      historyWindowHours: requestedHistoryHours,
       requestedShowRisky,
       appliedShowRisky: showRisky,
       requestedIncludeOlder,
@@ -1161,12 +1195,22 @@ exports.getFeed = async (options = {}) => {
     }
   }
   summary.noOpportunitiesReason = noOpportunitiesReason(summary, status, mappedRows)
+  const pagination = {
+    page,
+    pageSize: limit,
+    totalCount: Number(totalCount || 0),
+    totalPages,
+    hasPrevPage: page > 1,
+    hasNextPage: page < totalPages,
+    historyHours: requestedHistoryHours
+  }
 
   return {
     generatedAt: latestCompleted?.completed_at || latestCompleted?.started_at || null,
     ttlSeconds: Math.round(OPPORTUNITY_SCAN_INTERVAL_MS / 1000),
     currency: "USD",
     summary,
+    pagination,
     opportunities: mappedRows,
     plan: summary.plan,
     status: {

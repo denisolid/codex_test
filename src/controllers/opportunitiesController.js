@@ -63,6 +63,7 @@ function toFeedResponse(data = {}) {
     generatedAt: data?.generatedAt || null,
     ttlSeconds: data?.ttlSeconds || null,
     summary: data?.summary || null,
+    pagination: data?.pagination || null,
     status: data?.status || null,
     currency: data?.currency || "USD"
   }
@@ -72,6 +73,8 @@ exports.getTopOpportunities = asyncHandler(async (req, res) => {
   const data = await scannerService.getTopOpportunities({
     userId: req.userId,
     limit: req.validated?.limit,
+    page: req.validated?.page,
+    historyHours: req.validated?.historyHours,
     showRisky: req.query?.showRisky,
     forceRefresh: req.query?.force,
     category: req.query?.category,
@@ -85,6 +88,8 @@ exports.getFeed = asyncHandler(async (req, res) => {
   const data = await scannerService.getFeed({
     userId: req.userId,
     limit: req.validated?.limit,
+    page: req.validated?.page,
+    historyHours: req.validated?.historyHours,
     showRisky: req.query?.showRisky,
     category: req.query?.category,
     includeOlder: req.query?.includeOlder || req.query?.showOlder
