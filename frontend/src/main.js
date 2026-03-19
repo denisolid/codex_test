@@ -8351,6 +8351,20 @@ function formatOpportunityLabel(label, score) {
   return "Weak";
 }
 
+function getOpportunityDisplayScore(row = {}) {
+  const displayValue = Number(
+    row?.qualityScoreDisplay ??
+      row?.quality_score_display ??
+      row?.opportunityScoreDisplay ??
+      row?.opportunity_score_display,
+  );
+  if (Number.isFinite(displayValue)) {
+    return displayValue;
+  }
+  const rawValue = Number(row?.opportunityScore ?? row?.score ?? 0);
+  return Number.isFinite(rawValue) ? rawValue : 0;
+}
+
 function getExecutionConfidenceTone(value) {
   const safe = String(value || "")
     .trim()
@@ -11202,7 +11216,7 @@ function renderDashboardArbitragePanel() {
         ${opportunities
           .slice(0, 5)
           .map((row) => {
-            const score = Number(row?.opportunityScore ?? row?.score ?? 0);
+            const score = getOpportunityDisplayScore(row);
             const scoreTone = getOpportunityScoreTone(score);
             const scoreLabel = formatOpportunityLabel(
               row?.scoreCategory,
@@ -11379,7 +11393,7 @@ function renderPortfolioArbitrageWidget() {
         ${opportunities
           .slice(0, 3)
           .map((row) => {
-            const score = Number(row?.opportunityScore ?? row?.score ?? 0);
+            const score = getOpportunityDisplayScore(row);
             const scoreTone = getOpportunityScoreTone(score);
             const scoreLabel = formatOpportunityLabel(
               row?.scoreCategory,
@@ -12343,7 +12357,7 @@ function renderMarketTab() {
         <tbody>
           ${opportunityRows
             .map((row) => {
-              const score = Number(row?.opportunityScore ?? row?.score ?? 0);
+              const score = getOpportunityDisplayScore(row);
               const scoreTone = getOpportunityScoreTone(score);
               const scoreLabel = formatOpportunityLabel(
                 row?.scoreCategory,
@@ -12922,7 +12936,9 @@ function renderGlobalOpportunitiesTab() {
           ${rows
             .map((row, index) => {
               const lockedPreview = isLockedPremiumPreview(row);
-              const score = lockedPreview ? null : Number(row?.score || 0);
+              const score = lockedPreview
+                ? null
+                : getOpportunityDisplayScore(row);
               const scoreTone = lockedPreview
                 ? "warning"
                 : getOpportunityScoreTone(score);

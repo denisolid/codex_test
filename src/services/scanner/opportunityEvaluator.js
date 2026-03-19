@@ -6,6 +6,7 @@ const {
   PENALTY_WEIGHTS
 } = require("./config")
 const { normalizeCategory } = require("./stateModel")
+const MIN_SCAN_COST_USD = 2
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -291,6 +292,12 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
   const hardRejectReasons = []
   if (!base.buyMarket || !base.sellMarket || base.buyPrice == null || base.sellNet == null) {
     hardRejectReasons.push("broken_invalid_data")
+  }
+  if (
+    (base.buyPrice != null && base.buyPrice < MIN_SCAN_COST_USD) ||
+    (base.referencePrice != null && base.referencePrice < MIN_SCAN_COST_USD)
+  ) {
+    hardRejectReasons.push("below_min_cost_floor")
   }
   if (base.profit == null || base.profit <= 0) {
     hardRejectReasons.push("non_positive_profit")

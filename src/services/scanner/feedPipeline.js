@@ -16,6 +16,31 @@ function toFiniteOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function clampScore(value) {
+  const parsed = toFiniteOrNull(value)
+  if (parsed == null) return 0
+  return Math.min(Math.max(Math.round(parsed), 0), 100)
+}
+
+function buildDisplayQualityScore(value) {
+  const rawScore = toFiniteOrNull(value)
+  if (rawScore == null) return null
+  const score = clampScore(rawScore)
+
+  // Keep low scores readable in UI while preserving score order.
+  if (score <= 70) {
+    const normalized = score / 70
+    return Number((18 + 52 * Math.pow(normalized, 0.9)).toFixed(1))
+  }
+
+  // Avoid showing near-perfect 100/100 by default in visible feeds.
+  if (score >= 92) {
+    return Number((92 + (score - 92) * 0.6).toFixed(1))
+  }
+
+  return Number(score.toFixed(1))
+}
+
 function normalizeCategory(value) {
   const raw = normalizeText(value).toLowerCase()
   if (!raw) return "weapon_skin"
@@ -125,6 +150,8 @@ function buildFeedInsertRow(opportunity = {}, options = {}) {
   const eventMeta = options.eventMeta && typeof options.eventMeta === "object" ? options.eventMeta : {}
   const flags = Array.isArray(opportunity.flags) ? opportunity.flags : []
   const badges = Array.isArray(opportunity.badges) ? opportunity.badges : []
+  const rawQualityScore = clampScore(opportunity.score)
+  const qualityScoreDisplay = buildDisplayQualityScore(rawQualityScore)
 
   return {
     item_name: normalizeText(opportunity.itemName || opportunity.marketHashName || "Tracked Item"),
@@ -136,7 +163,7 @@ function buildFeedInsertRow(opportunity = {}, options = {}) {
     sell_net: Number(Number(opportunity.sellNet || 0).toFixed(4)),
     profit: Number(Number(opportunity.profit || 0).toFixed(4)),
     spread_pct: Number(Number(opportunity.spread || 0).toFixed(4)),
-    opportunity_score: Math.min(Math.max(Math.round(Number(opportunity.score || 0)), 0), 100),
+    opportunity_score: rawQualityScore,
     execution_confidence: normalizeText(opportunity.executionConfidence || "Low") || "Low",
     quality_grade: normalizeText(opportunity.qualityGrade || "SPECULATIVE") || "SPECULATIVE",
     liquidity_label: normalizeText(opportunity.liquidityBand || "Low") || "Low",
@@ -163,7 +190,8 @@ function buildFeedInsertRow(opportunity = {}, options = {}) {
       is_risky_eligible: Boolean(opportunity.isRiskyEligible),
       score_category: opportunity.scoreCategory || null,
       ...eventMeta,
-      ...(opportunity.metadata && typeof opportunity.metadata === "object" ? opportunity.metadata : {})
+      ...(opportunity.metadata && typeof opportunity.metadata === "object" ? opportunity.metadata : {}),
+      quality_score_display: qualityScoreDisplay
     }
   }
 }
@@ -172,6 +200,10 @@ function mapFeedRowToApiRow(row = {}) {
   const metadata = row?.metadata && typeof row.metadata === "object" ? row.metadata : {}
   const detectedAt = row?.detected_at || null
   const tier = normalizeText(metadata?.opportunity_tier).toLowerCase()
+  const rawScore = toFiniteOrNull(row?.opportunity_score)
+  const qualityScoreDisplay =
+    toFiniteOrNull(metadata?.quality_score_display ?? metadata?.qualityScoreDisplay) ??
+    buildDisplayQualityScore(rawScore)
   return {
     feedId: row?.id || null,
     detectedAt,
@@ -192,7 +224,9 @@ function mapFeedRowToApiRow(row = {}) {
     sellNet: toFiniteOrNull(row?.sell_net),
     profit: toFiniteOrNull(row?.profit),
     spread: toFiniteOrNull(row?.spread_pct),
-    score: toFiniteOrNull(row?.opportunity_score),
+    score: rawScore,
+    qualityScoreDisplay,
+    quality_score_display: qualityScoreDisplay,
     scoreCategory:
       metadata?.score_category ||
       (tier === "strong"

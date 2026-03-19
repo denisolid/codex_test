@@ -122,6 +122,20 @@ test("source eligibility aligns weapon-skin liquidity floor with risky entry thr
   assert.equal(aligned.reason, "")
 })
 
+test("source eligibility blocks case items below $2", () => {
+  const category = normalizeCategory("case", "Fracture Case")
+  const lowCost = evaluateEligibility({
+    category,
+    referencePrice: 1.75,
+    volume7d: 200,
+    marketCoverageCount: 2,
+    snapshotStale: false
+  })
+
+  assert.equal(lowCost.eligible, false)
+  assert.equal(lowCost.reason, "excludedLowValueItems")
+})
+
 test("candidate state separates enriching from strict eligible", () => {
   const category = normalizeCategory("case", "Revolution Case")
   const lowContextState = evaluateCandidateState({
