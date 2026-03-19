@@ -235,6 +235,13 @@ const SCAN_STATES = Object.freeze({
   SPECULATIVE_CANDIDATE: "speculative_candidate",
   HARD_REJECT: "hard_reject"
 })
+const SCANNER_SELECTION_CATEGORIES = Object.freeze([
+  ITEM_CATEGORIES.WEAPON_SKIN,
+  ITEM_CATEGORIES.CASE,
+  ITEM_CATEGORIES.STICKER_CAPSULE,
+  ITEM_CATEGORIES.KNIFE,
+  ITEM_CATEGORIES.GLOVE
+])
 const SCANNER_AUDIT_CATEGORIES = Object.freeze([
   ITEM_CATEGORIES.WEAPON_SKIN,
   ITEM_CATEGORIES.CASE,
@@ -1113,6 +1120,20 @@ function resolveCatalogSeedSource(candidateStatus = CATALOG_CANDIDATE_STATUS.CAN
   if (normalizedStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE) return "catalog_near_eligible"
   if (normalizedStatus === CATALOG_CANDIDATE_STATUS.ENRICHING) return "catalog_enriching"
   return "dynamic_snapshot"
+}
+
+function isCatalogUniverseSource(value = "") {
+  const source = String(value || "")
+    .trim()
+    .toLowerCase()
+  return source.startsWith("catalog_") || source === "dynamic_snapshot"
+}
+
+function isCuratedUniverseSource(value = "") {
+  const source = String(value || "")
+    .trim()
+    .toLowerCase()
+  return source === "curated_db" || source.startsWith("fallback_")
 }
 
 function computeUniverseSeedRank(seed = {}) {
@@ -2746,6 +2767,18 @@ function buildOpportunityAdmissionDiagnostics() {
     skins_scanned_count: 0,
     cases_scanned_count: 0,
     capsules_scanned_count: 0,
+    scan_now_count: 0,
+    scan_with_penalties_count: 0,
+    hard_reject_count: 0,
+    selected_hot_core: 0,
+    selected_rotating_pool: 0,
+    skipped_recently_scanned: 0,
+    skipped_last_run: 0,
+    reused_recently_scanned_to_fill: 0,
+    reused_last_run_to_fill: 0,
+    repeated_from_last_run_count: 0,
+    repeated_from_last_run_ratio: 0,
+    repeated_from_last_run_warning: false,
 
     scan_states: buildScanStateCounter(0),
     scan_states_by_category: buildScanStateByCategoryCounter(0),
@@ -2924,9 +2957,7 @@ function evaluateNearEligibleRiskyScanReadiness(seed = {}) {
   const snapshotCapturedAt = normalizeTextValue(seed?.snapshotCapturedAt ?? seed?.snapshot_captured_at)
   const hasCoverageForRisky = coverageCount >= 1
   const isRiskyLaneCandidate =
-    (candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE ||
-      candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE) &&
-    (maturityState === MATURITY_STATES.NEAR_ELIGIBLE || maturityState === MATURITY_STATES.ELIGIBLE) &&
+    candidateStatus !== CATALOG_CANDIDATE_STATUS.REJECTED &&
     progressionStatus !== SOURCE_CATALOG_PROGRESSION_STATUS.REJECTED
   const hasSnapshotPresence =
     Boolean(snapshotCapturedAt) && snapshotState !== SOURCE_CATALOG_SNAPSHOT_STATES.MISSING
@@ -2942,7 +2973,7 @@ function evaluateNearEligibleRiskyScanReadiness(seed = {}) {
 
   const blockingReasons = []
   if (!isRiskyLaneCandidate) {
-    blockingReasons.push("deferred_due_to_maturity")
+    blockingReasons.push("deferred_due_to_progression")
   }
   if (riskProfileBlocked) {
     blockingReasons.push("deferred_due_to_risk_profile")
@@ -2958,6 +2989,14 @@ function evaluateNearEligibleRiskyScanReadiness(seed = {}) {
   }
   if (!hasCoverageForRisky) {
     softReasons.push("deferred_near_eligible_insufficient_coverage")
+  }
+  if (
+    candidateStatus === CATALOG_CANDIDATE_STATUS.CANDIDATE ||
+    candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING ||
+    maturityState === MATURITY_STATES.COLD ||
+    maturityState === MATURITY_STATES.ENRICHING
+  ) {
+    softReasons.push("needs_enrichment")
   }
   if (!hasUsableReference) {
     softReasons.push("deferred_near_eligible_missing_reference")
@@ -3012,9 +3051,24 @@ function evaluateOpportunitySeedAdmission(seed = {}, options = {}) {
   const missingSnapshot = snapshotState === SOURCE_CATALOG_SNAPSHOT_STATES.MISSING
   const missingReference = referenceState === SOURCE_CATALOG_REFERENCE_STATES.MISSING
   const missingLiquidity = liquidityState === SOURCE_CATALOG_LIQUIDITY_STATES.MISSING
-  const weakCoverage = coverageState !== SOURCE_CATALOG_COVERAGE_STATES.READY
+  const weakCoverage =
+    coverageState !== SOURCE_CATALOG_COVERAGE_STATES.READY || coverageCount < MIN_MARKET_COVERAGE
   const agingData = freshness.state === FRESHNESS_STATES.AGING
   const staleData = !freshness.usable || freshness.state === FRESHNESS_STATES.STALE
+  const weakDepth = progressionBlockers.some((value) => String(value || "").toLowerCase().includes("depth"))
+  const hasAnyEvidence =
+    coverageCount >= 1 ||
+    snapshotState !== SOURCE_CATALOG_SNAPSHOT_STATES.MISSING ||
+    referenceState !== SOURCE_CATALOG_REFERENCE_STATES.MISSING ||
+    (toFiniteOrNull(seed?.liquidityRank ?? seed?.liquidity_rank) ?? 0) > 0
+  const weakEvidence =
+    countTrueValues([
+      coverageCount >= 1,
+      snapshotState !== SOURCE_CATALOG_SNAPSHOT_STATES.MISSING,
+      referenceState !== SOURCE_CATALOG_REFERENCE_STATES.MISSING,
+      liquidityState !== SOURCE_CATALOG_LIQUIDITY_STATES.MISSING,
+      freshness.usable
+    ]) <= 1
 
   const weaponSkinSeedFilters =
     itemCategory === ITEM_CATEGORIES.WEAPON_SKIN ? evaluateWeaponSkinSeedFilters(seed) : null
@@ -3034,15 +3088,30 @@ function evaluateOpportunitySeedAdmission(seed = {}, options = {}) {
   if (missingReference) penaltyReasons.push("missing_reference")
   if (missingLiquidity) penaltyReasons.push("missing_liquidity")
   if (weakCoverage) penaltyReasons.push("weak_coverage")
+  if (weakDepth) penaltyReasons.push("weak_depth")
   if (agingData) penaltyReasons.push("aging_data")
   if (staleData) penaltyReasons.push("stale_data")
   if (lowValueFlag) penaltyReasons.push("low_value_flag")
+  if (weakEvidence) {
+    penaltyReasons.push("thin_market_evidence")
+    speculativeReasons.push("thin_market_evidence")
+  }
+  if (
+    candidateStatus === CATALOG_CANDIDATE_STATUS.CANDIDATE ||
+    candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING ||
+    maturityState === MATURITY_STATES.COLD ||
+    maturityState === MATURITY_STATES.ENRICHING
+  ) {
+    penaltyReasons.push("needs_enrichment")
+  }
 
   if (penaltyReasons.length) {
     scanFlags.push("needs_enrichment")
   }
   if (missingLiquidity) scanFlags.push("missing_liquidity")
   if (agingData || staleData) scanFlags.push("aging_data")
+  if (weakCoverage) scanFlags.push("weak_coverage")
+  if (weakDepth) scanFlags.push("weak_depth")
   if (lowValueFlag) scanFlags.push("low_value_flag")
 
   let scanState = SCAN_STATES.SCAN_NOW
@@ -3051,34 +3120,11 @@ function evaluateOpportunitySeedAdmission(seed = {}, options = {}) {
   if (progressionStatus === SOURCE_CATALOG_PROGRESSION_STATUS.REJECTED || riskProfileBlocked) {
     scanState = SCAN_STATES.HARD_REJECT
     hardRejectReason = riskProfileBlocked ? "structural_or_antifake_block" : "progression_rejected"
+  } else if (!hasAnyEvidence) {
+    scanState = SCAN_STATES.HARD_REJECT
+    hardRejectReason = "insufficient_market_evidence"
   } else {
-    const evidenceCount = countTrueValues([
-      coverageCount >= 1,
-      snapshotState !== SOURCE_CATALOG_SNAPSHOT_STATES.MISSING,
-      referenceState !== SOURCE_CATALOG_REFERENCE_STATES.MISSING,
-      liquidityState !== SOURCE_CATALOG_LIQUIDITY_STATES.MISSING,
-      freshness.usable
-    ])
-    const hasAnyEvidence =
-      coverageCount >= 1 ||
-      snapshotState !== SOURCE_CATALOG_SNAPSHOT_STATES.MISSING ||
-      referenceState !== SOURCE_CATALOG_REFERENCE_STATES.MISSING ||
-      (toFiniteOrNull(seed?.liquidityRank) ?? 0) > 0
-
-    const missingCriticalCount = countTrueValues([
-      missingSnapshot,
-      missingReference,
-      missingLiquidity,
-      coverageCount < 1
-    ])
-
-    if (!hasAnyEvidence || evidenceCount <= 1) {
-      scanState = SCAN_STATES.SPECULATIVE_CANDIDATE
-      speculativeReasons.push(!hasAnyEvidence ? "insufficient_market_evidence" : "thin_market_evidence")
-    } else if (missingCriticalCount >= 3) {
-      scanState = SCAN_STATES.SPECULATIVE_CANDIDATE
-      speculativeReasons.push("multiple_missing_signals")
-    } else if (penaltyReasons.length) {
+    if (penaltyReasons.length) {
       scanState = SCAN_STATES.SCAN_WITH_PENALTIES
     } else {
       scanState = SCAN_STATES.SCAN_NOW
@@ -3089,7 +3135,7 @@ function evaluateOpportunitySeedAdmission(seed = {}, options = {}) {
   const ready = scanState !== SCAN_STATES.HARD_REJECT
   const isStrictExecutionReady = ready && scanState === SCAN_STATES.SCAN_NOW
   const isRiskyScanReady = ready && scanState === SCAN_STATES.SCAN_WITH_PENALTIES
-  const isSpeculativeScanReady = ready && scanState === SCAN_STATES.SPECULATIVE_CANDIDATE
+  const isSpeculativeScanReady = false
 
   if (forceScanFromCatalog && scanState === SCAN_STATES.HARD_REJECT) {
     // Rescue mode never bypasses structural/anti-fake blocks.
@@ -3111,9 +3157,7 @@ function evaluateOpportunitySeedAdmission(seed = {}, options = {}) {
       ? "blocked"
       : scanState === SCAN_STATES.SCAN_NOW
         ? "scan_now"
-        : scanState === SCAN_STATES.SCAN_WITH_PENALTIES
-          ? "scan_with_penalties"
-          : "speculative_candidate",
+        : "scan_with_penalties",
     candidateStatus,
     maturityState,
     snapshotState,
@@ -3174,8 +3218,12 @@ function summarizeOpportunitySeedAdmissions(admissions = [], executedSeeds = [],
         summary.scan_candidates_from_risky_ready += 1
       }
 
-      if (scanState === SCAN_STATES.SCAN_WITH_PENALTIES) {
-        for (const reason of normalizeTextList(admission?.penaltyReasons)) {
+      if (scanState === SCAN_STATES.SCAN_WITH_PENALTIES || scanState === SCAN_STATES.SPECULATIVE_CANDIDATE) {
+        const penaltyReasonList = normalizeTextList([
+          ...normalizeTextList(admission?.penaltyReasons),
+          ...normalizeTextList(admission?.speculativeReasons)
+        ])
+        for (const reason of penaltyReasonList) {
           summary.penalty_reasons[reason] = Number(summary.penalty_reasons[reason] || 0) + 1
           if (
             SCANNER_AUDIT_CATEGORIES.includes(itemCategory) &&
@@ -3184,18 +3232,6 @@ function summarizeOpportunitySeedAdmissions(admissions = [], executedSeeds = [],
           ) {
             summary.penalty_reasons_by_category[itemCategory][reason] =
               Number(summary.penalty_reasons_by_category[itemCategory][reason] || 0) + 1
-          }
-        }
-      } else if (scanState === SCAN_STATES.SPECULATIVE_CANDIDATE) {
-        for (const reason of normalizeTextList(admission?.speculativeReasons)) {
-          summary.speculative_reasons[reason] = Number(summary.speculative_reasons[reason] || 0) + 1
-          if (
-            SCANNER_AUDIT_CATEGORIES.includes(itemCategory) &&
-            summary.speculative_reasons_by_category &&
-            summary.speculative_reasons_by_category[itemCategory]
-          ) {
-            summary.speculative_reasons_by_category[itemCategory][reason] =
-              Number(summary.speculative_reasons_by_category[itemCategory][reason] || 0) + 1
           }
         }
       }
@@ -3240,6 +3276,9 @@ function summarizeOpportunitySeedAdmissions(admissions = [], executedSeeds = [],
 
   summary.universe_loaded_for_scan = Number(summary.scan_candidates_loaded || 0)
   summary.universe_deferred_before_scan = Number(summary.scan_candidates_deferred || 0)
+  summary.scan_now_count = Number(summary.scan_states?.[SCAN_STATES.SCAN_NOW] || 0)
+  summary.scan_with_penalties_count = Number(summary.scan_states?.[SCAN_STATES.SCAN_WITH_PENALTIES] || 0)
+  summary.hard_reject_count = Number(summary.scan_states?.[SCAN_STATES.HARD_REJECT] || 0)
   if (summary.deferred_due_to_missing_snapshot <= 0) {
     summary.deferred_due_to_missing_snapshot = Number(summary.deferred_near_eligible_missing_snapshot || 0)
   }
@@ -3248,6 +3287,21 @@ function summarizeOpportunitySeedAdmissions(admissions = [], executedSeeds = [],
       summary.deferred_due_to_visibility_or_feed_floor || 0
     )
   }
+  const rotationDiagnostics =
+    options?.rotationDiagnostics && typeof options.rotationDiagnostics === "object"
+      ? options.rotationDiagnostics
+      : {}
+  summary.selected_hot_core = Number(rotationDiagnostics?.selectedHotCore || 0)
+  summary.selected_rotating_pool = Number(rotationDiagnostics?.selectedRotating || 0)
+  summary.skipped_recently_scanned = Number(rotationDiagnostics?.skippedRecentlyScanned || 0)
+  summary.skipped_last_run = Number(rotationDiagnostics?.skippedLastRun || 0)
+  summary.reused_recently_scanned_to_fill = Number(
+    rotationDiagnostics?.reusedRecentlyScannedToFill || 0
+  )
+  summary.reused_last_run_to_fill = Number(rotationDiagnostics?.reusedLastRunToFill || 0)
+  summary.repeated_from_last_run_count = Number(rotationDiagnostics?.repeatedFromLastRunCount || 0)
+  summary.repeated_from_last_run_ratio = Number(rotationDiagnostics?.repeatedFromLastRunRatio || 0)
+  summary.repeated_from_last_run_warning = summary.repeated_from_last_run_ratio >= 0.7
 
   summary.penalty_top_reasons = toTopReasonCounts(summary.penalty_reasons, 8)
   summary.speculative_top_reasons = toTopReasonCounts(summary.speculative_reasons, 8)
@@ -3296,6 +3350,297 @@ function rankLayerRows(rows = []) {
       Number(b.liquidityRank || 0) - Number(a.liquidityRank || 0) ||
       sourceRank(b.universeSource) - sourceRank(a.universeSource)
   )
+}
+
+function rotateList(values = [], offset = 0) {
+  const list = Array.isArray(values) ? values : []
+  if (list.length <= 1) return list
+  const normalizedOffset = Number.isFinite(Number(offset)) ? Math.round(Number(offset)) : 0
+  const index = ((normalizedOffset % list.length) + list.length) % list.length
+  return [...list.slice(index), ...list.slice(0, index)]
+}
+
+function resolveSeedLastScannedAgeMinutes(seed = {}, nowMs = Date.now()) {
+  const scannedAt = seed?.quoteFetchedAt ?? seed?.quote_fetched_at
+  const ts = parseIsoTimestampMs(scannedAt)
+  if (ts == null) return null
+  const ageMinutes = (Number(nowMs) - ts) / (60 * 1000)
+  if (!Number.isFinite(ageMinutes) || ageMinutes < 0) return null
+  return round2(ageMinutes)
+}
+
+function scanStatePriority(scanState = "") {
+  const normalized = normalizeLowerText(scanState)
+  if (normalized === SCAN_STATES.SCAN_NOW) return 3
+  if (normalized === SCAN_STATES.SCAN_WITH_PENALTIES) return 2
+  if (normalized === SCAN_STATES.SPECULATIVE_CANDIDATE) return 2
+  return 0
+}
+
+function selectOpportunitySeedsWithRotation(seeds = [], options = {}) {
+  const ranked = rankLayerRows(seeds)
+  const opportunityTarget = Math.max(Math.round(Number(options?.opportunityTarget || 0)), 0)
+  if (!opportunityTarget) {
+    return {
+      coreSeeds: [],
+      rotatingSeeds: [],
+      opportunitySeeds: [],
+      diagnostics: {
+        enabled: true,
+        opportunityTarget: 0,
+        hotCoreTarget: 0,
+        rotatingTarget: 0,
+        cooldownMinutes: 0,
+        selectedHotCore: 0,
+        selectedRotating: 0,
+        skippedRecentlyScanned: 0,
+        skippedLastRun: 0,
+        reusedRecentlyScannedToFill: 0,
+        reusedLastRunToFill: 0,
+        repeatedFromLastRunCount: 0,
+        repeatedFromLastRunRatio: 0,
+        selectedByScanState: buildScanStateCounter(0)
+      }
+    }
+  }
+
+  const admissionResolver =
+    typeof options?.admissionResolver === "function"
+      ? options.admissionResolver
+      : (row) => evaluateOpportunitySeedAdmission(row, options)
+  const cooldownMinutes = Math.max(Number(options?.cooldownMinutes || 90), 0)
+  const hotCoreTarget = Math.max(
+    Math.min(Math.round(Number(options?.hotCoreTarget || HOT_OPPORTUNITY_SCAN_TARGET)), opportunityTarget),
+    0
+  )
+  const rotatingTarget = Math.max(opportunityTarget - hotCoreTarget, 0)
+  const nowMs = Date.now()
+  const categoryOrder = rotateList(SCANNER_SELECTION_CATEGORIES, options?.categoryCursor || 0)
+
+  const recentlySelectedNames = new Set(
+    (Array.isArray(options?.recentlySelectedNames) ? options.recentlySelectedNames : [])
+      .map((name) => normalizeMarketHashName(name))
+      .filter(Boolean)
+  )
+
+  const candidates = []
+  for (const row of ranked) {
+    const marketHashName = normalizeMarketHashName(row?.marketHashName)
+    if (!marketHashName) continue
+    const admission = admissionResolver(row) || {}
+    const scanState = normalizeLowerText(admission?.scanState)
+    if (scanState === SCAN_STATES.HARD_REJECT || admission?.ready === false) continue
+    const itemCategory = normalizeItemCategory(row?.itemCategory, marketHashName)
+    const ageMinutes = resolveSeedLastScannedAgeMinutes(row, nowMs)
+    const recentlyScanned = ageMinutes != null && ageMinutes <= cooldownMinutes
+    const recentlySelected = recentlySelectedNames.has(marketHashName)
+    candidates.push({
+      row,
+      marketHashName,
+      itemCategory,
+      scanState,
+      scanPriority: scanStatePriority(scanState),
+      ageMinutes,
+      recentlyScanned,
+      recentlySelected,
+      isCatalogSource: isCatalogUniverseSource(row?.universeSource)
+    })
+  }
+
+  const selectedNames = new Set()
+  const selectedByScanState = buildScanStateCounter(0)
+  const bumpSelectedScanState = (scanState = "") => {
+    const key = normalizeLowerText(scanState)
+    if (selectedByScanState[key] == null) return
+    selectedByScanState[key] += 1
+  }
+  const markSelected = (entry) => {
+    if (!entry?.marketHashName || selectedNames.has(entry.marketHashName)) return false
+    selectedNames.add(entry.marketHashName)
+    bumpSelectedScanState(entry.scanState)
+    return true
+  }
+
+  const hotCandidates = candidates
+    .filter((entry) => String(entry?.row?.scanLayer || "").trim().toLowerCase() === SCAN_LAYERS.HOT)
+    .sort(
+      (a, b) =>
+        Number(b.scanPriority || 0) - Number(a.scanPriority || 0) ||
+        Number(b.row?.layerPriority || 0) - Number(a.row?.layerPriority || 0) ||
+        Number(b.row?.maturityScore || 0) - Number(a.row?.maturityScore || 0) ||
+        Number(b.row?.signalHistoryScore || 0) - Number(a.row?.signalHistoryScore || 0) ||
+        Number(b.row?.liquidityRank || 0) - Number(a.row?.liquidityRank || 0) ||
+        sourceRank(b.row?.universeSource) - sourceRank(a.row?.universeSource)
+    )
+  const fallbackCoreCandidates = candidates
+    .slice()
+    .sort(
+      (a, b) =>
+        Number(b.scanPriority || 0) - Number(a.scanPriority || 0) ||
+        Number(b.row?.layerPriority || 0) - Number(a.row?.layerPriority || 0) ||
+        Number(b.row?.maturityScore || 0) - Number(a.row?.maturityScore || 0) ||
+        Number(b.row?.signalHistoryScore || 0) - Number(a.row?.signalHistoryScore || 0) ||
+        Number(b.row?.liquidityRank || 0) - Number(a.row?.liquidityRank || 0) ||
+        sourceRank(b.row?.universeSource) - sourceRank(a.row?.universeSource)
+    )
+
+  const coreSeeds = []
+  for (const entry of hotCandidates) {
+    if (coreSeeds.length >= hotCoreTarget) break
+    if (markSelected(entry)) {
+      coreSeeds.push(entry.row)
+    }
+  }
+  if (coreSeeds.length < hotCoreTarget) {
+    for (const entry of fallbackCoreCandidates) {
+      if (coreSeeds.length >= hotCoreTarget) break
+      if (markSelected(entry)) {
+        coreSeeds.push(entry.row)
+      }
+    }
+  }
+
+  const pickRotating = (poolEntries = [], remainingTarget = 0) => {
+    const needed = Math.max(Number(remainingTarget || 0), 0)
+    if (!needed) {
+      return {
+        selected: [],
+        skippedRecentlyScanned: 0,
+        skippedLastRun: 0,
+        reusedRecentlyScannedToFill: 0,
+        reusedLastRunToFill: 0
+      }
+    }
+
+    const byCategoryNotRecent = Object.fromEntries(categoryOrder.map((category) => [category, []]))
+    const byCategoryRecent = Object.fromEntries(categoryOrder.map((category) => [category, []]))
+    let skippedRecentlyScanned = 0
+    let skippedLastRun = 0
+    for (const entry of Array.isArray(poolEntries) ? poolEntries : []) {
+      if (!entry?.marketHashName || selectedNames.has(entry.marketHashName)) continue
+      const category = SCANNER_SELECTION_CATEGORIES.includes(entry.itemCategory)
+        ? entry.itemCategory
+        : ITEM_CATEGORIES.WEAPON_SKIN
+      const isRecent = Boolean(entry.recentlyScanned) || Boolean(entry.recentlySelected)
+      if (entry.recentlyScanned) skippedRecentlyScanned += 1
+      if (entry.recentlySelected) skippedLastRun += 1
+      const queue = isRecent ? byCategoryRecent[category] : byCategoryNotRecent[category]
+      if (queue) queue.push(entry)
+    }
+
+    const rotationAgeRank = (entry) =>
+      entry?.ageMinutes == null ? Number.MAX_SAFE_INTEGER : Number(entry.ageMinutes || 0)
+    const sortRotation = (a, b) =>
+      Number(b.scanPriority || 0) - Number(a.scanPriority || 0) ||
+      rotationAgeRank(b) - rotationAgeRank(a) ||
+      Number(b.row?.layerPriority || 0) - Number(a.row?.layerPriority || 0) ||
+      Number(b.row?.maturityScore || 0) - Number(a.row?.maturityScore || 0) ||
+      Number(b.row?.signalHistoryScore || 0) - Number(a.row?.signalHistoryScore || 0) ||
+      Number(b.row?.liquidityRank || 0) - Number(a.row?.liquidityRank || 0) ||
+      sourceRank(b.row?.universeSource) - sourceRank(a.row?.universeSource)
+    for (const category of categoryOrder) {
+      byCategoryNotRecent[category].sort(sortRotation)
+      byCategoryRecent[category].sort(sortRotation)
+    }
+
+    const selected = []
+    const drainRoundRobin = (queuesByCategory) => {
+      let madeProgress = true
+      while (selected.length < needed && madeProgress) {
+        madeProgress = false
+        for (const category of categoryOrder) {
+          if (selected.length >= needed) break
+          const queue = queuesByCategory[category]
+          if (!queue || !queue.length) continue
+          const entry = queue.shift()
+          if (!entry) continue
+          if (markSelected(entry)) {
+            selected.push(entry.row)
+            madeProgress = true
+          }
+        }
+      }
+    }
+
+    drainRoundRobin(byCategoryNotRecent)
+    const selectedFromNotRecent = selected.length
+    drainRoundRobin(byCategoryRecent)
+    const selectedFromRecent = Math.max(selected.length - selectedFromNotRecent, 0)
+    const reusedLastRunToFill = selectedFromRecent
+      ? selected
+          .map((row) => normalizeMarketHashName(row?.marketHashName))
+          .filter((name) => name && recentlySelectedNames.has(name)).length
+      : 0
+    const reusedRecentlyScannedToFill = selectedFromRecent
+      ? Math.max(selectedFromRecent - reusedLastRunToFill, 0)
+      : 0
+
+    return {
+      selected,
+      skippedRecentlyScanned,
+      skippedLastRun,
+      reusedRecentlyScannedToFill,
+      reusedLastRunToFill
+    }
+  }
+
+  const remainingCandidates = candidates.filter((entry) => !selectedNames.has(entry.marketHashName))
+  const primaryRotationPool = remainingCandidates.filter((entry) => entry.isCatalogSource)
+  const secondaryRotationPool = remainingCandidates.filter((entry) => !entry.isCatalogSource)
+
+  let skippedRecentlyScanned = 0
+  let skippedLastRun = 0
+  let reusedRecentlyScannedToFill = 0
+  let reusedLastRunToFill = 0
+  const rotatingSeeds = []
+
+  const primaryPick = pickRotating(primaryRotationPool, rotatingTarget)
+  rotatingSeeds.push(...primaryPick.selected)
+  skippedRecentlyScanned += primaryPick.skippedRecentlyScanned
+  skippedLastRun += primaryPick.skippedLastRun
+  reusedRecentlyScannedToFill += primaryPick.reusedRecentlyScannedToFill
+  reusedLastRunToFill += primaryPick.reusedLastRunToFill
+
+  const remainingAfterPrimary = Math.max(rotatingTarget - rotatingSeeds.length, 0)
+  if (remainingAfterPrimary > 0) {
+    const secondaryPick = pickRotating(secondaryRotationPool, remainingAfterPrimary)
+    rotatingSeeds.push(...secondaryPick.selected)
+    skippedRecentlyScanned += secondaryPick.skippedRecentlyScanned
+    skippedLastRun += secondaryPick.skippedLastRun
+    reusedRecentlyScannedToFill += secondaryPick.reusedRecentlyScannedToFill
+    reusedLastRunToFill += secondaryPick.reusedLastRunToFill
+  }
+
+  const opportunitySeeds = [...coreSeeds, ...rotatingSeeds].slice(0, opportunityTarget)
+  const repeatedFromLastRunCount = opportunitySeeds
+    .map((seed) => normalizeMarketHashName(seed?.marketHashName))
+    .filter((name) => name && recentlySelectedNames.has(name)).length
+  const repeatedFromLastRunRatio = opportunitySeeds.length
+    ? round2(repeatedFromLastRunCount / opportunitySeeds.length)
+    : 0
+
+  return {
+    coreSeeds,
+    rotatingSeeds,
+    opportunitySeeds,
+    diagnostics: {
+      enabled: true,
+      opportunityTarget,
+      hotCoreTarget,
+      rotatingTarget,
+      cooldownMinutes,
+      selectedHotCore: coreSeeds.length,
+      selectedRotating: rotatingSeeds.length,
+      skippedRecentlyScanned,
+      skippedLastRun,
+      reusedRecentlyScannedToFill,
+      reusedLastRunToFill,
+      repeatedFromLastRunCount,
+      repeatedFromLastRunRatio,
+      repeatedFromLastRunWarning: repeatedFromLastRunRatio >= 0.7,
+      selectedByScanState
+    }
+  }
 }
 
 function selectSeedsForLayeredScanning(seeds = [], options = {}) {
@@ -3569,23 +3914,24 @@ async function loadMatureCatalogUniverseSeeds(limit = HOT_MATURE_POOL_LIMIT, opt
   const safeLimit = Math.max(Math.round(Number(limit || HOT_MATURE_POOL_LIMIT)), 0)
   if (!safeLimit) return []
 
-  const categories = [
-    ITEM_CATEGORIES.WEAPON_SKIN,
-    ITEM_CATEGORIES.CASE,
-    ITEM_CATEGORIES.STICKER_CAPSULE
-  ]
-  let eligibleRows = []
+  const categories = [...SCANNER_SELECTION_CATEGORIES]
+  const scanPoolLimit = Math.max(
+    Math.min(Math.max(safeLimit * 4, 1200), Math.max(UNIVERSE_DB_LIMIT, 12000)),
+    safeLimit
+  )
+  let activeRows = []
   let candidateRows = []
   try {
-    ;[eligibleRows, candidateRows] = await Promise.all([
-      marketSourceCatalogRepo.listScanEligible({
-        limit: safeLimit,
+    ;[activeRows, candidateRows] = await Promise.all([
+      marketSourceCatalogRepo.listActiveTradable({
+        limit: scanPoolLimit,
         categories
       }),
       marketSourceCatalogRepo.listCandidatePool({
-        limit: safeLimit,
+        limit: scanPoolLimit,
         categories,
         candidateStatuses: [
+          CATALOG_CANDIDATE_STATUS.ELIGIBLE,
           CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE,
           CATALOG_CANDIDATE_STATUS.ENRICHING,
           CATALOG_CANDIDATE_STATUS.CANDIDATE
@@ -3597,8 +3943,9 @@ async function loadMatureCatalogUniverseSeeds(limit = HOT_MATURE_POOL_LIMIT, opt
     return []
   }
 
-  const seeds = await buildSeedsFromCatalogRows([...(eligibleRows || []), ...(candidateRows || [])], {
-    limit: safeLimit
+  const combinedRows = dedupeCatalogRowsByMarketHashName([...(candidateRows || []), ...(activeRows || [])])
+  const seeds = await buildSeedsFromCatalogRows(combinedRows, {
+    limit: scanPoolLimit
   })
   return seeds
 }
@@ -3712,11 +4059,13 @@ async function loadFeedSignalHistoryForItems(itemNames = []) {
   }
 }
 
-async function loadCuratedUniverseSeeds() {
+async function loadCuratedUniverseSeeds(limit = UNIVERSE_DB_LIMIT) {
   let curatedRows = []
+  const safeLimit = Math.max(Math.round(Number(limit || UNIVERSE_DB_LIMIT)), 0)
+  if (!safeLimit) return []
   try {
     curatedRows = await marketUniverseRepo.listActiveByLiquidityRank({
-      limit: UNIVERSE_DB_LIMIT,
+      limit: safeLimit,
       categories: [
         ITEM_CATEGORIES.WEAPON_SKIN,
         ITEM_CATEGORIES.CASE,
@@ -5765,6 +6114,11 @@ function createJobState() {
     lastCompletedAt: null,
     lastPersistSummary: null,
     lastStaleReconcileAt: 0,
+    selectionHistory: {
+      lastOpportunitySeedNames: [],
+      lastOpportunitySelectedAt: null,
+      rotationCursor: 0
+    },
     coordination: {
       lockAcquired: 0,
       lockDenied: 0,
@@ -6207,8 +6561,15 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
       forceScanFromCatalog
     })
     seedFilterMode = "allow_missing_snapshot_data"
+  } else if (isOpportunityMode) {
+    // Opportunity scan is scanability-first: enrichment is advisory, not admission gating.
+    selectedFilterResult = filterUniverseSeedsForScan(hydratedSeeds, {
+      allowMissingSnapshotData: true,
+      forceScanFromCatalog
+    })
+    seedFilterMode = "strict_scanability"
   } else if (!isOpportunityMode && strictFilterResult.selectedSeeds.length < strictCoverageThreshold) {
-  const relaxedFilterResult = filterUniverseSeedsForScan(hydratedSeeds, {
+    const relaxedFilterResult = filterUniverseSeedsForScan(hydratedSeeds, {
       allowMissingSnapshotData: true,
       forceScanFromCatalog
     })
@@ -6219,8 +6580,6 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
           ? "strict_plus_missing_snapshot_data"
           : "allow_missing_snapshot_data"
     }
-  } else if (isOpportunityMode) {
-    seedFilterMode = "strict_mature_only"
   }
 
   mergeDiscardStats(discardStats, selectedFilterResult.discardStats)
@@ -6319,30 +6678,87 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
     ),
     nearEligibleTarget: includeNearEligibleInOpportunity ? OPPORTUNITY_NEAR_ELIGIBLE_LIMIT : 0,
     enrichmentTarget: enrichmentBatchSize,
-    opportunityFilter: isOpportunityMode
-      ? (row) => resolveOpportunityAdmission(row).ready
-      : null,
+    opportunityFilter: null,
     forceScanFromCatalog,
     opportunityDeferredRows: deferredToEnrichmentRows
   })
   const allRankedSeeds = Array.isArray(layeredSelection?.allRankedSeeds)
     ? layeredSelection.allRankedSeeds
     : ranked
-  const opportunitySeeds = Array.isArray(layeredSelection?.opportunitySeeds)
-    ? layeredSelection.opportunitySeeds.slice(0, opportunityBatchSize)
+  const seedSelectionHistory =
+    options?.selectionHistory && typeof options.selectionHistory === "object"
+      ? options.selectionHistory
+      : {}
+  const previousSelectedNames = Array.isArray(seedSelectionHistory?.lastOpportunitySeedNames)
+    ? seedSelectionHistory.lastOpportunitySeedNames
     : []
-  const enrichmentSeeds = Array.isArray(layeredSelection?.enrichmentSeeds)
-    ? layeredSelection.enrichmentSeeds.slice(0, enrichmentBatchSize)
-    : []
+  const rotationSelection = isOpportunityMode
+    ? selectOpportunitySeedsWithRotation(allRankedSeeds, {
+        opportunityTarget: opportunityBatchSize,
+        hotCoreTarget: Math.min(Math.max(HOT_OPPORTUNITY_SCAN_TARGET, 1), opportunityBatchSize),
+        cooldownMinutes: Math.max(Number(options?.rotationCooldownMinutes || 90), 0),
+        categoryCursor: Number(seedSelectionHistory?.rotationCursor || 0),
+        recentlySelectedNames: previousSelectedNames,
+        admissionResolver: resolveOpportunityAdmission,
+        forceScanFromCatalog
+      })
+    : null
+  const opportunitySeeds = isOpportunityMode
+    ? Array.isArray(rotationSelection?.opportunitySeeds)
+      ? rotationSelection.opportunitySeeds.slice(0, opportunityBatchSize)
+      : []
+    : Array.isArray(layeredSelection?.opportunitySeeds)
+      ? layeredSelection.opportunitySeeds.slice(0, opportunityBatchSize)
+      : []
+  const selectedOpportunityNames = new Set(
+    opportunitySeeds
+      .map((row) => normalizeMarketHashName(row?.marketHashName))
+      .filter(Boolean)
+  )
+  const enrichmentSeeds = []
+  const enrichmentSeen = new Set()
+  for (const seed of [
+    ...(Array.isArray(layeredSelection?.enrichmentSeeds) ? layeredSelection.enrichmentSeeds : []),
+    ...allRankedSeeds
+  ]) {
+    if (enrichmentSeeds.length >= enrichmentBatchSize) break
+    const key = normalizeMarketHashName(seed?.marketHashName)
+    if (!key || selectedOpportunityNames.has(key) || enrichmentSeen.has(key)) continue
+    enrichmentSeen.add(key)
+    enrichmentSeeds.push(seed)
+  }
   const scanAdmission = isOpportunityMode
-    ? summarizeOpportunitySeedAdmissions(opportunityAdmissions, opportunitySeeds, { forceScanFromCatalog })
+    ? summarizeOpportunitySeedAdmissions(opportunityAdmissions, opportunitySeeds, {
+        forceScanFromCatalog,
+        rotationDiagnostics: rotationSelection?.diagnostics || {}
+      })
     : buildOpportunityAdmissionDiagnostics()
+  const nextRotationCursor = isOpportunityMode
+    ? (
+        Number(seedSelectionHistory?.rotationCursor || 0) + 1
+      ) % Math.max(SCANNER_SELECTION_CATEGORIES.length, 1)
+    : Number(seedSelectionHistory?.rotationCursor || 0)
+  const updatedSelectionHistory = isOpportunityMode
+    ? {
+        lastOpportunitySeedNames: opportunitySeeds
+          .map((seed) => normalizeMarketHashName(seed?.marketHashName))
+          .filter(Boolean)
+          .slice(-Math.max(opportunityBatchSize * 4, 800)),
+        lastOpportunitySelectedAt: new Date().toISOString(),
+        rotationCursor: nextRotationCursor
+      }
+    : {
+        lastOpportunitySeedNames: previousSelectedNames,
+        lastOpportunitySelectedAt: seedSelectionHistory?.lastOpportunitySelectedAt || null,
+        rotationCursor: nextRotationCursor
+      }
 
   return {
     seeds: mode === SCANNER_TYPES.ENRICHMENT ? [] : opportunitySeeds,
     enrichmentSeeds,
     allSeeds: allRankedSeeds,
     scanAdmission,
+    selectionHistory: updatedSelectionHistory,
     weaponSkinFilterDiagnostics:
       selectedFilterResult?.weaponSkinDiagnostics || buildWeaponSkinFilterDiagnostics(),
     snapshotWarmup: toSnapshotWarmupSummary({
@@ -6363,7 +6779,9 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
       layerDistribution: layeredSelection.diagnostics?.allSeeds?.layers || buildLayerCounter(0),
       layerDistributionByCategory:
         layeredSelection.diagnostics?.allSeeds?.layersByCategory || buildLayerByCategoryCounter(0),
-      highYieldCoreSize: Number(layeredSelection?.coreSeeds?.length || 0),
+      highYieldCoreSize: Number(
+        rotationSelection?.diagnostics?.selectedHotCore || layeredSelection?.coreSeeds?.length || 0
+      ),
       selectedForOpportunity: opportunitySeeds.length,
       selectedForEnrichment: enrichmentSeeds.length
     }),
@@ -6371,6 +6789,33 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
       layeredSelection.diagnostics && typeof layeredSelection.diagnostics === "object"
         ? {
             ...layeredSelection.diagnostics,
+            rotation:
+              rotationSelection?.diagnostics && typeof rotationSelection.diagnostics === "object"
+                ? rotationSelection.diagnostics
+                : {
+                    enabled: false,
+                    selectedHotCore: 0,
+                    selectedRotating: 0,
+                    skippedRecentlyScanned: 0,
+                    skippedLastRun: 0,
+                    reusedRecentlyScannedToFill: 0,
+                    reusedLastRunToFill: 0,
+                    repeatedFromLastRunCount: 0,
+                    repeatedFromLastRunRatio: 0,
+                    selectedByScanState: buildScanStateCounter(0)
+                  },
+            hotCoreSelected: Number(rotationSelection?.diagnostics?.selectedHotCore || 0),
+            rotatingSelected: Number(rotationSelection?.diagnostics?.selectedRotating || 0),
+            skippedRecentlyScanned: Number(rotationSelection?.diagnostics?.skippedRecentlyScanned || 0),
+            skippedLastRun: Number(rotationSelection?.diagnostics?.skippedLastRun || 0),
+            repeatedFromLastRunCount: Number(rotationSelection?.diagnostics?.repeatedFromLastRunCount || 0),
+            repeatedFromLastRunRatio: Number(rotationSelection?.diagnostics?.repeatedFromLastRunRatio || 0),
+            repeatingTooOften: Number(rotationSelection?.diagnostics?.repeatedFromLastRunRatio || 0) >= 0.7,
+            scanability: {
+              scanNow: Number(scanAdmission?.scan_now_count || 0),
+              scanWithPenalties: Number(scanAdmission?.scan_with_penalties_count || 0),
+              hardReject: Number(scanAdmission?.hard_reject_count || 0)
+            },
             scanAdmission
           }
         : {
@@ -6383,6 +6828,23 @@ async function loadScannerInputs(discardStats = {}, rejectedByItem = {}, options
             allSeeds: buildLayerDiagnostics(ranked),
             opportunity: buildLayerDiagnostics(opportunitySeeds),
             enrichment: buildLayerDiagnostics(enrichmentSeeds),
+            rotation: {
+              enabled: false,
+              selectedHotCore: 0,
+              selectedRotating: 0,
+              skippedRecentlyScanned: 0,
+              skippedLastRun: 0,
+              reusedRecentlyScannedToFill: 0,
+              reusedLastRunToFill: 0,
+              repeatedFromLastRunCount: 0,
+              repeatedFromLastRunRatio: 0,
+              selectedByScanState: buildScanStateCounter(0)
+            },
+            scanability: {
+              scanNow: Number(scanAdmission?.scan_now_count || 0),
+              scanWithPenalties: Number(scanAdmission?.scan_with_penalties_count || 0),
+              hardReject: Number(scanAdmission?.hard_reject_count || 0)
+            },
             scanAdmission
           }
   }
@@ -7219,6 +7681,10 @@ function buildHotScanSummary({
     layeredScanning?.hotUniverse && typeof layeredScanning.hotUniverse === "object"
       ? layeredScanning.hotUniverse
       : {}
+  const rotation =
+    layeredScanning?.rotation && typeof layeredScanning.rotation === "object"
+      ? layeredScanning.rotation
+      : {}
   const hotItemsByCategory = countRowsByCategory(
     (Array.isArray(opportunitySeeds) ? opportunitySeeds : []).map((row) => ({
       itemCategory: row?.itemCategory,
@@ -7262,6 +7728,29 @@ function buildHotScanSummary({
     selectedEnrichingForOpportunity: Number(
       layeredScanning?.selectedEnrichingForOpportunity || 0
     ),
+    selectedFromHotCore: Number(rotation?.selectedHotCore || layeredScanning?.hotCoreSelected || 0),
+    selectedFromRotatingPool: Number(
+      rotation?.selectedRotating || layeredScanning?.rotatingSelected || 0
+    ),
+    skippedRecentlyScanned: Number(
+      rotation?.skippedRecentlyScanned || layeredScanning?.skippedRecentlyScanned || 0
+    ),
+    skippedFromLastRun: Number(rotation?.skippedLastRun || layeredScanning?.skippedLastRun || 0),
+    reusedRecentlyScannedToFill: Number(rotation?.reusedRecentlyScannedToFill || 0),
+    reusedLastRunToFill: Number(rotation?.reusedLastRunToFill || 0),
+    repeatedFromLastRunCount: Number(
+      rotation?.repeatedFromLastRunCount || layeredScanning?.repeatedFromLastRunCount || 0
+    ),
+    repeatedFromLastRunRatio: Number(
+      rotation?.repeatedFromLastRunRatio || layeredScanning?.repeatedFromLastRunRatio || 0
+    ),
+    repeatedFromLastRunWarning:
+      Number(rotation?.repeatedFromLastRunRatio || layeredScanning?.repeatedFromLastRunRatio || 0) >=
+      0.7,
+    selectedByScanState:
+      rotation?.selectedByScanState && typeof rotation.selectedByScanState === "object"
+        ? rotation.selectedByScanState
+        : buildScanStateCounter(0),
     categoryContribution: {
       hotUniverse: hotUniverseByCategory,
       hotItems: queuedByCategory,
@@ -8099,7 +8588,8 @@ async function runScanInternal(options = {}) {
     enrichmentBatchSize: ENRICHMENT_BATCH_SIZE,
     includeNearEligibleInOpportunity: true,
     forceScanFromCatalog,
-    enableSnapshotWarmup: false
+    enableSnapshotWarmup: false,
+    selectionHistory: scannerState.selectionHistory
   })
   stageDurationsMs.inputHydrationMs = Date.now() - inputHydrationStartedAt
   const universeSeeds = Array.isArray(scannerInputs?.seeds) ? scannerInputs.seeds : []
@@ -8110,6 +8600,19 @@ async function runScanInternal(options = {}) {
   const weaponSkinFilterDiagnostics =
     scannerInputs?.weaponSkinFilterDiagnostics || buildWeaponSkinFilterDiagnostics()
   const snapshotWarmupSummary = scannerInputs?.snapshotWarmup || toSnapshotWarmupSummary()
+  if (scannerInputs?.selectionHistory && typeof scannerInputs.selectionHistory === "object") {
+    scannerState.selectionHistory = {
+      ...scannerState.selectionHistory,
+      ...scannerInputs.selectionHistory,
+      lastOpportunitySeedNames: Array.isArray(scannerInputs.selectionHistory.lastOpportunitySeedNames)
+        ? scannerInputs.selectionHistory.lastOpportunitySeedNames.slice(
+            -Math.max(opportunityUniverseTarget * 4, 800)
+          )
+        : Array.isArray(scannerState.selectionHistory?.lastOpportunitySeedNames)
+          ? scannerState.selectionHistory.lastOpportunitySeedNames
+          : []
+    }
+  }
   const scanAdmissionSummary =
     scannerInputs?.scanAdmission || buildOpportunityAdmissionDiagnostics()
   const layeredScanningSummary =

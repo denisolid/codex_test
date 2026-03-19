@@ -4,6 +4,8 @@ const AppError = require("../utils/AppError")
 const TABLE = "arbitrage_feed"
 const MAX_LIMIT = 1000
 const INSERT_BATCH_SIZE = 200
+const FEED_SELECT_FIELDS =
+  "id, item_name, market_hash_name, category, buy_market, buy_price, sell_market, sell_net, profit, spread_pct, opportunity_score, execution_confidence, quality_grade, liquidity_label, detected_at, scan_run_id, is_active, is_duplicate, metadata"
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -117,7 +119,7 @@ exports.insertRows = async (rows = []) => {
     const { data, error } = await supabaseAdmin
       .from(TABLE)
       .insert(chunk)
-      .select("*")
+      .select("id")
 
     if (error) {
       throw new AppError(error.message, 500)
@@ -141,7 +143,7 @@ exports.listFeed = async (options = {}) => {
 
   let query = supabaseAdmin
     .from(TABLE)
-    .select("*")
+    .select(FEED_SELECT_FIELDS)
     .order("detected_at", { ascending: false })
     .order("id", { ascending: false })
     .limit(limit)

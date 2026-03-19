@@ -10,7 +10,7 @@ exports.add = async (userId, targetUserId) => {
   const { data, error } = await supabaseAdmin
     .from("watchlists")
     .upsert(row, { onConflict: "user_id,target_user_id" })
-    .select("*")
+    .select("user_id, target_user_id")
     .single();
 
   if (error) {
