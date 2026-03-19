@@ -149,6 +149,31 @@ test("candidate selection tries to fill configured batch size and rotates cursor
   assert.equal(Number(first.diagnostics.scanable + first.diagnostics.scanableWithPenalties) > 0, true)
 })
 
+test("candidate selection cycles through full scannable pool before repeating under last-scanned ordering", () => {
+  const catalogRows = []
+  const categories = ["weapon_skin", "case", "sticker_capsule", "knife", "glove"]
+  for (let index = 0; index < 25; index += 1) {
+    catalogRows.push(buildCatalogRow(index + 1, categories[index % categories.length]))
+  }
+
+  const tracker = new Map()
+  let cursor = 0
+  const seen = new Set()
+  for (let run = 0; run < 3; run += 1) {
+    const selection = selectScanCandidates({
+      catalogRows,
+      batchSize: 10,
+      cursor,
+      lastScannedAtByName: tracker,
+      nowMs: Date.now() + run + 1
+    })
+    selection.selected.forEach((row) => seen.add(row.marketHashName))
+    cursor = selection.nextCursor
+  }
+
+  assert.equal(seen.size, 25)
+})
+
 test("opportunity evaluation keeps missing-liquidity items scannable with downgraded tier", () => {
   const evaluation = evaluateCandidateOpportunity(
     {
