@@ -21,6 +21,7 @@ test("normalizeRows defaults market_coverage_count to zero when missing", () => 
   assert.equal(row.market_hash_name, "AWP | Neo-Noir (Field-Tested)");
   assert.equal(row.market_coverage_count, 0);
   assert.equal(row.enrichment_priority, 0);
+  assert.equal(row.catalog_status, "shadow");
 });
 
 test("normalizeRows preserves explicit non-negative market_coverage_count", () => {
@@ -70,7 +71,9 @@ test("normalizeRows assigns candidate status defaults and enrichment flags", () 
   ]);
 
   assert.equal(eligibleRow.candidate_status, "eligible");
+  assert.equal(eligibleRow.catalog_status, "scannable");
   assert.equal(candidateRow.candidate_status, "candidate");
+  assert.equal(candidateRow.catalog_status, "shadow");
   assert.equal(candidateRow.missing_snapshot, true);
   assert.equal(candidateRow.missing_reference, true);
   assert.equal(candidateRow.missing_market_coverage, true);

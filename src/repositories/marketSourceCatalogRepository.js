@@ -16,6 +16,7 @@ const CANDIDATE_STATUS_SET = new Set([
 ])
 const MATURITY_STATE_SET = new Set(["cold", "enriching", "near_eligible", "eligible"])
 const SCAN_LAYER_SET = new Set(["hot", "warm", "cold"])
+const CATALOG_STATUS_SET = new Set(["scannable", "shadow", "blocked"])
 const CANDIDATE_STATE_COLUMNS = Object.freeze([
   "candidate_status",
   "missing_snapshot",
@@ -32,7 +33,11 @@ const CANDIDATE_STATE_COLUMNS = Object.freeze([
   "liquidity_state",
   "coverage_state",
   "progression_status",
-  "progression_blockers"
+  "progression_blockers",
+  "catalog_status",
+  "catalog_block_reason",
+  "catalog_quality_score",
+  "last_market_signal_at"
 ])
 
 function normalizeText(value) {
@@ -84,6 +89,13 @@ function normalizeScanLayer(value, fallback = "cold") {
   if (SCAN_LAYER_SET.has(text)) return text
   const fallbackValue = normalizeText(fallback).toLowerCase()
   return SCAN_LAYER_SET.has(fallbackValue) ? fallbackValue : "cold"
+}
+
+function normalizeCatalogStatus(value, fallback = "shadow") {
+  const text = normalizeText(value).toLowerCase()
+  if (CATALOG_STATUS_SET.has(text)) return text
+  const fallbackValue = normalizeText(fallback).toLowerCase()
+  return CATALOG_STATUS_SET.has(fallbackValue) ? fallbackValue : "shadow"
 }
 
 function deriveScanLayerFromMaturityState(state = "cold") {
@@ -297,6 +309,14 @@ function normalizeRows(rows = []) {
           : Array.isArray(row?.progressionBlockers)
             ? row.progressionBlockers.map((value) => normalizeText(value)).filter(Boolean)
             : [],
+        catalog_status: normalizeCatalogStatus(
+          row?.catalog_status ?? row?.catalogStatus,
+          scanEligible ? "scannable" : "shadow"
+        ),
+        catalog_block_reason: normalizeText(row?.catalog_block_reason || row?.catalogBlockReason) || null,
+        catalog_quality_score:
+          toFiniteOrNull(row?.catalog_quality_score ?? row?.catalogQualityScore) ?? 0,
+        last_market_signal_at: row?.last_market_signal_at || row?.lastMarketSignalAt || null,
         invalid_reason: normalizeText(row?.invalid_reason || row?.invalidReason) || null,
         source_tag: normalizeText(row?.source_tag || row?.sourceTag) || "curated_seed",
         is_active: row?.is_active == null ? (row?.isActive == null ? true : Boolean(row.isActive)) : Boolean(row.is_active),
@@ -374,7 +394,7 @@ exports.listActiveTradable = async (options = {}) => {
       let query = supabaseAdmin
         .from(TABLE)
         .select(
-          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,invalid_reason,source_tag,is_active,last_enriched_at"
+          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,invalid_reason,source_tag,is_active,last_enriched_at"
         )
         .eq("is_active", true)
         .eq("tradable", true)
@@ -405,6 +425,48 @@ exports.listActiveTradable = async (options = {}) => {
   })
 }
 
+exports.listScannerSource = async (options = {}) => {
+  const limit = normalizeLimit(options.limit, 1500)
+  const categories = normalizeCategories(options.categories)
+  return selectWithCompatibilityFallback({
+    buildPrimaryQuery: () => {
+      let query = supabaseAdmin
+        .from(TABLE)
+        .select(
+          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,invalid_reason,source_tag,is_active,last_enriched_at"
+        )
+        .eq("is_active", true)
+        .eq("tradable", true)
+        .eq("catalog_status", "scannable")
+        .order("catalog_quality_score", { ascending: false, nullsFirst: false })
+        .order("last_market_signal_at", { ascending: false, nullsFirst: false })
+        .order("liquidity_rank", { ascending: false, nullsFirst: false })
+
+      if (categories.length) {
+        query = query.in("category", categories)
+      }
+      return query
+    },
+    buildFallbackQuery: () => {
+      let query = supabaseAdmin
+        .from(TABLE)
+        .select(
+          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,invalid_reason,source_tag,is_active,last_enriched_at"
+        )
+        .eq("is_active", true)
+        .eq("tradable", true)
+        .order("liquidity_rank", { ascending: false, nullsFirst: false })
+
+      if (categories.length) {
+        query = query.in("category", categories)
+      }
+      return query
+    },
+    limit,
+    fallbackMessage: "market_source_catalog_list_scanner_source_failed"
+  })
+}
+
 exports.listScanEligible = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 2000)
   const categories = normalizeCategories(options.categories)
@@ -413,7 +475,7 @@ exports.listScanEligible = async (options = {}) => {
       let query = supabaseAdmin
         .from(TABLE)
         .select(
-          "market_hash_name,item_name,category,subcategory,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers"
+          "market_hash_name,item_name,category,subcategory,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at"
         )
         .eq("is_active", true)
         .eq("tradable", true)
@@ -454,7 +516,7 @@ exports.listCoverageSummary = async (options = {}) => {
       let query = supabaseAdmin
         .from(TABLE)
         .select(
-          "category,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,is_active,reference_price,volume_7d,market_coverage_count,snapshot_stale,invalid_reason,eligibility_reason,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers"
+          "category,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,is_active,reference_price,volume_7d,market_coverage_count,snapshot_stale,quote_fetched_at,snapshot_captured_at,invalid_reason,eligibility_reason,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at"
         )
         .eq("is_active", true)
 
@@ -491,7 +553,7 @@ exports.listCandidatePool = async (options = {}) => {
       let query = supabaseAdmin
         .from(TABLE)
         .select(
-          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,invalid_reason,source_tag,is_active,last_enriched_at"
+          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,invalid_reason,source_tag,is_active,last_enriched_at"
         )
         .eq("is_active", true)
         .eq("tradable", true)
@@ -541,7 +603,7 @@ exports.listByMarketHashNames = async (marketHashNames = [], options = {}) => {
         let query = supabaseAdmin
           .from(TABLE)
           .select(
-            "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,invalid_reason,source_tag,is_active,last_enriched_at"
+            "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,invalid_reason,source_tag,is_active,last_enriched_at"
           )
           .in("market_hash_name", chunk)
 
