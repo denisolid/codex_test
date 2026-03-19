@@ -256,7 +256,104 @@ test("opportunity evaluation keeps missing-liquidity items scannable with downgr
     evaluation.tier === "strong" || evaluation.tier === "risky" || evaluation.tier === "speculative",
     true
   )
-  assert.equal(evaluation.penaltyFlags.includes("missing_liquidity"), true)
+  assert.equal(evaluation.penaltyFlags.includes("low_sales_liquidity"), true)
+})
+
+test("opportunity diagnostics avoid contradictory tags for high-coverage fresh cases", () => {
+  const nowIso = new Date().toISOString()
+  const evaluation = evaluateCandidateOpportunity(
+    {
+      marketHashName: "Revolution Case",
+      itemName: "Revolution Case",
+      category: "case",
+      referencePrice: 2.05,
+      marketCoverageCount: 4,
+      volume7d: 4039,
+      snapshotCapturedAt: nowIso,
+      quoteFetchedAt: nowIso
+    },
+    {
+      marketHashName: "Revolution Case",
+      perMarket: [
+        { source: "steam", available: true, grossPrice: 1.88, netPriceAfterFees: 1.64, updatedAt: nowIso, volume7d: 4039 },
+        { source: "skinport", available: true, grossPrice: 1.92, netPriceAfterFees: 1.69, updatedAt: nowIso, volume7d: 1880 },
+        { source: "dmarket", available: true, grossPrice: 1.9, netPriceAfterFees: 1.77, updatedAt: nowIso, volume7d: 640 },
+        { source: "csfloat", available: true, grossPrice: 1.94, netPriceAfterFees: 1.9, updatedAt: nowIso, volume7d: 320 }
+      ],
+      bestBuy: { source: "steam", grossPrice: 1.88, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "csfloat", netPriceAfterFees: 2.26, url: "https://csfloat.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 1.88,
+        sellMarket: "csfloat",
+        sellNet: 2.26,
+        profit: 0.38,
+        spreadPercent: 20.21,
+        opportunityScore: 74,
+        executionConfidence: "Medium",
+        marketCoverage: 4,
+        referencePrice: 2.05,
+        depthFlags: [],
+        antiFake: { reasons: [] }
+      }
+    }
+  )
+
+  assert.equal(evaluation.penaltyFlags.includes("limited_market_coverage"), false)
+  assert.equal(evaluation.penaltyFlags.includes("low_sales_liquidity"), false)
+  assert.equal(evaluation.penaltyFlags.includes("stale_market_signal"), false)
+  assert.equal(evaluation.marketCoverageBand, "High")
+  assert.equal(
+    Number(evaluation?.metadata?.diagnostics_debug?.market_coverage_score || 0) >= 80,
+    true
+  )
+})
+
+test("opportunity diagnostics expose dimension debug output", () => {
+  const nowIso = new Date().toISOString()
+  const evaluation = evaluateCandidateOpportunity(
+    {
+      marketHashName: "AK-47 | Redline (Field-Tested)",
+      itemName: "AK-47 | Redline (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 10.2,
+      marketCoverageCount: 2,
+      volume7d: 80,
+      snapshotCapturedAt: nowIso,
+      quoteFetchedAt: nowIso
+    },
+    {
+      marketHashName: "AK-47 | Redline (Field-Tested)",
+      perMarket: [
+        { source: "steam", available: true, grossPrice: 8.2, netPriceAfterFees: 7.13, updatedAt: nowIso, volume7d: 80 },
+        { source: "skinport", available: true, grossPrice: 8.9, netPriceAfterFees: 7.83, updatedAt: nowIso, volume7d: 34 }
+      ],
+      bestBuy: { source: "steam", grossPrice: 8.2, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "skinport", netPriceAfterFees: 9.45, url: "https://skinport.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 8.2,
+        sellMarket: "skinport",
+        sellNet: 9.45,
+        profit: 1.25,
+        spreadPercent: 15.24,
+        opportunityScore: 73,
+        executionConfidence: "Medium",
+        marketCoverage: 2,
+        referencePrice: 10.2,
+        depthFlags: [],
+        antiFake: { reasons: [] }
+      }
+    }
+  )
+
+  const debug = evaluation?.metadata?.diagnostics_debug || {}
+  assert.equal(Number.isFinite(Number(debug.sales_liquidity_score)), true)
+  assert.equal(Number.isFinite(Number(debug.executable_depth_score)), true)
+  assert.equal(Number.isFinite(Number(debug.market_coverage_score)), true)
+  assert.equal(Number.isFinite(Number(debug.data_freshness_score)), true)
+  assert.equal(Array.isArray(debug?.raw_reasons?.sales_liquidity), true)
+  assert.equal(Array.isArray(debug?.raw_reasons?.emitted_tags), true)
 })
 
 test("opportunity evaluation enforces true hard reject reasons", () => {
@@ -386,6 +483,36 @@ test("feed event classifier detects new, updated, duplicate, and reactivated row
     metadata: { liquidity_value: 220 }
   })
   assert.equal(reactivatedEvent.eventType, "reactivated")
+})
+
+test("feed event classifier marks diagnostics-only flag changes as updated", () => {
+  const opportunity = {
+    itemName: "AWP | Asiimov (Field-Tested)",
+    buyMarket: "steam",
+    sellMarket: "skinport",
+    profit: 3.2,
+    spread: 12.1,
+    score: 69,
+    executionConfidence: "Medium",
+    liquidity: 180,
+    flags: ["stale_market_signal"],
+    badges: ["Stale market signal"]
+  }
+  const previousRow = {
+    is_active: true,
+    profit: 3.2,
+    spread_pct: 12.1,
+    opportunity_score: 69,
+    execution_confidence: "Medium",
+    metadata: {
+      liquidity_value: 180,
+      flags: ["limited_market_coverage"],
+      badges: ["Limited market coverage"]
+    }
+  }
+  const event = classifyOpportunityFeedEvent(opportunity, previousRow)
+  assert.equal(event.eventType, "updated")
+  assert.equal(event.changeReasons.includes("diagnostics"), true)
 })
 
 test("feed mapper keeps core scanner fields stable", () => {

@@ -7,6 +7,28 @@ const {
 } = require("./config")
 const { normalizeCategory } = require("./stateModel")
 const MIN_SCAN_COST_USD = 2
+const DIAGNOSTIC_FLAGS = Object.freeze({
+  SALES_LIQUIDITY: "low_sales_liquidity",
+  EXECUTABLE_DEPTH: "thin_executable_depth",
+  MARKET_COVERAGE: "limited_market_coverage",
+  DATA_FRESHNESS: "stale_market_signal"
+})
+const FRESHNESS_RULES_BY_CATEGORY = Object.freeze({
+  [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({ freshMaxMinutes: 45, agingMaxMinutes: 120 }),
+  [ITEM_CATEGORIES.CASE]: Object.freeze({ freshMaxMinutes: 60, agingMaxMinutes: 180 }),
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({ freshMaxMinutes: 90, agingMaxMinutes: 240 }),
+  [ITEM_CATEGORIES.KNIFE]: Object.freeze({ freshMaxMinutes: 120, agingMaxMinutes: 300 }),
+  [ITEM_CATEGORIES.GLOVE]: Object.freeze({ freshMaxMinutes: 120, agingMaxMinutes: 300 })
+})
+const DEPTH_FLAG_SEVERITY = Object.freeze({
+  MISSING_DEPTH: 2,
+  BUY_DEPTH_GAP_EXTREME: 2,
+  SELL_DEPTH_GAP_EXTREME: 2,
+  BUY_DEPTH_GAP_SUSPICIOUS: 1,
+  SELL_DEPTH_GAP_SUSPICIOUS: 1,
+  BUY_OUTLIER_ADJUSTED: 1,
+  SELL_OUTLIER_ADJUSTED: 1
+})
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -26,6 +48,40 @@ function clampScore(value) {
 
 function toArray(value) {
   return Array.isArray(value) ? value : []
+}
+
+function toIsoOrNull(value) {
+  const text = normalizeText(value)
+  if (!text) return null
+  const ts = new Date(text).getTime()
+  if (!Number.isFinite(ts)) return null
+  return new Date(ts).toISOString()
+}
+
+function normalizeSource(value) {
+  return normalizeText(value).toLowerCase()
+}
+
+function isCaseLikeCategory(category = "") {
+  return category === ITEM_CATEGORIES.CASE || category === ITEM_CATEGORIES.STICKER_CAPSULE
+}
+
+function isKnifeGloveCategory(category = "") {
+  return category === ITEM_CATEGORIES.KNIFE || category === ITEM_CATEGORIES.GLOVE
+}
+
+function resolveFreshnessRules(category = ITEM_CATEGORIES.WEAPON_SKIN) {
+  return (
+    FRESHNESS_RULES_BY_CATEGORY[category] || FRESHNESS_RULES_BY_CATEGORY[ITEM_CATEGORIES.WEAPON_SKIN]
+  )
+}
+
+function resolveScoreBand(score = 0) {
+  const value = Math.max(Number(score || 0), 0)
+  if (value >= 80) return "strong"
+  if (value >= 60) return "usable"
+  if (value >= 40) return "weak"
+  return "missing"
 }
 
 function confidenceLevel(value) {
@@ -62,21 +118,74 @@ function resolveVolume7d(comparedItem = {}, candidate = {}) {
   return null
 }
 
-function resolveQuoteAgeMinutes(comparedItem = {}, candidate = {}) {
-  const timestamps = [
-    candidate?.snapshotCapturedAt,
-    candidate?.quoteFetchedAt,
-    ...toArray(comparedItem?.perMarket).map((row) => row?.updatedAt)
-  ]
-    .map((value) => normalizeText(value))
-    .filter(Boolean)
-    .map((value) => new Date(value).getTime())
+function resolveUsedSignalFreshness({
+  comparedItem = {},
+  candidate = {},
+  buyMarket = "",
+  sellMarket = "",
+  referencePrice = null
+} = {}) {
+  const perMarket = toArray(comparedItem?.perMarket)
+  const usedSignals = []
+
+  const pushSignal = (source, signalType, timestamp) => {
+    const iso = toIsoOrNull(timestamp)
+    if (!iso) return
+    usedSignals.push({
+      source: normalizeSource(source) || null,
+      signalType: normalizeText(signalType) || "market_signal",
+      updatedAt: iso
+    })
+  }
+
+  const findMarketRow = (source) => {
+    const normalizedSource = normalizeSource(source)
+    if (!normalizedSource) return null
+    return (
+      perMarket.find(
+        (row) =>
+          normalizeSource(row?.source) === normalizedSource &&
+          Boolean(row?.available) &&
+          (toFiniteOrNull(row?.grossPrice) != null || toFiniteOrNull(row?.netPriceAfterFees) != null)
+      ) || null
+    )
+  }
+
+  const buyRow = findMarketRow(buyMarket)
+  const sellRow = findMarketRow(sellMarket)
+  pushSignal(buyMarket, "buy_market_quote", buyRow?.updatedAt)
+  pushSignal(sellMarket, "sell_market_quote", sellRow?.updatedAt)
+
+  if (toFiniteOrNull(referencePrice) != null) {
+    pushSignal("reference", "reference_quote", candidate?.quoteFetchedAt || candidate?.quote_fetched_at)
+    pushSignal(
+      "reference",
+      "reference_snapshot",
+      candidate?.snapshotCapturedAt || candidate?.snapshot_captured_at
+    )
+  }
+
+  const timestamps = usedSignals
+    .map((signal) => new Date(signal.updatedAt).getTime())
     .filter((value) => Number.isFinite(value))
-  if (!timestamps.length) return null
-  const latest = Math.max(...timestamps)
-  const ageMinutes = (Date.now() - latest) / (60 * 1000)
-  if (!Number.isFinite(ageMinutes) || ageMinutes < 0) return null
-  return Number(ageMinutes.toFixed(2))
+  if (!timestamps.length) {
+    return {
+      latestSignalAt: null,
+      ageMinutes: null,
+      usedSignals: []
+    }
+  }
+  const latestTs = Math.max(...timestamps)
+  const ageMinutesRaw = (Date.now() - latestTs) / (60 * 1000)
+  const ageMinutes =
+    Number.isFinite(ageMinutesRaw) && ageMinutesRaw >= 0
+      ? Number(ageMinutesRaw.toFixed(2))
+      : null
+  return {
+    latestSignalAt: new Date(latestTs).toISOString(),
+    ageMinutes,
+    usedSignals
+  }
 }
 
 function hasExtremeReferenceDeviation({
@@ -130,19 +239,233 @@ function hasFakeOrderbookSignals(comparedItem = {}) {
   return false
 }
 
+function scoreSalesLiquidity({
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
+  categoryProfile = {},
+  volume7d = null,
+  marketCoverage = 0
+} = {}) {
+  const value = toFiniteOrNull(volume7d)
+  const minVolume = Math.max(Number(categoryProfile.minVolume7d || 0), 1)
+  const reasons = []
+  let score = 0
+
+  if (value == null || value <= 0) {
+    score = isKnifeGloveCategory(category) ? 42 : 28
+    reasons.push("missing_recent_sales_signal")
+  } else if (isCaseLikeCategory(category)) {
+    if (value >= minVolume * 8) score = 96
+    else if (value >= minVolume * 4) score = 88
+    else if (value >= minVolume * 2) score = 76
+    else if (value >= minVolume) score = 62
+    else if (value >= Math.max(minVolume * 0.5, 8)) score = 48
+    else score = 30
+    reasons.push(value >= minVolume * 2 ? "strong_recent_sales_velocity" : "soft_recent_sales_velocity")
+  } else if (isKnifeGloveCategory(category)) {
+    if (value >= minVolume * 3) score = 88
+    else if (value >= minVolume * 1.5) score = 74
+    else if (value >= minVolume) score = 64
+    else if (value >= Math.max(minVolume * 0.5, 3)) score = 54
+    else score = 42
+    reasons.push(value >= minVolume ? "sparse_but_usable_sales_signal" : "thin_sales_signal")
+  } else {
+    if (value >= minVolume * 4) score = 92
+    else if (value >= minVolume * 2) score = 80
+    else if (value >= minVolume) score = 66
+    else if (value >= Math.max(minVolume * 0.6, 10)) score = 48
+    else score = 32
+    reasons.push(value >= minVolume ? "usable_recent_sales_signal" : "weak_recent_sales_signal")
+  }
+
+  if (Number(marketCoverage || 0) >= Number(categoryProfile.minMarketCoverage || 2) + 1) {
+    score += 6
+    reasons.push("cross_market_sales_supported")
+  }
+
+  return {
+    score: clampScore(score),
+    band: resolveScoreBand(score),
+    reasons
+  }
+}
+
+function scoreMarketCoverage({
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
+  categoryProfile = {},
+  marketCoverage = 0
+} = {}) {
+  const minCoverage = Math.max(Number(categoryProfile.minMarketCoverage || 2), 1)
+  const coverage = Math.max(Number(marketCoverage || 0), 0)
+  const reasons = []
+  let score = 0
+
+  if (coverage >= minCoverage + 2) {
+    score = 95
+    reasons.push("high_cross_market_presence")
+  } else if (coverage >= minCoverage + 1) {
+    score = 84
+    reasons.push("strong_cross_market_presence")
+  } else if (coverage >= minCoverage) {
+    score = 70
+    reasons.push("meets_cross_market_baseline")
+  } else if (coverage >= 1) {
+    score = isKnifeGloveCategory(category) ? 58 : 42
+    reasons.push("single_market_presence")
+  } else {
+    score = 20
+    reasons.push("no_market_presence")
+  }
+
+  return {
+    score: clampScore(score),
+    band: resolveScoreBand(score),
+    reasons
+  }
+}
+
+function scoreExecutableDepth({
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
+  comparedItem = {},
+  marketCoverage = 0,
+  salesLiquidityScore = 0
+} = {}) {
+  const depthFlags = toArray(comparedItem?.arbitrage?.depthFlags).map((value) =>
+    normalizeText(value).toUpperCase()
+  )
+  const reasons = []
+  const isCaseLike = isCaseLikeCategory(category)
+  const isSparse = isKnifeGloveCategory(category)
+  let score = isCaseLike ? 68 : isSparse ? 64 : 76
+
+  if (Number(marketCoverage || 0) >= 4) {
+    score += 8
+    reasons.push("multi_market_depth_context")
+  }
+  if (isCaseLike && Number(salesLiquidityScore || 0) >= 80) {
+    score += 8
+    reasons.push("sales_velocity_offsets_depth_noise")
+  }
+
+  for (const flag of depthFlags) {
+    const severity = Number(DEPTH_FLAG_SEVERITY[flag] || 0)
+    if (!severity) continue
+    const penalty =
+      severity >= 2
+        ? isCaseLike
+          ? 18
+          : isSparse
+            ? 16
+            : 26
+        : isCaseLike
+          ? 10
+          : isSparse
+            ? 9
+            : 14
+    score -= penalty
+    reasons.push(flag.toLowerCase())
+  }
+
+  return {
+    score: clampScore(score),
+    band: resolveScoreBand(score),
+    reasons
+  }
+}
+
+function scoreDataFreshness({
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
+  freshness = {}
+} = {}) {
+  const rules = resolveFreshnessRules(category)
+  const ageMinutes = toFiniteOrNull(freshness?.ageMinutes)
+  const reasons = []
+  let score = 0
+  let state = "missing"
+
+  if (ageMinutes == null) {
+    score = 24
+    state = "missing"
+    reasons.push("no_usable_market_timestamp")
+  } else if (ageMinutes <= Number(rules.freshMaxMinutes || 0)) {
+    score = 96
+    state = "fresh"
+    reasons.push("fresh_usable_market_signal")
+  } else if (ageMinutes <= Number(rules.agingMaxMinutes || 0)) {
+    score = 66
+    state = "aging"
+    reasons.push("aging_usable_market_signal")
+  } else if (ageMinutes <= Number(rules.agingMaxMinutes || 0) * 2) {
+    score = 42
+    state = "stale"
+    reasons.push("stale_market_signal")
+  } else {
+    score = 18
+    state = "stale"
+    reasons.push("very_stale_market_signal")
+  }
+
+  return {
+    score: clampScore(score),
+    band: resolveScoreBand(score),
+    state,
+    reasons
+  }
+}
+
+function buildDiagnosticDimensions({
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
+  categoryProfile = {},
+  comparedItem = {},
+  volume7d = null,
+  marketCoverage = 0,
+  usedSignalFreshness = {}
+} = {}) {
+  const salesLiquidity = scoreSalesLiquidity({
+    category,
+    categoryProfile,
+    volume7d,
+    marketCoverage
+  })
+  const marketCoverageDimension = scoreMarketCoverage({
+    category,
+    categoryProfile,
+    marketCoverage
+  })
+  const executableDepth = scoreExecutableDepth({
+    category,
+    comparedItem,
+    marketCoverage,
+    salesLiquidityScore: salesLiquidity.score
+  })
+  const dataFreshness = scoreDataFreshness({
+    category,
+    freshness: usedSignalFreshness
+  })
+
+  return {
+    sales_liquidity: salesLiquidity,
+    executable_depth: executableDepth,
+    market_coverage: marketCoverageDimension,
+    data_freshness: {
+      ...dataFreshness,
+      ageMinutes: toFiniteOrNull(usedSignalFreshness?.ageMinutes),
+      latestSignalAt: usedSignalFreshness?.latestSignalAt || null,
+      usedSignals: toArray(usedSignalFreshness?.usedSignals)
+    }
+  }
+}
+
 function buildPenaltySet({
   categoryProfile,
-  candidate = {},
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
   comparedItem = {},
   buyPrice = null,
   profit = null,
   spreadPercent = null,
-  marketCoverage = 0,
   referenceDeviation = {},
-  volume7d = null,
-  quoteAgeMinutes = null
+  diagnostics = {}
 } = {}) {
-  const penalties = new Set(toArray(candidate.scanPenaltyFlags))
+  const penalties = new Set()
 
   if (spreadPercent != null && spreadPercent < Number(categoryProfile.minSpreadPercent || 0)) {
     penalties.add("low_spread")
@@ -153,37 +476,49 @@ function buildPenaltySet({
   if (profit != null && profit < Number(categoryProfile.minProfitUsd || 0)) {
     penalties.add("low_profit")
   }
-  if (marketCoverage < Number(categoryProfile.minMarketCoverage || 2)) {
-    penalties.add("weak_coverage")
-  }
-  if (volume7d == null || volume7d < Number(categoryProfile.minVolume7d || 0)) {
-    penalties.add("missing_liquidity")
-  }
-  const depthFlags = toArray(comparedItem?.arbitrage?.depthFlags).map((value) =>
-    normalizeText(value).toUpperCase()
-  )
-  if (
-    depthFlags.includes("MISSING_DEPTH") ||
-    depthFlags.includes("BUY_DEPTH_GAP_SUSPICIOUS") ||
-    depthFlags.includes("SELL_DEPTH_GAP_SUSPICIOUS") ||
-    depthFlags.includes("BUY_OUTLIER_ADJUSTED") ||
-    depthFlags.includes("SELL_OUTLIER_ADJUSTED")
-  ) {
-    penalties.add("weak_depth")
-  }
-  if (quoteAgeMinutes == null || quoteAgeMinutes > 90 || candidate.scanFreshness?.state === "stale") {
-    penalties.add("aging_data")
-  }
   if (referenceDeviation.ratio != null && referenceDeviation.ratio > 1.8) {
     penalties.add("reference_deviation_warning")
+  }
+
+  const salesLiquidityScore = Number(diagnostics?.sales_liquidity?.score || 0)
+  const executableDepthScore = Number(diagnostics?.executable_depth?.score || 0)
+  const marketCoverageScore = Number(diagnostics?.market_coverage?.score || 0)
+  const dataFreshnessScore = Number(diagnostics?.data_freshness?.score || 0)
+
+  if (salesLiquidityScore < (isKnifeGloveCategory(category) ? 38 : 45)) {
+    penalties.add(DIAGNOSTIC_FLAGS.SALES_LIQUIDITY)
+  }
+  if (marketCoverageScore < (isKnifeGloveCategory(category) ? 40 : 45)) {
+    penalties.add(DIAGNOSTIC_FLAGS.MARKET_COVERAGE)
+  }
+  if (executableDepthScore < 45) {
+    penalties.add(DIAGNOSTIC_FLAGS.EXECUTABLE_DEPTH)
+  }
+  if (dataFreshnessScore < 55) {
+    penalties.add(DIAGNOSTIC_FLAGS.DATA_FRESHNESS)
+  }
+
+  if (salesLiquidityScore >= 70) penalties.delete(DIAGNOSTIC_FLAGS.SALES_LIQUIDITY)
+  if (marketCoverageScore >= 70) penalties.delete(DIAGNOSTIC_FLAGS.MARKET_COVERAGE)
+  if (dataFreshnessScore >= 70) penalties.delete(DIAGNOSTIC_FLAGS.DATA_FRESHNESS)
+  if (executableDepthScore >= 65) penalties.delete(DIAGNOSTIC_FLAGS.EXECUTABLE_DEPTH)
+
+  if (isCaseLikeCategory(category) && salesLiquidityScore >= 70) {
+    penalties.delete(DIAGNOSTIC_FLAGS.SALES_LIQUIDITY)
   }
 
   return Array.from(penalties)
 }
 
 function computePenaltyScore(penalties = []) {
+  const localWeights = {
+    [DIAGNOSTIC_FLAGS.SALES_LIQUIDITY]: 13,
+    [DIAGNOSTIC_FLAGS.EXECUTABLE_DEPTH]: 10,
+    [DIAGNOSTIC_FLAGS.MARKET_COVERAGE]: 11,
+    [DIAGNOSTIC_FLAGS.DATA_FRESHNESS]: 9
+  }
   return toArray(penalties).reduce((sum, flag) => {
-    return sum + Number(PENALTY_WEIGHTS[flag] || 5)
+    return sum + Number(localWeights[flag] ?? PENALTY_WEIGHTS[flag] ?? 5)
   }, 0)
 }
 
@@ -222,6 +557,13 @@ function resolveLiquidityBand(volume7d, profile = {}) {
   if (value >= minFloor * 3) return "High"
   if (value >= minFloor * 1.5) return "Medium"
   if (value >= minFloor) return "Low"
+  return "Low"
+}
+
+function resolveCoverageBand(score = 0) {
+  const value = Number(score || 0)
+  if (value >= 80) return "High"
+  if (value >= 60) return "Medium"
   return "Low"
 }
 
@@ -281,7 +623,21 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
   const profile = resolveCategoryProfile(category)
   const base = resolveBaseMetrics(comparedItem, candidate)
   const volume7d = resolveVolume7d(comparedItem, candidate)
-  const quoteAgeMinutes = resolveQuoteAgeMinutes(comparedItem, candidate)
+  const usedSignalFreshness = resolveUsedSignalFreshness({
+    comparedItem,
+    candidate,
+    buyMarket: base.buyMarket,
+    sellMarket: base.sellMarket,
+    referencePrice: base.referencePrice
+  })
+  const diagnostics = buildDiagnosticDimensions({
+    category,
+    categoryProfile: profile,
+    comparedItem,
+    volume7d,
+    marketCoverage: base.marketCoverage,
+    usedSignalFreshness
+  })
   const referenceDeviation = hasExtremeReferenceDeviation({
     buyPrice: base.buyPrice,
     sellNet: base.sellNet,
@@ -329,23 +685,21 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
 
   const penaltyFlags = buildPenaltySet({
     categoryProfile: profile,
-    candidate,
+    category,
     comparedItem,
     buyPrice: base.buyPrice,
     profit: base.profit,
     spreadPercent: base.spreadPercent,
-    marketCoverage: base.marketCoverage,
     referenceDeviation,
-    volume7d,
-    quoteAgeMinutes
+    diagnostics
   })
   const penaltyScore = computePenaltyScore(penaltyFlags)
   const finalScore = clampScore(Number(base.baseScore || 0) - penaltyScore)
 
   let confidence = confidenceLevel(base.executionConfidence)
-  if (penaltyFlags.includes("weak_depth")) confidence -= 1
-  if (penaltyFlags.includes("missing_liquidity")) confidence -= 1
-  if (penaltyFlags.includes("aging_data")) confidence -= 1
+  if (penaltyFlags.includes(DIAGNOSTIC_FLAGS.EXECUTABLE_DEPTH)) confidence -= 1
+  if (penaltyFlags.includes(DIAGNOSTIC_FLAGS.SALES_LIQUIDITY)) confidence -= 1
+  if (penaltyFlags.includes(DIAGNOSTIC_FLAGS.DATA_FRESHNESS)) confidence -= 1
   confidence = Math.max(confidence, 1)
   if (hardRejectReasons.length) {
     confidence = 1
@@ -360,13 +714,23 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
   })
 
   const liquidityBand = resolveLiquidityBand(volume7d, profile)
+  const marketCoverageBand = resolveCoverageBand(diagnostics?.market_coverage?.score)
   const badges = []
   if (tier === OPPORTUNITY_TIERS.STRONG) badges.push("Strong setup")
   if (tier === OPPORTUNITY_TIERS.RISKY) badges.push("Risk-adjusted")
   if (tier === OPPORTUNITY_TIERS.SPECULATIVE) badges.push("Speculative")
-  if (penaltyFlags.includes("aging_data")) badges.push("Aging data")
-  if (penaltyFlags.includes("weak_depth")) badges.push("Weak depth")
-  if (penaltyFlags.includes("missing_liquidity")) badges.push("Missing liquidity")
+  if (penaltyFlags.includes(DIAGNOSTIC_FLAGS.DATA_FRESHNESS)) badges.push("Stale market signal")
+  if (penaltyFlags.includes(DIAGNOSTIC_FLAGS.EXECUTABLE_DEPTH)) {
+    badges.push("Thin executable depth")
+  }
+  if (penaltyFlags.includes(DIAGNOSTIC_FLAGS.SALES_LIQUIDITY)) {
+    badges.push(
+      isCaseLikeCategory(category) ? "Low recent sales velocity" : "Low sales liquidity"
+    )
+  }
+  if (penaltyFlags.includes(DIAGNOSTIC_FLAGS.MARKET_COVERAGE)) {
+    badges.push("Limited market coverage")
+  }
 
   return {
     marketHashName: candidate.marketHashName,
@@ -388,6 +752,8 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
     executionConfidence: confidenceLabel(confidence),
     liquidity: volume7d == null ? null : round2(volume7d),
     liquidityBand,
+    marketCoverageBand,
+    marketCoverageLabel: marketCoverageBand,
     marketCoverage: Number(base.marketCoverage || 0),
     referencePrice: base.referencePrice == null ? null : roundPrice(base.referencePrice),
     buyUrl: base.buyUrl,
@@ -414,10 +780,27 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
       hard_reject_reasons: hardRejectReasons,
       penalty_score: penaltyScore,
       base_score: clampScore(base.baseScore),
-      quote_age_minutes: quoteAgeMinutes,
+      quote_age_minutes: toFiniteOrNull(usedSignalFreshness?.ageMinutes),
       reference_deviation_ratio: referenceDeviation.ratio,
       anti_fake_reasons: base.antiFakeReasons,
-      depth_flags: base.depthFlags
+      depth_flags: base.depthFlags,
+      diagnostics_debug: {
+        category,
+        sales_liquidity_score: Number(diagnostics?.sales_liquidity?.score || 0),
+        executable_depth_score: Number(diagnostics?.executable_depth?.score || 0),
+        market_coverage_score: Number(diagnostics?.market_coverage?.score || 0),
+        data_freshness_score: Number(diagnostics?.data_freshness?.score || 0),
+        market_coverage_band: marketCoverageBand,
+        latest_market_signal_at: usedSignalFreshness?.latestSignalAt || null,
+        used_market_signals: toArray(usedSignalFreshness?.usedSignals),
+        raw_reasons: {
+          sales_liquidity: toArray(diagnostics?.sales_liquidity?.reasons),
+          executable_depth: toArray(diagnostics?.executable_depth?.reasons),
+          market_coverage: toArray(diagnostics?.market_coverage?.reasons),
+          data_freshness: toArray(diagnostics?.data_freshness?.reasons),
+          emitted_tags: penaltyFlags
+        }
+      }
     }
   }
 }
