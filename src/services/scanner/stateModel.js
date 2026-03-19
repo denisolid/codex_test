@@ -39,6 +39,7 @@ const FRESHNESS_RULES_BY_CATEGORY = Object.freeze({
     agingMaxMinutes: 240
   })
 })
+const MIN_SCAN_COST_USD = 2
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -190,6 +191,9 @@ function classifyCatalogState(seed = {}) {
   }
 
   const referencePrice = toFiniteOrNull(seed.referencePrice ?? seed.reference_price)
+  if (referencePrice != null && referencePrice < MIN_SCAN_COST_USD) {
+    hardRejectReasons.push("below_min_cost_floor")
+  }
   const marketCoverageCount = Math.max(
     Number(toFiniteOrNull(seed.marketCoverageCount ?? seed.market_coverage_count) || 0),
     0

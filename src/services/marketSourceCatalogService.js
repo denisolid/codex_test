@@ -192,12 +192,12 @@ const SOURCE_QUALITY_RULES = Object.freeze({
     minMarketCoverage: 2
   }),
   [ITEM_CATEGORIES.CASE]: Object.freeze({
-    minReferencePrice: 1,
+    minReferencePrice: 2,
     minVolume7d: 70,
     minMarketCoverage: 2
   }),
   [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
-    minReferencePrice: 1,
+    minReferencePrice: 2,
     minVolume7d: 35,
     minMarketCoverage: 2
   })

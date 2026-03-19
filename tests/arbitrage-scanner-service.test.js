@@ -90,6 +90,24 @@ test("state model still keeps true hard rejects narrow and explicit", () => {
   assert.equal(result.hardRejectReasons.includes("invalid_row"), true)
 })
 
+test("state model hard-rejects rows below $2 cost floor", () => {
+  const result = classifyCatalogState({
+    marketHashName: "Fracture Case",
+    itemName: "Fracture Case",
+    category: "case",
+    tradable: true,
+    isActive: true,
+    referencePrice: 1.75,
+    marketCoverageCount: 3,
+    volume7d: 500,
+    snapshotCapturedAt: new Date().toISOString(),
+    quoteFetchedAt: new Date().toISOString()
+  })
+
+  assert.equal(result.state, SCAN_STATE.HARD_REJECT)
+  assert.equal(result.hardRejectReasons.includes("below_min_cost_floor"), true)
+})
+
 test("round-robin pool keeps category-aware distribution", () => {
   const rows = [
     buildCatalogRow(1, "weapon_skin"),
@@ -210,6 +228,43 @@ test("opportunity evaluation enforces true hard reject reasons", () => {
   assert.equal(evaluation.hardRejectReasons.includes("non_positive_profit"), true)
 })
 
+test("opportunity evaluation rejects opportunities below $2 cost floor", () => {
+  const evaluation = evaluateCandidateOpportunity(
+    {
+      marketHashName: "Low Cost Case",
+      itemName: "Low Cost Case",
+      category: "case",
+      referencePrice: 1.8,
+      marketCoverageCount: 2,
+      volume7d: 220,
+      scanPenaltyFlags: [],
+      scanFreshness: { state: "fresh" }
+    },
+    {
+      marketHashName: "Low Cost Case",
+      bestBuy: { source: "steam", grossPrice: 1.7 },
+      bestSellNet: { source: "skinport", netPriceAfterFees: 2.4 },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 1.7,
+        sellMarket: "skinport",
+        sellNet: 2.4,
+        profit: 0.7,
+        spreadPercent: 41.2,
+        opportunityScore: 72,
+        executionConfidence: "Medium",
+        marketCoverage: 2,
+        referencePrice: 1.8,
+        depthFlags: [],
+        antiFake: { reasons: [] }
+      }
+    }
+  )
+
+  assert.equal(evaluation.rejected, true)
+  assert.equal(evaluation.hardRejectReasons.includes("below_min_cost_floor"), true)
+})
+
 test("feed event classifier detects new, updated, duplicate, and reactivated rows", () => {
   const baseOpportunity = {
     itemName: "AK-47 | Redline (Field-Tested)",
@@ -305,8 +360,29 @@ test("feed mapper keeps core scanner fields stable", () => {
   assert.equal(mapped.buyMarket, "steam")
   assert.equal(mapped.sellMarket, "skinport")
   assert.equal(mapped.score, 80)
+  assert.equal(mapped.qualityScoreDisplay, 80)
+  assert.equal(mapped.quality_score_display, 80)
   assert.equal(mapped.isRiskyEligible, true)
   assert.equal(mapped.isHighConfidenceEligible, false)
+})
+
+test("display score soft-normalizes visible feed values without changing raw score ordering inputs", () => {
+  const mappedRows = [0, 10, 40, 70, 85, 100].map((score) =>
+    mapFeedRowToApiRow({
+      opportunity_score: score,
+      metadata: {}
+    })
+  )
+
+  const displayScores = mappedRows.map((row) => Number(row.qualityScoreDisplay))
+
+  assert.equal(displayScores[0] >= 15, true)
+  assert.equal(displayScores[displayScores.length - 1] < 100, true)
+  assert.equal(displayScores[4], 85)
+
+  for (let index = 1; index < displayScores.length; index += 1) {
+    assert.equal(displayScores[index] > displayScores[index - 1], true)
+  }
 })
 
 test("overdue watchdog tolerates active running scanner and flags stale completion", () => {

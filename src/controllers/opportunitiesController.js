@@ -2,6 +2,7 @@ const asyncHandler = require("../utils/asyncHandler")
 const scannerService = require("../services/arbitrageScannerService")
 
 function toOpportunityRow(row = {}) {
+  const qualityScoreDisplay = row?.qualityScoreDisplay ?? row?.quality_score_display ?? null
   return {
     feedId: row?.feedId || null,
     detectedAt: row?.detectedAt || null,
@@ -21,6 +22,8 @@ function toOpportunityRow(row = {}) {
     profit: row?.profit ?? null,
     spread: row?.spread ?? null,
     score: row?.score ?? null,
+    qualityScoreDisplay,
+    quality_score_display: qualityScoreDisplay,
     scoreCategory: row?.scoreCategory || null,
     executionConfidence: row?.executionConfidence || null,
     qualityGrade: row?.qualityGrade || null,

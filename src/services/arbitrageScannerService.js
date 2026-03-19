@@ -1078,10 +1078,11 @@ exports.getFeed = async (options = {}) => {
   const visibleFeedLimit = Math.max(Number(planConfig?.visibleFeedLimit || MAX_FEED_LIMIT), 1)
   const limit = Math.min(requestedLimit, visibleFeedLimit)
 
-  const requestedShowRisky = normalizeBoolean(options.showRisky)
+  const requestedShowRisky =
+    options.showRisky == null ? true : normalizeBoolean(options.showRisky)
   const requestedIncludeOlder = normalizeBoolean(options.includeOlder || options.showOlder)
   const requestedCategory = normalizeCategoryFilter(options.category)
-  const showRisky = advancedFiltersEnabled ? requestedShowRisky : false
+  const showRisky = advancedFiltersEnabled ? requestedShowRisky : true
   const includeOlder = advancedFiltersEnabled ? requestedIncludeOlder : false
   const categoryFilter = advancedFiltersEnabled ? requestedCategory : "all"
 

@@ -82,7 +82,7 @@ const CATEGORY_PROFILES = Object.freeze({
     speculativeScoreFloor: 28
   }),
   [ITEM_CATEGORIES.CASE]: Object.freeze({
-    minPriceUsd: 1,
+    minPriceUsd: 2,
     minProfitUsd: 0.3,
     minSpreadPercent: 2.5,
     minVolume7d: 18,
@@ -94,7 +94,7 @@ const CATEGORY_PROFILES = Object.freeze({
     speculativeScoreFloor: 24
   }),
   [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
-    minPriceUsd: 1,
+    minPriceUsd: 2,
     minProfitUsd: 0.35,
     minSpreadPercent: 2.5,
     minVolume7d: 18,
