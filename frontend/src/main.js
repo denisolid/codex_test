@@ -8343,13 +8343,33 @@ function getOpportunityScoreTone(score) {
 }
 
 function formatOpportunityLabel(label, score) {
-  const direct = String(label || "").trim();
-  if (direct) return direct;
   const value = Number(score || 0);
-  if (value >= 90) return "Strong";
-  if (value >= 75) return "Good";
-  if (value >= 60) return "Risky";
-  return "Weak";
+  const scoreLabel =
+    value >= 90
+      ? "Strong"
+      : value >= 75
+        ? "Good"
+        : value >= 60
+          ? "Risky"
+          : "Weak";
+
+  const direct = String(label || "").trim();
+  if (!direct) return scoreLabel;
+
+  const normalizedDirect = direct.toLowerCase();
+  const qualityLabels = new Set([
+    "strong",
+    "good",
+    "risky",
+    "weak",
+    "speculative",
+    "rejected",
+  ]);
+  if (qualityLabels.has(normalizedDirect)) {
+    return scoreLabel;
+  }
+
+  return direct;
 }
 
 function getOpportunityDisplayScore(row = {}) {
@@ -8366,10 +8386,44 @@ function getOpportunityDisplayScore(row = {}) {
   return Number.isFinite(rawValue) ? rawValue : 0;
 }
 
-function getExecutionConfidenceTone(value) {
+function normalizeExecutionConfidenceLabel(value) {
   const safe = String(value || "")
     .trim()
     .toLowerCase();
+  if (safe === "high") return "High";
+  if (safe === "medium") return "Medium";
+  return "Low";
+}
+
+function getExecutionConfidenceRank(value) {
+  const normalized = normalizeExecutionConfidenceLabel(value).toLowerCase();
+  if (normalized === "high") return 3;
+  if (normalized === "medium") return 2;
+  return 1;
+}
+
+function getScoreBasedConfidenceLabel(score) {
+  const value = Number(score || 0);
+  if (!Number.isFinite(value)) return "Low";
+  if (value >= 90) return "High";
+  if (value >= 72) return "Medium";
+  return "Low";
+}
+
+function getOpportunityDisplayConfidence(row = {}) {
+  const rawConfidence = normalizeExecutionConfidenceLabel(
+    row?.executionConfidence || row?.execution_confidence || "Low",
+  );
+  const score = getOpportunityDisplayScore(row);
+  const scoreConfidence = getScoreBasedConfidenceLabel(score);
+  return getExecutionConfidenceRank(scoreConfidence) >
+    getExecutionConfidenceRank(rawConfidence)
+    ? scoreConfidence
+    : rawConfidence;
+}
+
+function getExecutionConfidenceTone(value) {
+  const safe = normalizeExecutionConfidenceLabel(value).toLowerCase();
   if (safe === "high") return "positive";
   if (safe === "medium") return "warning";
   return "negative";
@@ -11223,9 +11277,7 @@ function renderDashboardArbitragePanel() {
               row?.scoreCategory,
               score,
             );
-            const executionConfidence = String(
-              row?.executionConfidence || "Low",
-            ).trim();
+            const executionConfidence = getOpportunityDisplayConfidence(row);
             const executionTone = getExecutionConfidenceTone(executionConfidence);
             const liquidityLabel = formatLiquidityBandLabel(
               row?.liquidityBand,
@@ -11400,9 +11452,7 @@ function renderPortfolioArbitrageWidget() {
               row?.scoreCategory,
               score,
             );
-            const executionConfidence = String(
-              row?.executionConfidence || "Low",
-            ).trim();
+            const executionConfidence = getOpportunityDisplayConfidence(row);
             const executionTone = getExecutionConfidenceTone(executionConfidence);
             const liquidityLabel = formatLiquidityBandLabel(
               row?.liquidityBand,
@@ -12364,9 +12414,7 @@ function renderMarketTab() {
                 row?.scoreCategory,
                 score,
               );
-              const executionConfidence = String(
-                row?.executionConfidence || "Low",
-              ).trim();
+              const executionConfidence = getOpportunityDisplayConfidence(row);
               const confidenceTone = getExecutionConfidenceTone(
                 executionConfidence,
               );
@@ -12952,7 +13000,7 @@ function renderGlobalOpportunitiesTab() {
                   );
               const executionConfidence = lockedPreview
                 ? "Locked"
-                : String(row?.executionConfidence || "Low").trim();
+                : getOpportunityDisplayConfidence(row);
               const confidenceTone = lockedPreview
                 ? "warning"
                 : getExecutionConfidenceTone(
