@@ -17,6 +17,7 @@ const CANDIDATE_STATUS_SET = new Set([
 const MATURITY_STATE_SET = new Set(["cold", "enriching", "near_eligible", "eligible"])
 const SCAN_LAYER_SET = new Set(["hot", "warm", "cold"])
 const CATALOG_STATUS_SET = new Set(["scannable", "shadow", "blocked"])
+const PRIORITY_TIER_SET = new Set(["tier_a", "tier_b"])
 const CANDIDATE_STATE_COLUMNS = Object.freeze([
   "candidate_status",
   "missing_snapshot",
@@ -37,7 +38,12 @@ const CANDIDATE_STATE_COLUMNS = Object.freeze([
   "catalog_status",
   "catalog_block_reason",
   "catalog_quality_score",
-  "last_market_signal_at"
+  "last_market_signal_at",
+  "priority_set_name",
+  "priority_tier",
+  "priority_rank",
+  "priority_boost",
+  "is_priority_item"
 ])
 
 function normalizeText(value) {
@@ -96,6 +102,13 @@ function normalizeCatalogStatus(value, fallback = "shadow") {
   if (CATALOG_STATUS_SET.has(text)) return text
   const fallbackValue = normalizeText(fallback).toLowerCase()
   return CATALOG_STATUS_SET.has(fallbackValue) ? fallbackValue : "shadow"
+}
+
+function normalizePriorityTier(value, fallback = null) {
+  const text = normalizeText(value).toLowerCase()
+  if (PRIORITY_TIER_SET.has(text)) return text
+  const fallbackValue = normalizeText(fallback).toLowerCase()
+  return PRIORITY_TIER_SET.has(fallbackValue) ? fallbackValue : null
 }
 
 function deriveScanLayerFromMaturityState(state = "cold") {
@@ -317,6 +330,14 @@ function normalizeRows(rows = []) {
         catalog_quality_score:
           toFiniteOrNull(row?.catalog_quality_score ?? row?.catalogQualityScore) ?? 0,
         last_market_signal_at: row?.last_market_signal_at || row?.lastMarketSignalAt || null,
+        priority_set_name: normalizeText(row?.priority_set_name || row?.prioritySetName) || null,
+        priority_tier: normalizePriorityTier(row?.priority_tier || row?.priorityTier, null),
+        priority_rank: toIntegerOrNull(row?.priority_rank ?? row?.priorityRank, 1),
+        priority_boost: toFiniteOrNull(row?.priority_boost ?? row?.priorityBoost) ?? 0,
+        is_priority_item:
+          row?.is_priority_item == null
+            ? normalizePriorityTier(row?.priority_tier || row?.priorityTier, null) != null
+            : Boolean(row.is_priority_item),
         invalid_reason: normalizeText(row?.invalid_reason || row?.invalidReason) || null,
         source_tag: normalizeText(row?.source_tag || row?.sourceTag) || "curated_seed",
         is_active: row?.is_active == null ? (row?.isActive == null ? true : Boolean(row.isActive)) : Boolean(row.is_active),
@@ -394,10 +415,11 @@ exports.listActiveTradable = async (options = {}) => {
       let query = supabaseAdmin
         .from(TABLE)
         .select(
-          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,invalid_reason,source_tag,is_active,last_enriched_at"
+          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item,invalid_reason,source_tag,is_active,last_enriched_at"
         )
         .eq("is_active", true)
         .eq("tradable", true)
+        .order("priority_boost", { ascending: false, nullsFirst: false })
         .order("liquidity_rank", { ascending: false, nullsFirst: false })
 
       if (categories.length) {
@@ -433,13 +455,15 @@ exports.listScannerSource = async (options = {}) => {
       let query = supabaseAdmin
         .from(TABLE)
         .select(
-          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,invalid_reason,source_tag,is_active,last_enriched_at"
+          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item,invalid_reason,source_tag,is_active,last_enriched_at"
         )
         .eq("is_active", true)
         .eq("tradable", true)
         .eq("catalog_status", "scannable")
+        .order("priority_tier", { ascending: true, nullsFirst: false })
         .order("catalog_quality_score", { ascending: false, nullsFirst: false })
         .order("last_market_signal_at", { ascending: false, nullsFirst: false })
+        .order("priority_boost", { ascending: false, nullsFirst: false })
         .order("liquidity_rank", { ascending: false, nullsFirst: false })
 
       if (categories.length) {
@@ -475,7 +499,7 @@ exports.listScanEligible = async (options = {}) => {
       let query = supabaseAdmin
         .from(TABLE)
         .select(
-          "market_hash_name,item_name,category,subcategory,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at"
+          "market_hash_name,item_name,category,subcategory,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item"
         )
         .eq("is_active", true)
         .eq("tradable", true)
@@ -516,7 +540,7 @@ exports.listCoverageSummary = async (options = {}) => {
       let query = supabaseAdmin
         .from(TABLE)
         .select(
-          "category,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,is_active,reference_price,volume_7d,market_coverage_count,snapshot_stale,quote_fetched_at,snapshot_captured_at,invalid_reason,eligibility_reason,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at"
+          "category,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,is_active,reference_price,volume_7d,market_coverage_count,snapshot_stale,quote_fetched_at,snapshot_captured_at,invalid_reason,eligibility_reason,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item"
         )
         .eq("is_active", true)
 
@@ -553,7 +577,7 @@ exports.listCandidatePool = async (options = {}) => {
       let query = supabaseAdmin
         .from(TABLE)
         .select(
-          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,invalid_reason,source_tag,is_active,last_enriched_at"
+          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item,invalid_reason,source_tag,is_active,last_enriched_at"
         )
         .eq("is_active", true)
         .eq("tradable", true)
@@ -603,7 +627,7 @@ exports.listByMarketHashNames = async (marketHashNames = [], options = {}) => {
         let query = supabaseAdmin
           .from(TABLE)
           .select(
-            "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,invalid_reason,source_tag,is_active,last_enriched_at"
+            "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item,invalid_reason,source_tag,is_active,last_enriched_at"
           )
           .in("market_hash_name", chunk)
 

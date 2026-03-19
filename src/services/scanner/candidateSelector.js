@@ -16,6 +16,26 @@ function toFiniteOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function normalizePriorityTier(value) {
+  const tier = normalizeText(value).toLowerCase()
+  if (tier === "tier_a" || tier === "tier_b") return tier
+  return null
+}
+
+function resolvePriorityTierRank(value) {
+  const tier = normalizePriorityTier(value)
+  if (tier === "tier_a") return 2
+  if (tier === "tier_b") return 1
+  return 0
+}
+
+function resolvePriorityTierBucket(row = {}) {
+  const tier = normalizePriorityTier(row.priorityTier || row.priority_tier)
+  if (tier === "tier_a") return "tier_a"
+  if (tier === "tier_b") return "tier_b"
+  return "non_priority"
+}
+
 function normalizeCatalogRow(row = {}) {
   const marketHashName = normalizeText(row.market_hash_name || row.marketHashName)
   if (!marketHashName) return null
@@ -38,6 +58,12 @@ function normalizeCatalogRow(row = {}) {
     snapshotStale: row.snapshot_stale == null ? Boolean(row.snapshotStale) : Boolean(row.snapshot_stale),
     snapshotCapturedAt: row.snapshot_captured_at || row.snapshotCapturedAt || null,
     quoteFetchedAt: row.quote_fetched_at || row.quoteFetchedAt || null,
+    priorityTier: normalizePriorityTier(row.priority_tier || row.priorityTier),
+    priorityBoost: toFiniteOrNull(row.priority_boost ?? row.priorityBoost) ?? 0,
+    isPriorityItem:
+      row.is_priority_item == null
+        ? normalizePriorityTier(row.priority_tier || row.priorityTier) != null
+        : Boolean(row.is_priority_item),
     invalidReason: normalizeText(row.invalid_reason || row.invalidReason) || null,
     sourceTag: normalizeText(row.source_tag || row.sourceTag) || null,
     raw: row
@@ -124,6 +150,12 @@ function buildRoundRobinPool(scannableRows = [], options = {}) {
     rows.sort((a, b) => {
       const aSeenAt = Number(lastScannedAtByName.get(a.marketHashName) || 0)
       const bSeenAt = Number(lastScannedAtByName.get(b.marketHashName) || 0)
+      const aTier = resolvePriorityTierRank(a.priorityTier)
+      const bTier = resolvePriorityTierRank(b.priorityTier)
+      if (aTier !== bTier) return bTier - aTier
+      const aPriorityBoost = Number(a.priorityBoost || 0)
+      const bPriorityBoost = Number(b.priorityBoost || 0)
+      if (aPriorityBoost !== bPriorityBoost) return bPriorityBoost - aPriorityBoost
       if (aSeenAt !== bSeenAt) return aSeenAt - bSeenAt
       const aCoverage = Number(a.marketCoverageCount || 0)
       const bCoverage = Number(b.marketCoverageCount || 0)
@@ -178,6 +210,16 @@ function selectScanCandidates(options = {}) {
     scanable: 0,
     scanableWithPenalties: 0,
     hardReject: 0,
+    poolByPriorityTier: {
+      tier_a: 0,
+      tier_b: 0,
+      non_priority: 0
+    },
+    selectedByPriorityTier: {
+      tier_a: 0,
+      tier_b: 0,
+      non_priority: 0
+    },
     stateByCategory: buildCategoryStateCounter(),
     hardRejectReasons: {},
     selectedByCategory: Object.fromEntries(
@@ -218,6 +260,10 @@ function selectScanCandidates(options = {}) {
   const scannableRows = classifiedRows.filter(
     (row) => row.scanState !== SCAN_STATE.HARD_REJECT
   )
+  for (const row of scannableRows) {
+    const bucket = resolvePriorityTierBucket(row)
+    diagnostics.poolByPriorityTier[bucket] = Number(diagnostics.poolByPriorityTier[bucket] || 0) + 1
+  }
   const pool = buildRoundRobinPool(scannableRows, { lastScannedAtByName })
   if (!pool.length) {
     return {
@@ -240,6 +286,9 @@ function selectScanCandidates(options = {}) {
     selected.push(selectedRow)
     diagnostics.selectedByCategory[selectedRow.category] =
       Number(diagnostics.selectedByCategory[selectedRow.category] || 0) + 1
+    const priorityBucket = resolvePriorityTierBucket(selectedRow)
+    diagnostics.selectedByPriorityTier[priorityBucket] =
+      Number(diagnostics.selectedByPriorityTier[priorityBucket] || 0) + 1
     lastScannedAtByName.set(selectedRow.marketHashName, nowMs)
   }
 

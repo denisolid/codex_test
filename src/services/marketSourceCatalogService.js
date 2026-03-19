@@ -11,17 +11,22 @@ const marketUniverseRepo = require("../repositories/marketUniverseRepository")
 const marketSnapshotRepo = require("../repositories/marketSnapshotRepository")
 const marketQuoteRepo = require("../repositories/marketQuoteRepository")
 const skinRepo = require("../repositories/skinRepository")
+const catalogPriorityCoverageService = require("./catalogPriorityCoverageService")
 
 const ITEM_CATEGORIES = Object.freeze({
   WEAPON_SKIN: "weapon_skin",
   CASE: "case",
-  STICKER_CAPSULE: "sticker_capsule"
+  STICKER_CAPSULE: "sticker_capsule",
+  KNIFE: "knife",
+  GLOVE: "glove"
 })
 
 const SCANNER_SCOPE_CATEGORIES = Object.freeze([
   ITEM_CATEGORIES.WEAPON_SKIN,
   ITEM_CATEGORIES.CASE,
-  ITEM_CATEGORIES.STICKER_CAPSULE
+  ITEM_CATEGORIES.STICKER_CAPSULE,
+  ITEM_CATEGORIES.KNIFE,
+  ITEM_CATEGORIES.GLOVE
 ])
 const SCANNER_SCOPE_CATEGORY_SET = new Set(SCANNER_SCOPE_CATEGORIES)
 const CATALOG_CANDIDATE_STATUS = Object.freeze({
@@ -182,6 +187,16 @@ const SOURCE_CATALOG_QUOTA_RULES = Object.freeze({
     min: 180,
     target: 250,
     max: 800
+  }),
+  [ITEM_CATEGORIES.KNIFE]: Object.freeze({
+    min: 0,
+    target: 0,
+    max: 0
+  }),
+  [ITEM_CATEGORIES.GLOVE]: Object.freeze({
+    min: 0,
+    target: 0,
+    max: 0
   })
 })
 
@@ -200,12 +215,24 @@ const SOURCE_QUALITY_RULES = Object.freeze({
     minReferencePrice: 2,
     minVolume7d: 35,
     minMarketCoverage: 2
+  }),
+  [ITEM_CATEGORIES.KNIFE]: Object.freeze({
+    minReferencePrice: 20,
+    minVolume7d: 6,
+    minMarketCoverage: 2
+  }),
+  [ITEM_CATEGORIES.GLOVE]: Object.freeze({
+    minReferencePrice: 20,
+    minVolume7d: 6,
+    minMarketCoverage: 2
   })
 })
 const SOURCE_CANDIDATE_HARD_FLOOR = Object.freeze({
   [ITEM_CATEGORIES.WEAPON_SKIN]: 0.45,
   [ITEM_CATEGORIES.CASE]: 0.3,
-  [ITEM_CATEGORIES.STICKER_CAPSULE]: 0.3
+  [ITEM_CATEGORIES.STICKER_CAPSULE]: 0.3,
+  [ITEM_CATEGORIES.KNIFE]: 2,
+  [ITEM_CATEGORIES.GLOVE]: 2
 })
 
 const CATEGORY_QUOTA_RULES = Object.freeze({
@@ -223,6 +250,16 @@ const CATEGORY_QUOTA_RULES = Object.freeze({
     min: 180,
     target: 250,
     max: 450
+  }),
+  [ITEM_CATEGORIES.KNIFE]: Object.freeze({
+    min: 0,
+    target: 0,
+    max: 0
+  }),
+  [ITEM_CATEGORIES.GLOVE]: Object.freeze({
+    min: 0,
+    target: 0,
+    max: 0
   })
 })
 
@@ -290,6 +327,14 @@ const CATALOG_FRESHNESS_RULES = Object.freeze({
   [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
     freshMaxMinutes: 90,
     agingMaxMinutes: 240
+  }),
+  [ITEM_CATEGORIES.KNIFE]: Object.freeze({
+    freshMaxMinutes: 120,
+    agingMaxMinutes: 240
+  }),
+  [ITEM_CATEGORIES.GLOVE]: Object.freeze({
+    freshMaxMinutes: 120,
+    agingMaxMinutes: 240
   })
 })
 const SNAPSHOT_DIAGNOSTIC_STATES = Object.freeze({
@@ -335,6 +380,11 @@ const CATALOG_SHADOW_REASONS = Object.freeze({
   WEAK_MARKET_COVERAGE: "weak_market_coverage",
   INCOMPLETE_REFERENCE_PRICING: "incomplete_reference_pricing"
 })
+const PRIORITY_TIERS = Object.freeze({
+  TIER_A: "tier_a",
+  TIER_B: "tier_b"
+})
+const PRIORITY_TIER_SET = new Set(Object.values(PRIORITY_TIERS))
 const MIN_SCAN_COST_USD = 2
 
 const BASE_INGEST_EXCLUDED_REASON_COUNTER = Object.freeze({
@@ -449,6 +499,13 @@ function normalizeCatalogStatus(value, fallback = CATALOG_STATUS.SHADOW) {
   if (CATALOG_STATUS_SET.has(text)) return text
   const fallbackText = normalizeText(fallback).toLowerCase()
   return CATALOG_STATUS_SET.has(fallbackText) ? fallbackText : CATALOG_STATUS.SHADOW
+}
+
+function normalizePriorityTier(value, fallback = null) {
+  const text = normalizeText(value).toLowerCase()
+  if (PRIORITY_TIER_SET.has(text)) return text
+  const fallbackText = normalizeText(fallback).toLowerCase()
+  return PRIORITY_TIER_SET.has(fallbackText) ? fallbackText : null
 }
 
 function resolveScanLayerForMaturityState(maturityState = CATALOG_MATURITY_STATE.COLD) {
@@ -577,6 +634,11 @@ function buildCatalogComparableState(row = {}) {
     catalog_quality_score:
       normalizeNumberForCompare(row?.catalog_quality_score ?? row?.catalogQualityScore, 2) ?? 0,
     last_market_signal_at: toIsoStringOrNull(row?.last_market_signal_at || row?.lastMarketSignalAt),
+    priority_set_name: normalizeText(row?.priority_set_name || row?.prioritySetName) || null,
+    priority_tier: normalizePriorityTier(row?.priority_tier || row?.priorityTier, null),
+    priority_rank: normalizeIntegerOrNull(row?.priority_rank ?? row?.priorityRank, 1),
+    priority_boost: normalizeNumberForCompare(row?.priority_boost ?? row?.priorityBoost, 2) ?? 0,
+    is_priority_item: row?.is_priority_item == null ? Boolean(row?.isPriorityItem) : Boolean(row.is_priority_item),
     invalid_reason: normalizeText(row?.invalid_reason || row?.invalidReason) || null,
     source_tag: normalizeText(row?.source_tag || row?.sourceTag) || "curated_seed",
     is_active: row?.is_active == null ? (row?.isActive == null ? true : Boolean(row.isActive)) : Boolean(row.is_active)
@@ -618,6 +680,11 @@ function hasCatalogRowChanges(previousRow = {}, nextRow = {}) {
     "catalog_block_reason",
     "catalog_quality_score",
     "last_market_signal_at",
+    "priority_set_name",
+    "priority_tier",
+    "priority_rank",
+    "priority_boost",
+    "is_priority_item",
     "invalid_reason",
     "source_tag",
     "is_active"
@@ -1466,6 +1533,16 @@ function buildBaseDiagnostics() {
       nearEligibleRowsByCategory: buildCategoryNumberMap(),
       candidateRowsByCategory: buildCategoryNumberMap(),
       enrichingRowsByCategory: buildCategoryNumberMap(),
+      priorityCoverage: {
+        totalPriorityItemsConfigured: 0,
+        matchedExistingCatalogItems: 0,
+        insertedMissingCatalogItems: 0,
+        unmatchedPriorityItems: [],
+        scannablePriorityItemsByTier: buildPriorityTierNumberMap(),
+        shadowPriorityItemsByTier: buildPriorityTierNumberMap(),
+        blockedPriorityItemsByTier: buildPriorityTierNumberMap(),
+        scannerSourceCountsByTier: buildPriorityTierNumberMap()
+      },
       fullRebuildRows: 0,
       incrementalRecomputeRows: 0,
       incrementalSkippedRows: 0,
@@ -1880,6 +1957,7 @@ function computeEnrichmentPriority({
   candidateStatus = CATALOG_CANDIDATE_STATUS.CANDIDATE,
   category = ITEM_CATEGORIES.WEAPON_SKIN,
   liquidityRank = 0,
+  priorityBoost = 0,
   referencePrice = null,
   volume7d = null,
   marketCoverageCount = 0,
@@ -1920,6 +1998,7 @@ function computeEnrichmentPriority({
 
   const score =
     Number(liquidityRank || 0) +
+    Math.min(Math.max(Number(priorityBoost || 0), 0) * 0.12, 60) +
     statusBoost +
     categoryBoost +
     referenceBoost +
@@ -2069,7 +2148,8 @@ function evaluateCandidateState({
   snapshot = null,
   snapshotStale = true,
   liquidityRank = 0,
-  quoteFetchedAt = null
+  quoteFetchedAt = null,
+  priorityBoost = 0
 } = {}) {
   const normalizedCategory = normalizeCategory(category, marketHashName)
   const hardFloor = Number(
@@ -2160,6 +2240,7 @@ function evaluateCandidateState({
     candidateStatus,
     category: normalizedCategory,
     liquidityRank,
+    priorityBoost,
     referencePrice,
     volume7d,
     marketCoverageCount,
@@ -2230,6 +2311,7 @@ function computeCatalogQualityScore({
   catalogStatus = CATALOG_STATUS.SHADOW,
   maturityScore = 0,
   liquidityRank = 0,
+  priorityBoost = 0,
   marketCoverageCount = 0,
   referencePrice = null,
   freshnessState = CATALOG_FRESHNESS_STATES.MISSING
@@ -2239,6 +2321,7 @@ function computeCatalogQualityScore({
   const coverageComponent = Math.min(Math.max(Number(marketCoverageCount || 0), 0) * 4, 12)
   const referenceComponent =
     toPositiveOrNull(referencePrice) == null ? 0 : Math.min(Number(referencePrice || 0) * 1.5, 10)
+  const priorityComponent = Math.min(Math.max(Number(priorityBoost || 0), 0) * 0.08, 24)
   const freshnessComponent =
     freshnessState === CATALOG_FRESHNESS_STATES.FRESH
       ? 8
@@ -2251,6 +2334,7 @@ function computeCatalogQualityScore({
   let score =
     maturityComponent +
     liquidityComponent +
+    priorityComponent +
     coverageComponent +
     referenceComponent +
     freshnessComponent
@@ -2270,6 +2354,7 @@ function classifyCatalogStatus({
   quoteFetchedAt = null,
   snapshotStale = false,
   liquidityRank = 0,
+  priorityBoost = 0,
   invalidReason = "",
   candidateState = {}
 } = {}) {
@@ -2340,6 +2425,7 @@ function classifyCatalogStatus({
       catalogStatus,
       maturityScore: candidateState?.maturityScore,
       liquidityRank,
+      priorityBoost,
       marketCoverageCount: normalizedCoverage,
       referencePrice: safeReferencePrice,
       freshnessState: freshness.state
@@ -2387,7 +2473,30 @@ function evaluateEligibility({
   return { eligible: true, reason: "" }
 }
 
-async function enrichSourceCatalog() {
+function buildPriorityTierNumberMap(initialValue = 0) {
+  const initial = Number(initialValue || 0)
+  return {
+    tier_a: initial,
+    tier_b: initial
+  }
+}
+
+function resolvePriorityEntryForCatalogRow(row = {}, priorityByKey = new Map()) {
+  if (!(priorityByKey instanceof Map) || !priorityByKey.size) return null
+  const category = normalizeCategory(row?.category, row?.market_hash_name || row?.marketHashName)
+  if (!category) return null
+  const itemName = normalizeText(row?.item_name || row?.itemName || row?.market_hash_name || row?.marketHashName)
+  const key = catalogPriorityCoverageService.buildPriorityKey(category, itemName)
+  if (!key) return null
+  return priorityByKey.get(key) || null
+}
+
+async function enrichSourceCatalog(options = {}) {
+  const priorityCoverage =
+    options?.priorityCoverage && typeof options.priorityCoverage === "object"
+      ? options.priorityCoverage
+      : {}
+  const priorityByKey = priorityCoverage?.byKey instanceof Map ? priorityCoverage.byKey : new Map()
   const rows = await marketSourceCatalogRepo.listActiveTradable({
     limit: 12000,
     categories: CATEGORY_PRIORITY
@@ -2410,6 +2519,19 @@ async function enrichSourceCatalog() {
       catalogStatusCounts: buildCatalogStatusNumberMap(),
       scannerSourceSize: 0,
       scanner_source_size: 0,
+      priorityCoverage: {
+        totalPriorityItemsConfigured: Number(priorityCoverage?.totalPriorityItemsConfigured || 0),
+        matchedExistingCatalogItems: Number(priorityCoverage?.matchedExistingCatalogItems || 0),
+        insertedMissingCatalogItems: Number(priorityCoverage?.insertedMissingCatalogItems || 0),
+        unmatchedPriorityItems: Array.isArray(priorityCoverage?.unmatchedPriorityItems)
+          ? priorityCoverage.unmatchedPriorityItems
+          : [],
+        error: normalizeText(priorityCoverage?.error) || null,
+        scannablePriorityItemsByTier: buildPriorityTierNumberMap(),
+        shadowPriorityItemsByTier: buildPriorityTierNumberMap(),
+        blockedPriorityItemsByTier: buildPriorityTierNumberMap(),
+        scannerSourceCountsByTier: buildPriorityTierNumberMap()
+      },
       tradableRows: 0,
       candidateRows: 0,
       enrichingRows: 0,
@@ -2511,6 +2633,10 @@ async function enrichSourceCatalog() {
   const catalogStatusCounts = buildCatalogStatusNumberMap()
   const blockedByReason = buildCatalogReasonMap(0, CATALOG_BLOCK_REASONS)
   const shadowByReason = buildCatalogReasonMap(0, CATALOG_SHADOW_REASONS)
+  const scannablePriorityItemsByTier = buildPriorityTierNumberMap()
+  const shadowPriorityItemsByTier = buildPriorityTierNumberMap()
+  const blockedPriorityItemsByTier = buildPriorityTierNumberMap()
+  const scannerSourceCountsByTier = buildPriorityTierNumberMap()
   const counts = {
     totalRows: rows.length,
     totalCatalog: rows.length,
@@ -2554,6 +2680,30 @@ async function enrichSourceCatalog() {
     if (!isScannerScopeCategory(category)) {
       continue
     }
+    const priorityEntry = resolvePriorityEntryForCatalogRow(
+      {
+        ...row,
+        category,
+        market_hash_name: marketHashName
+      },
+      priorityByKey
+    )
+    const priorityTier = normalizePriorityTier(
+      priorityEntry?.tier || row?.priority_tier || row?.priorityTier,
+      null
+    )
+    const priorityRankRaw = Number(
+      priorityEntry?.rank ?? row?.priority_rank ?? row?.priorityRank ?? 0
+    )
+    const priorityRank =
+      Number.isFinite(priorityRankRaw) && priorityRankRaw > 0 ? Math.round(priorityRankRaw) : null
+    const priorityBoost =
+      toFiniteOrNull(priorityEntry?.priorityBoost ?? row?.priority_boost ?? row?.priorityBoost) ?? 0
+    const prioritySetName =
+      normalizeText(
+        priorityEntry?.setName || row?.priority_set_name || row?.prioritySetName
+      ) || null
+    const isPriorityItem = Boolean(priorityTier && prioritySetName)
     mergeCategoryCounter(byCategory, category)
     byCategory[category].total += 1
 
@@ -2611,7 +2761,8 @@ async function enrichSourceCatalog() {
       snapshot,
       snapshotStale,
       liquidityRank,
-      quoteFetchedAt
+      quoteFetchedAt,
+      priorityBoost
     })
     const previousCandidateStatus = normalizeCandidateStatus(
       row?.candidate_status ?? row?.candidateStatus,
@@ -2742,6 +2893,7 @@ async function enrichSourceCatalog() {
       quoteFetchedAt,
       snapshotStale,
       liquidityRank,
+      priorityBoost,
       invalidReason,
       candidateState
     })
@@ -2750,6 +2902,9 @@ async function enrichSourceCatalog() {
     if (catalogStatus === CATALOG_STATUS.SCANNABLE) {
       counts.scannable += 1
       counts.scannerSourceSize += 1
+      if (isPriorityItem && priorityTier && scannerSourceCountsByTier[priorityTier] != null) {
+        scannerSourceCountsByTier[priorityTier] += 1
+      }
     } else if (catalogStatus === CATALOG_STATUS.SHADOW) {
       counts.shadow += 1
       if (catalogBlockReason && Object.prototype.hasOwnProperty.call(shadowByReason, catalogBlockReason)) {
@@ -2762,6 +2917,15 @@ async function enrichSourceCatalog() {
       }
     }
     catalogStatusCounts[catalogStatus] = Number(catalogStatusCounts[catalogStatus] || 0) + 1
+    if (isPriorityItem && priorityTier && scannablePriorityItemsByTier[priorityTier] != null) {
+      if (catalogStatus === CATALOG_STATUS.SCANNABLE) {
+        scannablePriorityItemsByTier[priorityTier] += 1
+      } else if (catalogStatus === CATALOG_STATUS.SHADOW) {
+        shadowPriorityItemsByTier[priorityTier] += 1
+      } else {
+        blockedPriorityItemsByTier[priorityTier] += 1
+      }
+    }
     const scanLayer = resolveScanLayerForMaturityState(maturityState)
 
     const nextRow = {
@@ -2797,6 +2961,11 @@ async function enrichSourceCatalog() {
       catalog_block_reason: catalogBlockReason,
       catalog_quality_score: Number(catalogClassification.catalogQualityScore || 0),
       last_market_signal_at: catalogClassification.lastMarketSignalAt,
+      priority_set_name: isPriorityItem ? prioritySetName : null,
+      priority_tier: isPriorityItem ? priorityTier : null,
+      priority_rank: isPriorityItem ? priorityRank : null,
+      priority_boost: isPriorityItem ? Number(priorityBoost || 0) : 0,
+      is_priority_item: isPriorityItem,
       invalid_reason: invalidReason,
       source_tag: normalizeText(row?.source_tag || row?.sourceTag) || "curated_seed",
       is_active: row?.is_active == null ? true : Boolean(row.is_active)
@@ -2855,6 +3024,19 @@ async function enrichSourceCatalog() {
     nearEligibleRowsByCategory,
     candidateRowsByCategory,
     enrichingRowsByCategory,
+    priorityCoverage: {
+      totalPriorityItemsConfigured: Number(priorityCoverage?.totalPriorityItemsConfigured || 0),
+      matchedExistingCatalogItems: Number(priorityCoverage?.matchedExistingCatalogItems || 0),
+      insertedMissingCatalogItems: Number(priorityCoverage?.insertedMissingCatalogItems || 0),
+      unmatchedPriorityItems: Array.isArray(priorityCoverage?.unmatchedPriorityItems)
+        ? priorityCoverage.unmatchedPriorityItems
+        : [],
+      error: normalizeText(priorityCoverage?.error) || null,
+      scannablePriorityItemsByTier,
+      shadowPriorityItemsByTier,
+      blockedPriorityItemsByTier,
+      scannerSourceCountsByTier
+    },
     fullRebuildRows: rows.length,
     incrementalRecomputeRows: updates.length,
     incrementalSkippedRows: skippedUnchangedRows,
@@ -3009,6 +3191,14 @@ function normalizeCatalogCandidateRows(rows = [], selectionTier = "") {
           : Array.isArray(row?.progressionBlockers)
             ? row.progressionBlockers.map((value) => normalizeText(value)).filter(Boolean)
             : [],
+        priority_set_name: normalizeText(row?.priority_set_name || row?.prioritySetName) || null,
+        priority_tier: normalizePriorityTier(row?.priority_tier || row?.priorityTier, null),
+        priority_rank: normalizeIntegerOrNull(row?.priority_rank ?? row?.priorityRank, 1),
+        priority_boost: toFiniteOrNull(row?.priority_boost ?? row?.priorityBoost) ?? 0,
+        is_priority_item:
+          row?.is_priority_item == null
+            ? normalizePriorityTier(row?.priority_tier || row?.priorityTier, null) != null
+            : Boolean(row.is_priority_item),
         selectionTier: tier,
         selectionTierRank: resolveTierRank(tier)
       }
@@ -3207,7 +3397,22 @@ async function runPipeline(options = {}) {
   base.targetUniverseSize = targetUniverseSize
 
   const ingest = await ingestSourceCatalogSeeds()
-  const sourceCoverage = await enrichSourceCatalog()
+  const priorityCoverage = await catalogPriorityCoverageService
+    .syncPriorityCoverageSet()
+    .catch((err) => ({
+      setName: null,
+      version: 1,
+      description: null,
+      totalPriorityItemsConfigured: 0,
+      matchedExistingCatalogItems: 0,
+      insertedMissingCatalogItems: 0,
+      unmatchedPriorityItems: [],
+      entries: [],
+      byKey: new Map(),
+      policyHintsByTier: {},
+      error: normalizeText(err?.message) || "priority_coverage_sync_failed"
+    }))
+  const sourceCoverage = await enrichSourceCatalog({ priorityCoverage })
   const universeBuild = await rebuildUniverseFromCatalog(targetUniverseSize)
 
   return {
@@ -3338,6 +3543,8 @@ async function runPipeline(options = {}) {
         sourceCoverage?.candidateRowsByCategory || base.sourceCatalog.candidateRowsByCategory,
       enrichingRowsByCategory:
         sourceCoverage?.enrichingRowsByCategory || base.sourceCatalog.enrichingRowsByCategory,
+      priorityCoverage:
+        sourceCoverage?.priorityCoverage || base.sourceCatalog.priorityCoverage,
       fullRebuildRows: Number(sourceCoverage?.fullRebuildRows || sourceCoverage?.totalRows || 0),
       incrementalRecomputeRows: Number(
         sourceCoverage?.incrementalRecomputeRows || sourceCoverage?.persistedUpdateRows || 0
