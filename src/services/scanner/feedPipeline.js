@@ -75,6 +75,16 @@ function safePercentChange(current, previous) {
   return Math.abs(((now - prev) / prev) * 100)
 }
 
+function normalizeStringSet(values = []) {
+  return Array.from(
+    new Set(
+      (Array.isArray(values) ? values : [])
+        .map((value) => normalizeText(value).toLowerCase())
+        .filter(Boolean)
+    )
+  ).sort()
+}
+
 function buildSignature(row = {}) {
   const itemName = normalizeText(row.itemName || row.item_name)
   const buyMarket = normalizeText(row.buyMarket || row.buy_market).toLowerCase()
@@ -100,27 +110,34 @@ function classifyOpportunityFeedEvent(opportunity = {}, previousRow = null) {
   }
 
   const changeReasons = []
+  const markChange = (code) => {
+    const normalized = normalizeText(code)
+    if (!normalized) return
+    if (!changeReasons.includes(normalized)) {
+      changeReasons.push(normalized)
+    }
+  }
   const profitChangePct = safePercentChange(opportunity.profit, previousRow.profit)
   if (profitChangePct >= Number(MIN_PROFIT_CHANGE_PCT || 0)) {
-    changeReasons.push("profit")
+    markChange("profit")
   }
 
   const scoreNow = toFiniteOrNull(opportunity.score)
   const scorePrev = toFiniteOrNull(previousRow.opportunity_score)
   if (scoreNow != null && scorePrev != null && Math.abs(scoreNow - scorePrev) >= Number(MIN_SCORE_CHANGE || 0)) {
-    changeReasons.push("score")
+    markChange("score")
   }
 
   const spreadChangePct = safePercentChange(opportunity.spread, previousRow.spread_pct)
   if (spreadChangePct >= Number(MIN_SPREAD_CHANGE_PCT || 0)) {
-    changeReasons.push("spread")
+    markChange("spread")
   }
 
   const liquidityNow = toFiniteOrNull(opportunity.liquidity)
   const liquidityPrev = toFiniteOrNull(previousRow?.metadata?.liquidity_value)
   const liquidityChangePct = safePercentChange(liquidityNow, liquidityPrev)
   if (liquidityChangePct >= Number(MIN_LIQUIDITY_CHANGE_PCT || 0)) {
-    changeReasons.push("liquidity")
+    markChange("liquidity")
   }
 
   const confidenceDelta = Math.abs(
@@ -128,7 +145,19 @@ function classifyOpportunityFeedEvent(opportunity = {}, previousRow = null) {
       confidenceLevel(previousRow.execution_confidence)
   )
   if (confidenceDelta >= Number(MIN_CONFIDENCE_CHANGE_LEVELS || 0)) {
-    changeReasons.push("confidence")
+    markChange("confidence")
+  }
+
+  const nowFlags = normalizeStringSet(opportunity.flags)
+  const prevFlags = normalizeStringSet(previousRow?.metadata?.flags)
+  if (nowFlags.join("|") !== prevFlags.join("|")) {
+    markChange("diagnostics")
+  }
+
+  const nowBadges = normalizeStringSet(opportunity.badges)
+  const prevBadges = normalizeStringSet(previousRow?.metadata?.badges)
+  if (nowBadges.join("|") !== prevBadges.join("|")) {
+    markChange("diagnostics")
   }
 
   const materiallyChanged = changeReasons.length > 0
@@ -246,6 +275,10 @@ function mapFeedRowToApiRow(row = {}) {
     referencePrice: toFiniteOrNull(metadata?.reference_price),
     flags: Array.isArray(metadata?.flags) ? metadata.flags : [],
     badges: Array.isArray(metadata?.badges) ? metadata.badges : [],
+    diagnosticsDebug:
+      metadata?.diagnostics_debug && typeof metadata.diagnostics_debug === "object"
+        ? metadata.diagnostics_debug
+        : null,
     isHighConfidenceEligible: Boolean(metadata?.is_high_confidence_eligible),
     isRiskyEligible: Boolean(metadata?.is_risky_eligible),
     buyUrl: metadata?.buy_url || null,
