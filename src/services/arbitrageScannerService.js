@@ -17,6 +17,9 @@ const {
   DEFAULT_UNIVERSE_LIMIT,
   UNIVERSE_DB_LIMIT,
   OPPORTUNITY_BATCH_TARGET,
+  OPPORTUNITY_SAFE_BATCH_SIZE,
+  OPPORTUNITY_HOT_TARGET,
+  OPPORTUNITY_BATCH_RUNTIME_TARGET,
   ENRICHMENT_BATCH_TARGET,
   SCAN_CHUNK_SIZE,
   ENRICHMENT_INTERVAL_MINUTES,
@@ -24,7 +27,8 @@ const {
   ENRICHMENT_INTERVAL_MS,
   OPPORTUNITY_SCAN_INTERVAL_MS,
   ENRICHMENT_JOB_TIMEOUT_MS,
-  OPPORTUNITY_JOB_TIMEOUT_MS,
+  OPPORTUNITY_HARD_TIMEOUT_MS,
+  OPPORTUNITY_SCAN_ALLOW_LIVE_FETCH,
   SCAN_TIMEOUT_PER_BATCH_MS,
   FEED_RETENTION_HOURS,
   FEED_ACTIVE_LIMIT,
@@ -354,11 +358,15 @@ function buildCompareInput(candidate = {}) {
 
 async function compareCandidates(candidates = [], forceRefresh = false) {
   const byName = {}
+  const allowLiveFetch = OPPORTUNITY_SCAN_ALLOW_LIVE_FETCH && Boolean(forceRefresh)
   const diagnostics = {
     batchesAttempted: 0,
     batchesCompleted: 0,
     batchesTimedOut: 0,
-    batchesFailed: 0
+    batchesFailed: 0,
+    chunkSize: SCAN_CHUNK_SIZE,
+    allowLiveFetch,
+    forceRefresh: allowLiveFetch
   }
   for (const chunk of chunkArray(candidates, SCAN_CHUNK_SIZE)) {
     diagnostics.batchesAttempted += 1
@@ -367,8 +375,8 @@ async function compareCandidates(candidates = [], forceRefresh = false) {
         marketComparisonService.compareItems(chunk.map((row) => buildCompareInput(row)), {
           planTier: "alpha_access",
           entitlements: scannerEntitlements,
-          allowLiveFetch: true,
-          forceRefresh: Boolean(forceRefresh)
+          allowLiveFetch,
+          forceRefresh: allowLiveFetch
         }),
         SCAN_TIMEOUT_PER_BATCH_MS,
         "SCANNER_BATCH_TIMEOUT"
@@ -499,7 +507,15 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
   return counters
 }
 
-function mergeDiagnostics({ selection = {}, compare = {}, evaluations = {}, persisted = {}, sourceCatalog = {} } = {}) {
+function mergeDiagnostics({
+  selection = {},
+  compare = {},
+  evaluations = {},
+  persisted = {},
+  sourceCatalog = {},
+  timing = {},
+  runtimeConfig = {}
+} = {}) {
   const selectionDiag = selection.diagnostics || {}
   return {
     scanStateCounts: {
@@ -529,6 +545,22 @@ function mergeDiagnostics({ selection = {}, compare = {}, evaluations = {}, pers
     },
     sourceCatalog,
     batchScan: compare,
+    timing: {
+      selectionMs: Number(timing.selectionMs || 0),
+      dbQueryMs: Number(timing.dbQueryMs || 0),
+      computeMs: Number(timing.computeMs || 0),
+      writeMs: Number(timing.writeMs || 0),
+      totalRunMs: Number(timing.totalRunMs || 0)
+    },
+    runtimeConfig: {
+      configuredBatchTarget: Number(runtimeConfig.configuredBatchTarget || 0),
+      hotTarget: Number(runtimeConfig.hotTarget || 0),
+      safeBatchSize: Number(runtimeConfig.safeBatchSize || 0),
+      runtimeBatchTarget: Number(runtimeConfig.runtimeBatchTarget || 0),
+      scanChunkSize: Number(runtimeConfig.scanChunkSize || 0),
+      scanAllowLiveFetch: Boolean(runtimeConfig.scanAllowLiveFetch),
+      hardTimeoutMs: Number(runtimeConfig.hardTimeoutMs || 0)
+    },
     scanProgress: {
       cursorBefore: Number(selection.cursorBefore || 0),
       cursorAfter: Number(selection.nextCursor || 0),
@@ -632,42 +664,65 @@ async function runEnrichmentJob({ forceRefresh = false } = {}) {
 }
 
 async function runOpportunityJob({ forceRefresh = false } = {}) {
-  const sourceCatalogDiagnostics = await marketSourceCatalogService.prepareSourceCatalog({
-    forceRefresh: false,
-    targetUniverseSize: DEFAULT_UNIVERSE_LIMIT
-  }).catch((err) => ({
-    error: normalizeText(err?.message) || "source_catalog_prepare_failed"
-  }))
-
+  const runStartedAtMs = Date.now()
+  const dbQueryStartedAtMs = Date.now()
   const catalogRows = await loadCatalogRows()
+  const dbQueryMs = Date.now() - dbQueryStartedAtMs
+
+  const selectionStartedAtMs = Date.now()
   const selection = selectScanCandidates({
     catalogRows,
-    batchSize: OPPORTUNITY_BATCH_TARGET,
+    batchSize: OPPORTUNITY_BATCH_RUNTIME_TARGET,
     cursor: rotationState.cursor,
     lastScannedAtByName: rotationState.lastScannedAtByName
   })
   selection.cursorBefore = rotationState.cursor
   rotationState.cursor = selection.nextCursor
   trimRotationMap()
+  const selectionMs = Date.now() - selectionStartedAtMs
 
+  const computeStartedAtMs = Date.now()
   const compared = await compareCandidates(selection.selected || [], forceRefresh)
   const evaluated = (selection.selected || []).map((candidate) =>
     evaluateCandidateOpportunity(candidate, compared.byName?.[candidate.marketHashName] || {})
   )
   const evaluationSummary = summarizeEvaluations(evaluated)
-  const enriched = await enrichRowsWithSkinMetadata(evaluated.filter((row) => row.rejected !== true))
-  const persisted = await persistFeedRows(enriched)
+  const opportunities = evaluated.filter((row) => row.rejected !== true)
+  const computeMs = Date.now() - computeStartedAtMs
+
+  const writeStartedAtMs = Date.now()
+  const persisted = await persistFeedRows(opportunities)
+  const writeMs = Date.now() - writeStartedAtMs
+  const totalRunMs = Date.now() - runStartedAtMs
 
   return {
     selectedCount: Number(selection.selected?.length || 0),
-    opportunitiesFound: enriched.length,
+    opportunitiesFound: opportunities.length,
     newOpportunitiesAdded: Number(persisted.newCount || 0),
     diagnostics: mergeDiagnostics({
       selection,
       compare: compared.diagnostics,
       evaluations: evaluationSummary,
       persisted,
-      sourceCatalog: sourceCatalogDiagnostics
+      sourceCatalog: {
+        mode: "deferred_to_enrichment"
+      },
+      timing: {
+        selectionMs,
+        dbQueryMs,
+        computeMs,
+        writeMs,
+        totalRunMs
+      },
+      runtimeConfig: {
+        configuredBatchTarget: OPPORTUNITY_BATCH_TARGET,
+        hotTarget: OPPORTUNITY_HOT_TARGET,
+        safeBatchSize: OPPORTUNITY_SAFE_BATCH_SIZE,
+        runtimeBatchTarget: OPPORTUNITY_BATCH_RUNTIME_TARGET,
+        scanChunkSize: SCAN_CHUNK_SIZE,
+        scanAllowLiveFetch: OPPORTUNITY_SCAN_ALLOW_LIVE_FETCH,
+        hardTimeoutMs: OPPORTUNITY_HARD_TIMEOUT_MS
+      }
     })
   }
 }
@@ -689,7 +744,20 @@ function formatRunResult(input = {}) {
   }
 }
 
-async function runJobWithLock({ scannerType, state, peerState, peerScannerType, timeoutMs, trigger, forceRefresh, worker }) {
+async function runJobWithLock({
+  scannerType,
+  state,
+  peerState,
+  peerScannerType,
+  timeoutMs,
+  hardTimeoutMs = null,
+  trigger,
+  forceRefresh,
+  worker
+}) {
+  const safeScannerType = normalizeText(scannerType) || LEGACY_SCANNER_TYPE
+  const safeTimeoutMs = Math.max(Math.round(Number(timeoutMs || 0)), 1000)
+  const safeHardTimeoutMs = Math.max(Math.round(Number(hardTimeoutMs || 0)), 0)
   if (state.inFlight) {
     return formatRunResult({
       scanRunId: state.currentRunId || null,
@@ -713,14 +781,55 @@ async function runJobWithLock({ scannerType, state, peerState, peerScannerType, 
         peerState.currentRunStartedAt && toIsoOrNull(peerState.currentRunStartedAt)
           ? Date.now() - new Date(peerState.currentRunStartedAt).getTime()
           : null
-    })
+      })
+  }
+
+  if (safeHardTimeoutMs > 0) {
+    const nowIso = new Date().toISOString()
+    const staleCutoffIso = new Date(Date.now() - safeHardTimeoutMs).toISOString()
+    await scannerRunRepo
+      .timeoutStaleRunningRuns(safeScannerType, {
+        cutoffIso: staleCutoffIso,
+        nowIso,
+        failureReason: `${safeScannerType}_hard_timeout_recovery`,
+        diagnosticsSummary: {
+          trigger,
+          hardTimeoutMs: safeHardTimeoutMs,
+          recoveredFromStaleLock: true
+        }
+      })
+      .catch(() => 0)
   }
 
   const startedAt = new Date().toISOString()
-  const runInsert = await scannerRunRepo.tryCreateRunningRun({
-    scannerType: normalizeText(scannerType) || LEGACY_SCANNER_TYPE,
+  let runInsert = await scannerRunRepo.tryCreateRunningRun({
+    scannerType: safeScannerType,
     startedAt
   })
+  if (runInsert.alreadyRunning && safeHardTimeoutMs > 0) {
+    const existingStartedAt = toIsoOrNull(runInsert?.existingRun?.started_at)
+    const existingElapsedMs = existingStartedAt ? Date.now() - new Date(existingStartedAt).getTime() : null
+    if (Number(existingElapsedMs || 0) > safeHardTimeoutMs) {
+      const nowIso = new Date().toISOString()
+      const staleCutoffIso = new Date(Date.now() - safeHardTimeoutMs).toISOString()
+      await scannerRunRepo
+        .timeoutStaleRunningRuns(safeScannerType, {
+          cutoffIso: staleCutoffIso,
+          nowIso,
+          failureReason: `${safeScannerType}_stale_lock_recovered`,
+          diagnosticsSummary: {
+            trigger,
+            hardTimeoutMs: safeHardTimeoutMs,
+            recoveredFromStaleLock: true
+          }
+        })
+        .catch(() => 0)
+      runInsert = await scannerRunRepo.tryCreateRunningRun({
+        scannerType: safeScannerType,
+        startedAt
+      })
+    }
+  }
   if (runInsert.alreadyRunning) {
     if (RECORD_SKIPPED_ALREADY_RUNNING) {
       await scannerRunRepo.createRun({
@@ -745,7 +854,7 @@ async function runJobWithLock({ scannerType, state, peerState, peerScannerType, 
   state.inFlight = (async () => {
     const startedAtMs = Date.now()
     try {
-      const result = await withTimeout(worker({ forceRefresh }), timeoutMs, "SCANNER_JOB_TIMEOUT")
+      const result = await withTimeout(worker({ forceRefresh }), safeTimeoutMs, "SCANNER_JOB_TIMEOUT")
       await scannerRunRepo.markCompleted(runId, {
         completedAt: new Date().toISOString(),
         itemsScanned: Number(result?.selectedCount || 0),
@@ -754,17 +863,29 @@ async function runJobWithLock({ scannerType, state, peerState, peerScannerType, 
         durationMs: Date.now() - startedAtMs,
         diagnosticsSummary: {
           trigger,
+          timeoutMs: safeTimeoutMs,
+          hardTimeoutMs: safeHardTimeoutMs || null,
           ...(result?.diagnostics || {})
         }
       })
     } catch (err) {
       const timedOut = String(err?.code || "").trim() === "SCANNER_JOB_TIMEOUT"
+      const elapsedMs = Date.now() - startedAtMs
       await scannerRunRepo.markFailed(runId, {
         completedAt: new Date().toISOString(),
         status: timedOut ? "timed_out" : "failed",
-        durationMs: Date.now() - startedAtMs,
-        failureReason: normalizeText(err?.message) || "scanner_job_failed",
-        diagnosticsSummary: { trigger, timedOut }
+        durationMs: elapsedMs,
+        failureReason: timedOut
+          ? `${safeScannerType}_timeout_after_${safeTimeoutMs}ms`
+          : normalizeText(err?.message) || "scanner_job_failed",
+        diagnosticsSummary: {
+          trigger,
+          timedOut,
+          errorCode: normalizeText(err?.code) || null,
+          timeoutMs: safeTimeoutMs,
+          hardTimeoutMs: safeHardTimeoutMs || null,
+          elapsedMs
+        }
       })
     } finally {
       const cutoffIso = new Date(
@@ -794,7 +915,8 @@ async function enqueueScan(options = {}) {
     state: scannerState,
     peerState: enrichmentState,
     peerScannerType: SCANNER_TYPES.ENRICHMENT,
-    timeoutMs: OPPORTUNITY_JOB_TIMEOUT_MS,
+    timeoutMs: OPPORTUNITY_HARD_TIMEOUT_MS,
+    hardTimeoutMs: OPPORTUNITY_HARD_TIMEOUT_MS,
     trigger: normalizeText(options.trigger || "system"),
     forceRefresh: Boolean(options.forceRefresh),
     worker: runOpportunityJob
@@ -935,6 +1057,8 @@ exports.getFeed = async (options = {}) => {
     scanStateByCategory: diagnostics.scanStateByCategory || {},
     scanProgress: diagnostics.scanProgress || {},
     batchScan: diagnostics.batchScan || {},
+    timing: diagnostics.timing || {},
+    runtimeConfig: diagnostics.runtimeConfig || {},
     highConfidence: Number(diagnostics.strongFound || 0),
     riskyEligible: Number(diagnostics.riskyFound || 0),
     speculativeEligible: Number(diagnostics.speculativeFound || 0),

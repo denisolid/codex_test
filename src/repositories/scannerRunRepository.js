@@ -292,6 +292,37 @@ exports.listRunningRuns = async (scannerType = "global_arbitrage", options = {})
   return Array.isArray(data) ? data : []
 }
 
+exports.timeoutStaleRunningRuns = async (scannerType = "global_arbitrage", options = {}) => {
+  const type = normalizeScannerType(scannerType)
+  const cutoffIso = String(options.cutoffIso || "").trim()
+  if (!cutoffIso) return 0
+
+  const nowIso = options.nowIso || new Date().toISOString()
+  const failureReason =
+    normalizeFailureReason(options.failureReason) ||
+    "scanner_run_exceeded_hard_timeout"
+  const diagnosticsSummary = toJsonObject(options.diagnosticsSummary)
+
+  const { data, error } = await supabaseAdmin
+    .from(TABLE)
+    .update({
+      status: "timed_out",
+      completed_at: nowIso,
+      failure_reason: failureReason,
+      diagnostics_summary: diagnosticsSummary
+    })
+    .eq("scanner_type", type)
+    .eq("status", "running")
+    .lt("started_at", cutoffIso)
+    .select("id")
+
+  if (error) {
+    throw new AppError(error.message, 500)
+  }
+
+  return Array.isArray(data) ? data.length : 0
+}
+
 exports.deleteOlderThan = async (cutoffIso, options = {}) => {
   const cutoff = String(cutoffIso || "").trim()
   if (!cutoff) return 0

@@ -12,6 +12,10 @@ const {
   arbitrageDuplicateWindowHours,
   arbitrageEnrichmentJobTimeoutMs,
   arbitrageOpportunityJobTimeoutMs,
+  arbitrageOpportunityHardTimeoutMs,
+  arbitrageOpportunityScanAllowLiveFetch,
+  arbitrageOpportunitySafeBatchSize,
+  arbitrageHotOpportunityScanTarget,
   arbitrageAllowCrossJobParallelism,
   arbitrageRecordSkippedAlreadyRunning,
   arbitrageScanTimeoutPerBatchMs,
@@ -188,6 +192,18 @@ const OPPORTUNITY_BATCH_TARGET = Math.max(
   Math.round(toNumber(arbitrageOpportunityBatchSize, 150, { min: 20 })),
   20
 )
+const OPPORTUNITY_SAFE_BATCH_SIZE = Math.max(
+  Math.round(toNumber(arbitrageOpportunitySafeBatchSize, 60, { min: 10 })),
+  10
+)
+const OPPORTUNITY_HOT_TARGET = Math.max(
+  Math.round(toNumber(arbitrageHotOpportunityScanTarget, 40, { min: 10 })),
+  10
+)
+const OPPORTUNITY_BATCH_RUNTIME_TARGET = Math.max(
+  Math.min(OPPORTUNITY_BATCH_TARGET, OPPORTUNITY_SAFE_BATCH_SIZE, OPPORTUNITY_HOT_TARGET),
+  10
+)
 const ENRICHMENT_BATCH_TARGET = Math.max(
   Math.round(toNumber(arbitrageEnrichmentBatchSize, 120, { min: 20 })),
   20
@@ -220,6 +236,11 @@ const OPPORTUNITY_JOB_TIMEOUT_MS = Math.max(
   Math.round(toNumber(arbitrageOpportunityJobTimeoutMs, 420000, { min: 60000 })),
   60000
 )
+const OPPORTUNITY_HARD_TIMEOUT_MS = Math.max(
+  Math.round(toNumber(arbitrageOpportunityHardTimeoutMs, 12 * 60 * 1000, { min: 600000, max: 900000 })),
+  600000
+)
+const OPPORTUNITY_SCAN_ALLOW_LIVE_FETCH = Boolean(arbitrageOpportunityScanAllowLiveFetch)
 const SCAN_TIMEOUT_PER_BATCH_MS = Math.max(
   Math.round(toNumber(arbitrageScanTimeoutPerBatchMs, 30000, { min: 1000 })),
   1000
@@ -272,6 +293,9 @@ module.exports = Object.freeze({
   DEFAULT_UNIVERSE_LIMIT,
   UNIVERSE_DB_LIMIT,
   OPPORTUNITY_BATCH_TARGET,
+  OPPORTUNITY_SAFE_BATCH_SIZE,
+  OPPORTUNITY_HOT_TARGET,
+  OPPORTUNITY_BATCH_RUNTIME_TARGET,
   ENRICHMENT_BATCH_TARGET,
   SCAN_CHUNK_SIZE,
   ENRICHMENT_INTERVAL_MINUTES,
@@ -280,6 +304,8 @@ module.exports = Object.freeze({
   OPPORTUNITY_SCAN_INTERVAL_MS,
   ENRICHMENT_JOB_TIMEOUT_MS,
   OPPORTUNITY_JOB_TIMEOUT_MS,
+  OPPORTUNITY_HARD_TIMEOUT_MS,
+  OPPORTUNITY_SCAN_ALLOW_LIVE_FETCH,
   SCAN_TIMEOUT_PER_BATCH_MS,
   FEED_RETENTION_HOURS,
   FEED_ACTIVE_LIMIT,
