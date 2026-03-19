@@ -984,7 +984,7 @@ function createGlobalOpportunitiesState() {
     error: "",
     generatedAt: null,
     currency: "USD",
-    showRisky: false,
+    showRisky: true,
     showOlder: false,
     category: "all",
     summary: null,
@@ -1221,7 +1221,7 @@ function syncPlanAwareUiState() {
   state.accountPage.planSwitcher.selected = planTier;
 
   if (shouldShowUpgradePrompt(entitlements, "advancedFilters")) {
-    state.globalOpportunities.showRisky = false;
+    state.globalOpportunities.showRisky = true;
     state.globalOpportunities.showOlder = false;
     state.globalOpportunities.category = "all";
     state.marketTab.opportunities.filters.showRisky = "0";
@@ -5679,22 +5679,23 @@ function onAppChange(event) {
 
   if (target.matches("#global-opportunities-show-risky")) {
     const entitlements = getProfileEntitlements();
-    if (shouldShowUpgradePrompt(entitlements, "advancedFilters")) {
+    const advancedFiltersEnabled = canUseAdvancedFilters(entitlements);
+    if (!advancedFiltersEnabled) {
       if (target instanceof HTMLInputElement) {
         target.checked = false;
       }
-      state.globalOpportunities.showRisky = false;
-      notify("info", "Advanced scanner filters require Full Access.");
+      state.globalOpportunities.showRisky = true;
       return;
     }
-    const checked =
+    const showHighConfidenceOnly =
       target instanceof HTMLInputElement ? Boolean(target.checked) : false;
-    state.globalOpportunities.showRisky = checked;
+    const showRisky = !showHighConfidenceOnly;
+    state.globalOpportunities.showRisky = showRisky;
     runUiTask(() =>
       refreshGlobalOpportunities({
         force: true,
         limit: 100,
-        showRisky: checked,
+        showRisky,
       }),
     );
     return;
@@ -7418,7 +7419,7 @@ async function refreshGlobalOpportunities(options = {}) {
   const visibleFeedLimit = Math.max(Number(entitlements.visibleFeedLimit || 100), 1);
   state.globalOpportunities = scanner;
   if (!advancedFiltersEnabled) {
-    scanner.showRisky = false;
+    scanner.showRisky = true;
     scanner.showOlder = false;
     scanner.category = "all";
   } else {
@@ -12864,6 +12865,7 @@ function renderGlobalOpportunitiesTab() {
     }
   });
   const showRisky = Boolean(scanner.showRisky);
+  const showHighConfidenceOnly = advancedFiltersEnabled && !showRisky;
   const showOlder = Boolean(scanner.showOlder);
   const categoryFilter = String(scanner.category || "all")
     .trim()
@@ -13260,18 +13262,22 @@ function renderGlobalOpportunitiesTab() {
       >
         ${scanner.loading ? "Refreshing..." : "Refresh"}
       </button>
-      <label
-        class="opportunity-risk-toggle"
-        for="global-opportunities-show-risky"
-      >
-        <input
-          id="global-opportunities-show-risky"
-          type="checkbox"
-          ${showRisky ? "checked" : ""}
-          ${scanner.loading || !advancedFiltersEnabled ? "disabled" : ""}
-        />
-        <span>Show risky opportunities</span>
-      </label>
+      ${
+        advancedFiltersEnabled
+          ? `<label
+              class="opportunity-risk-toggle"
+              for="global-opportunities-show-risky"
+            >
+              <input
+                id="global-opportunities-show-risky"
+                type="checkbox"
+                ${showHighConfidenceOnly ? "checked" : ""}
+                ${scanner.loading ? "disabled" : ""}
+              />
+              <span>Show high confidence results</span>
+            </label>`
+          : ""
+      }
       <label
         class="opportunity-risk-toggle"
         for="global-opportunities-show-older"
@@ -13487,7 +13493,7 @@ function renderGlobalOpportunitiesTab() {
         className: "wide dashboard-arbitrage-panel dashboard-arbitrage-panel-live",
         title: "Top Arbitrage Opportunities",
         subtitle:
-          `Top ${formatNumber(summary?.universeTarget || 100, 0)} universe across skins, cases, capsules, knives, and gloves. Default view shows only high-quality execution setups.`,
+          `Top ${formatNumber(summary?.universeTarget || 100, 0)} universe across skins, cases, capsules, knives, and gloves. Default view includes risky and high-confidence setups.`,
         body,
       })}
     </section>
