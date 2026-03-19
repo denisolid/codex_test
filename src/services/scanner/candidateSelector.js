@@ -58,6 +58,19 @@ function normalizeCatalogRow(row = {}) {
     snapshotStale: row.snapshot_stale == null ? Boolean(row.snapshotStale) : Boolean(row.snapshot_stale),
     snapshotCapturedAt: row.snapshot_captured_at || row.snapshotCapturedAt || null,
     quoteFetchedAt: row.quote_fetched_at || row.quoteFetchedAt || null,
+    referenceState: normalizeText(row.reference_state || row.referenceState) || null,
+    lastMarketSignalAt:
+      row.last_market_signal_at ||
+      row.lastMarketSignalAt ||
+      row.latest_market_signal_at ||
+      row.latestMarketSignalAt ||
+      null,
+    latestReferencePriceAt:
+      row.latest_reference_price_at ||
+      row.latestReferencePriceAt ||
+      row.reference_price_at ||
+      row.referencePriceAt ||
+      null,
     priorityTier: normalizePriorityTier(row.priority_tier || row.priorityTier),
     priorityBoost: toFiniteOrNull(row.priority_boost ?? row.priorityBoost) ?? 0,
     isPriorityItem:
@@ -71,6 +84,27 @@ function normalizeCatalogRow(row = {}) {
 }
 
 function toIsoOrNull(value) {
+  if (value == null || value === "") return null
+  if (value instanceof Date) {
+    const dateTs = value.getTime()
+    if (!Number.isFinite(dateTs)) return null
+    return new Date(dateTs).toISOString()
+  }
+
+  const numeric = toFiniteOrNull(value)
+  if (numeric != null) {
+    const normalizedTs =
+      numeric >= 1e12
+        ? Math.round(numeric)
+        : numeric >= 1e9
+          ? Math.round(numeric * 1000)
+          : null
+    if (normalizedTs != null) {
+      const ts = new Date(normalizedTs).getTime()
+      if (Number.isFinite(ts)) return new Date(ts).toISOString()
+    }
+  }
+
   const text = normalizeText(value)
   if (!text) return null
   const ts = new Date(text).getTime()
@@ -84,7 +118,8 @@ function hasStrongScanEvidence(row = {}) {
   const volume7d = toFiniteOrNull(row.volume7d)
   const snapshotCapturedAt = toIsoOrNull(row.snapshotCapturedAt)
   const quoteFetchedAt = toIsoOrNull(row.quoteFetchedAt)
-  const hasFreshnessSignal = Boolean(snapshotCapturedAt || quoteFetchedAt)
+  const lastMarketSignalAt = toIsoOrNull(row.lastMarketSignalAt)
+  const hasFreshnessSignal = Boolean(snapshotCapturedAt || quoteFetchedAt || lastMarketSignalAt)
 
   if (marketCoverageCount < 2) return false
   if (referencePrice == null || referencePrice <= 0) return false

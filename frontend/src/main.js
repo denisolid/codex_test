@@ -8736,11 +8736,31 @@ function buildOpportunityBadges(row = {}, options = {}) {
   const { max = 5 } = options;
   const labels = [];
   const seen = new Set();
+  const staleResultRaw =
+    row?.staleResult ??
+    row?.stale_result ??
+    row?.diagnosticsDebug?.stale_result ??
+    row?.diagnostics_debug?.stale_result;
+  const staleResult =
+    typeof staleResultRaw === "boolean"
+      ? staleResultRaw
+      : staleResultRaw == null || staleResultRaw === ""
+        ? null
+        : String(staleResultRaw).trim().toLowerCase() === "true" ||
+          String(staleResultRaw).trim() === "1";
+  const isStaleSignalLabel = (value) =>
+    /\bstale market signal\b/i.test(String(value || ""));
+  const isStaleSignalFlag = (value) =>
+    String(value || "")
+      .trim()
+      .toLowerCase() === "stale_market_signal";
   const add = (rawValue) => {
     const raw = String(rawValue || "").trim();
     if (!raw) return;
+    if (staleResult === false && isStaleSignalLabel(raw)) return;
     const looksLikeCode = raw.includes("_") || raw === raw.toUpperCase();
     const label = looksLikeCode ? formatArbitrageReasonLabel(raw) : raw;
+    if (staleResult === false && isStaleSignalLabel(label)) return;
     const key = label.trim().toLowerCase();
     if (!key || seen.has(key)) return;
     seen.add(key);
@@ -8757,7 +8777,13 @@ function buildOpportunityBadges(row = {}, options = {}) {
 
   explicitBadges.forEach(add);
   reasonBadges.forEach(add);
-  flags.forEach(add);
+  flags.forEach((flag) => {
+    if (staleResult === false && isStaleSignalFlag(flag)) return;
+    add(flag);
+  });
+  if (staleResult === true) {
+    add("Stale market signal");
+  }
 
   if (!Number.isFinite(Number(max)) || max <= 0) {
     return labels;

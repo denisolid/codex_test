@@ -554,11 +554,40 @@ function uniqueTextList(values = []) {
 }
 
 function toIsoStringOrNull(value) {
+  if (value == null || value === "") return null
+  if (value instanceof Date) {
+    const dateTs = value.getTime()
+    if (!Number.isFinite(dateTs)) return null
+    return new Date(dateTs).toISOString()
+  }
+
+  const numeric = toFiniteOrNull(value)
+  if (numeric != null) {
+    const normalizedTs =
+      numeric >= 1e12
+        ? Math.round(numeric)
+        : numeric >= 1e9
+          ? Math.round(numeric * 1000)
+          : null
+    if (normalizedTs != null) {
+      const ts = new Date(normalizedTs).getTime()
+      if (Number.isFinite(ts)) return new Date(ts).toISOString()
+    }
+  }
+
   const text = normalizeText(value)
   if (!text) return null
   const parsed = new Date(text).getTime()
   if (!Number.isFinite(parsed)) return null
   return new Date(parsed).toISOString()
+}
+
+function resolveLatestIso(values = []) {
+  const sorted = (Array.isArray(values) ? values : [])
+    .map((value) => toIsoStringOrNull(value))
+    .filter(Boolean)
+    .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())
+  return sorted[0] || null
 }
 
 function normalizeIntegerOrNull(value, min = 0) {
@@ -774,18 +803,66 @@ function resolveCatalogFreshnessState(ageMinutes = null, rules = {}) {
   return CATALOG_FRESHNESS_STATES.STALE
 }
 
+function resolveReferenceSignalAt({
+  referencePrice = null,
+  referenceState = "",
+  latestReferencePriceAt = null,
+  snapshotCapturedAt = null,
+  quoteFetchedAt = null
+} = {}) {
+  if (toPositiveOrNull(referencePrice) == null) return null
+  const directReferenceIso = resolveLatestIso([latestReferencePriceAt])
+  if (directReferenceIso) return directReferenceIso
+
+  const normalizedReferenceState = normalizeText(referenceState).toLowerCase()
+  const snapshotIso = toIsoStringOrNull(snapshotCapturedAt)
+  const quoteIso = toIsoStringOrNull(quoteFetchedAt)
+  if (
+    normalizedReferenceState === normalizeText(REFERENCE_DIAGNOSTIC_STATES.SNAPSHOT).toLowerCase() ||
+    normalizedReferenceState === "snapshot"
+  ) {
+    return snapshotIso
+  }
+  if (
+    normalizedReferenceState === normalizeText(REFERENCE_DIAGNOSTIC_STATES.QUOTE).toLowerCase() ||
+    normalizedReferenceState === "quote"
+  ) {
+    return quoteIso
+  }
+  return resolveLatestIso([quoteIso, snapshotIso])
+}
+
 function resolveCatalogFreshnessContext({
   category = ITEM_CATEGORIES.WEAPON_SKIN,
   snapshotCapturedAt = null,
   quoteFetchedAt = null,
+  referencePrice = null,
+  referenceState = "",
+  latestReferencePriceAt = null,
+  latestMarketSignalAt = null,
   snapshotStale = true,
   hasSnapshot = null
 } = {}) {
   const rules = getCatalogFreshnessRules(category)
-  const snapshotAgeMinutes = resolveAgeMinutes(snapshotCapturedAt)
-  const quoteAgeMinutes = resolveAgeMinutes(quoteFetchedAt)
+  const snapshotIso = toIsoStringOrNull(snapshotCapturedAt)
+  const quoteIso = toIsoStringOrNull(quoteFetchedAt)
+  const referenceIso = resolveReferenceSignalAt({
+    referencePrice,
+    referenceState,
+    latestReferencePriceAt,
+    snapshotCapturedAt: snapshotIso,
+    quoteFetchedAt: quoteIso
+  })
+  const canonicalLatestSignalAt =
+    resolveLatestIso([snapshotIso, quoteIso, referenceIso]) ||
+    toIsoStringOrNull(latestMarketSignalAt) ||
+    null
+  const snapshotAgeMinutes = resolveAgeMinutes(snapshotIso)
+  const quoteAgeMinutes = resolveAgeMinutes(quoteIso)
+  const referenceAgeMinutes = resolveAgeMinutes(referenceIso)
+  const ageMinutes = resolveAgeMinutes(canonicalLatestSignalAt)
   const hasSnapshotData =
-    hasSnapshot == null ? Boolean(snapshotCapturedAt) : Boolean(hasSnapshot)
+    hasSnapshot == null ? Boolean(snapshotIso) : Boolean(hasSnapshot)
   const snapshotState =
     snapshotAgeMinutes == null
       ? hasSnapshotData
@@ -795,33 +872,76 @@ function resolveCatalogFreshnessContext({
         : CATALOG_FRESHNESS_STATES.MISSING
       : resolveCatalogFreshnessState(snapshotAgeMinutes, rules)
   const quoteState = resolveCatalogFreshnessState(quoteAgeMinutes, rules)
-  const state =
-    snapshotState === CATALOG_FRESHNESS_STATES.FRESH || quoteState === CATALOG_FRESHNESS_STATES.FRESH
+  const referenceStateResolved = resolveCatalogFreshnessState(referenceAgeMinutes, rules)
+  const fallbackState =
+    snapshotState === CATALOG_FRESHNESS_STATES.FRESH ||
+    quoteState === CATALOG_FRESHNESS_STATES.FRESH ||
+    referenceStateResolved === CATALOG_FRESHNESS_STATES.FRESH
       ? CATALOG_FRESHNESS_STATES.FRESH
       : snapshotState === CATALOG_FRESHNESS_STATES.AGING ||
-          quoteState === CATALOG_FRESHNESS_STATES.AGING
+          quoteState === CATALOG_FRESHNESS_STATES.AGING ||
+          referenceStateResolved === CATALOG_FRESHNESS_STATES.AGING
         ? CATALOG_FRESHNESS_STATES.AGING
         : snapshotState === CATALOG_FRESHNESS_STATES.STALE ||
-            quoteState === CATALOG_FRESHNESS_STATES.STALE
+            quoteState === CATALOG_FRESHNESS_STATES.STALE ||
+            referenceStateResolved === CATALOG_FRESHNESS_STATES.STALE
           ? CATALOG_FRESHNESS_STATES.STALE
           : CATALOG_FRESHNESS_STATES.MISSING
+  const state =
+    ageMinutes == null ? fallbackState : resolveCatalogFreshnessState(ageMinutes, rules)
+  const staleThresholdMinutes = Number(rules.agingMaxMinutes || 0)
+  const hasFreshSignalWithinSla =
+    ageMinutes != null
+      ? staleThresholdMinutes > 0 && ageMinutes <= staleThresholdMinutes
+      : state === CATALOG_FRESHNESS_STATES.FRESH || state === CATALOG_FRESHNESS_STATES.AGING
+  let staleReasonSource = "no_usable_market_timestamp"
+  if (canonicalLatestSignalAt) {
+    const latestTs = new Date(canonicalLatestSignalAt).getTime()
+    const snapshotTs = snapshotIso ? new Date(snapshotIso).getTime() : Number.NaN
+    const quoteTs = quoteIso ? new Date(quoteIso).getTime() : Number.NaN
+    const referenceTs = referenceIso ? new Date(referenceIso).getTime() : Number.NaN
+    if (Number.isFinite(referenceTs) && referenceTs === latestTs) staleReasonSource = "latest_reference_price"
+    else if (Number.isFinite(quoteTs) && quoteTs === latestTs) staleReasonSource = "latest_quote"
+    else if (Number.isFinite(snapshotTs) && snapshotTs === latestTs) staleReasonSource = "latest_snapshot"
+  } else if (state === CATALOG_FRESHNESS_STATES.FRESH || state === CATALOG_FRESHNESS_STATES.AGING) {
+    if (snapshotState === CATALOG_FRESHNESS_STATES.FRESH || snapshotState === CATALOG_FRESHNESS_STATES.AGING) {
+      staleReasonSource = "snapshot_state_fallback"
+    } else if (
+      quoteState === CATALOG_FRESHNESS_STATES.FRESH ||
+      quoteState === CATALOG_FRESHNESS_STATES.AGING
+    ) {
+      staleReasonSource = "quote_state_fallback"
+    } else if (
+      referenceStateResolved === CATALOG_FRESHNESS_STATES.FRESH ||
+      referenceStateResolved === CATALOG_FRESHNESS_STATES.AGING
+    ) {
+      staleReasonSource = "reference_state_fallback"
+    }
+  }
 
   return {
     state,
     snapshotState,
     quoteState,
+    referenceState: referenceStateResolved,
+    ageMinutes,
     snapshotAgeMinutes,
     quoteAgeMinutes,
+    referenceAgeMinutes,
     hasSnapshotData,
     hasQuoteFreshness: quoteAgeMinutes != null,
+    hasAnySignal: Boolean(snapshotIso || quoteIso || referenceIso || canonicalLatestSignalAt),
+    latestSnapshotAt: snapshotIso,
+    latestQuoteAt: quoteIso,
+    latestReferencePriceAt: referenceIso,
+    latestMarketSignalAt: canonicalLatestSignalAt,
+    staleThresholdMinutes,
+    staleResult: !hasFreshSignalWithinSla,
+    staleReasonSource,
+    hasFreshSignalWithinSla,
     usable:
-      snapshotState === CATALOG_FRESHNESS_STATES.FRESH ||
-      snapshotState === CATALOG_FRESHNESS_STATES.AGING ||
-      quoteState === CATALOG_FRESHNESS_STATES.FRESH ||
-      quoteState === CATALOG_FRESHNESS_STATES.AGING,
-    strong:
-      snapshotState === CATALOG_FRESHNESS_STATES.FRESH ||
-      quoteState === CATALOG_FRESHNESS_STATES.FRESH
+      state === CATALOG_FRESHNESS_STATES.FRESH || state === CATALOG_FRESHNESS_STATES.AGING,
+    strong: state === CATALOG_FRESHNESS_STATES.FRESH
   }
 }
 
@@ -925,10 +1045,13 @@ function computeCatalogProgressContext({
   marketCoverageCount = 0,
   snapshotCapturedAt = null,
   quoteFetchedAt = null,
+  latestReferencePriceAt = null,
+  latestMarketSignalAt = null,
   snapshotStale = true,
   hasSnapshot = null,
   liquidityRank = 0,
   eligibilityReason = "",
+  referenceState = "",
   snapshotHasPriceSignal = false,
   snapshotHasLiquiditySignal = false
 } = {}) {
@@ -944,10 +1067,20 @@ function computeCatalogProgressContext({
     hasSnapshot == null
       ? Boolean(snapshotCapturedAt) || (safeReferencePrice != null && snapshotStale === false)
       : Boolean(hasSnapshot)
+  const resolvedReferenceState =
+    normalizeText(referenceState) ||
+    resolveReferenceDiagnosticState({
+      referencePrice: safeReferencePrice,
+      snapshotHasPriceSignal
+    })
   const freshness = resolveCatalogFreshnessContext({
     category: normalizedCategory,
     snapshotCapturedAt,
     quoteFetchedAt,
+    referencePrice: safeReferencePrice,
+    referenceState: resolvedReferenceState,
+    latestReferencePriceAt,
+    latestMarketSignalAt,
     snapshotStale,
     hasSnapshot: inferredSnapshotPresence
   })
@@ -1079,10 +1212,7 @@ function computeCatalogProgressContext({
       ]) >= 2,
     hasStructuralReason,
     coverageState: resolveCoverageDiagnosticState(coverageCount, minCoverage),
-    referenceState: resolveReferenceDiagnosticState({
-      referencePrice: safeReferencePrice,
-      snapshotHasPriceSignal
-    }),
+    referenceState: resolvedReferenceState,
     liquidityState: resolveLiquidityDiagnosticState({
       hasLiquidityContext,
       sufficientVolume,
@@ -2149,6 +2279,9 @@ function evaluateCandidateState({
   snapshotStale = true,
   liquidityRank = 0,
   quoteFetchedAt = null,
+  referenceState = "",
+  latestReferencePriceAt = null,
+  latestMarketSignalAt = null,
   priorityBoost = 0
 } = {}) {
   const normalizedCategory = normalizeCategory(category, marketHashName)
@@ -2177,10 +2310,13 @@ function evaluateCandidateState({
     marketCoverageCount,
     snapshotCapturedAt,
     quoteFetchedAt,
+    latestReferencePriceAt,
+    latestMarketSignalAt,
     snapshotStale: effectiveSnapshotStale,
     hasSnapshot,
     liquidityRank,
     eligibilityReason: eligibility?.reason,
+    referenceState,
     snapshotHasPriceSignal,
     snapshotHasLiquiditySignal
   })
@@ -2298,13 +2434,24 @@ function hasStructuralCatalogReason(reason = "") {
   )
 }
 
-function resolveLatestMarketSignalAt(snapshotCapturedAt = null, quoteFetchedAt = null) {
+function resolveLatestMarketSignalAt({
+  snapshotCapturedAt = null,
+  quoteFetchedAt = null,
+  referencePrice = null,
+  referenceState = "",
+  latestReferencePriceAt = null,
+  latestMarketSignalAt = null
+} = {}) {
   const snapshotIso = toIsoStringOrNull(snapshotCapturedAt)
   const quoteIso = toIsoStringOrNull(quoteFetchedAt)
-  if (!snapshotIso && !quoteIso) return null
-  if (!snapshotIso) return quoteIso
-  if (!quoteIso) return snapshotIso
-  return new Date(snapshotIso).getTime() >= new Date(quoteIso).getTime() ? snapshotIso : quoteIso
+  const referenceIso = resolveReferenceSignalAt({
+    referencePrice,
+    referenceState,
+    latestReferencePriceAt,
+    snapshotCapturedAt: snapshotIso,
+    quoteFetchedAt: quoteIso
+  })
+  return resolveLatestIso([snapshotIso, quoteIso, referenceIso, latestMarketSignalAt])
 }
 
 function computeCatalogQualityScore({
@@ -2352,6 +2499,9 @@ function classifyCatalogStatus({
   marketCoverageCount = 0,
   snapshotCapturedAt = null,
   quoteFetchedAt = null,
+  referenceState = "",
+  latestReferencePriceAt = null,
+  latestMarketSignalAt = null,
   snapshotStale = false,
   liquidityRank = 0,
   priorityBoost = 0,
@@ -2366,29 +2516,32 @@ function classifyCatalogStatus({
   const normalizedCoverage = Math.max(Number(marketCoverageCount || 0), 0)
   const snapshotIso = toIsoStringOrNull(snapshotCapturedAt)
   const quoteIso = toIsoStringOrNull(quoteFetchedAt)
-  const lastMarketSignalAt = resolveLatestMarketSignalAt(snapshotIso, quoteIso)
+  const canonicalLastMarketSignalAt = resolveLatestMarketSignalAt({
+    snapshotCapturedAt: snapshotIso,
+    quoteFetchedAt: quoteIso,
+    referencePrice: safeReferencePrice,
+    referenceState,
+    latestReferencePriceAt,
+    latestMarketSignalAt
+  })
   const freshness = resolveCatalogFreshnessContext({
     category: normalizedCategory,
     snapshotCapturedAt: snapshotIso,
     quoteFetchedAt: quoteIso,
+    referencePrice: safeReferencePrice,
+    referenceState,
+    latestReferencePriceAt,
+    latestMarketSignalAt: canonicalLastMarketSignalAt,
     snapshotStale,
     hasSnapshot: Boolean(snapshotIso)
   })
-  const hasAnySnapshotSignal = Boolean(snapshotIso)
-  const hasAnyQuoteSignal = Boolean(quoteIso)
-  const hasAnySignal = hasAnySnapshotSignal || hasAnyQuoteSignal
-  const hasRecentSnapshot =
-    freshness.snapshotState === CATALOG_FRESHNESS_STATES.FRESH ||
-    freshness.snapshotState === CATALOG_FRESHNESS_STATES.AGING
-  const hasRecentQuote =
-    freshness.quoteState === CATALOG_FRESHNESS_STATES.FRESH ||
-    freshness.quoteState === CATALOG_FRESHNESS_STATES.AGING
-  const hasRecentSignal = hasRecentSnapshot || hasRecentQuote
+  const hasAnySignal = Boolean(freshness.hasAnySignal)
+  const hasRecentSignal = Boolean(freshness.hasFreshSignalWithinSla)
   const antiFakeBlocked =
     Boolean(candidateState?.antiFakeBlocked) || hasStructuralCatalogReason(invalidReason)
   const belowMinCostFloor = safeReferencePrice != null && safeReferencePrice < MIN_SCAN_COST_USD
   const noUsableMarketBasis =
-    normalizedCoverage <= 0 && safeReferencePrice == null && !hasAnySnapshotSignal && !hasAnyQuoteSignal
+    normalizedCoverage <= 0 && safeReferencePrice == null && !hasAnySignal
   const staleOnlySignals = !hasRecentSignal && hasAnySignal
   const weakCoverage = normalizedCoverage < minCoverage
   const incompleteReferencePricing = safeReferencePrice == null
@@ -2430,8 +2583,11 @@ function classifyCatalogStatus({
       referencePrice: safeReferencePrice,
       freshnessState: freshness.state
     }),
-    lastMarketSignalAt,
-    freshnessState: freshness.state
+    lastMarketSignalAt: canonicalLastMarketSignalAt || freshness.latestMarketSignalAt || null,
+    freshnessState: freshness.state,
+    staleThresholdMinutes: freshness.staleThresholdMinutes,
+    staleResult: freshness.staleResult,
+    staleReasonSource: freshness.staleReasonSource
   }
 }
 
@@ -2442,13 +2598,20 @@ function evaluateEligibility({
   marketCoverageCount,
   snapshotStale,
   snapshotCapturedAt = null,
-  quoteFetchedAt = null
+  quoteFetchedAt = null,
+  referenceState = "",
+  latestReferencePriceAt = null,
+  latestMarketSignalAt = null
 }) {
   const rules = SOURCE_QUALITY_RULES[category] || SOURCE_QUALITY_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
   const freshness = resolveCatalogFreshnessContext({
     category,
     snapshotCapturedAt,
     quoteFetchedAt,
+    referencePrice,
+    referenceState,
+    latestReferencePriceAt,
+    latestMarketSignalAt,
     snapshotStale,
     hasSnapshot: Boolean(snapshotCapturedAt) || (referencePrice != null && snapshotStale === false)
   })
@@ -2718,7 +2881,7 @@ async function enrichSourceCatalog(options = {}) {
     const quoteCoverage = quoteCoverageByItem[marketHashName] || {}
     const categoryRules =
       SOURCE_QUALITY_RULES[category] || SOURCE_QUALITY_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
-    const snapshotCapturedAt = normalizeText(snapshot?.captured_at) || null
+    const snapshotCapturedAt = toIsoStringOrNull(snapshot?.captured_at) || null
     const snapshotReferencePrice = toPositiveOrNull(
       toFiniteOrNull(snapshot?.average_7d_price) ?? toFiniteOrNull(snapshot?.lowest_listing_price)
     )
@@ -2731,7 +2894,27 @@ async function enrichSourceCatalog(options = {}) {
     const referencePrice = snapshotReferencePrice ?? quoteReferencePrice
     const volume7d = resolveVolume7d(snapshot, quoteCoverage)
     const snapshotStale = snapshotCapturedAt ? isSnapshotStale(snapshot) : false
-    const quoteFetchedAt = normalizeText(quoteCoverage?.latestFetchedAt) || null
+    const quoteFetchedAt = toIsoStringOrNull(quoteCoverage?.latestFetchedAt) || null
+    const referenceState =
+      snapshotReferencePrice != null
+        ? REFERENCE_DIAGNOSTIC_STATES.SNAPSHOT
+        : quoteReferencePrice != null
+          ? REFERENCE_DIAGNOSTIC_STATES.QUOTE
+          : REFERENCE_DIAGNOSTIC_STATES.MISSING
+    const latestReferencePriceAt =
+      snapshotReferencePrice != null
+        ? snapshotCapturedAt
+        : quoteReferencePrice != null
+          ? quoteFetchedAt
+          : null
+    const latestMarketSignalAt = resolveLatestMarketSignalAt({
+      snapshotCapturedAt,
+      quoteFetchedAt,
+      referencePrice,
+      referenceState,
+      latestReferencePriceAt,
+      latestMarketSignalAt: row?.last_market_signal_at || row?.lastMarketSignalAt
+    })
 
     const eligibility = evaluateEligibility({
       category,
@@ -2740,7 +2923,10 @@ async function enrichSourceCatalog(options = {}) {
       marketCoverageCount,
       snapshotStale,
       snapshotCapturedAt,
-      quoteFetchedAt
+      quoteFetchedAt,
+      referenceState,
+      latestReferencePriceAt,
+      latestMarketSignalAt
     })
 
     const liquidityRank = computeSourceLiquidityScore({
@@ -2762,6 +2948,9 @@ async function enrichSourceCatalog(options = {}) {
       snapshotStale,
       liquidityRank,
       quoteFetchedAt,
+      referenceState,
+      latestReferencePriceAt,
+      latestMarketSignalAt,
       priorityBoost
     })
     const previousCandidateStatus = normalizeCandidateStatus(
@@ -2891,6 +3080,9 @@ async function enrichSourceCatalog(options = {}) {
       marketCoverageCount,
       snapshotCapturedAt,
       quoteFetchedAt,
+      referenceState: candidateState.referenceState || referenceState,
+      latestReferencePriceAt,
+      latestMarketSignalAt,
       snapshotStale,
       liquidityRank,
       priorityBoost,

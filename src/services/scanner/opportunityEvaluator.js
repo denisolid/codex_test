@@ -51,6 +51,27 @@ function toArray(value) {
 }
 
 function toIsoOrNull(value) {
+  if (value == null || value === "") return null
+  if (value instanceof Date) {
+    const directTs = value.getTime()
+    if (Number.isFinite(directTs)) return new Date(directTs).toISOString()
+    return null
+  }
+
+  const numeric = toFiniteOrNull(value)
+  if (numeric != null) {
+    const normalizedTs =
+      numeric >= 1e12
+        ? Math.round(numeric)
+        : numeric >= 1e9
+          ? Math.round(numeric * 1000)
+          : null
+    if (normalizedTs != null) {
+      const numericTs = new Date(normalizedTs).getTime()
+      if (Number.isFinite(numericTs)) return new Date(numericTs).toISOString()
+    }
+  }
+
   const text = normalizeText(value)
   if (!text) return null
   const ts = new Date(text).getTime()
@@ -118,13 +139,40 @@ function resolveVolume7d(comparedItem = {}, candidate = {}) {
   return null
 }
 
+function resolveLatestIso(values = []) {
+  const sorted = (Array.isArray(values) ? values : [])
+    .map((value) => toIsoOrNull(value))
+    .filter(Boolean)
+    .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())
+  return sorted[0] || null
+}
+
+function resolveReferenceSignalAt(candidate = {}, referencePrice = null, quoteIso = null, snapshotIso = null) {
+  if (toFiniteOrNull(referencePrice) == null) return null
+
+  const directReferenceIso = resolveLatestIso([
+    candidate?.latestReferencePriceAt,
+    candidate?.latest_reference_price_at,
+    candidate?.referencePriceAt,
+    candidate?.reference_price_at
+  ])
+  if (directReferenceIso) return directReferenceIso
+
+  const referenceState = normalizeText(candidate?.referenceState || candidate?.reference_state).toLowerCase()
+  if (referenceState === "snapshot") return snapshotIso
+  if (referenceState === "quote") return quoteIso
+  return resolveLatestIso([quoteIso, snapshotIso])
+}
+
 function resolveUsedSignalFreshness({
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
   comparedItem = {},
   candidate = {},
   buyMarket = "",
   sellMarket = "",
   referencePrice = null
 } = {}) {
+  const rules = resolveFreshnessRules(category)
   const perMarket = toArray(comparedItem?.perMarket)
   const usedSignals = []
 
@@ -153,26 +201,86 @@ function resolveUsedSignalFreshness({
 
   const buyRow = findMarketRow(buyMarket)
   const sellRow = findMarketRow(sellMarket)
-  pushSignal(buyMarket, "buy_market_quote", buyRow?.updatedAt)
-  pushSignal(sellMarket, "sell_market_quote", sellRow?.updatedAt)
+  pushSignal(buyMarket, "buy_market_quote", buyRow?.updatedAt || buyRow?.updated_at || buyRow?.fetched_at)
+  pushSignal(
+    sellMarket,
+    "sell_market_quote",
+    sellRow?.updatedAt || sellRow?.updated_at || sellRow?.fetched_at
+  )
 
-  if (toFiniteOrNull(referencePrice) != null) {
-    pushSignal("reference", "reference_quote", candidate?.quoteFetchedAt || candidate?.quote_fetched_at)
+  const latestQuoteAt = resolveLatestIso([
+    candidate?.latestQuoteAt,
+    candidate?.latest_quote_at,
+    candidate?.quoteFetchedAt,
+    candidate?.quote_fetched_at,
+    candidate?.scanFreshness?.latestQuoteAt,
+    candidate?.scanFreshness?.latest_quote_at,
+    comparedItem?.latestQuoteAt,
+    comparedItem?.latest_quote_at
+  ])
+  const latestSnapshotAt = resolveLatestIso([
+    candidate?.latestSnapshotAt,
+    candidate?.latest_snapshot_at,
+    candidate?.snapshotCapturedAt,
+    candidate?.snapshot_captured_at,
+    candidate?.scanFreshness?.latestSnapshotAt,
+    candidate?.scanFreshness?.latest_snapshot_at,
+    comparedItem?.latestSnapshotAt,
+    comparedItem?.latest_snapshot_at
+  ])
+  const latestReferencePriceAt = resolveReferenceSignalAt(
+    {
+      ...candidate,
+      latestReferencePriceAt:
+        candidate?.latestReferencePriceAt ||
+        candidate?.latest_reference_price_at ||
+        candidate?.scanFreshness?.latestReferencePriceAt ||
+        candidate?.scanFreshness?.latest_reference_price_at ||
+        comparedItem?.latestReferencePriceAt ||
+        comparedItem?.latest_reference_price_at,
+      referenceState: candidate?.referenceState || candidate?.reference_state
+    },
+    referencePrice,
+    latestQuoteAt,
+    latestSnapshotAt
+  )
+
+  pushSignal("catalog", "latest_quote", latestQuoteAt)
+  pushSignal("catalog", "latest_snapshot", latestSnapshotAt)
+  pushSignal("reference", "latest_reference_price", latestReferencePriceAt)
+
+  if (!usedSignals.length) {
     pushSignal(
-      "reference",
-      "reference_snapshot",
-      candidate?.snapshotCapturedAt || candidate?.snapshot_captured_at
+      "catalog",
+      "catalog_last_market_signal_fallback",
+      candidate?.lastMarketSignalAt ||
+        candidate?.last_market_signal_at ||
+        candidate?.scanFreshness?.latestMarketSignalAt ||
+        candidate?.scanFreshness?.latest_market_signal_at ||
+        candidate?.latestMarketSignalAt ||
+        candidate?.latest_market_signal_at
     )
   }
 
-  const timestamps = usedSignals
+  const sortedSignals = usedSignals
+    .slice()
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+  const timestamps = sortedSignals
     .map((signal) => new Date(signal.updatedAt).getTime())
     .filter((value) => Number.isFinite(value))
   if (!timestamps.length) {
     return {
+      latestQuoteAt,
+      latestSnapshotAt,
+      latestReferencePriceAt,
       latestSignalAt: null,
+      latestMarketSignalAt: null,
       ageMinutes: null,
-      usedSignals: []
+      staleThresholdMinutes: Number(rules.agingMaxMinutes || 0),
+      staleResult: true,
+      staleReasonSource: "no_usable_market_timestamp",
+      hasFreshSignalWithinSla: false,
+      usedSignals: sortedSignals
     }
   }
   const latestTs = Math.max(...timestamps)
@@ -181,10 +289,26 @@ function resolveUsedSignalFreshness({
     Number.isFinite(ageMinutesRaw) && ageMinutesRaw >= 0
       ? Number(ageMinutesRaw.toFixed(2))
       : null
+  const staleThresholdMinutes = Number(rules.agingMaxMinutes || 0)
+  const hasFreshSignalWithinSla =
+    ageMinutes != null &&
+    staleThresholdMinutes > 0 &&
+    ageMinutes <= staleThresholdMinutes
+  const latestSignal = sortedSignals[0] || null
   return {
+    latestQuoteAt,
+    latestSnapshotAt,
+    latestReferencePriceAt,
     latestSignalAt: new Date(latestTs).toISOString(),
+    latestMarketSignalAt: new Date(latestTs).toISOString(),
     ageMinutes,
-    usedSignals
+    staleThresholdMinutes,
+    staleResult: !hasFreshSignalWithinSla,
+    staleReasonSource: latestSignal
+      ? `${normalizeText(latestSignal.signalType)}${latestSignal.source ? `:${latestSignal.source}` : ""}`
+      : "no_usable_market_timestamp",
+    hasFreshSignalWithinSla,
+    usedSignals: sortedSignals
   }
 }
 
@@ -378,6 +502,13 @@ function scoreDataFreshness({
 } = {}) {
   const rules = resolveFreshnessRules(category)
   const ageMinutes = toFiniteOrNull(freshness?.ageMinutes)
+  const staleThresholdMinutes = Number(
+    toFiniteOrNull(freshness?.staleThresholdMinutes) ?? rules.agingMaxMinutes
+  )
+  const hasFreshSignalWithinSla =
+    ageMinutes != null &&
+    staleThresholdMinutes > 0 &&
+    ageMinutes <= staleThresholdMinutes
   const reasons = []
   let score = 0
   let state = "missing"
@@ -386,15 +517,15 @@ function scoreDataFreshness({
     score = 24
     state = "missing"
     reasons.push("no_usable_market_timestamp")
-  } else if (ageMinutes <= Number(rules.freshMaxMinutes || 0)) {
+  } else if (hasFreshSignalWithinSla && ageMinutes <= Number(rules.freshMaxMinutes || 0)) {
     score = 96
     state = "fresh"
     reasons.push("fresh_usable_market_signal")
-  } else if (ageMinutes <= Number(rules.agingMaxMinutes || 0)) {
+  } else if (hasFreshSignalWithinSla) {
     score = 66
     state = "aging"
     reasons.push("aging_usable_market_signal")
-  } else if (ageMinutes <= Number(rules.agingMaxMinutes || 0) * 2) {
+  } else if (ageMinutes <= staleThresholdMinutes * 2) {
     score = 42
     state = "stale"
     reasons.push("stale_market_signal")
@@ -441,6 +572,7 @@ function buildDiagnosticDimensions({
     category,
     freshness: usedSignalFreshness
   })
+  const freshnessAgeMinutes = toFiniteOrNull(usedSignalFreshness?.ageMinutes)
 
   return {
     sales_liquidity: salesLiquidity,
@@ -449,7 +581,21 @@ function buildDiagnosticDimensions({
     data_freshness: {
       ...dataFreshness,
       ageMinutes: toFiniteOrNull(usedSignalFreshness?.ageMinutes),
-      latestSignalAt: usedSignalFreshness?.latestSignalAt || null,
+      latestSignalAt:
+        usedSignalFreshness?.latestMarketSignalAt || usedSignalFreshness?.latestSignalAt || null,
+      latestMarketSignalAt: usedSignalFreshness?.latestMarketSignalAt || null,
+      latestQuoteAt: usedSignalFreshness?.latestQuoteAt || null,
+      latestSnapshotAt: usedSignalFreshness?.latestSnapshotAt || null,
+      latestReferencePriceAt: usedSignalFreshness?.latestReferencePriceAt || null,
+      staleThresholdMinutes:
+        toFiniteOrNull(usedSignalFreshness?.staleThresholdMinutes) ??
+        Number(resolveFreshnessRules(category).agingMaxMinutes || 0),
+      staleResult:
+        usedSignalFreshness?.staleResult == null
+          ? freshnessAgeMinutes == null
+          : Boolean(usedSignalFreshness?.staleResult),
+      staleReasonSource: normalizeText(usedSignalFreshness?.staleReasonSource) || "no_usable_market_timestamp",
+      hasFreshSignalWithinSla: Boolean(usedSignalFreshness?.hasFreshSignalWithinSla),
       usedSignals: toArray(usedSignalFreshness?.usedSignals)
     }
   }
@@ -484,6 +630,7 @@ function buildPenaltySet({
   const executableDepthScore = Number(diagnostics?.executable_depth?.score || 0)
   const marketCoverageScore = Number(diagnostics?.market_coverage?.score || 0)
   const dataFreshnessScore = Number(diagnostics?.data_freshness?.score || 0)
+  const hasFreshSignalWithinSla = Boolean(diagnostics?.data_freshness?.hasFreshSignalWithinSla)
 
   if (salesLiquidityScore < (isKnifeGloveCategory(category) ? 38 : 45)) {
     penalties.add(DIAGNOSTIC_FLAGS.SALES_LIQUIDITY)
@@ -494,13 +641,14 @@ function buildPenaltySet({
   if (executableDepthScore < 45) {
     penalties.add(DIAGNOSTIC_FLAGS.EXECUTABLE_DEPTH)
   }
-  if (dataFreshnessScore < 55) {
+  if (dataFreshnessScore < 55 && !hasFreshSignalWithinSla) {
     penalties.add(DIAGNOSTIC_FLAGS.DATA_FRESHNESS)
   }
 
   if (salesLiquidityScore >= 70) penalties.delete(DIAGNOSTIC_FLAGS.SALES_LIQUIDITY)
   if (marketCoverageScore >= 70) penalties.delete(DIAGNOSTIC_FLAGS.MARKET_COVERAGE)
   if (dataFreshnessScore >= 70) penalties.delete(DIAGNOSTIC_FLAGS.DATA_FRESHNESS)
+  if (hasFreshSignalWithinSla) penalties.delete(DIAGNOSTIC_FLAGS.DATA_FRESHNESS)
   if (executableDepthScore >= 65) penalties.delete(DIAGNOSTIC_FLAGS.EXECUTABLE_DEPTH)
 
   if (isCaseLikeCategory(category) && salesLiquidityScore >= 70) {
@@ -624,6 +772,7 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
   const base = resolveBaseMetrics(comparedItem, candidate)
   const volume7d = resolveVolume7d(comparedItem, candidate)
   const usedSignalFreshness = resolveUsedSignalFreshness({
+    category,
     comparedItem,
     candidate,
     buyMarket: base.buyMarket,
@@ -755,6 +904,10 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
     marketCoverageBand,
     marketCoverageLabel: marketCoverageBand,
     marketCoverage: Number(base.marketCoverage || 0),
+    latestMarketSignalAt: usedSignalFreshness?.latestMarketSignalAt || null,
+    latestQuoteAt: usedSignalFreshness?.latestQuoteAt || null,
+    latestSnapshotAt: usedSignalFreshness?.latestSnapshotAt || null,
+    latestReferencePriceAt: usedSignalFreshness?.latestReferencePriceAt || null,
     referencePrice: base.referencePrice == null ? null : roundPrice(base.referencePrice),
     buyUrl: base.buyUrl,
     sellUrl: base.sellUrl,
@@ -781,17 +934,38 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
       penalty_score: penaltyScore,
       base_score: clampScore(base.baseScore),
       quote_age_minutes: toFiniteOrNull(usedSignalFreshness?.ageMinutes),
+      latest_market_signal_at: usedSignalFreshness?.latestMarketSignalAt || null,
+      latest_quote_at: usedSignalFreshness?.latestQuoteAt || null,
+      latest_snapshot_at: usedSignalFreshness?.latestSnapshotAt || null,
+      latest_reference_price_at: usedSignalFreshness?.latestReferencePriceAt || null,
+      stale_threshold_used:
+        toFiniteOrNull(usedSignalFreshness?.staleThresholdMinutes) ??
+        Number(resolveFreshnessRules(category).agingMaxMinutes || 0),
+      stale_result:
+        usedSignalFreshness?.staleResult == null ? null : Boolean(usedSignalFreshness?.staleResult),
+      stale_reason_source: normalizeText(usedSignalFreshness?.staleReasonSource) || null,
       reference_deviation_ratio: referenceDeviation.ratio,
       anti_fake_reasons: base.antiFakeReasons,
       depth_flags: base.depthFlags,
       diagnostics_debug: {
         category,
+        latest_quote_at: usedSignalFreshness?.latestQuoteAt || null,
+        latest_snapshot_at: usedSignalFreshness?.latestSnapshotAt || null,
+        latest_reference_price_at: usedSignalFreshness?.latestReferencePriceAt || null,
         sales_liquidity_score: Number(diagnostics?.sales_liquidity?.score || 0),
         executable_depth_score: Number(diagnostics?.executable_depth?.score || 0),
         market_coverage_score: Number(diagnostics?.market_coverage?.score || 0),
         data_freshness_score: Number(diagnostics?.data_freshness?.score || 0),
         market_coverage_band: marketCoverageBand,
-        latest_market_signal_at: usedSignalFreshness?.latestSignalAt || null,
+        latest_market_signal_at:
+          usedSignalFreshness?.latestMarketSignalAt || usedSignalFreshness?.latestSignalAt || null,
+        stale_threshold_used:
+          toFiniteOrNull(usedSignalFreshness?.staleThresholdMinutes) ??
+          Number(resolveFreshnessRules(category).agingMaxMinutes || 0),
+        stale_result:
+          usedSignalFreshness?.staleResult == null ? null : Boolean(usedSignalFreshness?.staleResult),
+        stale_reason_source:
+          normalizeText(usedSignalFreshness?.staleReasonSource) || "no_usable_market_timestamp",
         used_market_signals: toArray(usedSignalFreshness?.usedSignals),
         raw_reasons: {
           sales_liquidity: toArray(diagnostics?.sales_liquidity?.reasons),

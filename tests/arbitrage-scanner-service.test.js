@@ -352,8 +352,63 @@ test("opportunity diagnostics expose dimension debug output", () => {
   assert.equal(Number.isFinite(Number(debug.executable_depth_score)), true)
   assert.equal(Number.isFinite(Number(debug.market_coverage_score)), true)
   assert.equal(Number.isFinite(Number(debug.data_freshness_score)), true)
+  assert.equal(typeof debug.category, "string")
+  assert.equal(Boolean(debug.latest_quote_at), true)
+  assert.equal(Boolean(debug.latest_snapshot_at), true)
+  assert.equal(Boolean(debug.latest_reference_price_at), true)
+  assert.equal(Boolean(debug.latest_market_signal_at), true)
+  assert.equal(Number.isFinite(Number(debug.stale_threshold_used)), true)
+  assert.equal(typeof debug.stale_result, "boolean")
+  assert.equal(typeof debug.stale_reason_source, "string")
   assert.equal(Array.isArray(debug?.raw_reasons?.sales_liquidity), true)
   assert.equal(Array.isArray(debug?.raw_reasons?.emitted_tags), true)
+})
+
+test("fresh quote inside SLA prevents stale market signal even with older fallback timestamps", () => {
+  const oldIso = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString()
+  const freshQuoteSeconds = Math.floor(Date.now() / 1000)
+  const evaluation = evaluateCandidateOpportunity(
+    {
+      marketHashName: "AK-47 | Slate (Field-Tested)",
+      itemName: "AK-47 | Slate (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 8.4,
+      marketCoverageCount: 2,
+      volume7d: 96,
+      snapshotCapturedAt: oldIso,
+      quoteFetchedAt: freshQuoteSeconds,
+      last_market_signal_at: oldIso
+    },
+    {
+      marketHashName: "AK-47 | Slate (Field-Tested)",
+      perMarket: [
+        { source: "steam", available: true, grossPrice: 6.8, netPriceAfterFees: 5.9, updatedAt: oldIso, volume7d: 96 },
+        { source: "skinport", available: true, grossPrice: 7.1, netPriceAfterFees: 6.3, updatedAt: oldIso, volume7d: 45 }
+      ],
+      bestBuy: { source: "steam", grossPrice: 6.8, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "skinport", netPriceAfterFees: 7.9, url: "https://skinport.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 6.8,
+        sellMarket: "skinport",
+        sellNet: 7.9,
+        profit: 1.1,
+        spreadPercent: 16.17,
+        opportunityScore: 70,
+        executionConfidence: "Medium",
+        marketCoverage: 2,
+        referencePrice: 8.4,
+        depthFlags: [],
+        antiFake: { reasons: [] }
+      }
+    }
+  )
+
+  assert.equal(evaluation.penaltyFlags.includes("stale_market_signal"), false)
+  assert.equal(evaluation.badges.includes("Stale market signal"), false)
+  assert.equal(Boolean(evaluation?.metadata?.latest_market_signal_at), true)
+  assert.equal(evaluation?.metadata?.stale_result, false)
+  assert.equal(String(evaluation?.metadata?.stale_reason_source || "").includes("latest_quote"), true)
 })
 
 test("opportunity evaluation enforces true hard reject reasons", () => {
@@ -515,6 +570,46 @@ test("feed event classifier marks diagnostics-only flag changes as updated", () 
   assert.equal(event.changeReasons.includes("diagnostics"), true)
 })
 
+test("feed event classifier treats canonical freshness changes as updates", () => {
+  const nowIso = new Date().toISOString()
+  const oldIso = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString()
+  const opportunity = {
+    itemName: "AWP | Asiimov (Field-Tested)",
+    buyMarket: "steam",
+    sellMarket: "skinport",
+    profit: 3.2,
+    spread: 12.1,
+    score: 69,
+    executionConfidence: "Medium",
+    liquidity: 180,
+    flags: ["limited_market_coverage"],
+    badges: ["Limited market coverage"],
+    metadata: {
+      latest_market_signal_at: nowIso,
+      stale_result: false,
+      stale_threshold_used: 120
+    }
+  }
+  const previousRow = {
+    is_active: true,
+    profit: 3.2,
+    spread_pct: 12.1,
+    opportunity_score: 69,
+    execution_confidence: "Medium",
+    metadata: {
+      liquidity_value: 180,
+      flags: ["limited_market_coverage"],
+      badges: ["Limited market coverage"],
+      latest_market_signal_at: oldIso,
+      stale_result: true,
+      stale_threshold_used: 120
+    }
+  }
+  const event = classifyOpportunityFeedEvent(opportunity, previousRow)
+  assert.equal(event.eventType, "updated")
+  assert.equal(event.changeReasons.includes("freshness"), true)
+})
+
 test("feed mapper keeps core scanner fields stable", () => {
   const insertRow = buildFeedInsertRow(
     {
@@ -536,6 +631,13 @@ test("feed mapper keeps core scanner fields stable", () => {
       referencePrice: 11.2,
       flags: ["missing_liquidity"],
       badges: ["Risk-adjusted"],
+      latestMarketSignalAt: "2026-03-19T09:58:00.000Z",
+      latestQuoteAt: "2026-03-19T09:58:00.000Z",
+      latestSnapshotAt: "2026-03-19T09:56:00.000Z",
+      latestReferencePriceAt: "2026-03-19T09:58:00.000Z",
+      staleThresholdUsed: 120,
+      staleResult: false,
+      staleReasonSource: "latest_quote:catalog",
       tier: "risky",
       isHighConfidenceEligible: false,
       isRiskyEligible: true
@@ -559,6 +661,12 @@ test("feed mapper keeps core scanner fields stable", () => {
   assert.equal(mapped.quality_score_display, 80)
   assert.equal(mapped.isRiskyEligible, true)
   assert.equal(mapped.isHighConfidenceEligible, false)
+  assert.equal(mapped.latestMarketSignalAt, "2026-03-19T09:58:00.000Z")
+  assert.equal(mapped.latestQuoteAt, "2026-03-19T09:58:00.000Z")
+  assert.equal(mapped.latestSnapshotAt, "2026-03-19T09:56:00.000Z")
+  assert.equal(mapped.latestReferencePriceAt, "2026-03-19T09:58:00.000Z")
+  assert.equal(mapped.staleResult, false)
+  assert.equal(mapped.staleReasonSource, "latest_quote:catalog")
 })
 
 test("display score soft-normalizes visible feed values without changing raw score ordering inputs", () => {
