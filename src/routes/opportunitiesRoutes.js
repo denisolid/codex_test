@@ -15,6 +15,14 @@ router.get(
     storeAs: "limit",
     message: "limit must be numeric"
   }),
+  parseOptionalNumericQuery("page", {
+    storeAs: "page",
+    message: "page must be numeric"
+  }),
+  parseOptionalNumericQuery("historyHours", {
+    storeAs: "historyHours",
+    message: "historyHours must be numeric"
+  }),
   ctrl.getTopOpportunities
 );
 
@@ -23,6 +31,14 @@ router.get(
   parseOptionalNumericQuery("limit", {
     storeAs: "limit",
     message: "limit must be numeric"
+  }),
+  parseOptionalNumericQuery("page", {
+    storeAs: "page",
+    message: "page must be numeric"
+  }),
+  parseOptionalNumericQuery("historyHours", {
+    storeAs: "historyHours",
+    message: "historyHours must be numeric"
   }),
   ctrl.getFeed
 );
