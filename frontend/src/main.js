@@ -7492,10 +7492,10 @@ async function refreshGlobalOpportunities(options = {}) {
                   ? "glove"
             : "",
     });
-    const [feedPayload, statusPayload] = await Promise.all([
-      api(`/opportunities/feed${feedQuery}`),
-      api("/opportunities/status"),
-    ]);
+    const feedPayload = await api(`/opportunities/feed${feedQuery}`);
+    const statusPayload =
+      feedPayload?.status ||
+      (await api("/opportunities/status").catch(() => null));
     const incomingRows = Array.isArray(feedPayload?.opportunities)
       ? feedPayload.opportunities
       : [];
@@ -7524,7 +7524,7 @@ async function refreshGlobalOpportunities(options = {}) {
     });
     scanner.seenFeedIds = Array.from(seenFeedIds).slice(-5000);
     scanner.summary = feedPayload?.summary || null;
-    scanner.status = statusPayload || feedPayload?.status || null;
+    scanner.status = statusPayload || null;
     if (String(scanner.status?.currentStatus || "").toLowerCase() !== "running") {
       scanner.pendingScanRunId = "";
     } else if (pendingScanRunId || scanner.pendingScanRunId) {

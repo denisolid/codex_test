@@ -1805,14 +1805,16 @@ test("opportunity admission diagnostics report scan states and reasons", () => {
   assert.equal(summary.scan_candidates_deferred, 1);
   assert.equal(summary.scan_candidates_executed, 1);
 
-  assert.equal(summary.scan_states.scan_now, 1);
-  assert.equal(summary.scan_states.scan_with_penalties, 3);
-  assert.equal(summary.scan_states.speculative_candidate, 1);
+  assert.equal(summary.scan_states.scan_now, 0);
+  assert.equal(summary.scan_states.scan_with_penalties, 5);
+  assert.equal(summary.scan_states.speculative_candidate, 0);
   assert.equal(summary.scan_states.hard_reject, 1);
 
-  assert.equal(summary.penalty_reasons.missing_reference, 1);
-  assert.equal(summary.penalty_reasons.missing_liquidity, 1);
+  assert.equal(summary.penalty_reasons.missing_snapshot, 1);
+  assert.equal(summary.penalty_reasons.missing_reference, 2);
+  assert.equal(summary.penalty_reasons.missing_liquidity, 2);
   assert.equal(summary.penalty_reasons.stale_data, 1);
-  assert.equal(summary.speculative_reasons.multiple_missing_signals, 1);
+  assert.equal(summary.penalty_reasons.needs_enrichment, 1);
+  assert.equal(Number(summary.speculative_reasons.multiple_missing_signals || 0), 0);
   assert.equal(summary.hard_reject_reasons.structural_or_antifake_block, 1);
 });
