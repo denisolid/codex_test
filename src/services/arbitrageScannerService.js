@@ -54,6 +54,13 @@ const MAX_FEED_LIMIT = 500
 const MANUAL_REFRESH_TRACKER_MAX = 4000
 const LEGACY_SCANNER_TYPE = "global_arbitrage"
 const SCANNER_RUN_RETENTION_HOURS = 24
+const CATALOG_SCAN_CATEGORIES = Object.freeze([
+  ITEM_CATEGORIES.WEAPON_SKIN,
+  ITEM_CATEGORIES.CASE,
+  ITEM_CATEGORIES.STICKER_CAPSULE,
+  ITEM_CATEGORIES.KNIFE,
+  ITEM_CATEGORIES.GLOVE
+])
 
 const scannerState = {
   timer: null,
@@ -89,6 +96,16 @@ function toIsoOrNull(value) {
   const ts = new Date(text).getTime()
   if (!Number.isFinite(ts)) return null
   return new Date(ts).toISOString()
+}
+
+function isStatementTimeoutError(err) {
+  const code = normalizeText(err?.code)
+  const message = normalizeText(err?.message).toLowerCase()
+  return (
+    code === "57014" ||
+    message.includes("statement timeout") ||
+    message.includes("canceling statement due to statement timeout")
+  )
 }
 
 function normalizeBoolean(value, fallback = false) {
@@ -326,16 +343,41 @@ function applyFeedPlanRestrictions(rows = [], entitlements = {}) {
 }
 
 async function loadCatalogRows() {
-  return marketSourceCatalogRepo.listActiveTradable({
-    limit: UNIVERSE_DB_LIMIT,
-    categories: [
-      ITEM_CATEGORIES.WEAPON_SKIN,
-      ITEM_CATEGORIES.CASE,
-      ITEM_CATEGORIES.STICKER_CAPSULE,
-      ITEM_CATEGORIES.KNIFE,
-      ITEM_CATEGORIES.GLOVE
-    ]
-  })
+  const attempts = Array.from(
+    new Set([
+      Math.max(UNIVERSE_DB_LIMIT, OPPORTUNITY_BATCH_RUNTIME_TARGET),
+      Math.max(Math.min(UNIVERSE_DB_LIMIT, 3000), OPPORTUNITY_BATCH_RUNTIME_TARGET),
+      Math.max(Math.min(UNIVERSE_DB_LIMIT, 1500), OPPORTUNITY_BATCH_RUNTIME_TARGET),
+      Math.max(OPPORTUNITY_BATCH_RUNTIME_TARGET * 4, 200)
+    ])
+  )
+  const diagnostics = {
+    attemptedLimits: [],
+    selectedLimit: null,
+    fallbackUsed: false,
+    statementTimeoutFallbacks: 0
+  }
+  let lastError = null
+  for (let index = 0; index < attempts.length; index += 1) {
+    const limit = attempts[index]
+    diagnostics.attemptedLimits.push(limit)
+    try {
+      const rows = await marketSourceCatalogRepo.listActiveTradable({
+        limit,
+        categories: CATALOG_SCAN_CATEGORIES
+      })
+      diagnostics.selectedLimit = limit
+      return { rows, diagnostics }
+    } catch (err) {
+      lastError = err
+      if (!isStatementTimeoutError(err) || index >= attempts.length - 1) {
+        throw err
+      }
+      diagnostics.fallbackUsed = true
+      diagnostics.statementTimeoutFallbacks += 1
+    }
+  }
+  throw lastError
 }
 
 function buildCompareInput(candidate = {}) {
@@ -446,17 +488,34 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
     updatedCount: 0,
     reactivatedCount: 0,
     duplicateCount: 0,
-    skippedUnchanged: 0
+    skippedUnchanged: 0,
+    cleanup: {
+      olderMarkedInactive: 0,
+      beyondLimitMarkedInactive: 0,
+      hadTimeout: false,
+      errors: []
+    }
   }
   const rows = (Array.isArray(opportunities) ? opportunities : []).filter((row) => row.rejected !== true)
   if (!rows.length) return counters
   const sinceIso = new Date(Date.now() - DUPLICATE_WINDOW_HOURS * 60 * 60 * 1000).toISOString()
   const names = Array.from(new Set(rows.map((row) => normalizeText(row.marketHashName || row.itemName)).filter(Boolean)))
-  const previousRows = await arbitrageFeedRepo.getRecentRowsByItems({
-    itemNames: names,
-    sinceIso,
-    limit: 4000
-  })
+  let previousRows = []
+  try {
+    previousRows = await arbitrageFeedRepo.getRecentRowsByItems({
+      itemNames: names,
+      sinceIso,
+      limit: 1200
+    })
+  } catch (err) {
+    if (isStatementTimeoutError(err)) {
+      counters.cleanup.hadTimeout = true
+      counters.cleanup.errors.push("recent_feed_lookup_timeout")
+      previousRows = []
+    } else {
+      throw err
+    }
+  }
   const latestByKey = {}
   for (const previous of previousRows || []) {
     const key = buildFeedKey(previous)
@@ -500,10 +559,26 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
     counters.insertedCount = Array.isArray(inserted) ? inserted.length : 0
   }
   const cutoffIso = new Date(Date.now() - FEED_RETENTION_HOURS * 60 * 60 * 1000).toISOString()
-  await Promise.all([
-    arbitrageFeedRepo.markInactiveOlderThan(cutoffIso),
-    arbitrageFeedRepo.markInactiveBeyondLimit(FEED_ACTIVE_LIMIT)
+  const cleanupResults = await Promise.allSettled([
+    arbitrageFeedRepo.markInactiveOlderThan(cutoffIso, { batchSize: 120, maxRows: 600 }),
+    arbitrageFeedRepo.markInactiveBeyondLimit(FEED_ACTIVE_LIMIT, { batchSize: 120, maxBatches: 3 })
   ])
+  const olderResult = cleanupResults[0]
+  const beyondResult = cleanupResults[1]
+  if (olderResult?.status === "fulfilled") {
+    counters.cleanup.olderMarkedInactive = Number(olderResult.value || 0)
+  } else if (olderResult?.status === "rejected") {
+    const reason = olderResult.reason
+    counters.cleanup.hadTimeout ||= isStatementTimeoutError(reason)
+    counters.cleanup.errors.push(normalizeText(reason?.message) || "older_cleanup_failed")
+  }
+  if (beyondResult?.status === "fulfilled") {
+    counters.cleanup.beyondLimitMarkedInactive = Number(beyondResult.value || 0)
+  } else if (beyondResult?.status === "rejected") {
+    const reason = beyondResult.reason
+    counters.cleanup.hadTimeout ||= isStatementTimeoutError(reason)
+    counters.cleanup.errors.push(normalizeText(reason?.message) || "beyond_limit_cleanup_failed")
+  }
   return counters
 }
 
@@ -541,7 +616,8 @@ function mergeDiagnostics({
       updatedCount: Number(persisted.updatedCount || 0),
       reactivatedCount: Number(persisted.reactivatedCount || 0),
       duplicateCount: Number(persisted.duplicateCount || 0),
-      skippedUnchanged: Number(persisted.skippedUnchanged || 0)
+      skippedUnchanged: Number(persisted.skippedUnchanged || 0),
+      cleanup: persisted.cleanup || {}
     },
     sourceCatalog,
     batchScan: compare,
@@ -610,13 +686,7 @@ async function runEnrichmentJob({ forceRefresh = false } = {}) {
 
   const catalogRows = await marketSourceCatalogRepo.listActiveTradable({
     limit: ENRICHMENT_BATCH_TARGET,
-    categories: [
-      ITEM_CATEGORIES.WEAPON_SKIN,
-      ITEM_CATEGORIES.CASE,
-      ITEM_CATEGORIES.STICKER_CAPSULE,
-      ITEM_CATEGORIES.KNIFE,
-      ITEM_CATEGORIES.GLOVE
-    ]
+    categories: CATALOG_SCAN_CATEGORIES
   }).catch(() => [])
   const names = Array.from(
     new Set((catalogRows || []).map((row) => normalizeText(row?.market_hash_name)).filter(Boolean))
@@ -666,7 +736,8 @@ async function runEnrichmentJob({ forceRefresh = false } = {}) {
 async function runOpportunityJob({ forceRefresh = false } = {}) {
   const runStartedAtMs = Date.now()
   const dbQueryStartedAtMs = Date.now()
-  const catalogRows = await loadCatalogRows()
+  const catalogLoad = await loadCatalogRows()
+  const catalogRows = Array.isArray(catalogLoad?.rows) ? catalogLoad.rows : []
   const dbQueryMs = Date.now() - dbQueryStartedAtMs
 
   const selectionStartedAtMs = Date.now()
@@ -705,7 +776,8 @@ async function runOpportunityJob({ forceRefresh = false } = {}) {
       evaluations: evaluationSummary,
       persisted,
       sourceCatalog: {
-        mode: "deferred_to_enrichment"
+        mode: "deferred_to_enrichment",
+        catalogLoad: catalogLoad?.diagnostics || {}
       },
       timing: {
         selectionMs,
@@ -870,17 +942,21 @@ async function runJobWithLock({
       })
     } catch (err) {
       const timedOut = String(err?.code || "").trim() === "SCANNER_JOB_TIMEOUT"
+      const dbStatementTimedOut = isStatementTimeoutError(err)
       const elapsedMs = Date.now() - startedAtMs
       await scannerRunRepo.markFailed(runId, {
         completedAt: new Date().toISOString(),
-        status: timedOut ? "timed_out" : "failed",
+        status: timedOut || dbStatementTimedOut ? "timed_out" : "failed",
         durationMs: elapsedMs,
         failureReason: timedOut
           ? `${safeScannerType}_timeout_after_${safeTimeoutMs}ms`
+          : dbStatementTimedOut
+            ? `${safeScannerType}_db_statement_timeout`
           : normalizeText(err?.message) || "scanner_job_failed",
         diagnosticsSummary: {
           trigger,
           timedOut,
+          dbStatementTimedOut,
           errorCode: normalizeText(err?.code) || null,
           timeoutMs: safeTimeoutMs,
           hardTimeoutMs: safeHardTimeoutMs || null,
