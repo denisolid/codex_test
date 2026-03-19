@@ -402,7 +402,14 @@ async function loadScannerSourceRows() {
 
 function buildCompareInput(candidate = {}) {
   const referencePrice = Number(candidate.referencePrice || 0)
-  const snapshotTs = candidate.quoteFetchedAt || candidate.snapshotCapturedAt || null
+  const snapshotTs =
+    candidate.latestMarketSignalAt ||
+    candidate.latest_market_signal_at ||
+    candidate.lastMarketSignalAt ||
+    candidate.last_market_signal_at ||
+    candidate.quoteFetchedAt ||
+    candidate.snapshotCapturedAt ||
+    null
   return {
     marketHashName: candidate.marketHashName,
     itemCategory: candidate.category,

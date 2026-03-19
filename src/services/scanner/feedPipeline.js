@@ -16,6 +16,48 @@ function toFiniteOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function toIsoOrNull(value) {
+  if (value == null || value === "") return null
+  if (value instanceof Date) {
+    const ts = value.getTime()
+    if (!Number.isFinite(ts)) return null
+    return new Date(ts).toISOString()
+  }
+  const numeric = toFiniteOrNull(value)
+  if (numeric != null) {
+    const normalizedTs =
+      numeric >= 1e12
+        ? Math.round(numeric)
+        : numeric >= 1e9
+          ? Math.round(numeric * 1000)
+          : null
+    if (normalizedTs != null) {
+      const ts = new Date(normalizedTs).getTime()
+      if (Number.isFinite(ts)) return new Date(ts).toISOString()
+    }
+  }
+  const text = normalizeText(value)
+  if (!text) return null
+  const ts = new Date(text).getTime()
+  if (!Number.isFinite(ts)) return null
+  return new Date(ts).toISOString()
+}
+
+function toBooleanOrNull(value) {
+  if (value == null || value === "") return null
+  if (typeof value === "boolean") return value
+  if (typeof value === "number") {
+    if (value === 1) return true
+    if (value === 0) return false
+    return null
+  }
+  const text = normalizeText(value).toLowerCase()
+  if (!text) return null
+  if (text === "true" || text === "1" || text === "yes") return true
+  if (text === "false" || text === "0" || text === "no") return false
+  return null
+}
+
 function clampScore(value) {
   const parsed = toFiniteOrNull(value)
   if (parsed == null) return 0
@@ -160,6 +202,63 @@ function classifyOpportunityFeedEvent(opportunity = {}, previousRow = null) {
     markChange("diagnostics")
   }
 
+  const nowMetadata = opportunity?.metadata && typeof opportunity.metadata === "object" ? opportunity.metadata : {}
+  const prevMetadata =
+    previousRow?.metadata && typeof previousRow.metadata === "object" ? previousRow.metadata : {}
+  const nowLatestMarketSignalAt =
+    toIsoOrNull(
+      nowMetadata?.latest_market_signal_at ??
+        nowMetadata?.latestMarketSignalAt ??
+        opportunity?.latestMarketSignalAt ??
+        opportunity?.latest_market_signal_at ??
+        nowMetadata?.diagnostics_debug?.latest_market_signal_at
+    ) || null
+  const prevLatestMarketSignalAt =
+    toIsoOrNull(
+      prevMetadata?.latest_market_signal_at ??
+        prevMetadata?.latestMarketSignalAt ??
+        prevMetadata?.diagnostics_debug?.latest_market_signal_at
+    ) || null
+  if (nowLatestMarketSignalAt !== prevLatestMarketSignalAt) {
+    markChange("freshness")
+  }
+
+  const nowStaleResult =
+    toBooleanOrNull(
+      nowMetadata?.stale_result ??
+        nowMetadata?.staleResult ??
+        opportunity?.staleResult ??
+        opportunity?.stale_result ??
+        nowMetadata?.diagnostics_debug?.stale_result
+    ) ?? null
+  const prevStaleResult =
+    toBooleanOrNull(
+      prevMetadata?.stale_result ??
+        prevMetadata?.staleResult ??
+        prevMetadata?.diagnostics_debug?.stale_result
+    ) ?? null
+  if (nowStaleResult !== prevStaleResult) {
+    markChange("freshness")
+  }
+
+  const nowStaleThreshold =
+    toFiniteOrNull(
+      nowMetadata?.stale_threshold_used ??
+        nowMetadata?.staleThresholdUsed ??
+        opportunity?.staleThresholdUsed ??
+        opportunity?.stale_threshold_used ??
+        nowMetadata?.diagnostics_debug?.stale_threshold_used
+    ) ?? null
+  const prevStaleThreshold =
+    toFiniteOrNull(
+      prevMetadata?.stale_threshold_used ??
+        prevMetadata?.staleThresholdUsed ??
+        prevMetadata?.diagnostics_debug?.stale_threshold_used
+    ) ?? null
+  if (nowStaleThreshold !== prevStaleThreshold) {
+    markChange("freshness")
+  }
+
   const materiallyChanged = changeReasons.length > 0
   return {
     eventType: materiallyChanged ? "updated" : "duplicate",
@@ -212,6 +311,55 @@ function buildFeedInsertRow(opportunity = {}, options = {}) {
       reference_price: toFiniteOrNull(opportunity.referencePrice),
       flags,
       badges,
+      latest_market_signal_at:
+        toIsoOrNull(
+          opportunity?.metadata?.latest_market_signal_at ??
+            opportunity?.metadata?.latestMarketSignalAt ??
+            opportunity?.latestMarketSignalAt ??
+            opportunity?.latest_market_signal_at
+        ) || null,
+      latest_quote_at:
+        toIsoOrNull(
+          opportunity?.metadata?.latest_quote_at ??
+            opportunity?.metadata?.latestQuoteAt ??
+            opportunity?.latestQuoteAt ??
+            opportunity?.latest_quote_at
+        ) || null,
+      latest_snapshot_at:
+        toIsoOrNull(
+          opportunity?.metadata?.latest_snapshot_at ??
+            opportunity?.metadata?.latestSnapshotAt ??
+            opportunity?.latestSnapshotAt ??
+            opportunity?.latest_snapshot_at
+        ) || null,
+      latest_reference_price_at:
+        toIsoOrNull(
+          opportunity?.metadata?.latest_reference_price_at ??
+            opportunity?.metadata?.latestReferencePriceAt ??
+            opportunity?.latestReferencePriceAt ??
+            opportunity?.latest_reference_price_at
+        ) || null,
+      stale_threshold_used:
+        toFiniteOrNull(
+          opportunity?.metadata?.stale_threshold_used ??
+            opportunity?.metadata?.staleThresholdUsed ??
+            opportunity?.staleThresholdUsed ??
+            opportunity?.stale_threshold_used
+        ) ?? null,
+      stale_result:
+        toBooleanOrNull(
+          opportunity?.metadata?.stale_result ??
+            opportunity?.metadata?.staleResult ??
+            opportunity?.staleResult ??
+            opportunity?.stale_result
+        ) ?? null,
+      stale_reason_source:
+        normalizeText(
+          opportunity?.metadata?.stale_reason_source ??
+            opportunity?.metadata?.staleReasonSource ??
+            opportunity?.staleReasonSource ??
+            opportunity?.stale_reason_source
+        ) || null,
       buy_url: opportunity.buyUrl || null,
       sell_url: opportunity.sellUrl || null,
       opportunity_tier: normalizeText(opportunity.tier || "").toLowerCase() || "speculative",
@@ -273,6 +421,82 @@ function mapFeedRowToApiRow(row = {}) {
     volume7d: toFiniteOrNull(metadata?.volume_7d ?? metadata?.liquidity_value),
     marketCoverage: Number(metadata?.market_coverage || 0),
     referencePrice: toFiniteOrNull(metadata?.reference_price),
+    latestMarketSignalAt:
+      toIsoOrNull(
+        metadata?.latest_market_signal_at ??
+          metadata?.latestMarketSignalAt ??
+          metadata?.diagnostics_debug?.latest_market_signal_at
+      ) || null,
+    latest_market_signal_at:
+      toIsoOrNull(
+        metadata?.latest_market_signal_at ??
+          metadata?.latestMarketSignalAt ??
+          metadata?.diagnostics_debug?.latest_market_signal_at
+      ) || null,
+    latestQuoteAt:
+      toIsoOrNull(
+        metadata?.latest_quote_at ?? metadata?.latestQuoteAt ?? metadata?.diagnostics_debug?.latest_quote_at
+      ) || null,
+    latest_quote_at:
+      toIsoOrNull(
+        metadata?.latest_quote_at ?? metadata?.latestQuoteAt ?? metadata?.diagnostics_debug?.latest_quote_at
+      ) || null,
+    latestSnapshotAt:
+      toIsoOrNull(
+        metadata?.latest_snapshot_at ??
+          metadata?.latestSnapshotAt ??
+          metadata?.diagnostics_debug?.latest_snapshot_at
+      ) || null,
+    latest_snapshot_at:
+      toIsoOrNull(
+        metadata?.latest_snapshot_at ??
+          metadata?.latestSnapshotAt ??
+          metadata?.diagnostics_debug?.latest_snapshot_at
+      ) || null,
+    latestReferencePriceAt:
+      toIsoOrNull(
+        metadata?.latest_reference_price_at ??
+          metadata?.latestReferencePriceAt ??
+          metadata?.diagnostics_debug?.latest_reference_price_at
+      ) || null,
+    latest_reference_price_at:
+      toIsoOrNull(
+        metadata?.latest_reference_price_at ??
+          metadata?.latestReferencePriceAt ??
+          metadata?.diagnostics_debug?.latest_reference_price_at
+      ) || null,
+    staleThresholdUsed:
+      toFiniteOrNull(
+        metadata?.stale_threshold_used ??
+          metadata?.staleThresholdUsed ??
+          metadata?.diagnostics_debug?.stale_threshold_used
+      ) ?? null,
+    stale_threshold_used:
+      toFiniteOrNull(
+        metadata?.stale_threshold_used ??
+          metadata?.staleThresholdUsed ??
+          metadata?.diagnostics_debug?.stale_threshold_used
+      ) ?? null,
+    staleResult:
+      toBooleanOrNull(
+        metadata?.stale_result ?? metadata?.staleResult ?? metadata?.diagnostics_debug?.stale_result
+      ) ?? null,
+    stale_result:
+      toBooleanOrNull(
+        metadata?.stale_result ?? metadata?.staleResult ?? metadata?.diagnostics_debug?.stale_result
+      ) ?? null,
+    staleReasonSource:
+      normalizeText(
+        metadata?.stale_reason_source ??
+          metadata?.staleReasonSource ??
+          metadata?.diagnostics_debug?.stale_reason_source
+      ) || null,
+    stale_reason_source:
+      normalizeText(
+        metadata?.stale_reason_source ??
+          metadata?.staleReasonSource ??
+          metadata?.diagnostics_debug?.stale_reason_source
+      ) || null,
     flags: Array.isArray(metadata?.flags) ? metadata.flags : [],
     badges: Array.isArray(metadata?.badges) ? metadata.badges : [],
     diagnosticsDebug:

@@ -52,11 +52,73 @@ function toFiniteOrNull(value) {
 }
 
 function toIsoOrNull(value) {
+  if (value == null || value === "") return null
+  if (value instanceof Date) {
+    const directTs = value.getTime()
+    if (Number.isFinite(directTs)) return new Date(directTs).toISOString()
+    return null
+  }
+
+  const numeric = toFiniteOrNull(value)
+  if (numeric != null) {
+    const normalizedTs =
+      numeric >= 1e12
+        ? Math.round(numeric)
+        : numeric >= 1e9
+          ? Math.round(numeric * 1000)
+          : null
+    if (normalizedTs != null) {
+      const numericTs = new Date(normalizedTs).getTime()
+      if (Number.isFinite(numericTs)) return new Date(numericTs).toISOString()
+    }
+  }
+
   const text = normalizeText(value)
   if (!text) return null
   const ts = new Date(text).getTime()
   if (!Number.isFinite(ts)) return null
   return new Date(ts).toISOString()
+}
+
+function resolveLatestIso(values = []) {
+  const sorted = (Array.isArray(values) ? values : [])
+    .map((value) => toIsoOrNull(value))
+    .filter(Boolean)
+    .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())
+  return sorted[0] || null
+}
+
+function resolveReferenceSignalAt(seed = {}, quoteIso = null, snapshotIso = null) {
+  if (toFiniteOrNull(seed?.referencePrice ?? seed?.reference_price) == null) return null
+  const directReferenceIso = resolveLatestIso([
+    seed?.latestReferencePriceAt,
+    seed?.latest_reference_price_at,
+    seed?.referencePriceAt,
+    seed?.reference_price_at
+  ])
+  if (directReferenceIso) return directReferenceIso
+
+  const referenceState = normalizeText(seed?.referenceState || seed?.reference_state).toLowerCase()
+  if (referenceState === "snapshot") return snapshotIso
+  if (referenceState === "quote") return quoteIso
+  return resolveLatestIso([quoteIso, snapshotIso])
+}
+
+function resolveLatestMarketSignalAt(seed = {}) {
+  const snapshotIso = resolveLatestIso([seed?.snapshotCapturedAt, seed?.snapshot_captured_at])
+  const quoteIso = resolveLatestIso([seed?.quoteFetchedAt, seed?.quote_fetched_at])
+  const referenceIso = resolveReferenceSignalAt(seed, quoteIso, snapshotIso)
+  const directLatestSignalIso = resolveLatestIso([
+    seed?.latestMarketSignalAt,
+    seed?.latest_market_signal_at,
+    seed?.lastMarketSignalAt,
+    seed?.last_market_signal_at
+  ])
+  return (
+    resolveLatestIso([snapshotIso, quoteIso, referenceIso]) ||
+    directLatestSignalIso ||
+    null
+  )
 }
 
 function normalizeCategory(value, fallbackName = "") {
@@ -81,12 +143,7 @@ function getCategoryProfile(category = ITEM_CATEGORIES.WEAPON_SKIN) {
 }
 
 function resolveFreshnessAgeMinutes(seed = {}) {
-  const snapshotIso = toIsoOrNull(seed.snapshotCapturedAt || seed.snapshot_captured_at)
-  const quoteIso = toIsoOrNull(seed.quoteFetchedAt || seed.quote_fetched_at)
-  const newestIso =
-    [snapshotIso, quoteIso]
-      .filter(Boolean)
-      .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || null
+  const newestIso = resolveLatestMarketSignalAt(seed)
   if (!newestIso) return null
   const ageMinutes = (Date.now() - new Date(newestIso).getTime()) / (60 * 1000)
   if (!Number.isFinite(ageMinutes) || ageMinutes < 0) return null
@@ -96,28 +153,36 @@ function resolveFreshnessAgeMinutes(seed = {}) {
 function resolveFreshnessState(seed = {}, category = ITEM_CATEGORIES.WEAPON_SKIN) {
   const rules = FRESHNESS_RULES_BY_CATEGORY[category] || FRESHNESS_RULES_BY_CATEGORY.weapon_skin
   const ageMinutes = resolveFreshnessAgeMinutes(seed)
-  const snapshotStale = seed?.snapshotStale == null ? Boolean(seed?.snapshot_stale) : Boolean(seed.snapshotStale)
+  const latestMarketSignalAt = resolveLatestMarketSignalAt(seed)
   if (ageMinutes == null) {
     return {
-      state: snapshotStale ? "stale" : "missing",
-      ageMinutes: null
+      state: "missing",
+      ageMinutes: null,
+      latestMarketSignalAt: null,
+      staleThresholdMinutes: Number(rules.agingMaxMinutes || 0)
     }
   }
-  if (ageMinutes <= Number(rules.freshMaxMinutes || 0) && !snapshotStale) {
+  if (ageMinutes <= Number(rules.freshMaxMinutes || 0)) {
     return {
       state: "fresh",
-      ageMinutes
+      ageMinutes,
+      latestMarketSignalAt,
+      staleThresholdMinutes: Number(rules.agingMaxMinutes || 0)
     }
   }
-  if (ageMinutes <= Number(rules.agingMaxMinutes || 0) && !snapshotStale) {
+  if (ageMinutes <= Number(rules.agingMaxMinutes || 0)) {
     return {
       state: "aging",
-      ageMinutes
+      ageMinutes,
+      latestMarketSignalAt,
+      staleThresholdMinutes: Number(rules.agingMaxMinutes || 0)
     }
   }
   return {
     state: "stale",
-    ageMinutes
+    ageMinutes,
+    latestMarketSignalAt,
+    staleThresholdMinutes: Number(rules.agingMaxMinutes || 0)
   }
 }
 
@@ -198,10 +263,7 @@ function classifyCatalogState(seed = {}) {
     Number(toFiniteOrNull(seed.marketCoverageCount ?? seed.market_coverage_count) || 0),
     0
   )
-  const hasFreshnessSignal = Boolean(
-    toIsoOrNull(seed.snapshotCapturedAt || seed.snapshot_captured_at) ||
-      toIsoOrNull(seed.quoteFetchedAt || seed.quote_fetched_at)
-  )
+  const hasFreshnessSignal = Boolean(resolveLatestMarketSignalAt(seed))
   if (marketCoverageCount <= 0 && referencePrice == null && !hasFreshnessSignal) {
     hardRejectReasons.push("unusable_market_coverage")
   }

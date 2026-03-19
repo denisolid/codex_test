@@ -334,6 +334,31 @@ test("catalog status marks complete market basis rows as scannable", () => {
   assert.equal(Number(status.catalogQualityScore || 0) > 0, true)
 })
 
+test("catalog status respects canonical latest market signal with unix timestamps", () => {
+  const oldSnapshotIso = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString()
+  const freshQuoteSeconds = Math.floor(Date.now() / 1000)
+  const status = classifyCatalogStatus({
+    category: "weapon_skin",
+    referencePrice: 11.4,
+    marketCoverageCount: 3,
+    snapshotCapturedAt: oldSnapshotIso,
+    quoteFetchedAt: freshQuoteSeconds,
+    referenceState: "quote_reference",
+    snapshotStale: true,
+    invalidReason: "",
+    liquidityRank: 60,
+    candidateState: { maturityScore: 80, antiFakeBlocked: false }
+  })
+
+  assert.equal(status.catalogStatus, "scannable")
+  assert.equal(Boolean(status.lastMarketSignalAt), true)
+  assert.equal(status.staleResult, false)
+  assert.equal(
+    status.staleReasonSource === "latest_quote" || status.staleReasonSource === "latest_reference_price",
+    true
+  )
+})
+
 test("universe backfill blocks zero-coverage weapon-skin enriching rows", () => {
   const recent = new Date().toISOString()
   const blocked = isUniverseBackfillReadyRow({
