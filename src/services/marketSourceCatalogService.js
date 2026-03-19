@@ -319,6 +319,23 @@ const PROGRESSION_DIAGNOSTIC_STATUS = Object.freeze({
   BLOCKED_NEAR_ELIGIBLE: "blocked_from_near_eligible",
   REJECTED: "rejected"
 })
+const CATALOG_STATUS = Object.freeze({
+  SCANNABLE: "scannable",
+  SHADOW: "shadow",
+  BLOCKED: "blocked"
+})
+const CATALOG_STATUS_SET = new Set(Object.values(CATALOG_STATUS))
+const CATALOG_BLOCK_REASONS = Object.freeze({
+  INVALID_CATALOG_REASON: "invalid_catalog_reason",
+  BELOW_MIN_COST_FLOOR: "below_min_cost_floor",
+  UNUSABLE_MARKET_COVERAGE: "unusable_market_coverage"
+})
+const CATALOG_SHADOW_REASONS = Object.freeze({
+  STALE_ONLY_SIGNALS: "stale_only_signals",
+  WEAK_MARKET_COVERAGE: "weak_market_coverage",
+  INCOMPLETE_REFERENCE_PRICING: "incomplete_reference_pricing"
+})
+const MIN_SCAN_COST_USD = 2
 
 const BASE_INGEST_EXCLUDED_REASON_COUNTER = Object.freeze({
   excludedDuplicate: 0,
@@ -357,6 +374,18 @@ function buildStatusNumberMap(initialValue = 0) {
   const initial = Number(initialValue || 0)
   return Object.fromEntries(
     Object.values(CATALOG_CANDIDATE_STATUS).map((status) => [status, initial])
+  )
+}
+
+function buildCatalogStatusNumberMap(initialValue = 0) {
+  const initial = Number(initialValue || 0)
+  return Object.fromEntries(Object.values(CATALOG_STATUS).map((status) => [status, initial]))
+}
+
+function buildCatalogReasonMap(initialValue = 0, reasons = {}) {
+  const initial = Number(initialValue || 0)
+  return Object.fromEntries(
+    Object.values(reasons).map((reason) => [reason, initial])
   )
 }
 
@@ -413,6 +442,13 @@ function normalizeMaturityState(value, fallback = CATALOG_MATURITY_STATE.COLD) {
   return CATALOG_MATURITY_STATE_SET.has(fallbackText)
     ? fallbackText
     : CATALOG_MATURITY_STATE.COLD
+}
+
+function normalizeCatalogStatus(value, fallback = CATALOG_STATUS.SHADOW) {
+  const text = normalizeText(value).toLowerCase()
+  if (CATALOG_STATUS_SET.has(text)) return text
+  const fallbackText = normalizeText(fallback).toLowerCase()
+  return CATALOG_STATUS_SET.has(fallbackText) ? fallbackText : CATALOG_STATUS.SHADOW
 }
 
 function resolveScanLayerForMaturityState(maturityState = CATALOG_MATURITY_STATE.COLD) {
@@ -536,6 +572,11 @@ function buildCatalogComparableState(row = {}) {
           ? row.progressionBlockers
           : []
     ),
+    catalog_status: normalizeCatalogStatus(row?.catalog_status ?? row?.catalogStatus),
+    catalog_block_reason: normalizeText(row?.catalog_block_reason || row?.catalogBlockReason) || null,
+    catalog_quality_score:
+      normalizeNumberForCompare(row?.catalog_quality_score ?? row?.catalogQualityScore, 2) ?? 0,
+    last_market_signal_at: toIsoStringOrNull(row?.last_market_signal_at || row?.lastMarketSignalAt),
     invalid_reason: normalizeText(row?.invalid_reason || row?.invalidReason) || null,
     source_tag: normalizeText(row?.source_tag || row?.sourceTag) || "curated_seed",
     is_active: row?.is_active == null ? (row?.isActive == null ? true : Boolean(row.isActive)) : Boolean(row.is_active)
@@ -573,6 +614,10 @@ function hasCatalogRowChanges(previousRow = {}, nextRow = {}) {
     "liquidity_state",
     "coverage_state",
     "progression_status",
+    "catalog_status",
+    "catalog_block_reason",
+    "catalog_quality_score",
+    "last_market_signal_at",
     "invalid_reason",
     "source_tag",
     "is_active"
@@ -1359,6 +1404,8 @@ function buildBaseDiagnostics() {
     sourceCatalog: {
       targetRows: SOURCE_CATALOG_LIMIT,
       totalRows: 0,
+      totalCatalog: 0,
+      total_catalog: 0,
       seededRows: 0,
       sourceCandidateRows: 0,
       selectedSeedRowsByCategory: buildCategoryNumberMap(),
@@ -1371,6 +1418,18 @@ function buildBaseDiagnostics() {
       missingRowsToTarget: 0,
       missingRowsToTargetByCategory: buildCategoryNumberMap(),
       activeCatalogRows: 0,
+      activeTradable: 0,
+      active_tradable: 0,
+      scannable: 0,
+      shadow: 0,
+      blocked: 0,
+      blockedByReason: buildCatalogReasonMap(0, CATALOG_BLOCK_REASONS),
+      shadowByReason: buildCatalogReasonMap(0, CATALOG_SHADOW_REASONS),
+      blocked_by_reason: buildCatalogReasonMap(0, CATALOG_BLOCK_REASONS),
+      shadow_by_reason: buildCatalogReasonMap(0, CATALOG_SHADOW_REASONS),
+      catalogStatusCounts: buildCatalogStatusNumberMap(),
+      scannerSourceSize: 0,
+      scanner_source_size: 0,
       tradableRows: 0,
       candidateRows: 0,
       enrichingRows: 0,
@@ -1407,6 +1466,9 @@ function buildBaseDiagnostics() {
       nearEligibleRowsByCategory: buildCategoryNumberMap(),
       candidateRowsByCategory: buildCategoryNumberMap(),
       enrichingRowsByCategory: buildCategoryNumberMap(),
+      fullRebuildRows: 0,
+      incrementalRecomputeRows: 0,
+      incrementalSkippedRows: 0,
       byCategory: buildEmptyCategoryCounter()
     },
     universeBuild: {
@@ -2149,6 +2211,144 @@ function evaluateCandidateState({
   }
 }
 
+function hasStructuralCatalogReason(reason = "") {
+  return /\binvalid|rejected|anti[_\s-]?fake|not[_\s-]?tradable|broken|outofscope|namepattern|unsupported\b/i.test(
+    String(reason || "")
+  )
+}
+
+function resolveLatestMarketSignalAt(snapshotCapturedAt = null, quoteFetchedAt = null) {
+  const snapshotIso = toIsoStringOrNull(snapshotCapturedAt)
+  const quoteIso = toIsoStringOrNull(quoteFetchedAt)
+  if (!snapshotIso && !quoteIso) return null
+  if (!snapshotIso) return quoteIso
+  if (!quoteIso) return snapshotIso
+  return new Date(snapshotIso).getTime() >= new Date(quoteIso).getTime() ? snapshotIso : quoteIso
+}
+
+function computeCatalogQualityScore({
+  catalogStatus = CATALOG_STATUS.SHADOW,
+  maturityScore = 0,
+  liquidityRank = 0,
+  marketCoverageCount = 0,
+  referencePrice = null,
+  freshnessState = CATALOG_FRESHNESS_STATES.MISSING
+} = {}) {
+  const maturityComponent = Math.min(Math.max(Number(maturityScore || 0), 0), 100) * 0.58
+  const liquidityComponent = Math.min(Math.max(Number(liquidityRank || 0), 0), 100) * 0.32
+  const coverageComponent = Math.min(Math.max(Number(marketCoverageCount || 0), 0) * 4, 12)
+  const referenceComponent =
+    toPositiveOrNull(referencePrice) == null ? 0 : Math.min(Number(referencePrice || 0) * 1.5, 10)
+  const freshnessComponent =
+    freshnessState === CATALOG_FRESHNESS_STATES.FRESH
+      ? 8
+      : freshnessState === CATALOG_FRESHNESS_STATES.AGING
+        ? 4
+        : freshnessState === CATALOG_FRESHNESS_STATES.STALE
+          ? -6
+          : -10
+
+  let score =
+    maturityComponent +
+    liquidityComponent +
+    coverageComponent +
+    referenceComponent +
+    freshnessComponent
+  if (catalogStatus === CATALOG_STATUS.SHADOW) {
+    score = Math.max(score - 22, 5)
+  } else if (catalogStatus === CATALOG_STATUS.BLOCKED) {
+    score = 0
+  }
+  return Number(Math.max(Math.min(score, 100), 0).toFixed(2))
+}
+
+function classifyCatalogStatus({
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
+  referencePrice = null,
+  marketCoverageCount = 0,
+  snapshotCapturedAt = null,
+  quoteFetchedAt = null,
+  snapshotStale = false,
+  liquidityRank = 0,
+  invalidReason = "",
+  candidateState = {}
+} = {}) {
+  const normalizedCategory = normalizeCategory(category)
+  const rules =
+    SOURCE_QUALITY_RULES[normalizedCategory] || SOURCE_QUALITY_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
+  const minCoverage = Math.max(Number(rules.minMarketCoverage || 2), 1)
+  const safeReferencePrice = toPositiveOrNull(referencePrice)
+  const normalizedCoverage = Math.max(Number(marketCoverageCount || 0), 0)
+  const snapshotIso = toIsoStringOrNull(snapshotCapturedAt)
+  const quoteIso = toIsoStringOrNull(quoteFetchedAt)
+  const lastMarketSignalAt = resolveLatestMarketSignalAt(snapshotIso, quoteIso)
+  const freshness = resolveCatalogFreshnessContext({
+    category: normalizedCategory,
+    snapshotCapturedAt: snapshotIso,
+    quoteFetchedAt: quoteIso,
+    snapshotStale,
+    hasSnapshot: Boolean(snapshotIso)
+  })
+  const hasAnySnapshotSignal = Boolean(snapshotIso)
+  const hasAnyQuoteSignal = Boolean(quoteIso)
+  const hasAnySignal = hasAnySnapshotSignal || hasAnyQuoteSignal
+  const hasRecentSnapshot =
+    freshness.snapshotState === CATALOG_FRESHNESS_STATES.FRESH ||
+    freshness.snapshotState === CATALOG_FRESHNESS_STATES.AGING
+  const hasRecentQuote =
+    freshness.quoteState === CATALOG_FRESHNESS_STATES.FRESH ||
+    freshness.quoteState === CATALOG_FRESHNESS_STATES.AGING
+  const hasRecentSignal = hasRecentSnapshot || hasRecentQuote
+  const antiFakeBlocked =
+    Boolean(candidateState?.antiFakeBlocked) || hasStructuralCatalogReason(invalidReason)
+  const belowMinCostFloor = safeReferencePrice != null && safeReferencePrice < MIN_SCAN_COST_USD
+  const noUsableMarketBasis =
+    normalizedCoverage <= 0 && safeReferencePrice == null && !hasAnySnapshotSignal && !hasAnyQuoteSignal
+  const staleOnlySignals = !hasRecentSignal && hasAnySignal
+  const weakCoverage = normalizedCoverage < minCoverage
+  const incompleteReferencePricing = safeReferencePrice == null
+
+  let catalogStatus = CATALOG_STATUS.SCANNABLE
+  let catalogBlockReason = null
+  if (antiFakeBlocked) {
+    catalogStatus = CATALOG_STATUS.BLOCKED
+    catalogBlockReason = CATALOG_BLOCK_REASONS.INVALID_CATALOG_REASON
+  } else if (belowMinCostFloor) {
+    catalogStatus = CATALOG_STATUS.BLOCKED
+    catalogBlockReason = CATALOG_BLOCK_REASONS.BELOW_MIN_COST_FLOOR
+  } else if (noUsableMarketBasis) {
+    catalogStatus = CATALOG_STATUS.BLOCKED
+    catalogBlockReason = CATALOG_BLOCK_REASONS.UNUSABLE_MARKET_COVERAGE
+  } else if (staleOnlySignals) {
+    catalogStatus = CATALOG_STATUS.SHADOW
+    catalogBlockReason = CATALOG_SHADOW_REASONS.STALE_ONLY_SIGNALS
+  } else if (weakCoverage) {
+    catalogStatus = CATALOG_STATUS.SHADOW
+    catalogBlockReason = CATALOG_SHADOW_REASONS.WEAK_MARKET_COVERAGE
+  } else if (incompleteReferencePricing) {
+    catalogStatus = CATALOG_STATUS.SHADOW
+    catalogBlockReason = CATALOG_SHADOW_REASONS.INCOMPLETE_REFERENCE_PRICING
+  } else if (!hasRecentSignal) {
+    catalogStatus = CATALOG_STATUS.SHADOW
+    catalogBlockReason = CATALOG_SHADOW_REASONS.STALE_ONLY_SIGNALS
+  }
+
+  return {
+    catalogStatus,
+    catalogBlockReason,
+    catalogQualityScore: computeCatalogQualityScore({
+      catalogStatus,
+      maturityScore: candidateState?.maturityScore,
+      liquidityRank,
+      marketCoverageCount: normalizedCoverage,
+      referencePrice: safeReferencePrice,
+      freshnessState: freshness.state
+    }),
+    lastMarketSignalAt,
+    freshnessState: freshness.state
+  }
+}
+
 function evaluateEligibility({
   category,
   referencePrice,
@@ -2189,13 +2389,27 @@ function evaluateEligibility({
 
 async function enrichSourceCatalog() {
   const rows = await marketSourceCatalogRepo.listActiveTradable({
-    limit: SOURCE_CATALOG_LIMIT,
+    limit: 12000,
     categories: CATEGORY_PRIORITY
   })
   if (!rows.length) {
     return {
       totalRows: 0,
+      totalCatalog: 0,
+      total_catalog: 0,
       activeCatalogRows: 0,
+      activeTradable: 0,
+      active_tradable: 0,
+      scannable: 0,
+      shadow: 0,
+      blocked: 0,
+      blockedByReason: buildCatalogReasonMap(0, CATALOG_BLOCK_REASONS),
+      shadowByReason: buildCatalogReasonMap(0, CATALOG_SHADOW_REASONS),
+      blocked_by_reason: buildCatalogReasonMap(0, CATALOG_BLOCK_REASONS),
+      shadow_by_reason: buildCatalogReasonMap(0, CATALOG_SHADOW_REASONS),
+      catalogStatusCounts: buildCatalogStatusNumberMap(),
+      scannerSourceSize: 0,
+      scanner_source_size: 0,
       tradableRows: 0,
       candidateRows: 0,
       enrichingRows: 0,
@@ -2232,7 +2446,10 @@ async function enrichSourceCatalog() {
       eligibleRowsByCategory: buildCategoryNumberMap(),
       nearEligibleRowsByCategory: buildCategoryNumberMap(),
       candidateRowsByCategory: buildCategoryNumberMap(),
-      enrichingRowsByCategory: buildCategoryNumberMap()
+      enrichingRowsByCategory: buildCategoryNumberMap(),
+      fullRebuildRows: 0,
+      incrementalRecomputeRows: 0,
+      incrementalSkippedRows: 0
     }
   }
 
@@ -2291,9 +2508,18 @@ async function enrichSourceCatalog() {
   const updates = []
   const nowIso = new Date().toISOString()
   let skippedUnchangedRows = 0
+  const catalogStatusCounts = buildCatalogStatusNumberMap()
+  const blockedByReason = buildCatalogReasonMap(0, CATALOG_BLOCK_REASONS)
+  const shadowByReason = buildCatalogReasonMap(0, CATALOG_SHADOW_REASONS)
   const counts = {
     totalRows: rows.length,
+    totalCatalog: rows.length,
     activeCatalogRows: rows.length,
+    activeTradable: 0,
+    scannable: 0,
+    shadow: 0,
+    blocked: 0,
+    scannerSourceSize: 0,
     tradableRows: 0,
     candidateRows: 0,
     enrichingRows: 0,
@@ -2334,6 +2560,7 @@ async function enrichSourceCatalog() {
     const tradable = row?.tradable == null ? true : Boolean(row.tradable)
     if (tradable) {
       counts.tradableRows += 1
+      counts.activeTradable += 1
     }
 
     const skinId = Number(skinsByName[marketHashName]?.id || 0)
@@ -2507,6 +2734,34 @@ async function enrichSourceCatalog() {
             ? candidateState.eligibilityReason
             : eligibility.reason || candidateState.eligibilityReason || "candidate_not_ready"
         ) || "candidate_not_ready"
+    const catalogClassification = classifyCatalogStatus({
+      category,
+      referencePrice,
+      marketCoverageCount,
+      snapshotCapturedAt,
+      quoteFetchedAt,
+      snapshotStale,
+      liquidityRank,
+      invalidReason,
+      candidateState
+    })
+    const catalogStatus = normalizeCatalogStatus(catalogClassification.catalogStatus)
+    const catalogBlockReason = normalizeText(catalogClassification.catalogBlockReason) || null
+    if (catalogStatus === CATALOG_STATUS.SCANNABLE) {
+      counts.scannable += 1
+      counts.scannerSourceSize += 1
+    } else if (catalogStatus === CATALOG_STATUS.SHADOW) {
+      counts.shadow += 1
+      if (catalogBlockReason && Object.prototype.hasOwnProperty.call(shadowByReason, catalogBlockReason)) {
+        shadowByReason[catalogBlockReason] = Number(shadowByReason[catalogBlockReason] || 0) + 1
+      }
+    } else {
+      counts.blocked += 1
+      if (catalogBlockReason && Object.prototype.hasOwnProperty.call(blockedByReason, catalogBlockReason)) {
+        blockedByReason[catalogBlockReason] = Number(blockedByReason[catalogBlockReason] || 0) + 1
+      }
+    }
+    catalogStatusCounts[catalogStatus] = Number(catalogStatusCounts[catalogStatus] || 0) + 1
     const scanLayer = resolveScanLayerForMaturityState(maturityState)
 
     const nextRow = {
@@ -2538,6 +2793,10 @@ async function enrichSourceCatalog() {
       coverage_state: candidateState.coverageState,
       progression_status: candidateState.progressionStatus,
       progression_blockers: scanEligible ? [] : candidateState.progressionBlockers,
+      catalog_status: catalogStatus,
+      catalog_block_reason: catalogBlockReason,
+      catalog_quality_score: Number(catalogClassification.catalogQualityScore || 0),
+      last_market_signal_at: catalogClassification.lastMarketSignalAt,
       invalid_reason: invalidReason,
       source_tag: normalizeText(row?.source_tag || row?.sourceTag) || "curated_seed",
       is_active: row?.is_active == null ? true : Boolean(row.is_active)
@@ -2567,6 +2826,14 @@ async function enrichSourceCatalog() {
 
   return {
     ...counts,
+    catalogStatusCounts,
+    blockedByReason,
+    shadowByReason,
+    total_catalog: Number(counts.totalCatalog || counts.totalRows || 0),
+    active_tradable: Number(counts.activeTradable || counts.tradableRows || 0),
+    blocked_by_reason: blockedByReason,
+    shadow_by_reason: shadowByReason,
+    scanner_source_size: Number(counts.scannerSourceSize || counts.scannable || 0),
     excludedRowsByReason,
     candidateFunnel,
     maturityFunnel,
@@ -2588,6 +2855,9 @@ async function enrichSourceCatalog() {
     nearEligibleRowsByCategory,
     candidateRowsByCategory,
     enrichingRowsByCategory,
+    fullRebuildRows: rows.length,
+    incrementalRecomputeRows: updates.length,
+    incrementalSkippedRows: skippedUnchangedRows,
     persistedUpdateRows: updates.length,
     skippedUnchangedRows
   }
@@ -2950,6 +3220,10 @@ async function runPipeline(options = {}) {
       ...base.sourceCatalog,
       targetRows: SOURCE_CATALOG_LIMIT,
       totalRows: Number(sourceCoverage?.totalRows || 0),
+      totalCatalog: Number(sourceCoverage?.totalCatalog || sourceCoverage?.totalRows || 0),
+      total_catalog: Number(
+        sourceCoverage?.total_catalog || sourceCoverage?.totalCatalog || sourceCoverage?.totalRows || 0
+      ),
       seededRows: Number(ingest?.seededRows || 0),
       sourceCandidateRows: Number(ingest?.sourceCandidateRows || 0),
       selectedSeedRowsByCategory:
@@ -2970,6 +3244,30 @@ async function runPipeline(options = {}) {
       missingRowsToTargetByCategory:
         ingest?.missingRowsToTargetByCategory || base.sourceCatalog.missingRowsToTargetByCategory,
       activeCatalogRows: Number(sourceCoverage?.activeCatalogRows || 0),
+      activeTradable: Number(sourceCoverage?.activeTradable || sourceCoverage?.tradableRows || 0),
+      active_tradable: Number(
+        sourceCoverage?.active_tradable || sourceCoverage?.activeTradable || sourceCoverage?.tradableRows || 0
+      ),
+      scannable: Number(sourceCoverage?.scannable || 0),
+      shadow: Number(sourceCoverage?.shadow || 0),
+      blocked: Number(sourceCoverage?.blocked || 0),
+      blockedByReason:
+        sourceCoverage?.blockedByReason || base.sourceCatalog.blockedByReason,
+      shadowByReason:
+        sourceCoverage?.shadowByReason || base.sourceCatalog.shadowByReason,
+      blocked_by_reason:
+        sourceCoverage?.blocked_by_reason || sourceCoverage?.blockedByReason || base.sourceCatalog.blocked_by_reason,
+      shadow_by_reason:
+        sourceCoverage?.shadow_by_reason || sourceCoverage?.shadowByReason || base.sourceCatalog.shadow_by_reason,
+      catalogStatusCounts:
+        sourceCoverage?.catalogStatusCounts || base.sourceCatalog.catalogStatusCounts,
+      scannerSourceSize: Number(sourceCoverage?.scannerSourceSize || sourceCoverage?.scannable || 0),
+      scanner_source_size: Number(
+        sourceCoverage?.scanner_source_size ||
+          sourceCoverage?.scannerSourceSize ||
+          sourceCoverage?.scannable ||
+          0
+      ),
       tradableRows: Number(sourceCoverage?.tradableRows || 0),
       candidateRows: Number(sourceCoverage?.candidateRows || 0),
       enrichingRows: Number(sourceCoverage?.enrichingRows || 0),
@@ -3040,6 +3338,13 @@ async function runPipeline(options = {}) {
         sourceCoverage?.candidateRowsByCategory || base.sourceCatalog.candidateRowsByCategory,
       enrichingRowsByCategory:
         sourceCoverage?.enrichingRowsByCategory || base.sourceCatalog.enrichingRowsByCategory,
+      fullRebuildRows: Number(sourceCoverage?.fullRebuildRows || sourceCoverage?.totalRows || 0),
+      incrementalRecomputeRows: Number(
+        sourceCoverage?.incrementalRecomputeRows || sourceCoverage?.persistedUpdateRows || 0
+      ),
+      incrementalSkippedRows: Number(
+        sourceCoverage?.incrementalSkippedRows || sourceCoverage?.skippedUnchangedRows || 0
+      ),
       byCategory: sourceCoverage?.byCategory || base.sourceCatalog.byCategory
     },
     universeBuild
@@ -3204,6 +3509,8 @@ module.exports = {
     computeSourceLiquidityScore,
     computeEnrichmentPriority,
     computeCatalogMaturity,
+    computeCatalogQualityScore,
+    classifyCatalogStatus,
     evaluateCandidateState,
     evaluateEligibility,
     isUniverseBackfillReadyRow,

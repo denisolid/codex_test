@@ -11,6 +11,7 @@ const {
     buildCategoryQuotas,
     buildSourceCatalogQuotas,
     computeCatalogMaturity,
+    classifyCatalogStatus,
     computeEnrichmentPriority,
     computeSourceLiquidityScore,
     evaluateCandidateState,
@@ -283,6 +284,54 @@ test("candidate state keeps zero-coverage weapon skins in enriching", () => {
 
   assert.equal(normalizeCandidateStatus(state.candidateStatus), "enriching")
   assert.equal(state.nearEligibleBlockers.includes("market_coverage_insufficient"), true)
+})
+
+test("catalog status blocks fully data-empty rows and shadows stale-only rows", () => {
+  const blocked = classifyCatalogStatus({
+    category: "weapon_skin",
+    referencePrice: null,
+    marketCoverageCount: 0,
+    snapshotCapturedAt: null,
+    quoteFetchedAt: null,
+    snapshotStale: true,
+    invalidReason: "",
+    liquidityRank: 0,
+    candidateState: { maturityScore: 8, antiFakeBlocked: false }
+  })
+  const staleShadow = classifyCatalogStatus({
+    category: "weapon_skin",
+    referencePrice: 14,
+    marketCoverageCount: 3,
+    snapshotCapturedAt: new Date(Date.now() - 10 * 60 * 60 * 1000).toISOString(),
+    quoteFetchedAt: new Date(Date.now() - 9 * 60 * 60 * 1000).toISOString(),
+    snapshotStale: true,
+    invalidReason: "",
+    liquidityRank: 72,
+    candidateState: { maturityScore: 70, antiFakeBlocked: false }
+  })
+
+  assert.equal(blocked.catalogStatus, "blocked")
+  assert.equal(blocked.catalogBlockReason, "unusable_market_coverage")
+  assert.equal(staleShadow.catalogStatus, "shadow")
+  assert.equal(staleShadow.catalogBlockReason, "stale_only_signals")
+})
+
+test("catalog status marks complete market basis rows as scannable", () => {
+  const status = classifyCatalogStatus({
+    category: "case",
+    referencePrice: 3.4,
+    marketCoverageCount: 3,
+    snapshotCapturedAt: new Date().toISOString(),
+    quoteFetchedAt: new Date().toISOString(),
+    snapshotStale: false,
+    invalidReason: "",
+    liquidityRank: 68,
+    candidateState: { maturityScore: 88, antiFakeBlocked: false }
+  })
+
+  assert.equal(status.catalogStatus, "scannable")
+  assert.equal(status.catalogBlockReason, null)
+  assert.equal(Number(status.catalogQualityScore || 0) > 0, true)
 })
 
 test("universe backfill blocks zero-coverage weapon-skin enriching rows", () => {

@@ -342,7 +342,7 @@ function applyFeedPlanRestrictions(rows = [], entitlements = {}) {
   }
 }
 
-async function loadCatalogRows() {
+async function loadScannerSourceRows() {
   const attempts = Array.from(
     new Set([
       Math.max(UNIVERSE_DB_LIMIT, OPPORTUNITY_BATCH_RUNTIME_TARGET),
@@ -355,14 +355,15 @@ async function loadCatalogRows() {
     attemptedLimits: [],
     selectedLimit: null,
     fallbackUsed: false,
-    statementTimeoutFallbacks: 0
+    statementTimeoutFallbacks: 0,
+    sourceMode: "catalog_status_scannable"
   }
   let lastError = null
   for (let index = 0; index < attempts.length; index += 1) {
     const limit = attempts[index]
     diagnostics.attemptedLimits.push(limit)
     try {
-      const rows = await marketSourceCatalogRepo.listActiveTradable({
+      const rows = await marketSourceCatalogRepo.listScannerSource({
         limit,
         categories: CATALOG_SCAN_CATEGORIES
       })
@@ -736,7 +737,7 @@ async function runEnrichmentJob({ forceRefresh = false } = {}) {
 async function runOpportunityJob({ forceRefresh = false } = {}) {
   const runStartedAtMs = Date.now()
   const dbQueryStartedAtMs = Date.now()
-  const catalogLoad = await loadCatalogRows()
+  const catalogLoad = await loadScannerSourceRows()
   const catalogRows = Array.isArray(catalogLoad?.rows) ? catalogLoad.rows : []
   const dbQueryMs = Date.now() - dbQueryStartedAtMs
 
@@ -776,7 +777,8 @@ async function runOpportunityJob({ forceRefresh = false } = {}) {
       evaluations: evaluationSummary,
       persisted,
       sourceCatalog: {
-        mode: "deferred_to_enrichment",
+        mode: "catalog_status_scannable",
+        scannerSourceSize: catalogRows.length,
         catalogLoad: catalogLoad?.diagnostics || {}
       },
       timing: {
