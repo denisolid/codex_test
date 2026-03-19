@@ -49,6 +49,7 @@ const DEFAULT_API_LIMIT = 100
 const MAX_FEED_LIMIT = 500
 const MANUAL_REFRESH_TRACKER_MAX = 4000
 const LEGACY_SCANNER_TYPE = "global_arbitrage"
+const SCANNER_RUN_RETENTION_HOURS = 24
 
 const scannerState = {
   timer: null,
@@ -766,6 +767,12 @@ async function runJobWithLock({ scannerType, state, peerState, peerScannerType, 
         diagnosticsSummary: { trigger, timedOut }
       })
     } finally {
+      const cutoffIso = new Date(
+        Date.now() - SCANNER_RUN_RETENTION_HOURS * 60 * 60 * 1000
+      ).toISOString()
+      scannerRunRepo
+        .deleteOlderThan(cutoffIso, { excludeRunning: true })
+        .catch(() => null)
       state.inFlight = null
       state.currentRunId = null
       state.currentRunStartedAt = null
