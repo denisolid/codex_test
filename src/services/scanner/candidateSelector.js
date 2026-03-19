@@ -230,7 +230,8 @@ function selectScanCandidates(options = {}) {
   }
 
   const selected = []
-  const startCursor = previousCursor % pool.length
+  const hasScanHistory = lastScannedAtByName instanceof Map && lastScannedAtByName.size > 0
+  const startCursor = hasScanHistory ? 0 : previousCursor % pool.length
   const maxSelection = Math.min(batchSize, pool.length)
   for (let offset = 0; offset < maxSelection; offset += 1) {
     const index = (startCursor + offset) % pool.length
@@ -246,7 +247,7 @@ function selectScanCandidates(options = {}) {
     selected,
     poolSize: pool.length,
     attemptedBatchSize: batchSize,
-    nextCursor: (startCursor + selected.length) % Math.max(pool.length, 1),
+    nextCursor: hasScanHistory ? 0 : (startCursor + selected.length) % Math.max(pool.length, 1),
     diagnostics
   }
 }
