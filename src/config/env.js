@@ -214,6 +214,16 @@ module.exports = {
   arbitrageOpportunityJobTimeoutMs: Number(
     process.env.ARBITRAGE_OPPORTUNITY_JOB_TIMEOUT_MS || 600000
   ),
+  arbitrageOpportunityHardTimeoutMs: Number(
+    process.env.ARBITRAGE_OPPORTUNITY_HARD_TIMEOUT_MS || 720000
+  ),
+  arbitrageOpportunityScanAllowLiveFetch:
+    process.env.ARBITRAGE_OPPORTUNITY_SCAN_ALLOW_LIVE_FETCH == null
+      ? false
+      : process.env.ARBITRAGE_OPPORTUNITY_SCAN_ALLOW_LIVE_FETCH === "true",
+  arbitrageOpportunitySafeBatchSize: Number(
+    process.env.ARBITRAGE_OPPORTUNITY_SAFE_BATCH_SIZE || 60
+  ),
   arbitrageAllowCrossJobParallelism:
     (
       process.env.ALLOW_CROSS_JOB_PARALLELISM ??
