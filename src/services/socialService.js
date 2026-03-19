@@ -28,6 +28,15 @@ function round2(n) {
   return Number((Number(n || 0)).toFixed(2));
 }
 
+function resolveSettledValue(result, fallbackValue, context) {
+  if (result?.status === "fulfilled") {
+    return result.value;
+  }
+  const message = String(result?.reason?.message || result?.reason || "unknown_error");
+  console.warn(`[social-service] ${context} degraded: ${message}`);
+  return fallbackValue;
+}
+
 async function computePortfolioSummaries(userIds, currency) {
   const safeIds = Array.from(
     new Set(
@@ -112,7 +121,8 @@ exports.listWatchlist = async (userId, options = {}) => {
     };
   }
 
-  const [users, portfolioSummaries, followerRows, viewStats] = await Promise.all([
+  const [usersResult, portfolioResult, followerRowsResult, viewStatsResult] =
+    await Promise.allSettled([
     userRepo.getByIds(targetIds),
     computePortfolioSummaries(targetIds, displayCurrency),
     watchlistRepo.listByTargetIds(targetIds),
@@ -120,7 +130,20 @@ exports.listWatchlist = async (userId, options = {}) => {
       targetIds,
       new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
     )
-  ]);
+    ]);
+
+  const users = resolveSettledValue(usersResult, [], "listWatchlist.users");
+  const portfolioSummaries = resolveSettledValue(
+    portfolioResult,
+    {},
+    "listWatchlist.portfolioSummaries"
+  );
+  const followerRows = resolveSettledValue(
+    followerRowsResult,
+    [],
+    "listWatchlist.followerRows"
+  );
+  const viewStats = resolveSettledValue(viewStatsResult, {}, "listWatchlist.viewStats");
 
   const userById = Object.fromEntries(users.map((user) => [String(user.id), user]));
   const followerCounts = mapFollowerCounts(followerRows);
@@ -194,7 +217,7 @@ exports.getLeaderboard = async (userId, options = {}) => {
   const displayCurrency = resolveCurrency(options.currency);
   const scope = String(options.scope || "global").toLowerCase();
   const limit = normalizeLimit(options.limit, 20, 100);
-  const poolLimit = Math.max(limit * 5, 200);
+  const poolLimit = Math.min(Math.max(limit * 4, 80), 150);
 
   const [watchRows, poolUsers] = await Promise.all([
     watchlistRepo.listByUser(userId),
@@ -212,14 +235,27 @@ exports.getLeaderboard = async (userId, options = {}) => {
   }
 
   const selectedUserIds = selectedUsers.map((row) => String(row.id));
-  const [summaries, followerRows, viewStats] = await Promise.all([
+  const [summariesResult, followerRowsResult, viewStatsResult] =
+    await Promise.allSettled([
     computePortfolioSummaries(selectedUserIds, displayCurrency),
     watchlistRepo.listByTargetIds(selectedUserIds),
     publicViewRepo.countByOwnersSince(
       selectedUserIds,
       new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
     )
-  ]);
+    ]);
+
+  const summaries = resolveSettledValue(
+    summariesResult,
+    {},
+    "getLeaderboard.portfolioSummaries"
+  );
+  const followerRows = resolveSettledValue(
+    followerRowsResult,
+    [],
+    "getLeaderboard.followerRows"
+  );
+  const viewStats = resolveSettledValue(viewStatsResult, {}, "getLeaderboard.viewStats");
 
   const followerCounts = mapFollowerCounts(followerRows);
 
