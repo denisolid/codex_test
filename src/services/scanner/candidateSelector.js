@@ -44,6 +44,28 @@ function normalizeCatalogRow(row = {}) {
   }
 }
 
+function toIsoOrNull(value) {
+  const text = normalizeText(value)
+  if (!text) return null
+  const ts = new Date(text).getTime()
+  if (!Number.isFinite(ts)) return null
+  return new Date(ts).toISOString()
+}
+
+function hasStrongScanEvidence(row = {}) {
+  const marketCoverageCount = Math.max(Number(toFiniteOrNull(row.marketCoverageCount) || 0), 0)
+  const referencePrice = toFiniteOrNull(row.referencePrice)
+  const volume7d = toFiniteOrNull(row.volume7d)
+  const snapshotCapturedAt = toIsoOrNull(row.snapshotCapturedAt)
+  const quoteFetchedAt = toIsoOrNull(row.quoteFetchedAt)
+  const hasFreshnessSignal = Boolean(snapshotCapturedAt || quoteFetchedAt)
+
+  if (marketCoverageCount < 2) return false
+  if (referencePrice == null || referencePrice <= 0) return false
+  if (volume7d != null && volume7d > 0) return true
+  return hasFreshnessSignal
+}
+
 function buildCategoryStateCounter() {
   return Object.fromEntries(
     ROUND_ROBIN_CATEGORY_ORDER.map((category) => [
@@ -81,39 +103,64 @@ function incrementCounter(target, key, amount = 1) {
 function buildRoundRobinPool(scannableRows = [], options = {}) {
   const lastScannedAtByName = options.lastScannedAtByName || new Map()
   const byCategory = Object.fromEntries(
-    ROUND_ROBIN_CATEGORY_ORDER.map((category) => [category, []])
+    ROUND_ROBIN_CATEGORY_ORDER.map((category) => [
+      category,
+      { preferred: [], fallback: [] }
+    ])
   )
 
   for (const row of Array.isArray(scannableRows) ? scannableRows : []) {
     const category = normalizeCategory(row.category || row.itemCategory, row.itemName)
     const bucket = byCategory[category]
     if (!bucket) continue
-    bucket.push(row)
+    if (hasStrongScanEvidence(row)) {
+      bucket.preferred.push(row)
+    } else {
+      bucket.fallback.push(row)
+    }
   }
 
-  for (const [category, bucket] of Object.entries(byCategory)) {
-    bucket.sort((a, b) => {
+  const sortRows = (rows = []) => {
+    rows.sort((a, b) => {
       const aSeenAt = Number(lastScannedAtByName.get(a.marketHashName) || 0)
       const bSeenAt = Number(lastScannedAtByName.get(b.marketHashName) || 0)
       if (aSeenAt !== bSeenAt) return aSeenAt - bSeenAt
+      const aCoverage = Number(a.marketCoverageCount || 0)
+      const bCoverage = Number(b.marketCoverageCount || 0)
+      if (aCoverage !== bCoverage) return bCoverage - aCoverage
+      const aVolume = Number(a.volume7d || 0)
+      const bVolume = Number(b.volume7d || 0)
+      if (aVolume !== bVolume) return bVolume - aVolume
       const aRank = Number(a.liquidityRank || 0)
       const bRank = Number(b.liquidityRank || 0)
       if (aRank !== bRank) return bRank - aRank
       return String(a.marketHashName).localeCompare(String(b.marketHashName))
     })
-    byCategory[category] = bucket
+  }
+
+  for (const category of Object.keys(byCategory)) {
+    sortRows(byCategory[category].preferred)
+    sortRows(byCategory[category].fallback)
   }
 
   const roundRobinPool = []
-  let hasRows = true
-  while (hasRows) {
-    hasRows = false
+  const pullRow = (bucket = {}) => {
+    if (bucket.preferred && bucket.preferred.length) return bucket.preferred.shift()
+    if (bucket.fallback && bucket.fallback.length) return bucket.fallback.shift()
+    return null
+  }
+
+  while (true) {
+    let addedInPass = false
     for (const category of ROUND_ROBIN_CATEGORY_ORDER) {
       const bucket = byCategory[category]
-      if (!bucket || !bucket.length) continue
-      hasRows = true
-      roundRobinPool.push(bucket.shift())
+      if (!bucket) continue
+      const picked = pullRow(bucket)
+      if (!picked) continue
+      roundRobinPool.push(picked)
+      addedInPass = true
     }
+    if (!addedInPass) break
   }
 
   return roundRobinPool
