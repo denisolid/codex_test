@@ -64,6 +64,10 @@ const SOURCE_CATALOG_LIMIT = Math.max(
 )
 const SOURCE_CATALOG_REFRESH_MS =
   Math.max(Number(arbitrageSourceCatalogRefreshMinutes || 60), 5) * 60 * 1000
+const SOURCE_CATALOG_ERROR_RETRY_MS = Math.max(
+  Math.min(SOURCE_CATALOG_REFRESH_MS, 15 * 60 * 1000),
+  5 * 60 * 1000
+)
 const SNAPSHOT_TTL_MS = Math.max(Number(marketSnapshotTtlMinutes || 30), 5) * 60 * 1000
 const MAJOR_CAPSULE_EVENT_PATTERN = /\b(katowice|cologne|atlanta|krakow|boston|london|berlin|stockholm|antwerp|rio|paris|copenhagen|major|rmr)\b/i
 const CAPSULE_EVENT_SIGNAL_PATTERN = /\b(esl|blast|pgl|dreamhack|iem|cluj|funspark|faceit|challengers|legends|contenders|champions|team)\b/i
@@ -462,6 +466,176 @@ function toIsoStringOrNull(value) {
   const parsed = new Date(text).getTime()
   if (!Number.isFinite(parsed)) return null
   return new Date(parsed).toISOString()
+}
+
+function normalizeIntegerOrNull(value, min = 0) {
+  const parsed = toFiniteOrNull(value)
+  if (parsed == null) return null
+  return Math.max(Math.round(parsed), min)
+}
+
+function normalizeIntegerOrDefault(value, defaultValue = 0, min = 0) {
+  const parsed = normalizeIntegerOrNull(value, min)
+  if (parsed == null) return Math.max(Math.round(Number(defaultValue || 0)), min)
+  return parsed
+}
+
+function normalizeNumberForCompare(value, decimals = 4) {
+  const parsed = toFiniteOrNull(value)
+  if (parsed == null) return null
+  return Number(parsed.toFixed(decimals))
+}
+
+function normalizeTextListForCompare(values = []) {
+  return uniqueTextList(values).sort((a, b) => a.localeCompare(b))
+}
+
+function buildCatalogComparableState(row = {}) {
+  return {
+    market_hash_name: normalizeText(row?.market_hash_name || row?.marketHashName) || null,
+    item_name: normalizeText(row?.item_name || row?.itemName) || null,
+    category: normalizeCategory(row?.category, row?.market_hash_name || row?.marketHashName),
+    subcategory: normalizeText(row?.subcategory) || null,
+    tradable: row?.tradable == null ? true : Boolean(row.tradable),
+    scan_eligible: row?.scan_eligible == null ? Boolean(row?.scanEligible) : Boolean(row.scan_eligible),
+    candidate_status: normalizeCandidateStatus(row?.candidate_status ?? row?.candidateStatus),
+    missing_snapshot:
+      row?.missing_snapshot == null ? Boolean(row?.missingSnapshot) : Boolean(row.missing_snapshot),
+    missing_reference:
+      row?.missing_reference == null ? Boolean(row?.missingReference) : Boolean(row.missing_reference),
+    missing_market_coverage:
+      row?.missing_market_coverage == null
+        ? Boolean(row?.missingMarketCoverage)
+        : Boolean(row.missing_market_coverage),
+    enrichment_priority:
+      normalizeNumberForCompare(row?.enrichment_priority ?? row?.enrichmentPriority, 2) ?? 0,
+    eligibility_reason: normalizeText(row?.eligibility_reason || row?.eligibilityReason) || null,
+    maturity_state: normalizeMaturityState(row?.maturity_state ?? row?.maturityState),
+    maturity_score: normalizeNumberForCompare(row?.maturity_score ?? row?.maturityScore, 2) ?? 0,
+    scan_layer: normalizeText(row?.scan_layer || row?.scanLayer) || null,
+    reference_price: normalizeNumberForCompare(row?.reference_price ?? row?.referencePrice, 4),
+    market_coverage_count: normalizeIntegerOrDefault(
+      row?.market_coverage_count ?? row?.marketCoverageCount,
+      0,
+      0
+    ),
+    liquidity_rank: normalizeNumberForCompare(row?.liquidity_rank ?? row?.liquidityRank, 2),
+    volume_7d: normalizeIntegerOrNull(row?.volume_7d ?? row?.volume7d, 0),
+    snapshot_stale: row?.snapshot_stale == null ? Boolean(row?.snapshotStale) : Boolean(row.snapshot_stale),
+    snapshot_captured_at: toIsoStringOrNull(row?.snapshot_captured_at || row?.snapshotCapturedAt),
+    quote_fetched_at: toIsoStringOrNull(row?.quote_fetched_at || row?.quoteFetchedAt),
+    snapshot_state: normalizeText(row?.snapshot_state || row?.snapshotState) || null,
+    reference_state: normalizeText(row?.reference_state || row?.referenceState) || null,
+    liquidity_state: normalizeText(row?.liquidity_state || row?.liquidityState) || null,
+    coverage_state: normalizeText(row?.coverage_state || row?.coverageState) || null,
+    progression_status: normalizeText(row?.progression_status || row?.progressionStatus) || null,
+    progression_blockers: normalizeTextListForCompare(
+      Array.isArray(row?.progression_blockers)
+        ? row.progression_blockers
+        : Array.isArray(row?.progressionBlockers)
+          ? row.progressionBlockers
+          : []
+    ),
+    invalid_reason: normalizeText(row?.invalid_reason || row?.invalidReason) || null,
+    source_tag: normalizeText(row?.source_tag || row?.sourceTag) || "curated_seed",
+    is_active: row?.is_active == null ? (row?.isActive == null ? true : Boolean(row.isActive)) : Boolean(row.is_active)
+  }
+}
+
+function hasCatalogRowChanges(previousRow = {}, nextRow = {}) {
+  const previous = buildCatalogComparableState(previousRow)
+  const next = buildCatalogComparableState(nextRow)
+  const fields = [
+    "market_hash_name",
+    "item_name",
+    "category",
+    "subcategory",
+    "tradable",
+    "scan_eligible",
+    "candidate_status",
+    "missing_snapshot",
+    "missing_reference",
+    "missing_market_coverage",
+    "enrichment_priority",
+    "eligibility_reason",
+    "maturity_state",
+    "maturity_score",
+    "scan_layer",
+    "reference_price",
+    "market_coverage_count",
+    "liquidity_rank",
+    "volume_7d",
+    "snapshot_stale",
+    "snapshot_captured_at",
+    "quote_fetched_at",
+    "snapshot_state",
+    "reference_state",
+    "liquidity_state",
+    "coverage_state",
+    "progression_status",
+    "invalid_reason",
+    "source_tag",
+    "is_active"
+  ]
+
+  for (const field of fields) {
+    if (previous[field] !== next[field]) return true
+  }
+
+  const previousBlockers = Array.isArray(previous.progression_blockers) ? previous.progression_blockers : []
+  const nextBlockers = Array.isArray(next.progression_blockers) ? next.progression_blockers : []
+  if (previousBlockers.length !== nextBlockers.length) return true
+  for (let index = 0; index < previousBlockers.length; index += 1) {
+    if (previousBlockers[index] !== nextBlockers[index]) return true
+  }
+
+  return false
+}
+
+function normalizeUniverseRowForCompare(row = {}, fallbackRank = 1) {
+  const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
+  return {
+    market_hash_name: marketHashName || null,
+    item_name: normalizeText(row?.item_name || row?.itemName || marketHashName) || null,
+    category: normalizeCategory(row?.category, marketHashName),
+    subcategory: normalizeText(row?.subcategory) || null,
+    liquidity_rank: normalizeIntegerOrDefault(row?.liquidity_rank ?? row?.liquidityRank, fallbackRank, 1),
+    is_active: row?.is_active == null ? true : Boolean(row.is_active)
+  }
+}
+
+function isSameUniverseRows(existingRows = [], nextRows = []) {
+  const existing = (Array.isArray(existingRows) ? existingRows : [])
+    .map((row, index) => normalizeUniverseRowForCompare(row, index + 1))
+    .sort(
+      (a, b) =>
+        Number(a.liquidity_rank || 0) - Number(b.liquidity_rank || 0) ||
+        String(a.market_hash_name || "").localeCompare(String(b.market_hash_name || ""))
+    )
+  const next = (Array.isArray(nextRows) ? nextRows : [])
+    .map((row, index) => normalizeUniverseRowForCompare(row, index + 1))
+    .sort(
+      (a, b) =>
+        Number(a.liquidity_rank || 0) - Number(b.liquidity_rank || 0) ||
+        String(a.market_hash_name || "").localeCompare(String(b.market_hash_name || ""))
+    )
+
+  if (existing.length !== next.length) return false
+  for (let index = 0; index < existing.length; index += 1) {
+    const prev = existing[index]
+    const curr = next[index]
+    if (
+      prev.market_hash_name !== curr.market_hash_name ||
+      prev.item_name !== curr.item_name ||
+      prev.category !== curr.category ||
+      prev.subcategory !== curr.subcategory ||
+      prev.liquidity_rank !== curr.liquidity_rank ||
+      prev.is_active !== curr.is_active
+    ) {
+      return false
+    }
+  }
+  return true
 }
 
 function resolveAgeMinutes(value) {
@@ -2115,6 +2289,8 @@ async function enrichSourceCatalog() {
   const nearEligibleFreshnessByState = buildFreshnessNumberMap()
   const nearEligibleFreshnessByStateByCategory = buildFreshnessByCategoryMap()
   const updates = []
+  const nowIso = new Date().toISOString()
+  let skippedUnchangedRows = 0
   const counts = {
     totalRows: rows.length,
     activeCatalogRows: rows.length,
@@ -2333,7 +2509,7 @@ async function enrichSourceCatalog() {
         ) || "candidate_not_ready"
     const scanLayer = resolveScanLayerForMaturityState(maturityState)
 
-    updates.push({
+    const nextRow = {
       market_hash_name: marketHashName,
       item_name: normalizeText(row?.item_name || row?.itemName || marketHashName) || marketHashName,
       category,
@@ -2364,12 +2540,22 @@ async function enrichSourceCatalog() {
       progression_blockers: scanEligible ? [] : candidateState.progressionBlockers,
       invalid_reason: invalidReason,
       source_tag: normalizeText(row?.source_tag || row?.sourceTag) || "curated_seed",
-      is_active: row?.is_active == null ? true : Boolean(row.is_active),
-      last_enriched_at: new Date().toISOString()
-    })
+      is_active: row?.is_active == null ? true : Boolean(row.is_active)
+    }
+
+    if (hasCatalogRowChanges(row, nextRow)) {
+      updates.push({
+        ...nextRow,
+        last_enriched_at: nowIso
+      })
+    } else {
+      skippedUnchangedRows += 1
+    }
   }
 
-  await marketSourceCatalogRepo.upsertRows(updates)
+  if (updates.length) {
+    await marketSourceCatalogRepo.upsertRows(updates)
+  }
 
   const excludedRowsByReason = {
     excludedLowValueItems: Number(counts.excludedLowValueItems || 0),
@@ -2401,7 +2587,9 @@ async function enrichSourceCatalog() {
     eligibleRowsByCategory,
     nearEligibleRowsByCategory,
     candidateRowsByCategory,
-    enrichingRowsByCategory
+    enrichingRowsByCategory,
+    persistedUpdateRows: updates.length,
+    skippedUnchangedRows
   }
 }
 
@@ -2669,7 +2857,24 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
     liquidityRank: index + 1
   }))
 
-  const persist = await marketUniverseRepo.replaceActiveUniverse(normalizedUniverseRows)
+  const universeComparisonLimit = Math.min(Math.max(safeTarget * 3, safeTarget + 250), 10000)
+  let existingUniverseRows = []
+  try {
+    existingUniverseRows = await marketUniverseRepo.listActiveByLiquidityRank({
+      limit: universeComparisonLimit
+    })
+  } catch (_err) {
+    existingUniverseRows = []
+  }
+
+  const unchangedUniverse =
+    existingUniverseRows.length > 0 && isSameUniverseRows(existingUniverseRows, normalizedUniverseRows)
+  const persist = unchangedUniverse
+    ? { deactivated: 0, upserted: 0, skipped: true }
+    : {
+        ...(await marketUniverseRepo.replaceActiveUniverse(normalizedUniverseRows)),
+        skipped: false
+      }
   const quotaShortfallByCategory = buildCategoryNumberMap()
   const quotaOverflowByCategory = buildCategoryNumberMap()
   const quotaReallocationByCategory = buildCategoryNumberMap()
@@ -2843,8 +3048,10 @@ async function runPipeline(options = {}) {
 
 function shouldRefresh(force = false) {
   if (force) return true
-  if (sourceCatalogState.lastDiagnostics?.error) return true
   if (!sourceCatalogState.lastPreparedAt) return true
+  if (sourceCatalogState.lastDiagnostics?.error) {
+    return Date.now() - sourceCatalogState.lastPreparedAt >= SOURCE_CATALOG_ERROR_RETRY_MS
+  }
   return Date.now() - sourceCatalogState.lastPreparedAt >= SOURCE_CATALOG_REFRESH_MS
 }
 

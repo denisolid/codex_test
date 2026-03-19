@@ -118,6 +118,32 @@ function formatSupabaseError(error, fallbackMessage = "database_error") {
   return chunks.join(" | ")
 }
 
+function isMissingCoverageRpcError(error) {
+  if (!error) return false
+  const code = normalizeText(error?.code).toUpperCase()
+  const message = normalizeText(error?.message).toLowerCase()
+  return (
+    code === "PGRST202" ||
+    message.includes("could not find the function public.get_latest_market_quote_rows_by_item_names")
+  )
+}
+
+async function getCoverageRowsFallback(itemNames = [], lookbackIso = null, maxRows = 5000) {
+  const { data, error } = await supabaseAdmin
+    .from(TABLE)
+    .select("item_name, market, best_buy, best_sell, best_sell_net, volume_7d, fetched_at")
+    .in("item_name", itemNames)
+    .gte("fetched_at", lookbackIso)
+    .order("fetched_at", { ascending: false })
+    .limit(maxRows)
+
+  if (error) {
+    throw new AppError(formatSupabaseError(error, "market_quote_coverage_lookup_failed"), 500)
+  }
+
+  return Array.isArray(data) ? data : []
+}
+
 exports.insertRows = async (rows = []) => {
   const payload = normalizeRows(rows)
   if (!payload.length) return 0
@@ -143,21 +169,35 @@ exports.getLatestCoverageByItemNames = async (itemNames = [], options = {}) => {
   const maxRowsPerChunk = Math.max(Math.round(Number(options.maxRowsPerChunk || 5000)), 200)
   const lookbackIso = new Date(Date.now() - lookbackHours * 60 * 60 * 1000).toISOString()
   const latestByItemMarket = {}
+  let rpcAvailable = true
+
   for (let index = 0; index < safeNames.length; index += QUERY_BATCH_SIZE) {
     const chunk = safeNames.slice(index, index + QUERY_BATCH_SIZE)
-    const { data, error } = await supabaseAdmin
-      .from(TABLE)
-      .select("item_name, market, best_buy, best_sell, best_sell_net, volume_7d, fetched_at")
-      .in("item_name", chunk)
-      .gte("fetched_at", lookbackIso)
-      .order("fetched_at", { ascending: false })
-      .limit(maxRowsPerChunk)
+    let rows = []
 
-    if (error) {
-      throw new AppError(formatSupabaseError(error, "market_quote_coverage_lookup_failed"), 500)
+    if (rpcAvailable) {
+      const rpcResult = await supabaseAdmin.rpc("get_latest_market_quote_rows_by_item_names", {
+        p_item_names: chunk,
+        p_lookback: lookbackIso
+      })
+
+      if (!rpcResult.error) {
+        rows = Array.isArray(rpcResult.data) ? rpcResult.data : []
+      } else if (isMissingCoverageRpcError(rpcResult.error)) {
+        rpcAvailable = false
+      } else {
+        throw new AppError(
+          formatSupabaseError(rpcResult.error, "market_quote_coverage_lookup_failed"),
+          500
+        )
+      }
     }
 
-    for (const row of data || []) {
+    if (!rpcAvailable) {
+      rows = await getCoverageRowsFallback(chunk, lookbackIso, maxRowsPerChunk)
+    }
+
+    for (const row of rows) {
       const itemName = normalizeText(row?.item_name)
       const market = normalizeSource(row?.market)
       if (!itemName || !market) continue
