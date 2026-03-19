@@ -334,11 +334,16 @@ async function loadCatalogRows() {
 }
 
 function buildCompareInput(candidate = {}) {
+  const referencePrice = Number(candidate.referencePrice || 0)
+  const snapshotTs = candidate.quoteFetchedAt || candidate.snapshotCapturedAt || null
   return {
     marketHashName: candidate.marketHashName,
     itemCategory: candidate.category,
     itemSubcategory: candidate.itemSubcategory || null,
     quantity: 1,
+    steamPrice: Number.isFinite(referencePrice) && referencePrice > 0 ? referencePrice : 0,
+    steamCurrency: "USD",
+    steamRecordedAt: snapshotTs,
     volume7d: candidate.volume7d,
     marketCoverageCount: candidate.marketCoverageCount,
     marketVolume7d: candidate.volume7d,
