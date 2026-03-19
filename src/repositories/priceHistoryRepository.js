@@ -1,6 +1,7 @@
 const { supabaseAdmin } = require("../config/supabase");
 const { marketPriceFallbackToMock } = require("../config/env");
 const AppError = require("../utils/AppError");
+const LATEST_PRICE_LOOKUP_CHUNK_SIZE = 200;
 
 function applyPriceSourceFilter(query) {
   if (marketPriceFallbackToMock) {
@@ -25,6 +26,16 @@ function normalizeSkinIds(skinIds = []) {
         .filter((id) => Number.isInteger(id) && id > 0)
     )
   );
+}
+
+function chunkValues(values = [], chunkSize = LATEST_PRICE_LOOKUP_CHUNK_SIZE) {
+  const rows = Array.isArray(values) ? values : [];
+  const size = Math.max(Number(chunkSize || 0), 1);
+  const chunks = [];
+  for (let index = 0; index < rows.length; index += size) {
+    chunks.push(rows.slice(index, index + size));
+  }
+  return chunks;
 }
 
 function buildLatestBySkinMap(rows = [], toValue) {
@@ -60,39 +71,45 @@ async function getLatestRowsWithFallback(skinIds, options = {}) {
         ? String(options.beforeDate)
         : null;
 
-  const rpcPayload = {
-    p_skin_ids: safeIds,
-    p_before: beforeIso,
-    p_exclude_mock: !marketPriceFallbackToMock
-  };
+  const rows = [];
+  for (const chunk of chunkValues(safeIds)) {
+    const rpcPayload = {
+      p_skin_ids: chunk,
+      p_before: beforeIso,
+      p_exclude_mock: !marketPriceFallbackToMock
+    };
 
-  const rpcRes = await supabaseAdmin.rpc("get_latest_price_rows_by_skin_ids", rpcPayload);
-  if (!rpcRes.error) {
-    return rpcRes.data || [];
+    const rpcRes = await supabaseAdmin.rpc("get_latest_price_rows_by_skin_ids", rpcPayload);
+    if (!rpcRes.error) {
+      rows.push(...(rpcRes.data || []));
+      continue;
+    }
+
+    if (!isMissingRpcError(rpcRes.error)) {
+      throw new AppError(rpcRes.error.message, 500);
+    }
+
+    let query = supabaseAdmin
+      .from("price_history")
+      .select("skin_id, price, currency, source, recorded_at")
+      .in("skin_id", chunk);
+
+    if (beforeIso) {
+      query = query.lte("recorded_at", beforeIso);
+    }
+
+    const fallbackRes = await applyPriceSourceFilter(
+      query.order("recorded_at", { ascending: false })
+    );
+
+    if (fallbackRes.error) {
+      throw new AppError(fallbackRes.error.message, 500);
+    }
+
+    rows.push(...(fallbackRes.data || []));
   }
 
-  if (!isMissingRpcError(rpcRes.error)) {
-    throw new AppError(rpcRes.error.message, 500);
-  }
-
-  let query = supabaseAdmin
-    .from("price_history")
-    .select("skin_id, price, currency, source, recorded_at")
-    .in("skin_id", safeIds);
-
-  if (beforeIso) {
-    query = query.lte("recorded_at", beforeIso);
-  }
-
-  const fallbackRes = await applyPriceSourceFilter(
-    query.order("recorded_at", { ascending: false })
-  );
-
-  if (fallbackRes.error) {
-    throw new AppError(fallbackRes.error.message, 500);
-  }
-
-  return fallbackRes.data || [];
+  return rows;
 }
 
 exports.insertPriceRows = async (rows) => {
