@@ -291,3 +291,42 @@ exports.listRunningRuns = async (scannerType = "global_arbitrage", options = {})
 
   return Array.isArray(data) ? data : []
 }
+
+exports.deleteOlderThan = async (cutoffIso, options = {}) => {
+  const cutoff = String(cutoffIso || "").trim()
+  if (!cutoff) return 0
+
+  const excludeRunning = options.excludeRunning !== false
+  let countQuery = supabaseAdmin
+    .from(TABLE)
+    .select("id", { count: "exact", head: true })
+    .lt("started_at", cutoff)
+
+  if (excludeRunning) {
+    countQuery = countQuery.neq("status", "running")
+  }
+
+  const { count, error: countError } = await countQuery
+  if (countError) {
+    throw new AppError(countError.message, 500)
+  }
+
+  const estimated = Number(count || 0)
+  if (!estimated) return 0
+
+  let deleteQuery = supabaseAdmin
+    .from(TABLE)
+    .delete()
+    .lt("started_at", cutoff)
+
+  if (excludeRunning) {
+    deleteQuery = deleteQuery.neq("status", "running")
+  }
+
+  const { error } = await deleteQuery
+  if (error) {
+    throw new AppError(error.message, 500)
+  }
+
+  return estimated
+}

@@ -2,7 +2,7 @@ const inventoryRepo = require("../repositories/inventoryRepository");
 const priceRepo = require("../repositories/priceHistoryRepository");
 const txRepo = require("../repositories/transactionRepository");
 const { daysAgoStart, daysAgoEnd } = require("../utils/date");
-const { marketPriceStaleHours } = require("../config/env");
+const { marketPriceStaleHours, marketCompareTimeoutMs } = require("../config/env");
 const AppError = require("../utils/AppError");
 const { derivePriceStatus } = require("../utils/priceStatus");
 const { buildPortfolioAnalytics } = require("../utils/portfolioAnalytics");
@@ -21,6 +21,28 @@ const marketComparisonService = require("./marketComparisonService");
 
 function round2(n) {
   return Number((n || 0).toFixed(2));
+}
+
+function withTimeout(promise, timeoutMs) {
+  const safeTimeoutMs = Math.max(Number(timeoutMs || 0), 1000);
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new AppError("Portfolio compare timed out", 504)), safeTimeoutMs);
+    })
+  ]);
+}
+
+function resolveSettledValue(result, fallbackValue, context, options = {}) {
+  if (result?.status === "fulfilled") {
+    return result.value;
+  }
+  if (options.required) {
+    throw result?.reason || new AppError(`${context} failed`, 500);
+  }
+  const message = String(result?.reason?.message || result?.reason || "unknown_error");
+  console.warn(`[portfolio-service] ${context} degraded: ${message}`);
+  return fallbackValue;
 }
 
 function percentile(values = [], ratio = 0.5) {
@@ -99,16 +121,56 @@ exports.getPortfolio = async (userId, options = {}) => {
   const displayCurrency = resolveCurrency(options.currency);
   const planTier = planService.normalizePlanTier(options.planTier);
   const entitlements = options.entitlements || planService.getEntitlements(planTier);
-  const txPnlState = await txRepo.getPnlStateBySkin(userId);
+  const priceLookupTimeoutMs = Math.min(
+    Math.max(Number(marketCompareTimeoutMs || 7000), 2500),
+    4500
+  );
+  const degradationAlerts = [];
+  let txPnlState = {};
+  try {
+    txPnlState = await withTimeout(txRepo.getPnlStateBySkin(userId), priceLookupTimeoutMs);
+  } catch (err) {
+    console.warn(
+      `[portfolio-service] txPnlState degraded: ${String(err?.message || "unknown_error")}`
+    );
+    degradationAlerts.push({
+      severity: "info",
+      code: "PORTFOLIO_PARTIAL_DATA",
+      message: "Recent transaction PnL is temporarily unavailable."
+    });
+    txPnlState = {};
+  }
   const realizedProfit = Object.values(txPnlState).reduce(
     (sum, state) => sum + Number(state.realized || 0),
     0
   );
-  const holdings = await inventoryRepo.getUserHoldings(userId);
-  if (!holdings.length) {
-    const preference = await marketComparisonService.getUserPricePreference(userId, {
-      currency: displayCurrency
+  let holdings = [];
+  try {
+    holdings = await inventoryRepo.getUserHoldings(userId);
+  } catch (err) {
+    console.warn(
+      `[portfolio-service] holdings degraded: ${String(err?.message || "unknown_error")}`
+    );
+    degradationAlerts.push({
+      severity: "warning",
+      code: "PORTFOLIO_PARTIAL_DATA",
+      message: "Inventory lookup is temporarily unavailable. Retry in a moment."
     });
+    holdings = [];
+  }
+  if (!holdings.length) {
+    let preference = { pricingMode: marketComparisonService.DEFAULT_PRICING_MODE };
+    try {
+      preference = await marketComparisonService.getUserPricePreference(userId, {
+        currency: displayCurrency
+      });
+    } catch (err) {
+      console.warn(
+        `[portfolio-service] pricePreference degraded: ${String(
+          err?.message || "unknown_error"
+        )}`
+      );
+    }
     return {
       totalValue: 0,
       totalValueSteam: 0,
@@ -120,7 +182,7 @@ exports.getPortfolio = async (userId, options = {}) => {
       sevenDayChangePercent: null,
       unpricedItemsCount: 0,
       staleItemsCount: 0,
-      alerts: [],
+      alerts: degradationAlerts,
       analytics: buildPortfolioAnalytics([], 0),
       advancedAnalytics: entitlements.advancedAnalytics
         ? buildAdvancedAnalytics([], 0)
@@ -149,14 +211,46 @@ exports.getPortfolio = async (userId, options = {}) => {
   }
 
   const skinIds = holdings.map((h) => h.skin_id);
-  const latestRows = await priceRepo.getLatestPriceRowsBySkinIds(skinIds);
-  const prices7d = await priceRepo.getLatestPricesBeforeDate(skinIds, daysAgoStart(7));
-  const prices1d = await priceRepo.getLatestPricesBeforeDate(skinIds, daysAgoStart(1));
-  const recentHistoryRows = await priceRepo.getHistoryBySkinIdsSince(
-    skinIds,
-    daysAgoStart(45),
-    14000
+  const [latestRowsResult, prices7dResult, prices1dResult, recentHistoryRowsResult] =
+    await Promise.allSettled([
+      withTimeout(priceRepo.getLatestPriceRowsBySkinIds(skinIds), priceLookupTimeoutMs),
+      withTimeout(priceRepo.getLatestPricesBeforeDate(skinIds, daysAgoStart(7)), priceLookupTimeoutMs),
+      withTimeout(priceRepo.getLatestPricesBeforeDate(skinIds, daysAgoStart(1)), priceLookupTimeoutMs),
+      withTimeout(
+        priceRepo.getHistoryBySkinIdsSince(skinIds, daysAgoStart(45), 14000),
+        priceLookupTimeoutMs + 1500
+      )
+    ]);
+
+  const latestRows = resolveSettledValue(latestRowsResult, {}, "latestPriceRows");
+  const prices7d = resolveSettledValue(prices7dResult, {}, "prices7d");
+  const prices1d = resolveSettledValue(prices1dResult, {}, "prices1d");
+  const recentHistoryRows = resolveSettledValue(
+    recentHistoryRowsResult,
+    [],
+    "recentHistoryRows"
   );
+  if (latestRowsResult?.status !== "fulfilled") {
+    degradationAlerts.push({
+      severity: "warning",
+      code: "PORTFOLIO_PARTIAL_DATA",
+      message: "Live price lookup timed out. Some prices may be temporarily unavailable."
+    });
+  }
+  if (prices7dResult?.status !== "fulfilled" || prices1dResult?.status !== "fulfilled") {
+    degradationAlerts.push({
+      severity: "info",
+      code: "PORTFOLIO_PARTIAL_DATA",
+      message: "Historical reference prices are partially unavailable."
+    });
+  }
+  if (recentHistoryRowsResult?.status !== "fulfilled") {
+    degradationAlerts.push({
+      severity: "info",
+      code: "PORTFOLIO_PARTIAL_DATA",
+      message: "Volatility guidance is temporarily degraded."
+    });
+  }
   const dailyPricesBySkin = buildDailyClosePriceMap(recentHistoryRows);
 
   let totalValue = 0;
@@ -272,29 +366,32 @@ exports.getPortfolio = async (userId, options = {}) => {
     : null;
   let marketComparison = null;
   try {
-    marketComparison = await marketComparisonService.compareItems(
-      itemsWithGuidance.map((item) => ({
-        skinId: item.skinId,
-        marketHashName: item.marketHashName,
-        quantity: item.quantity,
-        steamPrice: item.currentPrice,
-        steamCurrency: "USD",
-        steamRecordedAt: item.currentPriceRecordedAt,
-        sevenDayChangePercent: item.sevenDayChangePercent,
-        liquiditySales:
-          item.marketVolume24h ??
-          item.marketVolume7d ??
-          item?.marketInsight?.sellSuggestion?.volume24h ??
-          item?.managementClue?.metrics?.liquidityScore,
-        liquidityScore: item?.managementClue?.metrics?.liquidityScore
-      })),
-      {
-        userId,
-        pricingMode: options.pricingMode,
-        currency: displayCurrency,
-        allowLiveFetch: false,
-        failWhenAllBlocked: false
-      }
+    marketComparison = await withTimeout(
+      marketComparisonService.compareItems(
+        itemsWithGuidance.map((item) => ({
+          skinId: item.skinId,
+          marketHashName: item.marketHashName,
+          quantity: item.quantity,
+          steamPrice: item.currentPrice,
+          steamCurrency: "USD",
+          steamRecordedAt: item.currentPriceRecordedAt,
+          sevenDayChangePercent: item.sevenDayChangePercent,
+          liquiditySales:
+            item.marketVolume24h ??
+            item.marketVolume7d ??
+            item?.marketInsight?.sellSuggestion?.volume24h ??
+            item?.managementClue?.metrics?.liquidityScore,
+          liquidityScore: item?.managementClue?.metrics?.liquidityScore
+        })),
+        {
+          userId,
+          pricingMode: options.pricingMode,
+          currency: displayCurrency,
+          allowLiveFetch: false,
+          failWhenAllBlocked: false
+        }
+      ),
+      Math.max(Number(marketCompareTimeoutMs || 7000), 3000)
     );
   } catch (_err) {
     marketComparison = null;
@@ -408,7 +505,7 @@ exports.getPortfolio = async (userId, options = {}) => {
     { hold: 0, watch: 0, sell: 0 }
   );
 
-  const alerts = [];
+  const alerts = [...degradationAlerts];
   if (unpricedCount > 0) {
     alerts.push({
       severity: "warning",
