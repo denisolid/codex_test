@@ -174,6 +174,49 @@ test("candidate selection cycles through full scannable pool before repeating un
   assert.equal(seen.size, 25)
 })
 
+test("candidate selection prioritizes tier_a then tier_b then non-priority", () => {
+  const nowIso = new Date().toISOString()
+  const catalogRows = [
+    {
+      ...buildCatalogRow(1, "weapon_skin"),
+      market_hash_name: "AK-47 | Redline (Field-Tested)",
+      priority_tier: "tier_b",
+      priority_boost: 220
+    },
+    {
+      ...buildCatalogRow(2, "weapon_skin"),
+      market_hash_name: "AWP | Dragon Lore (Field-Tested)",
+      priority_tier: "tier_a",
+      priority_boost: 380
+    },
+    {
+      ...buildCatalogRow(3, "weapon_skin"),
+      market_hash_name: "M4A4 | The Emperor (Field-Tested)",
+      priority_tier: null,
+      priority_boost: 0
+    }
+  ].map((row) => ({
+    ...row,
+    snapshot_captured_at: nowIso,
+    quote_fetched_at: nowIso
+  }))
+
+  const selection = selectScanCandidates({
+    catalogRows,
+    batchSize: 3,
+    cursor: 0,
+    lastScannedAtByName: new Map()
+  })
+
+  assert.equal(selection.selected.length, 3)
+  assert.equal(selection.selected[0].priorityTier, "tier_a")
+  assert.equal(selection.selected[1].priorityTier, "tier_b")
+  assert.equal(selection.selected[2].priorityTier, null)
+  assert.equal(Number(selection.diagnostics.selectedByPriorityTier.tier_a || 0), 1)
+  assert.equal(Number(selection.diagnostics.selectedByPriorityTier.tier_b || 0), 1)
+  assert.equal(Number(selection.diagnostics.selectedByPriorityTier.non_priority || 0), 1)
+})
+
 test("opportunity evaluation keeps missing-liquidity items scannable with downgraded tier", () => {
   const evaluation = evaluateCandidateOpportunity(
     {
