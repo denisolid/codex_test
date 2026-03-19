@@ -135,10 +135,13 @@ exports.insertRows = async (rows = []) => {
   return insertedCount
 }
 
-exports.getLatestCoverageByItemNames = async (itemNames = []) => {
+exports.getLatestCoverageByItemNames = async (itemNames = [], options = {}) => {
   const safeNames = normalizeItemNames(itemNames)
   if (!safeNames.length) return {}
 
+  const lookbackHours = Math.max(Math.round(Number(options.lookbackHours || 72)), 1)
+  const maxRowsPerChunk = Math.max(Math.round(Number(options.maxRowsPerChunk || 5000)), 200)
+  const lookbackIso = new Date(Date.now() - lookbackHours * 60 * 60 * 1000).toISOString()
   const latestByItemMarket = {}
   for (let index = 0; index < safeNames.length; index += QUERY_BATCH_SIZE) {
     const chunk = safeNames.slice(index, index + QUERY_BATCH_SIZE)
@@ -146,8 +149,9 @@ exports.getLatestCoverageByItemNames = async (itemNames = []) => {
       .from(TABLE)
       .select("item_name, market, best_buy, best_sell, best_sell_net, volume_7d, fetched_at")
       .in("item_name", chunk)
+      .gte("fetched_at", lookbackIso)
       .order("fetched_at", { ascending: false })
-      .limit(50000)
+      .limit(maxRowsPerChunk)
 
     if (error) {
       throw new AppError(formatSupabaseError(error, "market_quote_coverage_lookup_failed"), 500)

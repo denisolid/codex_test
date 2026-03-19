@@ -264,30 +264,68 @@ exports.markRowsInactiveByIds = async (ids = []) => {
   return Array.isArray(data) ? data.length : 0
 }
 
-exports.markInactiveOlderThan = async (cutoffIso) => {
+exports.markInactiveOlderThan = async (cutoffIso, options = {}) => {
   const cutoff = normalizeText(cutoffIso)
   if (!cutoff) return 0
 
-  const { data, error } = await supabaseAdmin
-    .from(TABLE)
-    .update({ is_active: false })
-    .eq("is_active", true)
-    .lt("detected_at", cutoff)
-    .select("id")
-
-  if (error) {
-    throw new AppError(error.message, 500)
-  }
-
-  return Array.isArray(data) ? data.length : 0
-}
-
-exports.markInactiveBeyondLimit = async (activeLimit = 500) => {
-  const limit = Math.max(Math.round(Number(activeLimit || 0)), 1)
-  const batchSize = 200
+  const batchSize = Math.max(Math.round(Number(options.batchSize || 200)), 1)
+  const maxRows = Math.max(Math.round(Number(options.maxRows || 1000)), batchSize)
   let totalMarked = 0
 
+  while (totalMarked < maxRows) {
+    const remaining = maxRows - totalMarked
+    const selectSize = Math.min(batchSize, remaining)
+    const { data: idRows, error: selectError } = await supabaseAdmin
+      .from(TABLE)
+      .select("id")
+      .eq("is_active", true)
+      .lt("detected_at", cutoff)
+      .order("detected_at", { ascending: true })
+      .limit(selectSize)
+
+    if (selectError) {
+      throw new AppError(selectError.message, 500)
+    }
+
+    const ids = (Array.isArray(idRows) ? idRows : [])
+      .map((row) => normalizeText(row?.id))
+      .filter(Boolean)
+    if (!ids.length) {
+      break
+    }
+
+    const { data: updatedRows, error: updateError } = await supabaseAdmin
+      .from(TABLE)
+      .update({ is_active: false })
+      .in("id", ids)
+      .eq("is_active", true)
+      .select("id")
+
+    if (updateError) {
+      throw new AppError(updateError.message, 500)
+    }
+
+    const affected = Array.isArray(updatedRows) ? updatedRows.length : 0
+    totalMarked += affected
+    if (affected < selectSize) {
+      break
+    }
+  }
+
+  return totalMarked
+}
+
+exports.markInactiveBeyondLimit = async (activeLimit = 500, options = {}) => {
+  const limit = Math.max(Math.round(Number(activeLimit || 0)), 1)
+  const batchSize = Math.max(Math.round(Number(options.batchSize || 200)), 1)
+  const maxBatches = Math.max(Math.round(Number(options.maxBatches || 4)), 1)
+  let totalMarked = 0
+  let batches = 0
+
   while (true) {
+    if (batches >= maxBatches) {
+      break
+    }
     const { data, error } = await supabaseAdmin
       .from(TABLE)
       .select("id")
@@ -318,6 +356,7 @@ exports.markInactiveBeyondLimit = async (activeLimit = 500) => {
     }
 
     totalMarked += Array.isArray(updatedRows) ? updatedRows.length : 0
+    batches += 1
   }
 
   return totalMarked
