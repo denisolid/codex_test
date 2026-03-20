@@ -8999,6 +8999,115 @@ function formatOpportunityLiveStatusLabel(value) {
   return "Degraded";
 }
 
+function normalizeOpportunityFeedVerdict(value, options = {}) {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (raw === "strong_buy" || raw === "strong") return "strong";
+  if (raw === "good_small_size" || raw === "good") return "good";
+  if (raw === "watch") return "watch";
+  if (raw === "risky" || raw === "skip") return "risky";
+
+  const score = Number(options?.score);
+  if (Number.isFinite(score)) {
+    if (score >= 84) return "strong";
+    if (score >= 70) return "good";
+    if (score >= 56) return "watch";
+    return "risky";
+  }
+  return "watch";
+}
+
+function formatOpportunityFeedVerdictLabel(value, options = {}) {
+  if (options?.lockedPreview) return "Locked";
+  const verdict = normalizeOpportunityFeedVerdict(value, options);
+  if (verdict === "strong") return "Strong";
+  if (verdict === "good") return "Good";
+  if (verdict === "watch") return "Watch";
+  return "Risky";
+}
+
+function scoreOpportunityRiskLabel(label) {
+  const text = String(label || "")
+    .trim()
+    .toLowerCase();
+  if (!text) return 0;
+  if (
+    /\brisky\b|\bdegraded\b|\bfail|\bfake\b|\bnon-positive\b|\bblocked\b|\breject/.test(
+      text,
+    )
+  ) {
+    return 4;
+  }
+  if (
+    /\bstale\b|\bold\b|\baging\b|\blimited\b|\bmissing\b|\blow\b|\bweak\b/.test(
+      text,
+    )
+  ) {
+    return 3;
+  }
+  if (
+    /\bwatch\b|\bvolatility\b|\bspread\b|\bcoverage\b|\bliquidity\b/.test(
+      text,
+    )
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
+function normalizeOpportunityRiskLabels(labels = []) {
+  const excluded = new Set([
+    "new",
+    "live",
+    "stale",
+    "degraded",
+    "locked",
+    "full access",
+    "strong",
+    "good",
+    "watch",
+    "risky",
+  ]);
+  const unique = [];
+  const seen = new Set();
+  (Array.isArray(labels) ? labels : []).forEach((value) => {
+    const label = String(value || "").trim();
+    if (!label) return;
+    const key = label.toLowerCase();
+    if (excluded.has(key) || seen.has(key)) return;
+    seen.add(key);
+    unique.push(label);
+  });
+  return unique.sort((a, b) => scoreOpportunityRiskLabel(b) - scoreOpportunityRiskLabel(a));
+}
+
+function formatOpportunityFreshnessSummary(options = {}) {
+  const liveStatus = normalizeOpportunityLiveStatus(options.liveStatus);
+  const signalAgeHours = Number(options.signalAgeHours);
+  const hasAge = Number.isFinite(signalAgeHours) && signalAgeHours >= 0;
+
+  if (liveStatus === "live") {
+    if (hasAge && signalAgeHours < 0.5) {
+      return "Fresh signal updated in the last 30 minutes";
+    }
+    if (hasAge && signalAgeHours < 2) {
+      return `Fresh signal updated ${formatNumber(signalAgeHours, 1)}h ago`;
+    }
+    if (hasAge) {
+      return `Live signal last updated ${formatNumber(signalAgeHours, 1)}h ago`;
+    }
+    return "Fresh live market signal";
+  }
+  if (liveStatus === "stale") {
+    if (hasAge) {
+      return `Aging signal from ${formatNumber(signalAgeHours, 1)}h ago`;
+    }
+    return "Aging signal; verify in Insight";
+  }
+  return "Signal quality degraded; review in Insight";
+}
+
 function formatArbitrageReasonLabel(reasonCode) {
   const key = String(reasonCode || "")
     .trim()
@@ -13032,7 +13141,7 @@ function renderMarketTab() {
                 row?.liquidityBand,
                 row?.volume7d ?? row?.liquiditySample ?? row?.liquidity,
               );
-              const baseBadges = buildOpportunityBadges(row, { max: 5 });
+              const baseBadges = buildOpportunityBadges(row, { max: 3 });
               const itemId = Number(row?.itemId || row?.skinId || 0);
               const marketHashName = String(row?.itemName || "").trim();
               const itemCategory = normalizeOpportunityCategory(
@@ -13699,7 +13808,7 @@ function renderGlobalOpportunitiesTab() {
                     row?.liquidityBand,
                     row?.volume7d ?? row?.liquidity,
                   );
-              const baseBadges = buildOpportunityBadges(row, { max: 5 });
+              const baseBadges = buildOpportunityBadges(row, { max: 12 });
               const itemId = Number(row?.itemId || 0);
               const marketHashName = String(row?.itemName || "").trim();
               const itemCategory = normalizeOpportunityCategory(
@@ -13785,35 +13894,27 @@ function renderGlobalOpportunitiesTab() {
               const signalAgeHoursRaw = Number(
                 row?.latestSignalAgeHours ?? row?.latest_signal_age_hours,
               );
-              const signalAgeLabel = Number.isFinite(signalAgeHoursRaw)
-                ? `${formatNumber(signalAgeHoursRaw, 2)}h`
-                : "-";
-              const refreshAttemptAt = String(
-                row?.lastRefreshAttemptAt || row?.last_refresh_attempt_at || "",
-              ).trim();
-              const refreshAttemptLabel = refreshAttemptAt
-                ? formatRelativeTime(refreshAttemptAt)
-                : "-";
+              const freshnessSummary = formatOpportunityFreshnessSummary({
+                liveStatus,
+                signalAgeHours: signalAgeHoursRaw,
+              });
               const scanLabel = row?.scanRunId
                 ? `Scan #${formatScanRunLabel(row.scanRunId)}`
                 : "";
-              const rawBadges = [
-                ...(row?.isNew ? ["NEW"] : []),
-                liveStatusLabel.toUpperCase(),
-                ...baseBadges,
-                ...(lockedPreview ? ["LOCKED", "FULL ACCESS"] : []),
-              ];
-              const maxVisibleBadges = 5;
-              const badgeOverflowCount = Math.max(
-                rawBadges.length - maxVisibleBadges,
+              const verdictKey = lockedPreview
+                ? "locked"
+                : normalizeOpportunityFeedVerdict(row?.verdict, { score });
+              const verdictLabel = formatOpportunityFeedVerdictLabel(row?.verdict, {
+                score,
+                lockedPreview,
+              });
+              const allRiskLabels = normalizeOpportunityRiskLabels(baseBadges);
+              const riskHighlights = allRiskLabels.slice(0, 2);
+              const hiddenRiskCount = Math.max(
+                allRiskLabels.length - riskHighlights.length,
                 0,
               );
-              const badges = badgeOverflowCount
-                ? [
-                    ...rawBadges.slice(0, Math.max(maxVisibleBadges - 1, 0)),
-                    `+${formatNumber(badgeOverflowCount, 0)}`,
-                  ]
-                : rawBadges;
+              const insightLabel = hiddenRiskCount > 0 ? `Insight +${hiddenRiskCount}` : "Insight";
               const fallbackImage =
                 itemCategory === "case" ? defaultCaseImage : defaultSkinImage;
               const buyUrl =
@@ -13865,20 +13966,27 @@ function renderGlobalOpportunitiesTab() {
               const scoreValueMarkup = lockedPreview
                 ? scoreValueLabel
                 : escapeHtml(scoreValueLabel);
+              const marketCoverageCount = Math.max(
+                Number(row?.marketCoverage || 0),
+                0,
+              );
               const liquiditySubline = lockedPreview
                 ? escapeHtml(String(row?.lockHint || "Premium high-value market category"))
                 : escapeHtml(
-                    `Cov ${formatNumber(row?.marketCoverage || 0, 0)} | Sig ${signalAgeLabel} | Ref ${refreshAttemptLabel}`,
+                    `Coverage across ${formatNumber(marketCoverageCount, 0)} markets. ${freshnessSummary}.`,
                   );
               const lockedMessage = String(
                 row?.lockMessage || "Unlock knife and glove opportunities with Full Access",
               ).trim();
+              const pathLabel = lockedPreview
+                ? "Locked route"
+                : `${buyMarketLabel} to ${sellMarketLabel}`;
               const sublineText = lockedPreview
                 ? `${row?.lockHint || "Premium high-value market category"}${scanLabel ? ` • ${scanLabel}` : ""}`
                 : `${detectedLabel}${scanLabel ? ` • ${scanLabel}` : ""} | ${liveStatusLabel}`;
 
               return `
-                <tr class="opportunity-table-row ${row?.isNew ? "opportunity-row-new" : ""} ${lockedPreview ? "opportunity-row-locked" : ""}" data-feed-id="${escapeHtml(feedId)}">
+                <tr class="opportunity-table-row opportunity-row-verdict-${escapeHtml(verdictKey)} ${row?.isNew ? "opportunity-row-new" : ""} ${lockedPreview ? "opportunity-row-locked" : ""}" data-feed-id="${escapeHtml(feedId)}">
                   <td>
                     <div class="opportunity-item-cell" style="--rarity-color: ${escapeHtml(mediaAccentColor)}; --rarity-rgb: ${escapeHtml(mediaAccentRgb)};">
                       <div class="opportunity-item-media">
@@ -13944,8 +14052,13 @@ function renderGlobalOpportunitiesTab() {
                     </button>
                   </td>
                   <td class="opportunity-metric-cell opportunity-metric-profit-cell">
-                    <strong class="opportunity-metric-value opportunity-profit-value ${lockedPreview ? "warning" : "positive"}">${profitLabel}</strong>
-                    <small>Net profit</small>
+                    <span class="opportunity-verdict-badge tone-${escapeHtml(
+                      verdictKey,
+                    )}">${escapeHtml(verdictLabel)}</span>
+                    <strong class="opportunity-metric-value opportunity-profit-value tone-${escapeHtml(
+                      verdictKey,
+                    )} ${lockedPreview ? "warning" : "positive"}">${profitLabel}</strong>
+                    <small class="opportunity-profit-path">${escapeHtml(pathLabel)}</small>
                   </td>
                   <td class="opportunity-metric-cell">
                     <strong class="opportunity-metric-value opportunity-spread-value">${spreadLabel}</strong>
@@ -13970,28 +14083,32 @@ function renderGlobalOpportunitiesTab() {
                     <small>${liquiditySubline}</small>
                   </td>
                   <td class="opportunity-badges-cell">
-                    ${
-                      badges.length
-                        ? `<div class="opportunity-badges">${badges
-                            .map(
-                              (badge) =>
-                                `<span class="opportunity-badge ${
-                                  String(badge).trim().toUpperCase() === "NEW"
-                                    ? "new"
-                                    : String(badge).trim().toUpperCase() === "LIVE"
-                                      ? "is-live"
-                                      : String(badge).trim().toUpperCase() === "STALE"
-                                        ? "is-stale"
-                                        : String(badge).trim().toUpperCase() === "DEGRADED"
-                                          ? "is-degraded"
-                                          : ""
-                                }">${escapeHtml(
-                                  badge,
-                                )}</span>`,
-                            )
-                            .join("")}</div>`
-                        : '<span class="muted">-</span>'
-                    }
+                    <div class="opportunity-signal-stack">
+                      <span class="opportunity-freshness-pill tone-${escapeHtml(
+                        liveStatus,
+                      )}">${escapeHtml(freshnessSummary)}</span>
+                      <div class="opportunity-badges">
+                        ${
+                          riskHighlights.length
+                            ? riskHighlights
+                                .map(
+                                  (badge) =>
+                                    `<span class="opportunity-badge is-risk">${escapeHtml(
+                                      badge,
+                                    )}</span>`,
+                                )
+                                .join("")
+                            : '<span class="opportunity-badge signal-clean">No major risk flags</span>'
+                        }
+                      </div>
+                      ${
+                        hiddenRiskCount > 0 && !lockedPreview
+                          ? `<small class="opportunity-signal-meta">+${escapeHtml(
+                              formatNumber(hiddenRiskCount, 0),
+                            )} more checks in Insight</small>`
+                          : ""
+                      }
+                    </div>
                   </td>
                   <td class="actions-cell">
                     ${
@@ -14013,7 +14130,7 @@ function renderGlobalOpportunitiesTab() {
                             data-opportunity-index="${escapeHtml(String(index))}"
                             ${feedId ? "" : "disabled"}
                           >
-                            Insight
+                            ${escapeHtml(insightLabel)}
                           </button>
                           <button
                             type="button"
