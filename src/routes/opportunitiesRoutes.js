@@ -47,5 +47,6 @@ router.post("/refresh", ctrl.refreshFeed);
 router.post("/trigger", ctrl.refreshFeed);
 
 router.get("/status", ctrl.getScannerStatus);
+router.get("/:opportunityId/insight", ctrl.getOpportunityInsight);
 
 module.exports = router;

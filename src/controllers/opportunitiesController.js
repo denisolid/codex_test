@@ -1,5 +1,6 @@
 const asyncHandler = require("../utils/asyncHandler")
 const scannerService = require("../services/arbitrageScannerService")
+const opportunityInsightService = require("../services/opportunityInsightService")
 
 function toOpportunityRow(row = {}) {
   const qualityScoreDisplay = row?.qualityScoreDisplay ?? row?.quality_score_display ?? null
@@ -144,4 +145,12 @@ exports.refreshFeedAdmin = asyncHandler(async (req, res) => {
 exports.getScannerStatus = asyncHandler(async (_req, res) => {
   const status = await scannerService.getStatus()
   res.json(status || {})
+})
+
+exports.getOpportunityInsight = asyncHandler(async (req, res) => {
+  const opportunityId = String(req.params?.opportunityId || "").trim()
+  const insight = await opportunityInsightService.getOpportunityInsight(opportunityId, {
+    forceRefresh: req.query?.force
+  })
+  res.json(insight)
 })
