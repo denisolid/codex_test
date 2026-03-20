@@ -80,6 +80,24 @@ function toOpportunityRow(row = {}) {
     refresh_status: row?.refresh_status || row?.refreshStatus || "pending",
     liveStatus: row?.liveStatus || row?.live_status || "degraded",
     live_status: row?.live_status || row?.liveStatus || "degraded",
+    skinportQuotePrice: row?.skinportQuotePrice ?? row?.skinport_quote_price ?? null,
+    skinport_quote_price: row?.skinport_quote_price ?? row?.skinportQuotePrice ?? null,
+    skinportQuoteCurrency: row?.skinportQuoteCurrency ?? row?.skinport_quote_currency ?? null,
+    skinport_quote_currency: row?.skinport_quote_currency ?? row?.skinportQuoteCurrency ?? null,
+    skinportQuoteObservedAt:
+      row?.skinportQuoteObservedAt || row?.skinport_quote_observed_at || null,
+    skinport_quote_observed_at:
+      row?.skinport_quote_observed_at || row?.skinportQuoteObservedAt || null,
+    skinportQuoteType: row?.skinportQuoteType || row?.skinport_quote_type || null,
+    skinport_quote_type: row?.skinport_quote_type || row?.skinportQuoteType || null,
+    skinportItemSlug: row?.skinportItemSlug || row?.skinport_item_slug || null,
+    skinport_item_slug: row?.skinport_item_slug || row?.skinportItemSlug || null,
+    skinportListingId: row?.skinportListingId || row?.skinport_listing_id || null,
+    skinport_listing_id: row?.skinport_listing_id || row?.skinportListingId || null,
+    skinportPriceIntegrityStatus:
+      row?.skinportPriceIntegrityStatus || row?.skinport_price_integrity_status || null,
+    skinport_price_integrity_status:
+      row?.skinport_price_integrity_status || row?.skinportPriceIntegrityStatus || null,
     verdict: row?.verdict || null,
     itemId: row?.itemId || null,
     buyUrl: row?.buyUrl || null,

@@ -382,6 +382,23 @@ function mapFeedRowToApiRow(row = {}) {
   const qualityScoreDisplay =
     toFiniteOrNull(metadata?.quality_score_display ?? metadata?.qualityScoreDisplay) ??
     buildDisplayQualityScore(rawScore)
+  const skinportQuotePrice =
+    toFiniteOrNull(row?.skinport_quote_price ?? metadata?.skinport_quote_price) ?? null
+  const skinportQuoteCurrency =
+    normalizeText(row?.skinport_quote_currency ?? metadata?.skinport_quote_currency).toUpperCase() ||
+    null
+  const skinportQuoteObservedAt =
+    toIsoOrNull(row?.skinport_quote_observed_at ?? metadata?.skinport_quote_observed_at) || null
+  const skinportQuoteType =
+    normalizeText(row?.skinport_quote_type ?? metadata?.skinport_quote_type).toLowerCase() || null
+  const skinportItemSlug =
+    normalizeText(row?.skinport_item_slug ?? metadata?.skinport_item_slug) || null
+  const skinportListingId =
+    normalizeText(row?.skinport_listing_id ?? metadata?.skinport_listing_id) || null
+  const skinportPriceIntegrityStatus =
+    normalizeText(
+      row?.skinport_price_integrity_status ?? metadata?.skinport_price_integrity_status
+    ).toLowerCase() || null
   return {
     feedId: row?.id || null,
     detectedAt,
@@ -560,6 +577,20 @@ function mapFeedRowToApiRow(row = {}) {
     live_status:
       normalizeText(row?.live_status || metadata?.publish_refresh?.live_status).toLowerCase() ||
       "degraded",
+    skinportQuotePrice,
+    skinport_quote_price: skinportQuotePrice,
+    skinportQuoteCurrency,
+    skinport_quote_currency: skinportQuoteCurrency,
+    skinportQuoteObservedAt,
+    skinport_quote_observed_at: skinportQuoteObservedAt,
+    skinportQuoteType,
+    skinport_quote_type: skinportQuoteType,
+    skinportItemSlug,
+    skinport_item_slug: skinportItemSlug,
+    skinportListingId,
+    skinport_listing_id: skinportListingId,
+    skinportPriceIntegrityStatus,
+    skinport_price_integrity_status: skinportPriceIntegrityStatus,
     flags: Array.isArray(metadata?.flags) ? metadata.flags : [],
     badges: Array.isArray(metadata?.badges) ? metadata.badges : [],
     diagnosticsDebug:

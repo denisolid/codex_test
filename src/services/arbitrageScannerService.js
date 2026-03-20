@@ -31,8 +31,6 @@ const {
   OPPORTUNITY_HARD_TIMEOUT_MS,
   OPPORTUNITY_SCAN_ALLOW_LIVE_FETCH,
   SCAN_TIMEOUT_PER_BATCH_MS,
-  FEED_RETENTION_HOURS,
-  FEED_ACTIVE_LIMIT,
   DUPLICATE_WINDOW_HOURS,
   INSERT_DUPLICATES,
   ALLOW_CROSS_JOB_PARALLELISM,
@@ -50,8 +48,10 @@ const {
 } = require("./scanner/feedPipeline")
 
 const MAX_API_LIMIT = 200
-const DEFAULT_API_LIMIT = 100
-const MAX_FEED_LIMIT = 500
+const FEED_PAGE_SIZE = 100
+const DEFAULT_API_LIMIT = FEED_PAGE_SIZE
+const MAX_FEED_LIMIT = FEED_PAGE_SIZE
+const FEED_WINDOW_HOURS = 24
 const DEFAULT_HISTORY_WINDOW_HOURS = 24
 const MAX_HISTORY_WINDOW_HOURS = 168
 const MANUAL_REFRESH_TRACKER_MAX = 4000
@@ -139,6 +139,23 @@ function normalizeHistoryHours(value, fallback = DEFAULT_HISTORY_WINDOW_HOURS) {
 function buildSinceIso(hours, nowMs = Date.now()) {
   const safeHours = normalizeHistoryHours(hours, DEFAULT_HISTORY_WINDOW_HOURS)
   return new Date(nowMs - safeHours * 60 * 60 * 1000).toISOString()
+}
+
+async function countFeedSafely(options = {}) {
+  try {
+    return {
+      count: await arbitrageFeedRepo.countFeed(options),
+      timedOut: false
+    }
+  } catch (err) {
+    if (isStatementTimeoutError(err)) {
+      return {
+        count: null,
+        timedOut: true
+      }
+    }
+    throw err
+  }
 }
 
 function normalizeCategoryFilter(value) {
@@ -345,9 +362,7 @@ function applyFeedPlanRestrictions(rows = [], entitlements = {}) {
       return visible
     })
   }
-  const beforeLimit = filtered.length
-  filtered = filtered.slice(0, visibleFeedLimit)
-  const hiddenByLimit = Math.max(beforeLimit - filtered.length, 0)
+  const hiddenByLimit = 0
   const premiumLock = premiumCategoryAccessService.applyPremiumPreviewLock(filtered, entitlements)
   return {
     rows: premiumLock.rows,
@@ -586,26 +601,17 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
     const inserted = await arbitrageFeedRepo.insertRows(insertRows)
     counters.insertedCount = Array.isArray(inserted) ? inserted.length : 0
   }
-  const cutoffIso = new Date(Date.now() - FEED_RETENTION_HOURS * 60 * 60 * 1000).toISOString()
+  const cutoffIso = new Date(Date.now() - FEED_WINDOW_HOURS * 60 * 60 * 1000).toISOString()
   const cleanupResults = await Promise.allSettled([
-    arbitrageFeedRepo.markInactiveOlderThan(cutoffIso, { batchSize: 120, maxRows: 600 }),
-    arbitrageFeedRepo.markInactiveBeyondLimit(FEED_ACTIVE_LIMIT, { batchSize: 120, maxBatches: 3 })
+    arbitrageFeedRepo.markInactiveOlderThan(cutoffIso, { batchSize: 120, maxRows: 600 })
   ])
   const olderResult = cleanupResults[0]
-  const beyondResult = cleanupResults[1]
   if (olderResult?.status === "fulfilled") {
     counters.cleanup.olderMarkedInactive = Number(olderResult.value || 0)
   } else if (olderResult?.status === "rejected") {
     const reason = olderResult.reason
     counters.cleanup.hadTimeout ||= isStatementTimeoutError(reason)
     counters.cleanup.errors.push(normalizeText(reason?.message) || "older_cleanup_failed")
-  }
-  if (beyondResult?.status === "fulfilled") {
-    counters.cleanup.beyondLimitMarkedInactive = Number(beyondResult.value || 0)
-  } else if (beyondResult?.status === "rejected") {
-    const reason = beyondResult.reason
-    counters.cleanup.hadTimeout ||= isStatementTimeoutError(reason)
-    counters.cleanup.errors.push(normalizeText(reason?.message) || "beyond_limit_cleanup_failed")
   }
   return counters
 }
@@ -1100,15 +1106,14 @@ async function getScannerStatusInternal() {
 exports.getFeed = async (options = {}) => {
   const planContext = await resolvePlanContext(options)
   const entitlements = planContext?.entitlements || planService.getEntitlements(planContext?.planTier)
-  const planConfig = planService.getPlanConfig(planContext?.planTier || entitlements?.planTier || "free")
   const advancedFiltersEnabled = planService.canUseAdvancedFilters(entitlements)
 
-  const requestedLimit = normalizeLimit(options.limit, DEFAULT_API_LIMIT, MAX_FEED_LIMIT)
-  const visibleFeedLimit = Math.max(Number(planConfig?.visibleFeedLimit || MAX_FEED_LIMIT), 1)
-  const limit = Math.min(requestedLimit, visibleFeedLimit)
+  const requestedLimit = normalizeLimit(options.limit, DEFAULT_API_LIMIT, MAX_API_LIMIT)
+  const limit = FEED_PAGE_SIZE
   const requestedPage = normalizePage(options.page, 1)
-  const requestedHistoryHours = normalizeHistoryHours(options.historyHours, DEFAULT_HISTORY_WINDOW_HOURS)
-  const historySinceIso = buildSinceIso(requestedHistoryHours)
+  const requestedHistoryHours = normalizeHistoryHours(options.historyHours, FEED_WINDOW_HOURS)
+  const historyWindowHours = FEED_WINDOW_HOURS
+  const historySinceIso = buildSinceIso(historyWindowHours)
 
   const requestedShowRisky =
     options.showRisky == null ? true : normalizeBoolean(options.showRisky)
@@ -1118,31 +1123,44 @@ exports.getFeed = async (options = {}) => {
   const includeOlder = advancedFiltersEnabled ? requestedIncludeOlder : false
   const categoryFilter = advancedFiltersEnabled ? requestedCategory : "all"
 
-  const [totalCount, activeCount, status] = await Promise.all([
-    arbitrageFeedRepo.countFeed({
-      includeInactive: includeOlder,
-      category: categoryFilter === "all" ? "" : categoryFilter,
-      minScore: 0,
-      excludeLowConfidence: false,
-      highConfidenceOnly: !showRisky,
-      sinceIso: historySinceIso
-    }),
-    arbitrageFeedRepo.countFeed({
-      includeInactive: false,
-      category: categoryFilter === "all" ? "" : categoryFilter,
-      minScore: 0,
-      excludeLowConfidence: false,
-      highConfidenceOnly: !showRisky,
-      sinceIso: historySinceIso
-    }),
-    getScannerStatusInternal()
+  const totalCountPromise = countFeedSafely({
+    includeInactive: includeOlder,
+    category: categoryFilter === "all" ? "" : categoryFilter,
+    minScore: 0,
+    excludeLowConfidence: false,
+    highConfidenceOnly: !showRisky,
+    sinceIso: historySinceIso
+  })
+  const activeCountPromise = includeOlder
+    ? countFeedSafely({
+        includeInactive: false,
+        category: categoryFilter === "all" ? "" : categoryFilter,
+        minScore: 0,
+        excludeLowConfidence: false,
+        highConfidenceOnly: !showRisky,
+        sinceIso: historySinceIso
+      })
+    : totalCountPromise
+
+  const [status, totalCountResult, activeCountResult] = await Promise.all([
+    getScannerStatusInternal(),
+    totalCountPromise,
+    activeCountPromise
   ])
-  const totalPages = Math.max(Math.ceil(Number(totalCount || 0) / limit), 1)
-  const page = Math.min(requestedPage, totalPages)
+
+  const knownTotalCount = Number.isFinite(Number(totalCountResult?.count))
+    ? Math.max(Number(totalCountResult.count), 0)
+    : null
+  const knownActiveCount = Number.isFinite(Number(activeCountResult?.count))
+    ? Math.max(Number(activeCountResult.count), 0)
+    : null
+  const knownTotalPages =
+    knownTotalCount == null ? null : Math.max(Math.ceil(knownTotalCount / limit), 1)
+  const page = knownTotalPages == null ? requestedPage : Math.min(requestedPage, knownTotalPages)
   const offset = (page - 1) * limit
 
-  const feedRows = await arbitrageFeedRepo.listFeed({
-    limit,
+  const rawFeedRows = await arbitrageFeedRepo.listFeed({
+    limit: knownTotalCount == null ? limit + 1 : limit,
     offset,
     includeInactive: includeOlder,
     category: categoryFilter === "all" ? "" : categoryFilter,
@@ -1151,6 +1169,27 @@ exports.getFeed = async (options = {}) => {
     highConfidenceOnly: !showRisky,
     sinceIso: historySinceIso
   })
+  const hasExtraRow = knownTotalCount == null && rawFeedRows.length > limit
+  const feedRows = hasExtraRow ? rawFeedRows.slice(0, limit) : rawFeedRows
+
+  const derivedTotalCount =
+    knownTotalCount == null
+      ? Math.max(offset + feedRows.length + (hasExtraRow ? 1 : 0), 0)
+      : knownTotalCount
+  const totalPages =
+    knownTotalPages == null ? Math.max(page + (hasExtraRow ? 1 : 0), 1) : knownTotalPages
+  const hasNextPage = knownTotalPages == null ? hasExtraRow : page < totalPages
+  const activeCount =
+    includeOlder
+      ? knownActiveCount == null
+        ? Number(status?.activeOpportunities || 0)
+        : knownActiveCount
+      : derivedTotalCount
+
+  const countDiagnostics = {
+    totalCountTimedOut: Boolean(totalCountResult?.timedOut),
+    activeCountTimedOut: Boolean(activeCountResult?.timedOut)
+  }
 
   let publishRefreshDiagnostics = {
     attempted: 0,
@@ -1190,7 +1229,7 @@ exports.getFeed = async (options = {}) => {
   const summary = {
     scannedItems: Number(diagnostics.scannedItems || latestCompleted?.items_scanned || 0),
     opportunities: mappedRows.length,
-    totalDetected: Number(totalCount || 0),
+    totalDetected: Number(derivedTotalCount || 0),
     activeOpportunities: Number(activeCount || 0),
     candidateItems: Number(diagnostics.candidatePoolSize || 0),
     discardedReasons: diagnostics.rejectedByReason || {},
@@ -1211,9 +1250,9 @@ exports.getFeed = async (options = {}) => {
     updatedOpportunities: Number(diagnostics?.persisted?.updatedCount || 0),
     reactivatedOpportunities: Number(diagnostics?.persisted?.reactivatedCount || 0),
     signalEventsAdded: Number(diagnostics?.persisted?.insertedCount || 0),
-    feedRetentionHours: FEED_RETENTION_HOURS,
-    feedActiveLimit: FEED_ACTIVE_LIMIT,
-    historyWindowHours: requestedHistoryHours,
+    feedRetentionHours: FEED_WINDOW_HOURS,
+    historyWindowHours,
+    countDiagnostics,
     publishRefresh: publishRefreshDiagnostics,
     plan: {
       planTier: planContext?.planTier || "free",
@@ -1221,7 +1260,8 @@ exports.getFeed = async (options = {}) => {
       appliedLimit: limit,
       requestedPage,
       appliedPage: page,
-      historyWindowHours: requestedHistoryHours,
+      requestedHistoryHours,
+      appliedHistoryHours: historyWindowHours,
       requestedShowRisky,
       appliedShowRisky: showRisky,
       requestedIncludeOlder,
@@ -1236,11 +1276,11 @@ exports.getFeed = async (options = {}) => {
   const pagination = {
     page,
     pageSize: limit,
-    totalCount: Number(totalCount || 0),
+    totalCount: Number(derivedTotalCount || 0),
     totalPages,
     hasPrevPage: page > 1,
-    hasNextPage: page < totalPages,
-    historyHours: requestedHistoryHours
+    hasNextPage,
+    historyHours: historyWindowHours
   }
 
   return {
@@ -1392,3 +1432,4 @@ exports.__testables = {
   SCAN_TIMEOUT_PER_BATCH_MS,
   SCAN_STATE
 }
+

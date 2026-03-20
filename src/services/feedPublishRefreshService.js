@@ -7,6 +7,8 @@ const { deriveInsightPayloadFromOpportunity } = require("./opportunityInsightSer
 const LIVE_MAX_SIGNAL_AGE_HOURS = 2
 const ANALYZABLE_MAX_SIGNAL_AGE_HOURS = 24
 const QUOTE_LOOKBACK_HOURS = 72
+const SKINPORT_QUOTE_TYPE_LIVE_EXECUTABLE = "live_executable"
+const SKINPORT_PRICE_INTEGRITY_CONFIRMED = "confirmed"
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -31,6 +33,13 @@ function normalizeBoolean(value, fallback = false) {
   const raw = normalizeText(value).toLowerCase()
   if (!raw) return fallback
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on"
+}
+
+function toJsonObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+  return value
 }
 
 function resolveLatestIso(values = []) {
@@ -67,6 +76,131 @@ function resolveNetSellFromQuote(quoteRow = {}, sellMarket = "", fallback = null
     return roundPrice(bestSell * (1 - fee / 100))
   }
   return toFiniteOrNull(fallback)
+}
+
+function readSkinportQuoteField(quoteRow = {}, keys = []) {
+  const qualityFlags = toJsonObject(quoteRow?.quality_flags || quoteRow?.qualityFlags)
+  for (const key of Array.isArray(keys) ? keys : []) {
+    const fromQualityFlags = normalizeText(qualityFlags?.[key])
+    if (fromQualityFlags) return fromQualityFlags
+    const fromRow = normalizeText(quoteRow?.[key])
+    if (fromRow) return fromRow
+  }
+  return ""
+}
+
+function deriveSkinportItemSlug(quoteRow = {}) {
+  const direct = readSkinportQuoteField(quoteRow, [
+    "skinport_item_slug",
+    "item_slug",
+    "itemSlug",
+    "slug"
+  ])
+  if (direct) return direct
+
+  const url = readSkinportQuoteField(quoteRow, [
+    "skinport_item_url",
+    "item_page",
+    "itemPage",
+    "listing_url",
+    "url"
+  ])
+  if (!url) return null
+
+  try {
+    const parsed = new URL(url)
+    const chunks = parsed.pathname.split("/").filter(Boolean)
+    const itemIdx = chunks.findIndex((part) => String(part).toLowerCase() === "item")
+    if (itemIdx >= 0 && chunks[itemIdx + 1]) {
+      return decodeURIComponent(chunks[itemIdx + 1])
+    }
+  } catch (_err) {
+    return null
+  }
+  return null
+}
+
+function buildSkinportValidation(mapped = {}, buyQuote = null, sellQuote = null) {
+  const buyMarket = normalizeText(mapped.buyMarket).toLowerCase()
+  const sellMarket = normalizeText(mapped.sellMarket).toLowerCase()
+  const side = buyMarket === "skinport" ? "buy" : sellMarket === "skinport" ? "sell" : null
+  if (!side) {
+    return {
+      applicable: false,
+      confirmed: true,
+      quotePrice: null,
+      quoteCurrency: null,
+      quoteObservedAt: null,
+      quoteType: null,
+      itemSlug: null,
+      listingId: null,
+      priceIntegrityStatus: null
+    }
+  }
+
+  const quoteRow = side === "buy" ? buyQuote : sellQuote
+  const quotePrice =
+    side === "buy"
+      ? toFiniteOrNull(quoteRow?.best_buy)
+      : toFiniteOrNull(quoteRow?.best_sell_net ?? quoteRow?.best_sell)
+  const quoteCurrency =
+    readSkinportQuoteField(quoteRow, [
+      "skinport_quote_currency",
+      "quote_currency",
+      "currency"
+    ]).toUpperCase() || null
+  const quoteObservedAt = toIsoOrNull(
+    readSkinportQuoteField(quoteRow, [
+      "skinport_quote_observed_at",
+      "quote_observed_at",
+      "quoteObservedAt"
+    ]) ||
+      quoteRow?.fetched_at ||
+      quoteRow?.fetchedAt
+  )
+  const quoteType =
+    normalizeText(
+      readSkinportQuoteField(quoteRow, [
+        "skinport_quote_type",
+        "quote_type",
+        "quoteType"
+      ])
+    ).toLowerCase() || null
+  const listingId =
+    readSkinportQuoteField(quoteRow, [
+      "skinport_listing_id",
+      "listing_id",
+      "listingId",
+      "id"
+    ]) || null
+  const itemSlug = deriveSkinportItemSlug(quoteRow)
+  const priceIntegrityStatus =
+    normalizeText(
+      readSkinportQuoteField(quoteRow, [
+        "skinport_price_integrity_status",
+        "price_integrity_status",
+        "priceIntegrityStatus"
+      ])
+    ).toLowerCase() || "unconfirmed"
+  const hasExecutablePrice = quotePrice != null && quotePrice > 0
+  const confirmed =
+    hasExecutablePrice &&
+    quoteObservedAt != null &&
+    quoteType === SKINPORT_QUOTE_TYPE_LIVE_EXECUTABLE &&
+    priceIntegrityStatus === SKINPORT_PRICE_INTEGRITY_CONFIRMED
+
+  return {
+    applicable: true,
+    side,
+    confirmed,
+    quotePrice: quotePrice == null ? null : roundPrice(quotePrice),
+    quoteCurrency,
+    quoteObservedAt,
+    quoteType,
+    itemSlug,
+    listingId,
+    priceIntegrityStatus
+  }
 }
 
 function resolveRefreshOutcome({
@@ -127,26 +261,49 @@ function buildRefreshedOpportunityRow(rawRow = {}, quoteRowsByItem = {}, options
   const sellMarket = normalizeText(mapped.sellMarket).toLowerCase()
   const buyQuote = itemQuotes?.[buyMarket] || null
   const sellQuote = itemQuotes?.[sellMarket] || null
+  const skinportValidation = buildSkinportValidation(mapped, buyQuote, sellQuote)
 
-  const buyPriceRefreshed =
+  const buyPriceFromQuote =
     toFiniteOrNull(buyQuote?.best_buy) != null && Number(buyQuote.best_buy) > 0
       ? roundPrice(Number(buyQuote.best_buy))
-      : toFiniteOrNull(mapped.buyPrice)
-  const sellNetRefreshed = resolveNetSellFromQuote(
-    sellQuote,
-    sellMarket,
-    mapped.sellNet
-  )
-  const netProfitAfterFees =
+      : null
+  const buyPriceRefreshed =
+    buyMarket === "skinport"
+      ? skinportValidation.confirmed
+        ? buyPriceFromQuote
+        : null
+      : buyPriceFromQuote != null
+        ? buyPriceFromQuote
+        : toFiniteOrNull(mapped.buyPrice)
+
+  const sellNetFromQuote = resolveNetSellFromQuote(sellQuote, sellMarket, null)
+  const sellNetRefreshed =
+    sellMarket === "skinport"
+      ? skinportValidation.confirmed
+        ? sellNetFromQuote
+        : null
+      : sellNetFromQuote != null
+        ? sellNetFromQuote
+        : toFiniteOrNull(mapped.sellNet)
+
+  let netProfitAfterFees =
     buyPriceRefreshed != null && sellNetRefreshed != null
       ? roundPrice(sellNetRefreshed - buyPriceRefreshed)
       : toFiniteOrNull(mapped.profit)
-  const spreadPct =
+  if (skinportValidation.applicable && !skinportValidation.confirmed) {
+    netProfitAfterFees = null
+  }
+
+  let spreadPct =
     buyPriceRefreshed != null &&
     buyPriceRefreshed > 0 &&
     netProfitAfterFees != null
       ? round2((netProfitAfterFees / buyPriceRefreshed) * 100)
       : toFiniteOrNull(mapped.spread)
+  if (skinportValidation.applicable && !skinportValidation.confirmed) {
+    spreadPct = null
+  }
+
   const marketSignalObservedAt = resolveLatestIso([
     buyQuote?.fetched_at,
     sellQuote?.fetched_at,
@@ -192,6 +349,13 @@ function buildRefreshedOpportunityRow(rawRow = {}, quoteRowsByItem = {}, options
     latest_market_signal_at: marketSignalObservedAt || metadata?.latest_market_signal_at || null,
     latest_quote_at: marketSignalObservedAt || metadata?.latest_quote_at || null,
     volume_7d: volume7d == null ? metadata?.volume_7d || null : round2(volume7d),
+    skinport_quote_price: skinportValidation.quotePrice,
+    skinport_quote_currency: skinportValidation.quoteCurrency,
+    skinport_quote_observed_at: skinportValidation.quoteObservedAt,
+    skinport_quote_type: skinportValidation.quoteType,
+    skinport_item_slug: skinportValidation.itemSlug,
+    skinport_listing_id: skinportValidation.listingId,
+    skinport_price_integrity_status: skinportValidation.priceIntegrityStatus,
     publish_refresh: {
       refreshed_at: nowIso,
       refresh_status: outcome.refreshStatus,
@@ -239,6 +403,20 @@ function buildRefreshedOpportunityRow(rawRow = {}, quoteRowsByItem = {}, options
     refreshStatus: outcome.refreshStatus,
     liveStatus: outcome.liveStatus,
     admission: outcome.admission,
+    skinportQuotePrice: skinportValidation.quotePrice,
+    skinport_quote_price: skinportValidation.quotePrice,
+    skinportQuoteCurrency: skinportValidation.quoteCurrency,
+    skinport_quote_currency: skinportValidation.quoteCurrency,
+    skinportQuoteObservedAt: skinportValidation.quoteObservedAt,
+    skinport_quote_observed_at: skinportValidation.quoteObservedAt,
+    skinportQuoteType: skinportValidation.quoteType,
+    skinport_quote_type: skinportValidation.quoteType,
+    skinportItemSlug: skinportValidation.itemSlug,
+    skinport_item_slug: skinportValidation.itemSlug,
+    skinportListingId: skinportValidation.listingId,
+    skinport_listing_id: skinportValidation.listingId,
+    skinportPriceIntegrityStatus: skinportValidation.priceIntegrityStatus,
+    skinport_price_integrity_status: skinportValidation.priceIntegrityStatus,
     reasonSummary: insight?.reason_summary || null,
     whyThisTradeExists: insight?.why_this_trade_exists || null,
     whatCanBreakIt: insight?.what_can_break_it || null,
@@ -274,12 +452,43 @@ function shouldAdmitToFeed(row = {}, options = {}) {
   const includeRisky = normalizeBoolean(options.includeRisky, false)
   const refreshStatus = normalizeStatus(row.refreshStatus || row.refresh_status, "degraded")
   const liveStatus = normalizeStatus(row.liveStatus || row.live_status, "degraded")
+  const buyMarket = normalizeText(row.buyMarket || row.buy_market).toLowerCase()
+  const sellMarket = normalizeText(row.sellMarket || row.sell_market).toLowerCase()
+  const skinportApplicable = buyMarket === "skinport" || sellMarket === "skinport"
+  const skinportQuoteType = normalizeText(
+    row.skinportQuoteType ?? row.skinport_quote_type
+  ).toLowerCase()
+  const skinportIntegrityStatus = normalizeText(
+    row.skinportPriceIntegrityStatus ?? row.skinport_price_integrity_status
+  ).toLowerCase()
   const ageHours =
     toFiniteOrNull(row.latestSignalAgeHours ?? row.latest_signal_age_hours) ?? null
   const analyzable =
     (toFiniteOrNull(row.netProfitAfterFees ?? row.net_profit_after_fees ?? row.profit) || 0) > 0 &&
     ageHours != null &&
     ageHours <= ANALYZABLE_MAX_SIGNAL_AGE_HOURS
+
+  if (skinportApplicable) {
+    const skinportQuoteObservedAt = toIsoOrNull(
+      row.skinportQuoteObservedAt ?? row.skinport_quote_observed_at
+    )
+    const skinportQuoteAgeHours = computeAgeHours(skinportQuoteObservedAt)
+    const isLiveSkinport =
+      liveStatus === "live" &&
+      refreshStatus === "ok" &&
+      ageHours != null &&
+      ageHours <= LIVE_MAX_SIGNAL_AGE_HOURS &&
+      skinportQuoteAgeHours != null &&
+      skinportQuoteAgeHours <= LIVE_MAX_SIGNAL_AGE_HOURS
+    if (
+      skinportQuoteType !== SKINPORT_QUOTE_TYPE_LIVE_EXECUTABLE ||
+      skinportIntegrityStatus !== SKINPORT_PRICE_INTEGRITY_CONFIRMED ||
+      !isLiveSkinport
+    ) {
+      return false
+    }
+    return true
+  }
 
   if (
     liveStatus === "live" &&
@@ -323,6 +532,18 @@ async function refreshForFeedPublish(feedRows = [], options = {}) {
         .filter(Boolean)
     )
   )
+  const skinportItemNames = Array.from(
+    new Set(
+      mapped
+        .filter((row) => {
+          const buyMarket = normalizeText(row.buyMarket || row.buy_market).toLowerCase()
+          const sellMarket = normalizeText(row.sellMarket || row.sell_market).toLowerCase()
+          return buyMarket === "skinport" || sellMarket === "skinport"
+        })
+        .map((row) => normalizeText(row.marketHashName || row.itemName))
+        .filter(Boolean)
+    )
+  )
 
   let quoteRowsByItem = {}
   try {
@@ -331,6 +552,29 @@ async function refreshForFeedPublish(feedRows = [], options = {}) {
     })
   } catch (_err) {
     quoteRowsByItem = {}
+  }
+  if (skinportItemNames.length) {
+    try {
+      const skinportRowsByItem = await marketQuoteRepo.getLatestRowsByItemNames(
+        skinportItemNames,
+        {
+          lookbackHours: Number(options.lookbackHours || QUOTE_LOOKBACK_HOURS),
+          markets: ["skinport"],
+          includeQualityFlags: true,
+          useRpc: false
+        }
+      )
+      for (const [itemName, marketRows] of Object.entries(skinportRowsByItem || {})) {
+        if (!quoteRowsByItem[itemName]) {
+          quoteRowsByItem[itemName] = {}
+        }
+        if (marketRows?.skinport) {
+          quoteRowsByItem[itemName].skinport = marketRows.skinport
+        }
+      }
+    } catch (_err) {
+      // Fall back to the base quote map when quality-flag refresh fails.
+    }
   }
 
   const refreshedRows = rows.map((row) =>
@@ -389,6 +633,7 @@ exports.runFeedPublishRefreshJob = refreshForFeedPublish
 exports.__testables = {
   computeAgeHours,
   resolveRefreshOutcome,
+  buildSkinportValidation,
   shouldAdmitToFeed,
   buildRefreshedOpportunityRow
 }

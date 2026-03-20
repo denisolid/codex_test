@@ -4,8 +4,10 @@ const AppError = require("../utils/AppError")
 const TABLE = "arbitrage_feed"
 const MAX_LIMIT = 1000
 const INSERT_BATCH_SIZE = 200
+const FEED_TIME_COLUMN_PRIMARY = "created_at"
+const FEED_TIME_COLUMN_FALLBACK = "detected_at"
 const FEED_SELECT_FIELDS_BASE =
-  "id, item_name, market_hash_name, category, buy_market, buy_price, sell_market, sell_net, profit, spread_pct, opportunity_score, execution_confidence, quality_grade, liquidity_label, detected_at, discovered_at, market_signal_observed_at, feed_published_at, insight_refreshed_at, last_refresh_attempt_at, latest_signal_age_hours, net_profit_after_fees, confidence_score, freshness_score, verdict, refresh_status, live_status, scan_run_id, is_active, is_duplicate, metadata"
+  "id, item_name, market_hash_name, category, buy_market, buy_price, sell_market, sell_net, profit, spread_pct, opportunity_score, execution_confidence, quality_grade, liquidity_label, created_at, detected_at, discovered_at, market_signal_observed_at, feed_published_at, insight_refreshed_at, last_refresh_attempt_at, latest_signal_age_hours, net_profit_after_fees, confidence_score, freshness_score, verdict, refresh_status, live_status, scan_run_id, is_active, is_duplicate, metadata"
 const FEED_SELECT_FIELDS_LEGACY =
   "id, item_name, market_hash_name, category, buy_market, buy_price, sell_market, sell_net, profit, spread_pct, opportunity_score, execution_confidence, quality_grade, liquidity_label, detected_at, scan_run_id, is_active, is_duplicate, metadata"
 
@@ -103,6 +105,17 @@ async function runFeedSelectWithFallback(queryBuilder) {
     return queryBuilder(FEED_SELECT_FIELDS_LEGACY)
   }
   return first
+}
+
+async function runFeedQueryWithTimeColumn(queryBuilder) {
+  const primary = await queryBuilder(FEED_TIME_COLUMN_PRIMARY)
+  if (!primary?.error) {
+    return primary
+  }
+  if (isMissingColumnError(primary.error)) {
+    return queryBuilder(FEED_TIME_COLUMN_FALLBACK)
+  }
+  return primary
 }
 
 function normalizeRows(rows = []) {
@@ -244,34 +257,36 @@ exports.listFeed = async (options = {}) => {
   const excludeLowConfidence = Boolean(options.excludeLowConfidence)
   const highConfidenceOnly = Boolean(options.highConfidenceOnly)
 
-  const { data, error } = await runFeedSelectWithFallback((selectFields) => {
-    let query = supabaseAdmin
-      .from(TABLE)
-      .select(selectFields)
-      .order("detected_at", { ascending: false })
-      .order("id", { ascending: false })
-      .range(offset, offset + limit - 1)
+  const { data, error } = await runFeedQueryWithTimeColumn((timeColumn) =>
+    runFeedSelectWithFallback((selectFields) => {
+      let query = supabaseAdmin
+        .from(TABLE)
+        .select(selectFields)
+        .order(timeColumn, { ascending: false })
+        .order("id", { ascending: false })
+        .range(offset, offset + limit - 1)
 
-    if (!includeInactive) {
-      query = query.eq("is_active", true)
-    }
-    if (sinceIso) {
-      query = query.gte("detected_at", sinceIso)
-    }
-    if (category) {
-      query = query.eq("category", category)
-    }
-    if (minScore != null) {
-      query = query.gte("opportunity_score", minScore)
-    }
-    if (excludeLowConfidence) {
-      query = query.neq("execution_confidence", "Low")
-    }
-    if (highConfidenceOnly) {
-      query = query.contains("metadata", { is_high_confidence_eligible: true })
-    }
-    return query
-  })
+      if (!includeInactive) {
+        query = query.eq("is_active", true)
+      }
+      if (sinceIso) {
+        query = query.gte(timeColumn, sinceIso)
+      }
+      if (category) {
+        query = query.eq("category", category)
+      }
+      if (minScore != null) {
+        query = query.gte("opportunity_score", minScore)
+      }
+      if (excludeLowConfidence) {
+        query = query.neq("execution_confidence", "Low")
+      }
+      if (highConfidenceOnly) {
+        query = query.contains("metadata", { is_high_confidence_eligible: true })
+      }
+      return query
+    })
+  )
 
   if (error) {
     throw new AppError(error.message, 500)
@@ -307,27 +322,28 @@ exports.countFeed = async (options = {}) => {
   const excludeLowConfidence = Boolean(options.excludeLowConfidence)
   const highConfidenceOnly = Boolean(options.highConfidenceOnly)
 
-  let query = supabaseAdmin.from(TABLE).select("id", { count: "exact", head: true })
-  if (!includeInactive) {
-    query = query.eq("is_active", true)
-  }
-  if (sinceIso) {
-    query = query.gte("detected_at", sinceIso)
-  }
-  if (category) {
-    query = query.eq("category", category)
-  }
-  if (minScore != null) {
-    query = query.gte("opportunity_score", minScore)
-  }
-  if (excludeLowConfidence) {
-    query = query.neq("execution_confidence", "Low")
-  }
-  if (highConfidenceOnly) {
-    query = query.contains("metadata", { is_high_confidence_eligible: true })
-  }
-
-  const { count, error } = await query
+  const { count, error } = await runFeedQueryWithTimeColumn((timeColumn) => {
+    let query = supabaseAdmin.from(TABLE).select("id", { count: "exact", head: true })
+    if (!includeInactive) {
+      query = query.eq("is_active", true)
+    }
+    if (sinceIso) {
+      query = query.gte(timeColumn, sinceIso)
+    }
+    if (category) {
+      query = query.eq("category", category)
+    }
+    if (minScore != null) {
+      query = query.gte("opportunity_score", minScore)
+    }
+    if (excludeLowConfidence) {
+      query = query.neq("execution_confidence", "Low")
+    }
+    if (highConfidenceOnly) {
+      query = query.contains("metadata", { is_high_confidence_eligible: true })
+    }
+    return query
+  })
 
   if (error) {
     throw new AppError(error.message, 500)
@@ -405,13 +421,16 @@ exports.markInactiveOlderThan = async (cutoffIso, options = {}) => {
   while (totalMarked < maxRows) {
     const remaining = maxRows - totalMarked
     const selectSize = Math.min(batchSize, remaining)
-    const { data: idRows, error: selectError } = await supabaseAdmin
-      .from(TABLE)
-      .select("id")
-      .eq("is_active", true)
-      .lt("detected_at", cutoff)
-      .order("detected_at", { ascending: true })
-      .limit(selectSize)
+    const { data: idRows, error: selectError } = await runFeedQueryWithTimeColumn(
+      (timeColumn) =>
+        supabaseAdmin
+          .from(TABLE)
+          .select("id")
+          .eq("is_active", true)
+          .lt(timeColumn, cutoff)
+          .order(timeColumn, { ascending: true })
+          .limit(selectSize)
+    )
 
     if (selectError) {
       throw new AppError(selectError.message, 500)
