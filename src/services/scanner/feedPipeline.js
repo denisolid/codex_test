@@ -376,6 +376,7 @@ function buildFeedInsertRow(opportunity = {}, options = {}) {
 function mapFeedRowToApiRow(row = {}) {
   const metadata = row?.metadata && typeof row.metadata === "object" ? row.metadata : {}
   const detectedAt = row?.detected_at || null
+  const discoveredAt = row?.discovered_at || detectedAt || null
   const tier = normalizeText(metadata?.opportunity_tier).toLowerCase()
   const rawScore = toFiniteOrNull(row?.opportunity_score)
   const qualityScoreDisplay =
@@ -384,6 +385,8 @@ function mapFeedRowToApiRow(row = {}) {
   return {
     feedId: row?.id || null,
     detectedAt,
+    discoveredAt,
+    discovered_at: discoveredAt,
     scanRunId: row?.scan_run_id || null,
     isActive: row?.is_active == null ? true : Boolean(row.is_active),
     isDuplicate: Boolean(row?.is_duplicate),
@@ -423,12 +426,14 @@ function mapFeedRowToApiRow(row = {}) {
     referencePrice: toFiniteOrNull(metadata?.reference_price),
     latestMarketSignalAt:
       toIsoOrNull(
+        row?.market_signal_observed_at ??
         metadata?.latest_market_signal_at ??
           metadata?.latestMarketSignalAt ??
           metadata?.diagnostics_debug?.latest_market_signal_at
       ) || null,
     latest_market_signal_at:
       toIsoOrNull(
+        row?.market_signal_observed_at ??
         metadata?.latest_market_signal_at ??
           metadata?.latestMarketSignalAt ??
           metadata?.diagnostics_debug?.latest_market_signal_at
@@ -497,6 +502,64 @@ function mapFeedRowToApiRow(row = {}) {
           metadata?.staleReasonSource ??
           metadata?.diagnostics_debug?.stale_reason_source
       ) || null,
+    marketSignalObservedAt:
+      toIsoOrNull(
+        row?.market_signal_observed_at ??
+          metadata?.latest_market_signal_at ??
+          metadata?.latestMarketSignalAt
+      ) || null,
+    market_signal_observed_at:
+      toIsoOrNull(
+        row?.market_signal_observed_at ??
+          metadata?.latest_market_signal_at ??
+          metadata?.latestMarketSignalAt
+      ) || null,
+    feedPublishedAt: toIsoOrNull(row?.feed_published_at) || null,
+    feed_published_at: toIsoOrNull(row?.feed_published_at) || null,
+    insightRefreshedAt: toIsoOrNull(row?.insight_refreshed_at) || null,
+    insight_refreshed_at: toIsoOrNull(row?.insight_refreshed_at) || null,
+    lastRefreshAttemptAt: toIsoOrNull(row?.last_refresh_attempt_at) || null,
+    last_refresh_attempt_at: toIsoOrNull(row?.last_refresh_attempt_at) || null,
+    latestSignalAgeHours:
+      toFiniteOrNull(row?.latest_signal_age_hours ?? metadata?.publish_refresh?.latest_signal_age_hours) ??
+      null,
+    latest_signal_age_hours:
+      toFiniteOrNull(row?.latest_signal_age_hours ?? metadata?.publish_refresh?.latest_signal_age_hours) ??
+      null,
+    netProfitAfterFees:
+      toFiniteOrNull(row?.net_profit_after_fees) ?? toFiniteOrNull(row?.profit),
+    net_profit_after_fees:
+      toFiniteOrNull(row?.net_profit_after_fees) ?? toFiniteOrNull(row?.profit),
+    confidenceScore:
+      toFiniteOrNull(row?.confidence_score) != null
+        ? clampScore(row?.confidence_score)
+        : null,
+    confidence_score:
+      toFiniteOrNull(row?.confidence_score) != null
+        ? clampScore(row?.confidence_score)
+        : null,
+    freshnessScore:
+      toFiniteOrNull(row?.freshness_score) != null
+        ? clampScore(row?.freshness_score)
+        : null,
+    freshness_score:
+      toFiniteOrNull(row?.freshness_score) != null
+        ? clampScore(row?.freshness_score)
+        : null,
+    verdict:
+      normalizeText(row?.verdict || metadata?.publish_refresh?.verdict).toLowerCase() || null,
+    refreshStatus:
+      normalizeText(row?.refresh_status || metadata?.publish_refresh?.refresh_status).toLowerCase() ||
+      "pending",
+    refresh_status:
+      normalizeText(row?.refresh_status || metadata?.publish_refresh?.refresh_status).toLowerCase() ||
+      "pending",
+    liveStatus:
+      normalizeText(row?.live_status || metadata?.publish_refresh?.live_status).toLowerCase() ||
+      "degraded",
+    live_status:
+      normalizeText(row?.live_status || metadata?.publish_refresh?.live_status).toLowerCase() ||
+      "degraded",
     flags: Array.isArray(metadata?.flags) ? metadata.flags : [],
     badges: Array.isArray(metadata?.badges) ? metadata.badges : [],
     diagnosticsDebug:

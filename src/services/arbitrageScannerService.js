@@ -6,6 +6,7 @@ const scannerRunRepo = require("../repositories/scannerRunRepository")
 const marketComparisonService = require("./marketComparisonService")
 const marketSourceCatalogService = require("./marketSourceCatalogService")
 const marketImageService = require("./marketImageService")
+const feedPublishRefreshService = require("./feedPublishRefreshService")
 const planService = require("./planService")
 const premiumCategoryAccessService = require("./premiumCategoryAccessService")
 const {
@@ -1151,7 +1152,35 @@ exports.getFeed = async (options = {}) => {
     sinceIso: historySinceIso
   })
 
-  let mappedRows = (feedRows || []).map((row) => mapFeedRowToApiRow(row))
+  let publishRefreshDiagnostics = {
+    attempted: 0,
+    refreshed: 0,
+    admitted: 0,
+    live: 0,
+    stale: 0,
+    degraded: 0,
+    suppressed: 0,
+    quoteRowsFound: 0
+  }
+  let mappedRows = []
+  try {
+    const refreshed = await feedPublishRefreshService.refreshForFeedPublish(feedRows, {
+      includeRisky: showRisky,
+      persist: true
+    })
+    publishRefreshDiagnostics =
+      refreshed?.diagnostics && typeof refreshed.diagnostics === "object"
+        ? refreshed.diagnostics
+        : publishRefreshDiagnostics
+    mappedRows = Array.isArray(refreshed?.rows) ? refreshed.rows : []
+  } catch (_err) {
+    mappedRows = (feedRows || []).map((row) => ({
+      ...mapFeedRowToApiRow(row),
+      refreshStatus: "failed",
+      liveStatus: "degraded"
+    }))
+  }
+
   mappedRows = await enrichRowsWithSkinMetadata(mappedRows)
   const restricted = applyFeedPlanRestrictions(mappedRows, entitlements)
   mappedRows = restricted.rows
@@ -1185,6 +1214,7 @@ exports.getFeed = async (options = {}) => {
     feedRetentionHours: FEED_RETENTION_HOURS,
     feedActiveLimit: FEED_ACTIVE_LIMIT,
     historyWindowHours: requestedHistoryHours,
+    publishRefresh: publishRefreshDiagnostics,
     plan: {
       planTier: planContext?.planTier || "free",
       requestedLimit,
@@ -1198,6 +1228,7 @@ exports.getFeed = async (options = {}) => {
       appliedIncludeOlder: includeOlder,
       requestedCategory,
       appliedCategory: categoryFilter,
+      liveSignalMaxAgeHours: Number(feedPublishRefreshService.LIVE_MAX_SIGNAL_AGE_HOURS || 2),
       ...restricted.planLimits
     }
   }

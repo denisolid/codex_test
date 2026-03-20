@@ -7,6 +7,22 @@ function toOpportunityRow(row = {}) {
   return {
     feedId: row?.feedId || null,
     detectedAt: row?.detectedAt || null,
+    discoveredAt: row?.discoveredAt || row?.discovered_at || row?.detectedAt || null,
+    discovered_at: row?.discovered_at || row?.discoveredAt || row?.detectedAt || null,
+    marketSignalObservedAt:
+      row?.marketSignalObservedAt || row?.market_signal_observed_at || row?.latestMarketSignalAt || null,
+    market_signal_observed_at:
+      row?.market_signal_observed_at || row?.marketSignalObservedAt || row?.latestMarketSignalAt || null,
+    feedPublishedAt: row?.feedPublishedAt || row?.feed_published_at || null,
+    feed_published_at: row?.feed_published_at || row?.feedPublishedAt || null,
+    insightRefreshedAt: row?.insightRefreshedAt || row?.insight_refreshed_at || null,
+    insight_refreshed_at: row?.insight_refreshed_at || row?.insightRefreshedAt || null,
+    lastRefreshAttemptAt: row?.lastRefreshAttemptAt || row?.last_refresh_attempt_at || null,
+    last_refresh_attempt_at: row?.last_refresh_attempt_at || row?.lastRefreshAttemptAt || null,
+    latestSignalAgeHours:
+      row?.latestSignalAgeHours ?? row?.latest_signal_age_hours ?? null,
+    latest_signal_age_hours:
+      row?.latest_signal_age_hours ?? row?.latestSignalAgeHours ?? null,
     scanRunId: row?.scanRunId || null,
     isActive: row?.isActive == null ? true : Boolean(row.isActive),
     isDuplicate: Boolean(row?.isDuplicate),
@@ -22,6 +38,10 @@ function toOpportunityRow(row = {}) {
     sellNet: row?.sellNet ?? null,
     profit: row?.profit ?? null,
     spread: row?.spread ?? null,
+    netProfitAfterFees:
+      row?.netProfitAfterFees ?? row?.net_profit_after_fees ?? row?.profit ?? null,
+    net_profit_after_fees:
+      row?.net_profit_after_fees ?? row?.netProfitAfterFees ?? row?.profit ?? null,
     score: row?.score ?? null,
     qualityScoreDisplay,
     quality_score_display: qualityScoreDisplay,
@@ -52,6 +72,15 @@ function toOpportunityRow(row = {}) {
     badges: Array.isArray(row?.badges) ? row.badges : [],
     isHighConfidenceEligible: Boolean(row?.isHighConfidenceEligible),
     isRiskyEligible: Boolean(row?.isRiskyEligible),
+    confidenceScore: row?.confidenceScore ?? row?.confidence_score ?? null,
+    confidence_score: row?.confidence_score ?? row?.confidenceScore ?? null,
+    freshnessScore: row?.freshnessScore ?? row?.freshness_score ?? null,
+    freshness_score: row?.freshness_score ?? row?.freshnessScore ?? null,
+    refreshStatus: row?.refreshStatus || row?.refresh_status || "pending",
+    refresh_status: row?.refresh_status || row?.refreshStatus || "pending",
+    liveStatus: row?.liveStatus || row?.live_status || "degraded",
+    live_status: row?.live_status || row?.liveStatus || "degraded",
+    verdict: row?.verdict || null,
     itemId: row?.itemId || null,
     buyUrl: row?.buyUrl || null,
     sellUrl: row?.sellUrl || null,

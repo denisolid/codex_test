@@ -107,6 +107,7 @@ function deriveProfitMetrics(opportunity = {}) {
   const grossSell =
     sellNet != null && keepRatio > 0 ? roundPrice(sellNet / keepRatio) : null
   const netProfitUsd =
+    toFiniteOrNull(opportunity.netProfitAfterFees ?? opportunity.net_profit_after_fees) ??
     toFiniteOrNull(opportunity.profit) ??
     (buyPrice != null && sellNet != null ? roundPrice(sellNet - buyPrice) : null)
   const grossProfitUsd =
@@ -718,6 +719,7 @@ function clearInsightCache() {
 exports.INSIGHT_CACHE_TTL_MS = INSIGHT_CACHE_TTL_MS
 exports.getOpportunityInsight = getInsightForFeedId
 exports.precomputeInsightsForOpportunityIds = precomputeInsightsForOpportunityIds
+exports.deriveInsightPayloadFromOpportunity = buildInsightPayloadFromOpportunity
 
 exports.__testables = {
   normalizeCategory,
