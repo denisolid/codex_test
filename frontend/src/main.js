@@ -20,6 +20,7 @@ import { renderSection } from "./components/uiPrimitives";
 import {
   renderDrawer,
   renderKPIBar,
+  renderModal,
   renderPanel,
   renderStatGrid,
   renderStatTile,
@@ -1010,6 +1011,18 @@ function createGlobalOpportunitiesState() {
   };
 }
 
+function createOpportunityInsightModalState() {
+  return {
+    open: false,
+    focusPending: false,
+    loading: false,
+    error: "",
+    opportunityId: "",
+    itemName: "",
+    payload: null,
+  };
+}
+
 function createEmailOnboardingState() {
   return {
     email: "",
@@ -1124,6 +1137,7 @@ const state = {
     marketHashName: "",
     payload: null,
   },
+  opportunityInsightModal: createOpportunityInsightModalState(),
   compareRefreshing: false,
   txSubmitting: false,
   txForm: {
@@ -1263,6 +1277,8 @@ let avatarMenuLastFocusedElement = null;
 let inspectModalLastTriggerElement = null;
 let compareDrawerLastTriggerElement = null;
 let compareDrawerRequestTicket = 0;
+let opportunityInsightLastTriggerElement = null;
+let opportunityInsightRequestTicket = 0;
 let txEditModalLastTriggerElement = null;
 let bodyScrollLockY = 0;
 let bodyScrollLocked = false;
@@ -1954,6 +1970,10 @@ function syncBodyUiLocks() {
     Boolean(state.compareDrawer.open),
   );
   document.body.classList.toggle(
+    "opportunity-insight-open",
+    Boolean(state.opportunityInsightModal.open),
+  );
+  document.body.classList.toggle(
     "tx-edit-modal-open",
     Boolean(state.txEditModal.open),
   );
@@ -1966,6 +1986,7 @@ function hasBlockingOverlayOpen() {
     state.portfolioControls.open ||
     state.inspectModal.open ||
     state.compareDrawer.open ||
+    state.opportunityInsightModal.open ||
     state.txEditModal.open,
   );
 }
@@ -2262,6 +2283,65 @@ function trapCompareDrawerFocus(event) {
   }
 
   if (!event.shiftKey && (active === last || !panel.contains(active))) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function focusOpportunityInsightModalIfNeeded() {
+  if (
+    !state.opportunityInsightModal.open ||
+    !state.opportunityInsightModal.focusPending
+  ) {
+    return;
+  }
+
+  state.opportunityInsightModal.focusPending = false;
+  const modal = document.querySelector("[data-opportunity-insight-dialog]");
+  if (!modal) return;
+
+  const preferredTarget =
+    modal.querySelector("[data-opportunity-insight-close]") ||
+    modal.querySelector("button:not([disabled])") ||
+    modal.querySelector("a[href]");
+  if (preferredTarget instanceof HTMLElement) {
+    preferredTarget.focus();
+    return;
+  }
+
+  if (modal instanceof HTMLElement) {
+    modal.focus();
+  }
+}
+
+function trapOpportunityInsightModalFocus(event) {
+  if (!state.opportunityInsightModal.open || event.key !== "Tab") return;
+  const modal = document.querySelector("[data-opportunity-insight-dialog]");
+  if (!modal) return;
+
+  const focusable = Array.from(
+    modal.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((el) => el instanceof HTMLElement);
+
+  if (!focusable.length) {
+    event.preventDefault();
+    modal.focus();
+    return;
+  }
+
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+
+  if (event.shiftKey && (active === first || !modal.contains(active))) {
+    event.preventDefault();
+    last.focus();
+    return;
+  }
+
+  if (!event.shiftKey && (active === last || !modal.contains(active))) {
     event.preventDefault();
     first.focus();
   }
@@ -3923,6 +4003,94 @@ function closeCompareDrawer(options = {}) {
   compareDrawerLastTriggerElement = null;
 }
 
+function closeOpportunityInsightModal(options = {}) {
+  const { restoreFocus = true } = options;
+  if (!state.opportunityInsightModal.open) return;
+  opportunityInsightRequestTicket += 1;
+  state.opportunityInsightModal.open = false;
+  state.opportunityInsightModal.focusPending = false;
+  state.opportunityInsightModal.loading = false;
+  state.opportunityInsightModal.error = "";
+  render();
+
+  if (restoreFocus && opportunityInsightLastTriggerElement) {
+    requestAnimationFrame(() => {
+      opportunityInsightLastTriggerElement?.focus?.();
+    });
+  }
+  opportunityInsightLastTriggerElement = null;
+}
+
+async function refreshOpportunityInsightModal(options = {}) {
+  const {
+    forceRefresh = false,
+    opportunityId: rawOpportunityId = state.opportunityInsightModal.opportunityId,
+  } = options;
+  const opportunityId = String(rawOpportunityId || "").trim();
+  if (!opportunityId) return;
+  const ticket = ++opportunityInsightRequestTicket;
+  state.opportunityInsightModal.loading = true;
+  state.opportunityInsightModal.error = "";
+  render();
+
+  try {
+    const query = buildQuery({
+      force: forceRefresh ? "1" : "",
+    });
+    const payload = await api(
+      `/opportunities/${encodeURIComponent(opportunityId)}/insight${query}`,
+    );
+    if (ticket !== opportunityInsightRequestTicket) return;
+    state.opportunityInsightModal.payload = payload || null;
+    state.opportunityInsightModal.itemName = String(
+      payload?.opportunity?.item_name ||
+        state.opportunityInsightModal.itemName ||
+        "Opportunity Insight",
+    ).trim();
+  } catch (err) {
+    if (ticket !== opportunityInsightRequestTicket) return;
+    state.opportunityInsightModal.error =
+      err.message || "Failed to load opportunity insight.";
+  } finally {
+    if (ticket === opportunityInsightRequestTicket) {
+      state.opportunityInsightModal.loading = false;
+      render();
+    }
+  }
+}
+
+function openOpportunityInsightModalByOpportunity(opportunity, triggerElement = null) {
+  const row = opportunity && typeof opportunity === "object" ? opportunity : null;
+  if (!row) return;
+  if (isLockedPremiumPreview(row)) {
+    openPremiumUpgradePanel(
+      String(row?.lockMessage || "Unlock knife and glove opportunities with Full Access"),
+    );
+    return;
+  }
+
+  const opportunityId = normalizeFeedId(row);
+  if (!opportunityId) {
+    setError("Unable to open insight for this opportunity.");
+    return;
+  }
+
+  if (triggerElement instanceof HTMLElement) {
+    opportunityInsightLastTriggerElement = triggerElement;
+  }
+
+  state.opportunityInsightModal.open = true;
+  state.opportunityInsightModal.focusPending = true;
+  state.opportunityInsightModal.loading = true;
+  state.opportunityInsightModal.error = "";
+  state.opportunityInsightModal.opportunityId = opportunityId;
+  state.opportunityInsightModal.itemName = String(row?.itemName || "Opportunity Insight").trim();
+  state.opportunityInsightModal.payload = null;
+  render();
+
+  runUiTask(() => refreshOpportunityInsightModal({ opportunityId, forceRefresh: false }));
+}
+
 function openPremiumUpgradePanel(
   message = "Unlock knife and glove opportunities with Full Access",
 ) {
@@ -4389,6 +4557,15 @@ async function handleTabSwitch(tab) {
     compareDrawerRequestTicket += 1;
   }
 
+  if (target !== "opportunities" && state.opportunityInsightModal.open) {
+    state.opportunityInsightModal.open = false;
+    state.opportunityInsightModal.focusPending = false;
+    state.opportunityInsightModal.loading = false;
+    state.opportunityInsightModal.error = "";
+    opportunityInsightRequestTicket += 1;
+    opportunityInsightLastTriggerElement = null;
+  }
+
   if (target !== "portfolio" && state.portfolioControls.open) {
     state.portfolioControls.open = false;
     state.portfolioControls.focusPending = false;
@@ -4763,6 +4940,12 @@ function onAppClick(event) {
     return;
   }
 
+  if (target.matches("[data-opportunity-insight-overlay]")) {
+    event.preventDefault();
+    closeOpportunityInsightModal();
+    return;
+  }
+
   if (target.matches("[data-tx-edit-overlay]")) {
     event.preventDefault();
     closeTxEditModal();
@@ -4899,6 +5082,12 @@ function onAppClick(event) {
   if (button?.matches("[data-compare-drawer-close]")) {
     event.preventDefault();
     closeCompareDrawer();
+    return;
+  }
+
+  if (button?.matches("[data-opportunity-insight-close]")) {
+    event.preventDefault();
+    closeOpportunityInsightModal();
     return;
   }
 
@@ -5248,6 +5437,61 @@ function onAppClick(event) {
     return;
   }
 
+  if (button?.matches(".opportunity-insight-btn")) {
+    event.preventDefault();
+    const lockedPreview = button.getAttribute("data-locked-preview") === "1";
+    if (lockedPreview) {
+      openPremiumUpgradePanel(
+        button.getAttribute("data-lock-message") ||
+          "Unlock knife and glove opportunities with Full Access",
+      );
+      return;
+    }
+
+    const opportunityIndexRaw = button.getAttribute("data-opportunity-index");
+    const opportunityIndex =
+      opportunityIndexRaw == null || !String(opportunityIndexRaw).trim()
+        ? Number.NaN
+        : Number(opportunityIndexRaw);
+    const opportunityRows = Array.isArray(state.globalOpportunities?.items)
+      ? state.globalOpportunities.items
+      : [];
+    let opportunity =
+      Number.isInteger(opportunityIndex) && opportunityIndex >= 0
+        ? opportunityRows[opportunityIndex] || null
+        : null;
+
+    if (!opportunity) {
+      const opportunityId = String(
+        button.getAttribute("data-opportunity-id") || "",
+      ).trim();
+      if (opportunityId) {
+        opportunity =
+          opportunityRows.find(
+            (row) => normalizeFeedId(row) === opportunityId,
+          ) || null;
+      }
+    }
+
+    if (!opportunity) {
+      setError("Unable to resolve opportunity insight context.");
+      return;
+    }
+
+    openOpportunityInsightModalByOpportunity(opportunity, button);
+    return;
+  }
+
+  if (button?.matches("#opportunity-insight-refresh-btn")) {
+    event.preventDefault();
+    runUiTask(() =>
+      refreshOpportunityInsightModal({
+        forceRefresh: true,
+      }),
+    );
+    return;
+  }
+
   if (button?.matches(".opportunity-market-action-btn")) {
     event.preventDefault();
     openCompareDrawerMarketTarget(
@@ -5423,6 +5667,7 @@ function onAppKeydown(event) {
   trapPortfolioControlsFocus(event);
   trapInspectModalFocus(event);
   trapCompareDrawerFocus(event);
+  trapOpportunityInsightModalFocus(event);
   trapTxEditModalFocus(event);
 
   if (event.key === "Escape" && state.inspectModal.open) {
@@ -5440,6 +5685,12 @@ function onAppKeydown(event) {
   if (event.key === "Escape" && state.compareDrawer.open) {
     event.preventDefault();
     closeCompareDrawer();
+    return;
+  }
+
+  if (event.key === "Escape" && state.opportunityInsightModal.open) {
+    event.preventDefault();
+    closeOpportunityInsightModal();
     return;
   }
 
@@ -6002,6 +6253,7 @@ async function logout() {
     marketHashName: "",
     payload: null,
   };
+  state.opportunityInsightModal = createOpportunityInsightModalState();
   state.tabSwitch.loading = false;
   state.tabSwitch.target = "";
   state.activeTab = isAccountPath()
@@ -6071,6 +6323,8 @@ async function logout() {
   inspectModalLastTriggerElement = null;
   compareDrawerLastTriggerElement = null;
   compareDrawerRequestTicket += 1;
+  opportunityInsightLastTriggerElement = null;
+  opportunityInsightRequestTicket += 1;
   portfolioControlsLastTriggerElement = null;
   txEditModalLastTriggerElement = null;
   render();
@@ -8692,6 +8946,38 @@ function normalizeFeedId(row = {}) {
   return String(row?.feedId || row?.id || "").trim();
 }
 
+function formatOpportunityInsightFlag(flag) {
+  const raw = String(flag || "")
+    .trim()
+    .replaceAll("_", " ");
+  if (!raw) return "Unknown risk";
+  return toTitle(raw);
+}
+
+function getOpportunityInsightVerdictTone(verdict) {
+  const safe = String(verdict || "")
+    .trim()
+    .toLowerCase();
+  if (safe === "strong_buy") return "positive";
+  if (safe === "good_small_size") return "positive-soft";
+  if (safe === "watch") return "warning";
+  if (safe === "risky") return "danger-soft";
+  return "danger";
+}
+
+function formatOpportunityInsightVerdict(verdict) {
+  const safe = String(verdict || "")
+    .trim()
+    .toLowerCase();
+  if (!safe) return "N/A";
+  if (safe === "strong_buy") return "Strong Buy";
+  if (safe === "good_small_size") return "Good (Small Size)";
+  if (safe === "watch") return "Watch";
+  if (safe === "risky") return "Risky";
+  if (safe === "skip") return "Skip";
+  return toTitle(safe.replaceAll("_", " "));
+}
+
 function formatArbitrageReasonLabel(reasonCode) {
   const key = String(reasonCode || "")
     .trim()
@@ -9561,6 +9847,131 @@ function renderCompareDrawerOverlay() {
     rootClassName: "compare-drawer-root",
     overlayAttr: 'data-compare-drawer-overlay="1"',
     panelAttr: 'data-compare-drawer-panel="1"',
+  });
+}
+
+function renderOpportunityInsightOverlay() {
+  const modal = state.opportunityInsightModal || createOpportunityInsightModalState();
+  if (!modal.open) return "";
+
+  const payload =
+    modal.payload && typeof modal.payload === "object" ? modal.payload : null;
+  const currencyCode = String(
+    state.globalOpportunities?.currency || state.currency || "USD",
+  )
+    .trim()
+    .toUpperCase();
+  const verdictLabel = formatOpportunityInsightVerdict(payload?.verdict);
+  const verdictTone = getOpportunityInsightVerdictTone(payload?.verdict);
+  const riskFlags = Array.isArray(payload?.risk_flags) ? payload.risk_flags : [];
+  const failureConditions = Array.isArray(payload?.failure_conditions)
+    ? payload.failure_conditions
+    : [];
+
+  const statusMarkup = modal.loading
+    ? `
+      <div class="opportunity-insight-loading">
+        <span class="spinner" aria-hidden="true"></span>
+        <p>Loading deterministic trade insight...</p>
+      </div>
+    `
+    : modal.error
+      ? `<div class="error opportunity-insight-error" role="alert">${escapeHtml(modal.error)}</div>`
+      : payload
+        ? `
+          <div class="opportunity-insight-layout">
+            <section class="opportunity-insight-summary">
+              <div class="opportunity-insight-summary-head">
+                <span class="opportunity-insight-verdict tone-${escapeHtml(verdictTone)}">${escapeHtml(verdictLabel)}</span>
+                <small class="muted">Updated ${escapeHtml(formatRelativeTime(payload?.generated_at || null))}</small>
+              </div>
+              <p>${escapeHtml(payload?.reason_summary || "No summary available yet.")}</p>
+            </section>
+            <div class="opportunity-insight-grid">
+              <section class="opportunity-insight-card">
+                <h4>Profit Breakdown</h4>
+                <dl class="opportunity-insight-metrics">
+                  <div><dt>Gross Profit</dt><dd>${formatSignedMoney(payload?.gross_profit_usd, currencyCode)}</dd></div>
+                  <div><dt>Gross Profit %</dt><dd>${formatPercent(payload?.gross_profit_pct)}</dd></div>
+                  <div><dt>Net Profit (After Fees)</dt><dd>${formatSignedMoney(payload?.net_profit_usd_after_fees, currencyCode)}</dd></div>
+                  <div><dt>Net Profit % (After Fees)</dt><dd>${formatPercent(payload?.net_profit_pct_after_fees)}</dd></div>
+                </dl>
+                <p class="muted">${escapeHtml(payload?.why_this_trade_exists || "")}</p>
+              </section>
+              <section class="opportunity-insight-card">
+                <h4>Market Quality</h4>
+                <dl class="opportunity-insight-metrics">
+                  <div><dt>Confidence Score</dt><dd>${escapeHtml(`${formatNumber(payload?.confidence_score || 0, 0)}/100`)}</dd></div>
+                  <div><dt>Liquidity Score</dt><dd>${escapeHtml(`${formatNumber(payload?.liquidity_score || 0, 0)}/100`)}</dd></div>
+                  <div><dt>Freshness Score</dt><dd>${escapeHtml(`${formatNumber(payload?.freshness_score || 0, 0)}/100`)}</dd></div>
+                </dl>
+                <p class="muted">${escapeHtml(payload?.score_explanations?.confidence || "")}</p>
+                <p class="muted">${escapeHtml(payload?.score_explanations?.liquidity || "")}</p>
+                <p class="muted">${escapeHtml(payload?.score_explanations?.freshness || "")}</p>
+              </section>
+              <section class="opportunity-insight-card">
+                <h4>Exit Analysis</h4>
+                <dl class="opportunity-insight-metrics">
+                  <div><dt>Estimated Exit ETA</dt><dd>${escapeHtml(
+                    payload?.exit_eta_hours == null
+                      ? "-"
+                      : `${formatNumber(payload.exit_eta_hours, 1)}h`,
+                  )}</dd></div>
+                  <div><dt>Recommended Size</dt><dd>${formatMoney(
+                    payload?.recommended_position_size,
+                    currencyCode,
+                  )}</dd></div>
+                </dl>
+                <p class="muted">${escapeHtml(payload?.why_exit_may_be_easy_or_hard || "")}</p>
+              </section>
+              <section class="opportunity-insight-card">
+                <h4>Risks</h4>
+                ${
+                  riskFlags.length
+                    ? `<ul class="opportunity-insight-list">${riskFlags
+                        .map((flag) => `<li>${escapeHtml(formatOpportunityInsightFlag(flag))}</li>`)
+                        .join("")}</ul>`
+                    : '<p class="muted">No active risk flags.</p>'
+                }
+                <p class="muted">${escapeHtml(payload?.what_can_break_it || "")}</p>
+              </section>
+              <section class="opportunity-insight-card opportunity-insight-card-wide">
+                <h4>Failure Conditions</h4>
+                ${
+                  failureConditions.length
+                    ? `<ul class="opportunity-insight-list">${failureConditions
+                        .map((item) => `<li>${escapeHtml(item)}</li>`)
+                        .join("")}</ul>`
+                    : '<p class="muted">No explicit stop conditions provided.</p>'
+                }
+              </section>
+            </div>
+          </div>
+        `
+        : '<p class="muted">Select an opportunity to load insight.</p>';
+
+  const footerMarkup = `
+    <button
+      type="button"
+      class="ghost-btn"
+      id="opportunity-insight-refresh-btn"
+      ${modal.loading ? "disabled" : ""}
+    >
+      ${modal.loading ? "Refreshing..." : "Refresh Insight"}
+    </button>
+  `;
+
+  return renderModal({
+    open: modal.open,
+    title: modal.itemName || "Opportunity Insight",
+    subtitle: "Post-scan deterministic decision support",
+    bodyMarkup: statusMarkup,
+    footerMarkup,
+    closeAttr: 'data-opportunity-insight-close="1"',
+    label: "Opportunity insight",
+    rootClassName: "opportunity-insight-modal-overlay",
+    overlayAttr: 'data-opportunity-insight-overlay="1"',
+    panelAttr: 'data-opportunity-insight-dialog="1"',
   });
 }
 
@@ -13519,6 +13930,15 @@ function renderGlobalOpportunitiesTab() {
                         : `
                           <button
                             type="button"
+                            class="ghost-btn opportunity-insight-btn"
+                            data-opportunity-id="${escapeHtml(feedId)}"
+                            data-opportunity-index="${escapeHtml(String(index))}"
+                            ${feedId ? "" : "disabled"}
+                          >
+                            Insight
+                          </button>
+                          <button
+                            type="button"
                             class="ghost-btn opportunity-compare-btn"
                             data-opportunity-index="${escapeHtml(String(index))}"
                             data-skin-id="${escapeHtml(String(itemId || ""))}"
@@ -14955,6 +15375,7 @@ function renderApp() {
       ${renderAppFooter()}
     </main>
     ${renderInspectModalOverlay()}
+    ${renderOpportunityInsightOverlay()}
     ${renderCompareDrawerOverlay()}
     ${
       state.activeTab === "portfolio" || state.portfolioControls.open
@@ -14971,6 +15392,7 @@ function renderApp() {
   focusPortfolioControlsIfNeeded();
   focusInspectModalIfNeeded();
   focusCompareDrawerIfNeeded();
+  focusOpportunityInsightModalIfNeeded();
   restoreInputFocusIfNeeded();
   scheduleDashboardKpiPinnedSync();
 
@@ -15034,6 +15456,9 @@ function render() {
     state.compareDrawer.open = false;
     state.compareDrawer.focusPending = false;
     state.compareDrawer.loading = false;
+    state.opportunityInsightModal.open = false;
+    state.opportunityInsightModal.focusPending = false;
+    state.opportunityInsightModal.loading = false;
     state.txEditModal = {
       open: false,
       id: null,
@@ -15066,6 +15491,9 @@ function render() {
     state.compareDrawer.open = false;
     state.compareDrawer.focusPending = false;
     state.compareDrawer.loading = false;
+    state.opportunityInsightModal.open = false;
+    state.opportunityInsightModal.focusPending = false;
+    state.opportunityInsightModal.loading = false;
     state.txEditModal = {
       open: false,
       id: null,

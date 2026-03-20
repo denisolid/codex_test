@@ -73,6 +73,10 @@ function normalizeMarket(value) {
   return text
 }
 
+function normalizeId(value) {
+  return normalizeText(value)
+}
+
 function normalizeRows(rows = []) {
   return (Array.isArray(rows) ? rows : [])
     .map((row) => {
@@ -190,6 +194,23 @@ exports.listFeed = async (options = {}) => {
   }
 
   return data || []
+}
+
+exports.getById = async (id) => {
+  const safeId = normalizeId(id)
+  if (!safeId) return null
+
+  const { data, error } = await supabaseAdmin
+    .from(TABLE)
+    .select(FEED_SELECT_FIELDS)
+    .eq("id", safeId)
+    .maybeSingle()
+
+  if (error) {
+    throw new AppError(error.message, 500)
+  }
+
+  return data || null
 }
 
 exports.countFeed = async (options = {}) => {
