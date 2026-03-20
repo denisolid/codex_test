@@ -128,6 +128,18 @@ function isMissingCoverageRpcError(error) {
   )
 }
 
+function normalizeMarkets(values = []) {
+  const safeValues = Array.isArray(values) ? values : []
+  if (!safeValues.length) return []
+  return Array.from(
+    new Set(
+      safeValues
+        .map((value) => normalizeSource(value))
+        .filter(Boolean)
+    )
+  )
+}
+
 async function getCoverageRowsFallback(itemNames = [], lookbackIso = null, maxRows = 5000) {
   const { data, error } = await supabaseAdmin
     .from(TABLE)
@@ -265,9 +277,82 @@ exports.getLatestCoverageByItemNames = async (itemNames = [], options = {}) => {
   )
 }
 
+exports.getLatestRowsByItemNames = async (itemNames = [], options = {}) => {
+  const safeNames = normalizeItemNames(itemNames)
+  if (!safeNames.length) return {}
+
+  const lookbackHours = Math.max(Math.round(Number(options.lookbackHours || 72)), 1)
+  const lookbackIso = new Date(Date.now() - lookbackHours * 60 * 60 * 1000).toISOString()
+  const allowedMarkets = normalizeMarkets(options.markets)
+  const rowsByItem = {}
+  let rpcAvailable = true
+
+  for (let index = 0; index < safeNames.length; index += QUERY_BATCH_SIZE) {
+    const chunk = safeNames.slice(index, index + QUERY_BATCH_SIZE)
+    let rows = []
+
+    if (rpcAvailable) {
+      const rpcResult = await supabaseAdmin.rpc("get_latest_market_quote_rows_by_item_names", {
+        p_item_names: chunk,
+        p_lookback: lookbackIso
+      })
+      if (!rpcResult.error) {
+        rows = Array.isArray(rpcResult.data) ? rpcResult.data : []
+      } else if (isMissingCoverageRpcError(rpcResult.error)) {
+        rpcAvailable = false
+      } else {
+        throw new AppError(
+          formatSupabaseError(rpcResult.error, "market_quote_rows_lookup_failed"),
+          500
+        )
+      }
+    }
+
+    if (!rpcAvailable) {
+      const { data, error } = await supabaseAdmin
+        .from(TABLE)
+        .select("item_name, market, best_buy, best_sell, best_sell_net, volume_7d, fetched_at")
+        .in("item_name", chunk)
+        .gte("fetched_at", lookbackIso)
+        .order("fetched_at", { ascending: false })
+        .limit(5000)
+      if (error) {
+        throw new AppError(
+          formatSupabaseError(error, "market_quote_rows_lookup_failed"),
+          500
+        )
+      }
+      rows = Array.isArray(data) ? data : []
+    }
+
+    for (const row of rows) {
+      const itemName = normalizeText(row?.item_name)
+      const market = normalizeSource(row?.market)
+      if (!itemName || !market) continue
+      if (allowedMarkets.length && !allowedMarkets.includes(market)) continue
+
+      if (!rowsByItem[itemName]) rowsByItem[itemName] = {}
+      if (!rowsByItem[itemName][market]) {
+        rowsByItem[itemName][market] = {
+          item_name: itemName,
+          market,
+          best_buy: toPositiveOrNull(row?.best_buy),
+          best_sell: toPositiveOrNull(row?.best_sell),
+          best_sell_net: toPositiveOrNull(row?.best_sell_net),
+          volume_7d: toIntegerOrNull(row?.volume_7d, { min: 0 }),
+          fetched_at: normalizeText(row?.fetched_at) || null
+        }
+      }
+    }
+  }
+
+  return rowsByItem
+}
+
 exports.__testables = {
   normalizeItemNames,
   formatSupabaseError,
   resolveReferenceCandidate,
-  resolveConservativeMedian
+  resolveConservativeMedian,
+  normalizeMarkets
 }

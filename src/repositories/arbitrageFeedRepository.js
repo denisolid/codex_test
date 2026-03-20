@@ -4,7 +4,9 @@ const AppError = require("../utils/AppError")
 const TABLE = "arbitrage_feed"
 const MAX_LIMIT = 1000
 const INSERT_BATCH_SIZE = 200
-const FEED_SELECT_FIELDS =
+const FEED_SELECT_FIELDS_BASE =
+  "id, item_name, market_hash_name, category, buy_market, buy_price, sell_market, sell_net, profit, spread_pct, opportunity_score, execution_confidence, quality_grade, liquidity_label, detected_at, discovered_at, market_signal_observed_at, feed_published_at, insight_refreshed_at, last_refresh_attempt_at, latest_signal_age_hours, net_profit_after_fees, confidence_score, freshness_score, verdict, refresh_status, live_status, scan_run_id, is_active, is_duplicate, metadata"
+const FEED_SELECT_FIELDS_LEGACY =
   "id, item_name, market_hash_name, category, buy_market, buy_price, sell_market, sell_net, profit, spread_pct, opportunity_score, execution_confidence, quality_grade, liquidity_label, detected_at, scan_run_id, is_active, is_duplicate, metadata"
 
 function normalizeText(value) {
@@ -77,6 +79,32 @@ function normalizeId(value) {
   return normalizeText(value)
 }
 
+function normalizeStatus(value, fallback = "") {
+  const raw = normalizeText(value).toLowerCase()
+  if (!raw) return fallback
+  return raw
+}
+
+function isMissingColumnError(error) {
+  const message = normalizeText(error?.message).toLowerCase()
+  const code = normalizeText(error?.code).toUpperCase()
+  return (
+    code === "42703" ||
+    message.includes("column") && message.includes("does not exist")
+  )
+}
+
+async function runFeedSelectWithFallback(queryBuilder) {
+  const first = await queryBuilder(FEED_SELECT_FIELDS_BASE)
+  if (!first?.error) {
+    return first
+  }
+  if (isMissingColumnError(first.error)) {
+    return queryBuilder(FEED_SELECT_FIELDS_LEGACY)
+  }
+  return first
+}
+
 function normalizeRows(rows = []) {
   return (Array.isArray(rows) ? rows : [])
     .map((row) => {
@@ -118,6 +146,61 @@ function normalizeRows(rows = []) {
         quality_grade: normalizeText(row?.quality_grade || row?.qualityGrade || "RISKY") || "RISKY",
         liquidity_label: normalizeText(row?.liquidity_label || row?.liquidityLabel || "Low") || "Low",
         detected_at: row?.detected_at || row?.detectedAt || new Date().toISOString(),
+        discovered_at:
+          row?.discovered_at ||
+          row?.discoveredAt ||
+          row?.detected_at ||
+          row?.detectedAt ||
+          new Date().toISOString(),
+        market_signal_observed_at:
+          row?.market_signal_observed_at ||
+          row?.marketSignalObservedAt ||
+          null,
+        feed_published_at: row?.feed_published_at || row?.feedPublishedAt || null,
+        insight_refreshed_at:
+          row?.insight_refreshed_at || row?.insightRefreshedAt || null,
+        last_refresh_attempt_at:
+          row?.last_refresh_attempt_at || row?.lastRefreshAttemptAt || null,
+        latest_signal_age_hours:
+          toFiniteOrNull(row?.latest_signal_age_hours ?? row?.latestSignalAgeHours) ??
+          null,
+        net_profit_after_fees:
+          toFiniteOrNull(row?.net_profit_after_fees ?? row?.netProfitAfterFees ?? profit) ??
+          null,
+        confidence_score:
+          toFiniteOrNull(row?.confidence_score ?? row?.confidenceScore) == null
+            ? null
+            : Math.min(
+                Math.max(
+                  Math.round(
+                    Number(
+                      toFiniteOrNull(row?.confidence_score ?? row?.confidenceScore)
+                    )
+                  ),
+                  0
+                ),
+                100
+              ),
+        freshness_score:
+          toFiniteOrNull(row?.freshness_score ?? row?.freshnessScore) == null
+            ? null
+            : Math.min(
+                Math.max(
+                  Math.round(
+                    Number(
+                      toFiniteOrNull(row?.freshness_score ?? row?.freshnessScore)
+                    )
+                  ),
+                  0
+                ),
+                100
+              ),
+        verdict: normalizeStatus(row?.verdict, null),
+        refresh_status: normalizeStatus(
+          row?.refresh_status ?? row?.refreshStatus,
+          "pending"
+        ),
+        live_status: normalizeStatus(row?.live_status ?? row?.liveStatus, "degraded"),
         scan_run_id: normalizeText(row?.scan_run_id || row?.scanRunId) || null,
         is_active: row?.is_active == null ? true : Boolean(row.is_active),
         is_duplicate: row?.is_duplicate == null ? false : Boolean(row.is_duplicate),
@@ -161,33 +244,34 @@ exports.listFeed = async (options = {}) => {
   const excludeLowConfidence = Boolean(options.excludeLowConfidence)
   const highConfidenceOnly = Boolean(options.highConfidenceOnly)
 
-  let query = supabaseAdmin
-    .from(TABLE)
-    .select(FEED_SELECT_FIELDS)
-    .order("detected_at", { ascending: false })
-    .order("id", { ascending: false })
-    .range(offset, offset + limit - 1)
+  const { data, error } = await runFeedSelectWithFallback((selectFields) => {
+    let query = supabaseAdmin
+      .from(TABLE)
+      .select(selectFields)
+      .order("detected_at", { ascending: false })
+      .order("id", { ascending: false })
+      .range(offset, offset + limit - 1)
 
-  if (!includeInactive) {
-    query = query.eq("is_active", true)
-  }
-  if (sinceIso) {
-    query = query.gte("detected_at", sinceIso)
-  }
-  if (category) {
-    query = query.eq("category", category)
-  }
-  if (minScore != null) {
-    query = query.gte("opportunity_score", minScore)
-  }
-  if (excludeLowConfidence) {
-    query = query.neq("execution_confidence", "Low")
-  }
-  if (highConfidenceOnly) {
-    query = query.contains("metadata", { is_high_confidence_eligible: true })
-  }
-
-  const { data, error } = await query
+    if (!includeInactive) {
+      query = query.eq("is_active", true)
+    }
+    if (sinceIso) {
+      query = query.gte("detected_at", sinceIso)
+    }
+    if (category) {
+      query = query.eq("category", category)
+    }
+    if (minScore != null) {
+      query = query.gte("opportunity_score", minScore)
+    }
+    if (excludeLowConfidence) {
+      query = query.neq("execution_confidence", "Low")
+    }
+    if (highConfidenceOnly) {
+      query = query.contains("metadata", { is_high_confidence_eligible: true })
+    }
+    return query
+  })
 
   if (error) {
     throw new AppError(error.message, 500)
@@ -200,11 +284,13 @@ exports.getById = async (id) => {
   const safeId = normalizeId(id)
   if (!safeId) return null
 
-  const { data, error } = await supabaseAdmin
-    .from(TABLE)
-    .select(FEED_SELECT_FIELDS)
-    .eq("id", safeId)
-    .maybeSingle()
+  const { data, error } = await runFeedSelectWithFallback((selectFields) =>
+    supabaseAdmin
+      .from(TABLE)
+      .select(selectFields)
+      .eq("id", safeId)
+      .maybeSingle()
+  )
 
   if (error) {
     throw new AppError(error.message, 500)
@@ -404,4 +490,32 @@ exports.markInactiveBeyondLimit = async (activeLimit = 500, options = {}) => {
   }
 
   return totalMarked
+}
+
+exports.updatePublishRefreshState = async (rows = []) => {
+  const payload = (Array.isArray(rows) ? rows : [])
+    .map((row) => ({
+      id: normalizeText(row?.id),
+      patch:
+        row?.patch && typeof row.patch === "object" && !Array.isArray(row.patch)
+          ? row.patch
+          : null
+    }))
+    .filter((row) => row.id && row.patch)
+
+  if (!payload.length) return 0
+
+  let updatedCount = 0
+  for (const row of payload) {
+    const { error } = await supabaseAdmin
+      .from(TABLE)
+      .update(row.patch)
+      .eq("id", row.id)
+
+    if (error) {
+      throw new AppError(error.message, 500)
+    }
+    updatedCount += 1
+  }
+  return updatedCount
 }

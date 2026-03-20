@@ -1,4 +1,4 @@
-import "./style.css";
+﻿import "./style.css";
 import "./responsive.css";
 import { API_URL } from "./config";
 import { clearAuthToken, getAuthToken, withAuthHeaders } from "./authToken";
@@ -1843,7 +1843,7 @@ function renderToastHost() {
             aria-label="Dismiss notification"
             data-toast-dismiss="${Number(toast.id)}"
           >
-            Ã—
+            Ãƒâ€”
           </button>
         </article>
       `;
@@ -7847,13 +7847,21 @@ async function refreshGlobalOpportunities(options = {}) {
     const newBadgeWindowMs = 45 * 60 * 1000;
     scanner.items = incomingRows.map((row) => {
       const feedId = normalizeFeedId(row);
+      const rowLiveStatus = normalizeOpportunityLiveStatus(
+        row?.liveStatus || row?.live_status,
+      );
       const detectedTs = new Date(row?.detectedAt || "").getTime();
       const isRecentDetection =
         Number.isFinite(detectedTs) &&
         detectedTs > 0 &&
         nowTs - detectedTs >= 0 &&
         nowTs - detectedTs <= newBadgeWindowMs;
-      const isNew = allowNewBadge && Boolean(feedId) && !seenFeedIds.has(feedId) && isRecentDetection;
+      const isNew =
+        allowNewBadge &&
+        rowLiveStatus === "live" &&
+        Boolean(feedId) &&
+        !seenFeedIds.has(feedId) &&
+        isRecentDetection;
       if (feedId) {
         seenFeedIds.add(feedId);
       }
@@ -8976,6 +8984,21 @@ function formatOpportunityInsightVerdict(verdict) {
   if (safe === "risky") return "Risky";
   if (safe === "skip") return "Skip";
   return toTitle(safe.replaceAll("_", " "));
+}
+
+function normalizeOpportunityLiveStatus(value) {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (raw === "live" || raw === "stale" || raw === "degraded") return raw;
+  return "degraded";
+}
+
+function formatOpportunityLiveStatusLabel(value) {
+  const status = normalizeOpportunityLiveStatus(value);
+  if (status === "live") return "Live";
+  if (status === "stale") return "Stale";
+  return "Degraded";
 }
 
 function formatArbitrageReasonLabel(reasonCode) {
@@ -13734,11 +13757,28 @@ function renderGlobalOpportunitiesTab() {
               const detectedLabel = detectedAt
                 ? `Added ${formatRelativeTime(detectedAt)}`
                 : "Added -";
+              const liveStatus = normalizeOpportunityLiveStatus(
+                row?.liveStatus || row?.live_status,
+              );
+              const liveStatusLabel = formatOpportunityLiveStatusLabel(liveStatus);
+              const signalAgeHoursRaw = Number(
+                row?.latestSignalAgeHours ?? row?.latest_signal_age_hours,
+              );
+              const signalAgeLabel = Number.isFinite(signalAgeHoursRaw)
+                ? `${formatNumber(signalAgeHoursRaw, 2)}h`
+                : "-";
+              const refreshAttemptAt = String(
+                row?.lastRefreshAttemptAt || row?.last_refresh_attempt_at || "",
+              ).trim();
+              const refreshAttemptLabel = refreshAttemptAt
+                ? formatRelativeTime(refreshAttemptAt)
+                : "-";
               const scanLabel = row?.scanRunId
                 ? `Scan #${formatScanRunLabel(row.scanRunId)}`
                 : "";
               const badges = [
                 ...(row?.isNew ? ["NEW"] : []),
+                liveStatusLabel.toUpperCase(),
                 ...baseBadges,
                 ...(lockedPreview ? ["LOCKED", "FULL ACCESS"] : []),
               ];
@@ -13763,7 +13803,7 @@ function renderGlobalOpportunitiesTab() {
                 !lockedPreview &&
                 Boolean(itemId > 0 || compareUrl || marketHashName);
               const hiddenValueMarkup =
-                '<span class="premium-value-blur" aria-hidden="true">••••</span>';
+                '<span class="premium-value-blur" aria-hidden="true">****</span>';
               const buyMarketLabel = lockedPreview
                 ? "Locked"
                 : formatMarketSourceLabel(row?.buyMarket);
@@ -13796,14 +13836,14 @@ function renderGlobalOpportunitiesTab() {
               const liquiditySubline = lockedPreview
                 ? escapeHtml(String(row?.lockHint || "Premium high-value market category"))
                 : escapeHtml(
-                    `Coverage ${formatNumber(row?.marketCoverage || 0, 0)} market(s)`,
+                    `Coverage ${formatNumber(row?.marketCoverage || 0, 0)} market(s) | Signal ${signalAgeLabel} | Refresh ${refreshAttemptLabel}`,
                   );
               const lockedMessage = String(
                 row?.lockMessage || "Unlock knife and glove opportunities with Full Access",
               ).trim();
               const sublineText = lockedPreview
                 ? `${row?.lockHint || "Premium high-value market category"}${scanLabel ? ` • ${scanLabel}` : ""}`
-                : `${detectedLabel}${scanLabel ? ` • ${scanLabel}` : ""}`;
+                : `${detectedLabel}${scanLabel ? ` • ${scanLabel}` : ""} | ${liveStatusLabel}`;
 
               return `
                 <tr class="opportunity-table-row ${row?.isNew ? "opportunity-row-new" : ""} ${lockedPreview ? "opportunity-row-locked" : ""}" data-feed-id="${escapeHtml(feedId)}">
@@ -13906,7 +13946,13 @@ function renderGlobalOpportunitiesTab() {
                                 `<span class="opportunity-badge ${
                                   String(badge).trim().toUpperCase() === "NEW"
                                     ? "new"
-                                    : ""
+                                    : String(badge).trim().toUpperCase() === "LIVE"
+                                      ? "is-live"
+                                      : String(badge).trim().toUpperCase() === "STALE"
+                                        ? "is-stale"
+                                        : String(badge).trim().toUpperCase() === "DEGRADED"
+                                          ? "is-degraded"
+                                          : ""
                                 }">${escapeHtml(
                                   badge,
                                 )}</span>`,
@@ -14058,6 +14104,19 @@ function renderGlobalOpportunitiesTab() {
               summary.riskyEligible || 0,
               0,
             )} risky-eligible, ${formatNumber(summary.newOpportunitiesAdded || 0, 0)} newly added.`,
+          )}</p>`
+        : ""
+    }
+    ${
+      summary?.publishRefresh
+        ? `<p class="helper-text">${escapeHtml(
+            `Publish refresh: ${formatNumber(summary.publishRefresh.live || 0, 0)} live, ${formatNumber(
+              summary.publishRefresh.stale || 0,
+              0,
+            )} stale, ${formatNumber(summary.publishRefresh.degraded || 0, 0)} degraded, ${formatNumber(
+              summary.publishRefresh.suppressed || 0,
+              0,
+            )} suppressed.`,
           )}</p>`
         : ""
     }
@@ -15763,3 +15822,4 @@ bootstrapSession().catch(() => {
   steamSyncHintRequestedAfterSteamLogin = false;
   render();
 });
+
