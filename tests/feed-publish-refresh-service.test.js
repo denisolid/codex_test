@@ -105,7 +105,14 @@ test("buildRefreshedOpportunityRow refreshes prices and marks live status", () =
           best_sell: 25.8,
           best_sell_net: 22.7,
           volume_7d: 210,
-          fetched_at: new Date(nowMs - 15 * 60 * 1000).toISOString()
+          fetched_at: new Date(nowMs - 15 * 60 * 1000).toISOString(),
+          quality_flags: {
+            skinport_quote_type: "live_executable",
+            skinport_price_integrity_status: "confirmed",
+            skinport_quote_currency: "USD",
+            skinport_item_slug: "ak-47-vulcan-field-tested",
+            skinport_listing_id: "sp-live-1"
+          }
         }
       }
     },
@@ -117,6 +124,9 @@ test("buildRefreshedOpportunityRow refreshes prices and marks live status", () =
   assert.equal(refreshed.api.liveStatus, "live")
   assert.equal(refreshed.api.refreshStatus, "ok")
   assert.equal(Number(refreshed.api.latestSignalAgeHours || 0) <= 2, true)
+  assert.equal(refreshed.api.skinportQuoteType, "live_executable")
+  assert.equal(refreshed.api.skinportPriceIntegrityStatus, "confirmed")
+  assert.equal(Boolean(refreshed.api.skinportListingId), true)
 })
 
 test("shouldAdmitToFeed respects live and risky admission rules", () => {
@@ -145,4 +155,49 @@ test("shouldAdmitToFeed respects live and risky admission rules", () => {
     netProfitAfterFees: -0.2
   }
   assert.equal(shouldAdmitToFeed(degradedRow, { includeRisky: true }), false)
+})
+
+test("shouldAdmitToFeed blocks skinport rows unless live executable quote is confirmed", () => {
+  const blocked = {
+    buyMarket: "skinport",
+    sellMarket: "steam",
+    liveStatus: "live",
+    refreshStatus: "ok",
+    latestSignalAgeHours: 0.8,
+    netProfitAfterFees: 1.1,
+    skinportQuoteType: "historical_summary",
+    skinportPriceIntegrityStatus: "unconfirmed",
+    skinportQuoteObservedAt: new Date().toISOString()
+  }
+  const allowed = {
+    buyMarket: "skinport",
+    sellMarket: "steam",
+    liveStatus: "live",
+    refreshStatus: "ok",
+    latestSignalAgeHours: 0.8,
+    netProfitAfterFees: 1.1,
+    skinportQuoteType: "live_executable",
+    skinportPriceIntegrityStatus: "confirmed",
+    skinportQuoteObservedAt: new Date().toISOString()
+  }
+
+  assert.equal(shouldAdmitToFeed(blocked, { includeRisky: true }), false)
+  assert.equal(shouldAdmitToFeed(allowed, { includeRisky: false }), true)
+})
+
+test("shouldAdmitToFeed blocks skinport rows when quote timestamp is stale", () => {
+  const staleObservedAt = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
+  const row = {
+    buyMarket: "skinport",
+    sellMarket: "steam",
+    liveStatus: "live",
+    refreshStatus: "ok",
+    latestSignalAgeHours: 0.7,
+    netProfitAfterFees: 1.2,
+    skinportQuoteType: "live_executable",
+    skinportPriceIntegrityStatus: "confirmed",
+    skinportQuoteObservedAt: staleObservedAt
+  }
+
+  assert.equal(shouldAdmitToFeed(row, { includeRisky: false }), false)
 })

@@ -140,6 +140,16 @@ function normalizeMarkets(values = []) {
   )
 }
 
+function normalizeBoolean(value, fallback = false) {
+  if (typeof value === "boolean") return value
+  if (typeof value === "number") return value !== 0
+  const text = normalizeText(value).toLowerCase()
+  if (!text) return fallback
+  if (text === "1" || text === "true" || text === "yes" || text === "on") return true
+  if (text === "0" || text === "false" || text === "no" || text === "off") return false
+  return fallback
+}
+
 async function getCoverageRowsFallback(itemNames = [], lookbackIso = null, maxRows = 5000) {
   const { data, error } = await supabaseAdmin
     .from(TABLE)
@@ -284,8 +294,10 @@ exports.getLatestRowsByItemNames = async (itemNames = [], options = {}) => {
   const lookbackHours = Math.max(Math.round(Number(options.lookbackHours || 72)), 1)
   const lookbackIso = new Date(Date.now() - lookbackHours * 60 * 60 * 1000).toISOString()
   const allowedMarkets = normalizeMarkets(options.markets)
+  const includeQualityFlags = normalizeBoolean(options.includeQualityFlags, false)
+  const useRpc = !includeQualityFlags && normalizeBoolean(options.useRpc, true)
   const rowsByItem = {}
-  let rpcAvailable = true
+  let rpcAvailable = useRpc
 
   for (let index = 0; index < safeNames.length; index += QUERY_BATCH_SIZE) {
     const chunk = safeNames.slice(index, index + QUERY_BATCH_SIZE)
@@ -309,9 +321,12 @@ exports.getLatestRowsByItemNames = async (itemNames = [], options = {}) => {
     }
 
     if (!rpcAvailable) {
+      const selectFields = includeQualityFlags
+        ? "item_name, market, best_buy, best_sell, best_sell_net, volume_7d, fetched_at, quality_flags"
+        : "item_name, market, best_buy, best_sell, best_sell_net, volume_7d, fetched_at"
       const { data, error } = await supabaseAdmin
         .from(TABLE)
-        .select("item_name, market, best_buy, best_sell, best_sell_net, volume_7d, fetched_at")
+        .select(selectFields)
         .in("item_name", chunk)
         .gte("fetched_at", lookbackIso)
         .order("fetched_at", { ascending: false })
@@ -340,7 +355,8 @@ exports.getLatestRowsByItemNames = async (itemNames = [], options = {}) => {
           best_sell: toPositiveOrNull(row?.best_sell),
           best_sell_net: toPositiveOrNull(row?.best_sell_net),
           volume_7d: toIntegerOrNull(row?.volume_7d, { min: 0 }),
-          fetched_at: normalizeText(row?.fetched_at) || null
+          fetched_at: normalizeText(row?.fetched_at) || null,
+          quality_flags: toJsonObject(row?.quality_flags || row?.qualityFlags)
         }
       }
     }

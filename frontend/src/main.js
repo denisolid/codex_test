@@ -7735,22 +7735,12 @@ async function refreshGlobalOpportunities(options = {}) {
   const scanner = state.globalOpportunities || createGlobalOpportunitiesState();
   const entitlements = getProfileEntitlements();
   const advancedFiltersEnabled = canUseAdvancedFilters(entitlements);
-  const visibleFeedLimit = Math.max(Number(entitlements.visibleFeedLimit || 100), 1);
-  const requestedPageSize = Math.min(
-    Math.max(Number(limit || scanner.pageSize || GLOBAL_OPPORTUNITY_PAGE_SIZE), 1),
-    visibleFeedLimit,
-  );
+  const requestedPageSize = GLOBAL_OPPORTUNITY_PAGE_SIZE;
   const requestedPage = Math.max(
     Math.round(Number(page == null ? scanner.page || 1 : page) || 1),
     1,
   );
-  const requestedHistoryHours = clampInt(
-    historyHours == null
-      ? scanner.historyHours || GLOBAL_OPPORTUNITY_HISTORY_HOURS
-      : historyHours,
-    1,
-    168,
-  );
+  const requestedHistoryHours = GLOBAL_OPPORTUNITY_HISTORY_HOURS;
   state.globalOpportunities = scanner;
   scanner.pageSize = requestedPageSize;
   scanner.page = requestedPage;
@@ -7879,12 +7869,12 @@ async function refreshGlobalOpportunities(options = {}) {
         : {};
     const resolvedPageSize = Math.min(
       Math.max(Number(payloadPagination.pageSize || requestedPageSize), 1),
-      visibleFeedLimit,
+      GLOBAL_OPPORTUNITY_PAGE_SIZE,
     );
     const resolvedHistoryHours = clampInt(
       payloadPagination.historyHours || requestedHistoryHours,
-      1,
-      168,
+      GLOBAL_OPPORTUNITY_HISTORY_HOURS,
+      GLOBAL_OPPORTUNITY_HISTORY_HOURS,
     );
     const totalCount = Math.max(
       Number(
@@ -14109,9 +14099,9 @@ function renderGlobalOpportunitiesTab() {
       </label>
     </div>
     <p class="helper-text">
-      <strong>Current Plan: ${escapeHtml(planLabel)}</strong>. Feed cap: ${escapeHtml(
-        formatNumber(entitlements.visibleFeedLimit || 0, 0),
-      )} items.
+      <strong>Current Plan: ${escapeHtml(planLabel)}</strong>. Feed window: last ${escapeHtml(
+        formatNumber(GLOBAL_OPPORTUNITY_HISTORY_HOURS, 0),
+      )}h, ${escapeHtml(formatNumber(GLOBAL_OPPORTUNITY_PAGE_SIZE, 0))} items per page.
       ${
         advancedFiltersEnabled
           ? " Advanced filters unlocked."
