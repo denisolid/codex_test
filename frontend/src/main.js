@@ -2876,6 +2876,34 @@ function formatRelativeTime(isoValue) {
   return `${Math.floor(deltaSeconds / 86400)}d ago`;
 }
 
+function formatOpportunitySeenLabel(row = {}) {
+  const timesSeen = Number(row?.timesSeen ?? row?.times_seen ?? 1);
+  const firstSeenAt =
+    String(
+      row?.firstSeenAt ||
+        row?.first_seen_at ||
+        row?.discoveredAt ||
+        row?.discovered_at ||
+        row?.detectedAt ||
+        row?.detected_at ||
+        "",
+    ).trim() || null;
+  const lastSeenAt =
+    String(
+      row?.lastPublishedAt ||
+        row?.last_published_at ||
+        row?.lastSeenAt ||
+        row?.last_seen_at ||
+        row?.feedPublishedAt ||
+        row?.feed_published_at ||
+        "",
+    ).trim() || null;
+  if (timesSeen > 1 && lastSeenAt) {
+    return `Updated ${formatRelativeTime(lastSeenAt)}`;
+  }
+  return firstSeenAt ? `Added ${formatRelativeTime(firstSeenAt)}` : "Added -";
+}
+
 function formatTimeUntil(isoValue) {
   if (!isoValue) return "-";
   const ts = new Date(isoValue).getTime();
@@ -8718,8 +8746,8 @@ function renderMarketSourceIcon(source) {
 function getOpportunityScoreTone(score) {
   const value = Number(score || 0);
   if (value >= 90) return "positive";
-  if (value >= 75) return "neutral";
-  if (value >= 60) return "warning";
+  if (value >= 70) return "neutral";
+  if (value >= 30) return "warning";
   return "negative";
 }
 
@@ -8728,10 +8756,10 @@ function formatOpportunityLabel(label, score) {
   const scoreLabel =
     value >= 90
       ? "Strong"
-      : value >= 75
+      : value >= 70
         ? "Good"
-        : value >= 60
-          ? "Risky"
+        : value >= 30
+          ? "Watch"
           : "Weak";
 
   const direct = String(label || "").trim();
@@ -13785,23 +13813,7 @@ function renderGlobalOpportunitiesTab() {
               const score = lockedPreview
                 ? null
                 : getOpportunityDisplayScore(row);
-              const scoreTone = lockedPreview
-                ? "warning"
-                : getOpportunityScoreTone(score);
-              const scoreLabel = lockedPreview
-                ? String(row?.previewScoreBand || "Locked")
-                : formatOpportunityLabel(
-                    row?.scoreCategory,
-                    score,
-                  );
-              const executionConfidence = lockedPreview
-                ? "Locked"
-                : getOpportunityDisplayConfidence(row);
-              const confidenceTone = lockedPreview
-                ? "warning"
-                : getExecutionConfidenceTone(
-                    executionConfidence,
-                  );
+              const executionConfidenceLabel = lockedPreview ? "Locked" : "In Insight";
               const liquidityLabel = lockedPreview
                 ? "Premium preview"
                 : formatLiquidityBandLabel(
@@ -13883,10 +13895,7 @@ function renderGlobalOpportunitiesTab() {
                 getOpportunityImageUrl(row, visualItem),
               ).trim();
               const feedId = normalizeFeedId(row);
-              const detectedAt = String(row?.detectedAt || "").trim();
-              const detectedLabel = detectedAt
-                ? `Added ${formatRelativeTime(detectedAt)}`
-                : "Added -";
+              const detectedLabel = formatOpportunitySeenLabel(row);
               const liveStatus = normalizeOpportunityLiveStatus(
                 row?.liveStatus || row?.live_status,
               );
@@ -13909,9 +13918,13 @@ function renderGlobalOpportunitiesTab() {
                 lockedPreview,
               });
               const allRiskLabels = normalizeOpportunityRiskLabels(baseBadges);
-              const riskHighlights = allRiskLabels.slice(0, 2);
+              const primaryRiskLabel =
+                allRiskLabels[0] ||
+                (lockedPreview
+                  ? String(row?.lockHint || "Premium note")
+                  : String(liquidityLabel || "Liquidity note"));
               const hiddenRiskCount = Math.max(
-                allRiskLabels.length - riskHighlights.length,
+                allRiskLabels.length - (allRiskLabels.length ? 1 : 0),
                 0,
               );
               const insightLabel = hiddenRiskCount > 0 ? `Insight +${hiddenRiskCount}` : "Insight";
@@ -13983,7 +13996,7 @@ function renderGlobalOpportunitiesTab() {
                 : `${buyMarketLabel} to ${sellMarketLabel}`;
               const sublineText = lockedPreview
                 ? `${row?.lockHint || "Premium high-value market category"}${scanLabel ? ` • ${scanLabel}` : ""}`
-                : `${detectedLabel}${scanLabel ? ` • ${scanLabel}` : ""} | ${liveStatusLabel}`;
+                : `${detectedLabel}${scanLabel ? ` • ${scanLabel}` : ""}`;
 
               return `
                 <tr class="opportunity-table-row opportunity-row-verdict-${escapeHtml(verdictKey)} ${row?.isNew ? "opportunity-row-new" : ""} ${lockedPreview ? "opportunity-row-locked" : ""}" data-feed-id="${escapeHtml(feedId)}">
@@ -14055,9 +14068,7 @@ function renderGlobalOpportunitiesTab() {
                     <span class="opportunity-verdict-badge tone-${escapeHtml(
                       verdictKey,
                     )}">${escapeHtml(verdictLabel)}</span>
-                    <strong class="opportunity-metric-value opportunity-profit-value tone-${escapeHtml(
-                      verdictKey,
-                    )} ${lockedPreview ? "warning" : "positive"}">${profitLabel}</strong>
+                    <strong class="opportunity-metric-value opportunity-profit-value ${lockedPreview ? "warning" : "positive"}">${profitLabel}</strong>
                     <small class="opportunity-profit-path">${escapeHtml(pathLabel)}</small>
                   </td>
                   <td class="opportunity-metric-cell">
@@ -14065,15 +14076,13 @@ function renderGlobalOpportunitiesTab() {
                     <small>Price spread</small>
                   </td>
                   <td class="opportunity-metric-cell opportunity-score-cell">
-                    <strong class="opportunity-metric-value opportunity-score-value ${escapeHtml(
-                      scoreTone,
-                    )}">${scoreValueMarkup}</strong>
-                    <small>${escapeHtml(`${scoreLabel} quality`)}</small>
+                    <strong class="opportunity-metric-value opportunity-score-value neutral">${scoreValueMarkup}</strong>
+                    <small>Quality score</small>
                   </td>
                   <td class="opportunity-metric-cell opportunity-confidence-cell">
-                    <strong class="opportunity-metric-value opportunity-confidence-value ${escapeHtml(
-                      confidenceTone,
-                    )}">${escapeHtml(executionConfidence)}</strong>
+                    <strong class="opportunity-metric-value opportunity-confidence-value neutral">${escapeHtml(
+                      executionConfidenceLabel,
+                    )}</strong>
                     <small>Execution confidence</small>
                   </td>
                   <td class="opportunity-metric-cell opportunity-liquidity-cell">
@@ -14088,26 +14097,10 @@ function renderGlobalOpportunitiesTab() {
                         liveStatus,
                       )}">${escapeHtml(freshnessSummary)}</span>
                       <div class="opportunity-badges">
-                        ${
-                          riskHighlights.length
-                            ? riskHighlights
-                                .map(
-                                  (badge) =>
-                                    `<span class="opportunity-badge is-risk">${escapeHtml(
-                                      badge,
-                                    )}</span>`,
-                                )
-                                .join("")
-                            : '<span class="opportunity-badge signal-clean">No major risk flags</span>'
-                        }
+                        <span class="opportunity-badge primary-note">${escapeHtml(
+                          primaryRiskLabel || "No major risk flags",
+                        )}</span>
                       </div>
-                      ${
-                        hiddenRiskCount > 0 && !lockedPreview
-                          ? `<small class="opportunity-signal-meta">+${escapeHtml(
-                              formatNumber(hiddenRiskCount, 0),
-                            )} more checks in Insight</small>`
-                          : ""
-                      }
                     </div>
                   </td>
                   <td class="actions-cell">

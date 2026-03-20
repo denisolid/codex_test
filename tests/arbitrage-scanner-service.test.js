@@ -1,5 +1,6 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
+const arbitrageFeedRepo = require("../src/repositories/arbitrageFeedRepository")
 
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || "https://example.supabase.co"
 process.env.SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "anon"
@@ -13,10 +14,13 @@ const {
     buildRoundRobinPool,
     selectScanCandidates,
     evaluateCandidateOpportunity,
+    buildOpportunityFingerprint,
+    buildMaterialChangeHash,
     classifyOpportunityFeedEvent,
     isMateriallyNewOpportunity,
     buildFeedInsertRow,
     mapFeedRowToApiRow,
+    persistFeedRows,
     isScannerRunOverdue,
     DEFAULT_UNIVERSE_LIMIT,
     OPPORTUNITY_BATCH_TARGET,
@@ -513,6 +517,8 @@ test("feed event classifier detects new, updated, duplicate, and reactivated row
 
   const duplicateEvent = classifyOpportunityFeedEvent(baseOpportunity, {
     is_active: true,
+    buy_market: "steam",
+    sell_market: "skinport",
     profit: 12,
     spread_pct: 13,
     opportunity_score: 85,
@@ -522,6 +528,8 @@ test("feed event classifier detects new, updated, duplicate, and reactivated row
   assert.equal(duplicateEvent.eventType, "duplicate")
   assert.equal(isMateriallyNewOpportunity(baseOpportunity, {
     is_active: true,
+    buy_market: "steam",
+    sell_market: "skinport",
     profit: 12,
     spread_pct: 13,
     opportunity_score: 85,
@@ -610,6 +618,87 @@ test("feed event classifier treats canonical freshness changes as updates", () =
   assert.equal(event.changeReasons.includes("freshness"), true)
 })
 
+test("opportunity fingerprint changes when listing identity changes", () => {
+  const base = {
+    marketHashName: "AK-47 | Redline (Field-Tested)",
+    itemName: "AK-47 | Redline (Field-Tested)",
+    itemCategory: "weapon_skin",
+    buyMarket: "steam",
+    buyPrice: 12.1,
+    sellMarket: "skinport",
+    sellNet: 13.5,
+    metadata: {
+      skinport_listing_id: "sp-001",
+      buy_url: "https://steamcommunity.com/market/listings/730/AK-47",
+      sell_url: "https://skinport.com/item/ak-47-redline-field-tested"
+    }
+  }
+  const changedListing = {
+    ...base,
+    metadata: {
+      ...base.metadata,
+      skinport_listing_id: "sp-002"
+    }
+  }
+
+  const fpA = buildOpportunityFingerprint(base)
+  const fpB = buildOpportunityFingerprint(changedListing)
+  assert.equal(Boolean(fpA), true)
+  assert.equal(Boolean(fpB), true)
+  assert.notEqual(fpA, fpB)
+})
+
+test("material hash captures meaningful path/quality changes", () => {
+  const a = buildMaterialChangeHash({
+    buyMarket: "steam",
+    sellMarket: "skinport",
+    buyPrice: 10,
+    sellNet: 12,
+    profit: 2,
+    spread: 20,
+    qualityGrade: "RISKY",
+    executionConfidence: "Medium",
+    verdict: "watch",
+    metadata: {
+      skinport_listing_id: "sp-1"
+    }
+  })
+  const b = buildMaterialChangeHash({
+    buyMarket: "steam",
+    sellMarket: "skinport",
+    buyPrice: 10.01,
+    sellNet: 12.01,
+    profit: 2.01,
+    spread: 20.05,
+    qualityGrade: "RISKY",
+    executionConfidence: "Medium",
+    verdict: "watch",
+    metadata: {
+      skinport_listing_id: "sp-1"
+    }
+  })
+  const c = buildMaterialChangeHash({
+    buyMarket: "steam",
+    sellMarket: "dmarket",
+    buyPrice: 10,
+    sellNet: 12,
+    profit: 2,
+    spread: 20,
+    qualityGrade: "STRONG",
+    executionConfidence: "High",
+    verdict: "strong_buy",
+    metadata: {
+      skinport_listing_id: "sp-1"
+    }
+  })
+
+  assert.equal(Boolean(a), true)
+  assert.equal(Boolean(b), true)
+  assert.equal(Boolean(c), true)
+  assert.equal(a, b)
+  assert.notEqual(a, c)
+})
+
 test("feed mapper keeps core scanner fields stable", () => {
   const insertRow = buildFeedInsertRow(
     {
@@ -667,6 +756,12 @@ test("feed mapper keeps core scanner fields stable", () => {
   assert.equal(mapped.latestReferencePriceAt, "2026-03-19T09:58:00.000Z")
   assert.equal(mapped.staleResult, false)
   assert.equal(mapped.staleReasonSource, "latest_quote:catalog")
+  assert.equal(Boolean(insertRow.opportunity_fingerprint), true)
+  assert.equal(Boolean(insertRow.material_change_hash), true)
+  assert.equal(insertRow.times_seen, 1)
+  assert.equal(Boolean(mapped.opportunityFingerprint), true)
+  assert.equal(Boolean(mapped.materialChangeHash), true)
+  assert.equal(mapped.timesSeen, 1)
 })
 
 test("display score soft-normalizes visible feed values without changing raw score ordering inputs", () => {
@@ -685,6 +780,111 @@ test("display score soft-normalizes visible feed values without changing raw sco
 
   for (let index = 1; index < displayScores.length; index += 1) {
     assert.equal(displayScores[index] > displayScores[index - 1], true)
+  }
+})
+
+test("persistFeedRows updates active fingerprint match instead of inserting duplicate row", async () => {
+  const opportunity = {
+    marketHashName: "AK-47 | Redline (Field-Tested)",
+    itemName: "AK-47 | Redline (Field-Tested)",
+    itemCategory: "weapon_skin",
+    buyMarket: "steam",
+    buyPrice: 10,
+    sellMarket: "skinport",
+    sellNet: 12.5,
+    profit: 2.5,
+    spread: 25,
+    score: 80,
+    executionConfidence: "Medium",
+    qualityGrade: "RISKY",
+    liquidityBand: "Medium",
+    liquidity: 150,
+    marketCoverage: 2,
+    referencePrice: 11.2,
+    metadata: {
+      skinport_listing_id: "sp-live-1",
+      buy_url: "https://steamcommunity.com/market/listings/730/AK-47",
+      sell_url: "https://skinport.com/item/ak-47-redline-field-tested"
+    }
+  }
+  const fingerprint = buildOpportunityFingerprint(opportunity)
+  const materialHash = buildMaterialChangeHash(opportunity)
+  const existingRow = {
+    id: "feed-row-dup-1",
+    item_name: opportunity.itemName,
+    category: "weapon_skin",
+    buy_market: "steam",
+    buy_price: 10,
+    sell_market: "skinport",
+    sell_net: 12.5,
+    profit: 2.5,
+    spread_pct: 25,
+    opportunity_score: 80,
+    execution_confidence: "Medium",
+    quality_grade: "RISKY",
+    is_active: true,
+    opportunity_fingerprint: fingerprint,
+    material_change_hash: materialHash,
+    times_seen: 2,
+    first_seen_at: "2026-03-19T10:00:00.000Z",
+    metadata: {
+      liquidity_value: 150,
+      skinport_listing_id: "sp-live-1",
+      buy_url: "https://steamcommunity.com/market/listings/730/AK-47",
+      sell_url: "https://skinport.com/item/ak-47-redline-field-tested",
+      opportunity_fingerprint: fingerprint,
+      material_change_hash: materialHash
+    }
+  }
+
+  const originals = {
+    getRecentRowsByItems: arbitrageFeedRepo.getRecentRowsByItems,
+    getActiveRowsByFingerprints: arbitrageFeedRepo.getActiveRowsByFingerprints,
+    updateRowsById: arbitrageFeedRepo.updateRowsById,
+    insertRows: arbitrageFeedRepo.insertRows,
+    markInactiveOlderThan: arbitrageFeedRepo.markInactiveOlderThan
+  }
+
+  let updateRowsPayload = null
+  let insertRowsPayload = null
+
+  arbitrageFeedRepo.getRecentRowsByItems = async () => [existingRow]
+  arbitrageFeedRepo.getActiveRowsByFingerprints = async () => [existingRow]
+  arbitrageFeedRepo.updateRowsById = async (rows = []) => {
+    updateRowsPayload = rows
+    return rows.length
+  }
+  arbitrageFeedRepo.insertRows = async (rows = []) => {
+    insertRowsPayload = rows
+    return rows.map((row, index) => ({ id: row?.id || `new-${index}` }))
+  }
+  arbitrageFeedRepo.markInactiveOlderThan = async () => 0
+
+  try {
+    const result = await persistFeedRows([opportunity], "scan-run-1")
+    assert.equal(result.insertedCount, 0)
+    assert.equal(result.newCount, 0)
+    assert.equal(result.duplicateCount, 1)
+    assert.equal(result.skippedUnchanged, 0)
+    assert.equal(Array.isArray(updateRowsPayload), true)
+    assert.equal(updateRowsPayload.length, 1)
+    assert.equal(insertRowsPayload, null)
+    assert.equal(updateRowsPayload[0].id, existingRow.id)
+    assert.equal(
+      Number(updateRowsPayload[0]?.patch?.times_seen || 0) >= 3,
+      true
+    )
+    assert.equal(Boolean(updateRowsPayload[0]?.patch?.last_seen_at), true)
+    assert.equal(
+      updateRowsPayload[0]?.patch?.opportunity_fingerprint,
+      fingerprint
+    )
+  } finally {
+    arbitrageFeedRepo.getRecentRowsByItems = originals.getRecentRowsByItems
+    arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
+    arbitrageFeedRepo.updateRowsById = originals.updateRowsById
+    arbitrageFeedRepo.insertRows = originals.insertRows
+    arbitrageFeedRepo.markInactiveOlderThan = originals.markInactiveOlderThan
   }
 })
 

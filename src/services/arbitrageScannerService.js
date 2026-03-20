@@ -32,7 +32,6 @@ const {
   OPPORTUNITY_SCAN_ALLOW_LIVE_FETCH,
   SCAN_TIMEOUT_PER_BATCH_MS,
   DUPLICATE_WINDOW_HOURS,
-  INSERT_DUPLICATES,
   ALLOW_CROSS_JOB_PARALLELISM,
   RECORD_SKIPPED_ALREADY_RUNNING
 } = require("./scanner/config")
@@ -41,6 +40,8 @@ const { selectScanCandidates, buildRoundRobinPool } = require("./scanner/candida
 const { evaluateCandidateOpportunity, clampScore } = require("./scanner/opportunityEvaluator")
 const {
   buildSignature,
+  buildOpportunityFingerprint,
+  buildMaterialChangeHash,
   classifyOpportunityFeedEvent,
   isMateriallyNewOpportunity,
   buildFeedInsertRow,
@@ -524,6 +525,114 @@ function buildFeedKey(row = {}) {
   })
 }
 
+function toJsonObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+  return value
+}
+
+function toSafeInteger(value, fallback = 1, min = 1) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(Math.round(parsed), min)
+}
+
+function buildFeedUpdatePatch({
+  previousRow = {},
+  insertRow = {},
+  nowIso,
+  scanRunId,
+  event
+} = {}) {
+  const previousMetadata = toJsonObject(previousRow?.metadata)
+  const insertMetadata = toJsonObject(insertRow?.metadata)
+  const firstSeenAt =
+    toIsoOrNull(previousRow?.first_seen_at || previousRow?.firstSeenAt) ||
+    toIsoOrNull(insertRow?.first_seen_at || insertRow?.firstSeenAt) ||
+    toIsoOrNull(previousRow?.discovered_at || previousRow?.detected_at) ||
+    nowIso
+  const timesSeen = toSafeInteger(previousRow?.times_seen ?? previousRow?.timesSeen, 1, 1) + 1
+  const eventType = normalizeText(event?.eventType || "updated").toLowerCase() || "updated"
+  const materiallyChanged = Boolean(event?.materiallyChanged)
+  const changeReasons = Array.isArray(event?.changeReasons) ? event.changeReasons : []
+
+  const mergedMetadata = {
+    ...previousMetadata,
+    ...insertMetadata,
+    feed_event: eventType,
+    feed_event_reasons: changeReasons,
+    feed_event_materially_changed: materiallyChanged,
+    opportunity_fingerprint:
+      normalizeText(insertRow?.opportunity_fingerprint) ||
+      normalizeText(previousRow?.opportunity_fingerprint) ||
+      null,
+    material_change_hash:
+      normalizeText(insertRow?.material_change_hash) ||
+      normalizeText(previousRow?.material_change_hash) ||
+      null,
+    first_seen_at: firstSeenAt,
+    last_seen_at: nowIso,
+    last_published_at: nowIso,
+    times_seen: timesSeen
+  }
+
+  return {
+    item_name: insertRow.item_name,
+    market_hash_name: insertRow.market_hash_name,
+    category: insertRow.category,
+    buy_market: insertRow.buy_market,
+    buy_price: insertRow.buy_price,
+    sell_market: insertRow.sell_market,
+    sell_net: insertRow.sell_net,
+    profit: insertRow.profit,
+    spread_pct: insertRow.spread_pct,
+    opportunity_score: insertRow.opportunity_score,
+    execution_confidence: insertRow.execution_confidence,
+    quality_grade: insertRow.quality_grade,
+    liquidity_label: insertRow.liquidity_label,
+    detected_at: nowIso,
+    discovered_at: firstSeenAt,
+    first_seen_at: firstSeenAt,
+    last_seen_at: nowIso,
+    last_published_at: nowIso,
+    times_seen: timesSeen,
+    opportunity_fingerprint:
+      normalizeText(insertRow?.opportunity_fingerprint) ||
+      normalizeText(previousRow?.opportunity_fingerprint) ||
+      null,
+    material_change_hash:
+      normalizeText(insertRow?.material_change_hash) ||
+      normalizeText(previousRow?.material_change_hash) ||
+      null,
+    market_signal_observed_at:
+      insertRow?.market_signal_observed_at ?? previousRow?.market_signal_observed_at ?? null,
+    feed_published_at: nowIso,
+    scan_run_id: normalizeText(scanRunId) || null,
+    is_active: true,
+    is_duplicate: !materiallyChanged,
+    metadata: mergedMetadata
+  }
+}
+
+function attachEventMetaToInsertRow(insertRow = {}, event = {}) {
+  const safeInsertRow = insertRow && typeof insertRow === "object" ? insertRow : {}
+  const safeMetadata = toJsonObject(safeInsertRow.metadata)
+  const eventType = normalizeText(event?.eventType || "new").toLowerCase() || "new"
+  const changeReasons = Array.isArray(event?.changeReasons) ? event.changeReasons : []
+  const materiallyChanged = Boolean(event?.materiallyChanged)
+  return {
+    ...safeInsertRow,
+    is_duplicate: eventType === "duplicate",
+    metadata: {
+      ...safeMetadata,
+      feed_event: eventType,
+      feed_event_reasons: changeReasons,
+      feed_event_materially_changed: materiallyChanged
+    }
+  }
+}
+
 async function persistFeedRows(opportunities = [], scanRunId = null) {
   const counters = {
     insertedCount: 0,
@@ -543,6 +652,36 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
   if (!rows.length) return counters
   const sinceIso = new Date(Date.now() - DUPLICATE_WINDOW_HOURS * 60 * 60 * 1000).toISOString()
   const names = Array.from(new Set(rows.map((row) => normalizeText(row.marketHashName || row.itemName)).filter(Boolean)))
+  const nowIso = new Date().toISOString()
+  const preparedRows = rows.map((opportunity) => {
+    const insertRow = buildFeedInsertRow(opportunity, {
+      scanRunId,
+      detectedAt: nowIso,
+      firstSeenAt: nowIso,
+      lastSeenAt: nowIso,
+      lastPublishedAt: nowIso,
+      timesSeen: 1
+    })
+    const fingerprint =
+      normalizeText(insertRow?.opportunity_fingerprint) ||
+      buildOpportunityFingerprint(opportunity)
+    const materialChangeHash =
+      normalizeText(insertRow?.material_change_hash) ||
+      buildMaterialChangeHash(opportunity)
+    insertRow.opportunity_fingerprint = fingerprint
+    insertRow.material_change_hash = materialChangeHash
+    insertRow.metadata = {
+      ...toJsonObject(insertRow.metadata),
+      opportunity_fingerprint: fingerprint || null,
+      material_change_hash: materialChangeHash || null
+    }
+    return {
+      opportunity,
+      insertRow,
+      key: buildFeedKey(insertRow) || buildFeedKey(opportunity),
+      fingerprint
+    }
+  })
   let previousRows = []
   try {
     previousRows = await arbitrageFeedRepo.getRecentRowsByItems({
@@ -559,44 +698,147 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
       throw err
     }
   }
+  let activeFingerprintRows = []
+  const fingerprints = Array.from(
+    new Set(preparedRows.map((row) => normalizeText(row.fingerprint)).filter(Boolean))
+  )
+  if (fingerprints.length) {
+    try {
+      activeFingerprintRows = await arbitrageFeedRepo.getActiveRowsByFingerprints({
+        fingerprints,
+        sinceIso,
+        limit: Math.max(1200, fingerprints.length * 2)
+      })
+    } catch (err) {
+      if (isStatementTimeoutError(err)) {
+        counters.cleanup.hadTimeout = true
+        counters.cleanup.errors.push("active_fingerprint_lookup_timeout")
+        activeFingerprintRows = []
+      } else {
+        throw err
+      }
+    }
+  }
+
   const latestByKey = {}
   for (const previous of previousRows || []) {
     const key = buildFeedKey(previous)
     if (key && !latestByKey[key]) latestByKey[key] = previous
   }
+  const activeByFingerprint = {}
+  for (const previous of activeFingerprintRows || []) {
+    const fingerprint = normalizeText(
+      previous?.opportunity_fingerprint ||
+        previous?.opportunityFingerprint ||
+        previous?.metadata?.opportunity_fingerprint
+    )
+    if (fingerprint && !activeByFingerprint[fingerprint]) {
+      activeByFingerprint[fingerprint] = previous
+    }
+  }
 
-  const nowIso = new Date().toISOString()
   const insertRows = []
-  for (const opportunity of rows) {
-    const key = buildFeedKey(opportunity)
-    const previous = key ? latestByKey[key] || null : null
-    const event = classifyOpportunityFeedEvent(opportunity, previous)
-    if (event.eventType === "duplicate") {
-      counters.duplicateCount += 1
-      if (!INSERT_DUPLICATES) {
+  const updateRows = []
+  const pendingInsertFingerprints = new Set()
+
+  for (const prepared of preparedRows) {
+    const opportunity = prepared.opportunity
+    const key = prepared.key
+    const fingerprint = normalizeText(prepared.fingerprint)
+    let previous = fingerprint ? activeByFingerprint[fingerprint] || null : null
+    let matchedBy = previous ? "fingerprint" : null
+    if (!previous && key) {
+      previous = latestByKey[key] || null
+      matchedBy = previous ? "signature" : null
+    }
+
+    const baseEvent = classifyOpportunityFeedEvent(opportunity, previous)
+    const previousMaterialHash = normalizeText(
+      previous?.material_change_hash ||
+        previous?.materialChangeHash ||
+        previous?.metadata?.material_change_hash
+    )
+    const nextMaterialHash = normalizeText(prepared.insertRow?.material_change_hash)
+    const fingerprintShifted =
+      Boolean(previous) &&
+      Boolean(fingerprint) &&
+      normalizeText(previous?.opportunity_fingerprint) &&
+      normalizeText(previous?.opportunity_fingerprint) !== fingerprint
+    const materialHashShifted =
+      Boolean(previous) &&
+      Boolean(previousMaterialHash) &&
+      Boolean(nextMaterialHash) &&
+      previousMaterialHash !== nextMaterialHash
+    const materiallyChanged =
+      Boolean(baseEvent?.materiallyChanged) ||
+      fingerprintShifted ||
+      materialHashShifted
+    const extraReasons = []
+    if (fingerprintShifted) extraReasons.push("quote_identity")
+    if (materialHashShifted) extraReasons.push("material_hash")
+    if (matchedBy === "signature" && fingerprintShifted) extraReasons.push("fingerprint_shift")
+    const normalizedEventType = !previous
+      ? "new"
+      : !Boolean(previous?.is_active)
+        ? "reactivated"
+        : materiallyChanged
+          ? "updated"
+          : "duplicate"
+    const normalizedEvent = {
+      eventType: normalizedEventType,
+      materiallyChanged,
+      changeReasons: Array.from(
+        new Set([...(Array.isArray(baseEvent?.changeReasons) ? baseEvent.changeReasons : []), ...extraReasons])
+      )
+    }
+    const insertRowWithEvent = attachEventMetaToInsertRow(prepared.insertRow, normalizedEvent)
+
+    if (!previous) {
+      if (fingerprint && pendingInsertFingerprints.has(fingerprint)) {
+        counters.duplicateCount += 1
         counters.skippedUnchanged += 1
         continue
       }
-    } else if (event.eventType === "new") {
       counters.newCount += 1
-    } else if (event.eventType === "updated") {
-      counters.updatedCount += 1
-    } else if (event.eventType === "reactivated") {
-      counters.reactivatedCount += 1
+      if (fingerprint) pendingInsertFingerprints.add(fingerprint)
+      insertRows.push(insertRowWithEvent)
+      continue
     }
-    insertRows.push(
-      buildFeedInsertRow(opportunity, {
-        scanRunId,
-        detectedAt: nowIso,
-        eventMeta: {
-          feed_event: event.eventType,
-          feed_event_reasons: event.changeReasons,
-          feed_event_materially_changed: event.materiallyChanged
-        }
-      })
-    )
+
+    if (normalizedEvent.eventType === "updated") {
+      counters.updatedCount += 1
+    } else if (normalizedEvent.eventType === "reactivated") {
+      counters.reactivatedCount += 1
+    } else {
+      counters.duplicateCount += 1
+    }
+
+    const patch = buildFeedUpdatePatch({
+      previousRow: previous,
+      insertRow: insertRowWithEvent,
+      nowIso,
+      scanRunId,
+      event: normalizedEvent
+    })
+    updateRows.push({
+      id: previous.id,
+      patch
+    })
+
+    const cachedUpdatedRow = {
+      ...previous,
+      ...patch,
+      metadata: toJsonObject(patch.metadata),
+      is_active: true,
+      id: previous.id
+    }
+    if (key) latestByKey[key] = cachedUpdatedRow
+    if (fingerprint) activeByFingerprint[fingerprint] = cachedUpdatedRow
   }
 
+  if (updateRows.length) {
+    await arbitrageFeedRepo.updateRowsById(updateRows)
+  }
   if (insertRows.length) {
     const inserted = await arbitrageFeedRepo.insertRows(insertRows)
     counters.insertedCount = Array.isArray(inserted) ? inserted.length : 0
@@ -1419,10 +1661,14 @@ exports.__testables = {
   buildRoundRobinPool,
   selectScanCandidates,
   evaluateCandidateOpportunity,
+  buildOpportunityFingerprint,
+  buildMaterialChangeHash,
   classifyOpportunityFeedEvent,
   isMateriallyNewOpportunity,
   buildFeedInsertRow,
   mapFeedRowToApiRow,
+  persistFeedRows,
+  buildFeedUpdatePatch,
   confidenceLevel,
   clampScore,
   isScannerRunOverdue,

@@ -9,6 +9,22 @@ function toOpportunityRow(row = {}) {
     detectedAt: row?.detectedAt || null,
     discoveredAt: row?.discoveredAt || row?.discovered_at || row?.detectedAt || null,
     discovered_at: row?.discovered_at || row?.discoveredAt || row?.detectedAt || null,
+    firstSeenAt: row?.firstSeenAt || row?.first_seen_at || row?.discoveredAt || null,
+    first_seen_at: row?.first_seen_at || row?.firstSeenAt || row?.discoveredAt || null,
+    lastSeenAt: row?.lastSeenAt || row?.last_seen_at || row?.detectedAt || null,
+    last_seen_at: row?.last_seen_at || row?.lastSeenAt || row?.detectedAt || null,
+    lastPublishedAt:
+      row?.lastPublishedAt || row?.last_published_at || row?.feedPublishedAt || null,
+    last_published_at:
+      row?.last_published_at || row?.lastPublishedAt || row?.feedPublishedAt || null,
+    timesSeen: row?.timesSeen ?? row?.times_seen ?? 1,
+    times_seen: row?.times_seen ?? row?.timesSeen ?? 1,
+    opportunityFingerprint:
+      row?.opportunityFingerprint || row?.opportunity_fingerprint || null,
+    opportunity_fingerprint:
+      row?.opportunity_fingerprint || row?.opportunityFingerprint || null,
+    materialChangeHash: row?.materialChangeHash || row?.material_change_hash || null,
+    material_change_hash: row?.material_change_hash || row?.materialChangeHash || null,
     marketSignalObservedAt:
       row?.marketSignalObservedAt || row?.market_signal_observed_at || row?.latestMarketSignalAt || null,
     market_signal_observed_at:

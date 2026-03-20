@@ -1,3 +1,4 @@
+const { createHash } = require("crypto")
 const {
   MIN_CONFIDENCE_CHANGE_LEVELS,
   MIN_LIQUIDITY_CHANGE_PCT,
@@ -5,6 +6,29 @@ const {
   MIN_SCORE_CHANGE,
   MIN_SPREAD_CHANGE_PCT
 } = require("./config")
+
+const MIN_BUY_PRICE_CHANGE_PCT = 2
+const MIN_SELL_PRICE_CHANGE_PCT = 2
+const FINGERPRINT_PRICE_BANDS = Object.freeze([
+  { max: 5, step: 0.1 },
+  { max: 20, step: 0.25 },
+  { max: 100, step: 0.5 },
+  { max: 300, step: 1 },
+  { max: Infinity, step: 2 }
+])
+const MATERIAL_PRICE_BANDS = Object.freeze([
+  { max: 5, step: 0.05 },
+  { max: 20, step: 0.1 },
+  { max: 100, step: 0.25 },
+  { max: 300, step: 0.5 },
+  { max: Infinity, step: 1 }
+])
+const MATERIAL_PROFIT_BANDS = Object.freeze([
+  { max: 2.5, step: 0.05 },
+  { max: 10, step: 0.1 },
+  { max: 50, step: 0.25 },
+  { max: Infinity, step: 0.5 }
+])
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -127,6 +151,183 @@ function normalizeStringSet(values = []) {
   ).sort()
 }
 
+function toJsonObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+  return value
+}
+
+function toIntegerOrNull(value, fallback = null, min = 1) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(Math.round(parsed), min)
+}
+
+function normalizeUrlIdentity(value) {
+  const raw = normalizeText(value)
+  if (!raw) return ""
+  try {
+    const parsed = new URL(raw)
+    return `${parsed.host}${parsed.pathname}`.toLowerCase()
+  } catch (_err) {
+    return raw.toLowerCase()
+  }
+}
+
+function firstNonEmptyText(values = []) {
+  for (const value of Array.isArray(values) ? values : []) {
+    const normalized = normalizeText(value)
+    if (normalized) return normalized
+  }
+  return ""
+}
+
+function normalizeBandValue(value, bands = FINGERPRINT_PRICE_BANDS) {
+  const parsed = toFiniteOrNull(value)
+  if (parsed == null) return "na"
+  const absolute = Math.abs(parsed)
+  const profile = (Array.isArray(bands) ? bands : []).find(
+    (row) => absolute <= Number(row?.max || 0)
+  )
+  const step = Number(profile?.step || 0.25)
+  if (!Number.isFinite(step) || step <= 0) return "na"
+  const bucket = Math.round(parsed / step)
+  const snapped = Number((bucket * step).toFixed(4))
+  return `${snapped.toFixed(4)}@${step.toFixed(4)}`
+}
+
+function hashCanonical(parts = []) {
+  const payload = (Array.isArray(parts) ? parts : [])
+    .map((part) => normalizeText(part))
+    .join("|")
+  return createHash("sha1").update(payload).digest("hex")
+}
+
+function resolveListingIdentity(row = {}, metadata = {}) {
+  return (
+    firstNonEmptyText([
+      row?.skinport_listing_id,
+      row?.skinportListingId,
+      row?.buy_listing_id,
+      row?.buyListingId,
+      row?.sell_listing_id,
+      row?.sellListingId,
+      row?.listing_id,
+      row?.listingId,
+      metadata?.skinport_listing_id,
+      metadata?.buy_listing_id,
+      metadata?.sell_listing_id,
+      metadata?.listing_id,
+      metadata?.listingId
+    ]).toLowerCase() || "na"
+  )
+}
+
+function resolveVerdict(row = {}, metadata = {}) {
+  return (
+    firstNonEmptyText([
+      row?.verdict,
+      metadata?.publish_refresh?.verdict,
+      metadata?.verdict
+    ]).toLowerCase() || "na"
+  )
+}
+
+function buildOpportunityFingerprint(row = {}) {
+  const metadata = toJsonObject(row?.metadata)
+  const itemIdentity =
+    firstNonEmptyText([
+      row?.item_id,
+      row?.itemId,
+      metadata?.item_id,
+      metadata?.itemId,
+      row?.market_hash_name,
+      row?.marketHashName,
+      row?.item_name,
+      row?.itemName
+    ]).toLowerCase() || "na"
+  const category = normalizeCategory(row?.category || row?.itemCategory)
+  const buyMarket = normalizeText(row?.buy_market || row?.buyMarket).toLowerCase() || "na"
+  const sellMarket = normalizeText(row?.sell_market || row?.sellMarket).toLowerCase() || "na"
+  const variantToken = firstNonEmptyText([
+    row?.item_subcategory,
+    row?.itemSubcategory,
+    metadata?.item_subcategory,
+    metadata?.itemSubcategory,
+    row?.item_rarity,
+    row?.itemRarity,
+    metadata?.item_rarity,
+    metadata?.itemRarity,
+    metadata?.item_variant,
+    metadata?.wear,
+    metadata?.phase
+  ])
+    .toLowerCase()
+    .replace(/\s+/g, "_") || "na"
+  const listingIdentity = resolveListingIdentity(row, metadata)
+  const quoteTypeIdentity =
+    firstNonEmptyText([
+      row?.skinport_quote_type,
+      row?.skinportQuoteType,
+      metadata?.skinport_quote_type,
+      metadata?.quote_type
+    ]).toLowerCase() || "na"
+  const buyQuoteIdentity =
+    firstNonEmptyText([
+      row?.buy_quote_identity,
+      metadata?.buy_quote_identity,
+      normalizeUrlIdentity(row?.buy_url || row?.buyUrl || metadata?.buy_url),
+      normalizeBandValue(row?.buy_price ?? row?.buyPrice, FINGERPRINT_PRICE_BANDS)
+    ]).toLowerCase() || "na"
+  const sellQuoteIdentity =
+    firstNonEmptyText([
+      row?.sell_quote_identity,
+      metadata?.sell_quote_identity,
+      normalizeUrlIdentity(row?.sell_url || row?.sellUrl || metadata?.sell_url),
+      normalizeBandValue(row?.sell_net ?? row?.sellNet, FINGERPRINT_PRICE_BANDS)
+    ]).toLowerCase() || "na"
+
+  return `ofp_${hashCanonical([
+    `item:${itemIdentity}`,
+    `category:${category}`,
+    `buy:${buyMarket}`,
+    `sell:${sellMarket}`,
+    `variant:${variantToken}`,
+    `listing:${listingIdentity}`,
+    `buy_quote:${buyQuoteIdentity}`,
+    `sell_quote:${sellQuoteIdentity}`,
+    `quote_type:${quoteTypeIdentity}`,
+    `buy_band:${normalizeBandValue(row?.buy_price ?? row?.buyPrice, FINGERPRINT_PRICE_BANDS)}`,
+    `sell_band:${normalizeBandValue(row?.sell_net ?? row?.sellNet, FINGERPRINT_PRICE_BANDS)}`
+  ])}`
+}
+
+function buildMaterialChangeHash(row = {}) {
+  const metadata = toJsonObject(row?.metadata)
+  const buyMarket = normalizeText(row?.buy_market || row?.buyMarket).toLowerCase() || "na"
+  const sellMarket = normalizeText(row?.sell_market || row?.sellMarket).toLowerCase() || "na"
+  const qualityGrade =
+    normalizeText(row?.quality_grade || row?.qualityGrade || "SPECULATIVE").toUpperCase() ||
+    "SPECULATIVE"
+  const executionConfidence =
+    normalizeText(row?.execution_confidence || row?.executionConfidence || "low").toLowerCase() ||
+    "low"
+  return `mch_${hashCanonical([
+    `buy:${buyMarket}`,
+    `sell:${sellMarket}`,
+    `listing:${resolveListingIdentity(row, metadata)}`,
+    `buy_band:${normalizeBandValue(row?.buy_price ?? row?.buyPrice, MATERIAL_PRICE_BANDS)}`,
+    `sell_band:${normalizeBandValue(row?.sell_net ?? row?.sellNet, MATERIAL_PRICE_BANDS)}`,
+    `profit_band:${normalizeBandValue(row?.profit, MATERIAL_PROFIT_BANDS)}`,
+    `quality:${qualityGrade}`,
+    `confidence:${executionConfidence}`,
+    `verdict:${resolveVerdict(row, metadata)}`,
+    `buy_quote:${normalizeUrlIdentity(row?.buy_url || row?.buyUrl || metadata?.buy_url) || "na"}`,
+    `sell_quote:${normalizeUrlIdentity(row?.sell_url || row?.sellUrl || metadata?.sell_url) || "na"}`
+  ])}`
+}
+
 function buildSignature(row = {}) {
   const itemName = normalizeText(row.itemName || row.item_name)
   const buyMarket = normalizeText(row.buyMarket || row.buy_market).toLowerCase()
@@ -159,6 +360,34 @@ function classifyOpportunityFeedEvent(opportunity = {}, previousRow = null) {
       changeReasons.push(normalized)
     }
   }
+  const buyMarketNow = normalizeText(opportunity.buyMarket || opportunity.buy_market).toLowerCase()
+  const buyMarketPrev = normalizeText(previousRow?.buy_market || previousRow?.buyMarket).toLowerCase()
+  const sellMarketNow = normalizeText(opportunity.sellMarket || opportunity.sell_market).toLowerCase()
+  const sellMarketPrev = normalizeText(previousRow?.sell_market || previousRow?.sellMarket).toLowerCase()
+  if (
+    buyMarketPrev &&
+    sellMarketPrev &&
+    (buyMarketNow !== buyMarketPrev || sellMarketNow !== sellMarketPrev)
+  ) {
+    markChange("market_path")
+  }
+
+  const buyPriceChangePct = safePercentChange(
+    opportunity.buyPrice ?? opportunity.buy_price,
+    previousRow?.buy_price ?? previousRow?.buyPrice
+  )
+  if (buyPriceChangePct >= MIN_BUY_PRICE_CHANGE_PCT) {
+    markChange("buy_price")
+  }
+
+  const sellNetChangePct = safePercentChange(
+    opportunity.sellNet ?? opportunity.sell_net,
+    previousRow?.sell_net ?? previousRow?.sellNet
+  )
+  if (sellNetChangePct >= MIN_SELL_PRICE_CHANGE_PCT) {
+    markChange("sell_net")
+  }
+
   const profitChangePct = safePercentChange(opportunity.profit, previousRow.profit)
   if (profitChangePct >= Number(MIN_PROFIT_CHANGE_PCT || 0)) {
     markChange("profit")
@@ -205,6 +434,36 @@ function classifyOpportunityFeedEvent(opportunity = {}, previousRow = null) {
   const nowMetadata = opportunity?.metadata && typeof opportunity.metadata === "object" ? opportunity.metadata : {}
   const prevMetadata =
     previousRow?.metadata && typeof previousRow.metadata === "object" ? previousRow.metadata : {}
+  const listingNow = resolveListingIdentity(opportunity, nowMetadata)
+  const listingPrev = resolveListingIdentity(previousRow, prevMetadata)
+  if (listingNow !== listingPrev) {
+    markChange("listing")
+  }
+
+  const qualityBucketNow = normalizeText(
+    opportunity.qualityGrade || opportunity.quality_grade
+  ).toUpperCase()
+  const qualityBucketPrev = normalizeText(
+    previousRow?.quality_grade || previousRow?.qualityGrade
+  ).toUpperCase()
+  if (qualityBucketNow !== qualityBucketPrev) {
+    markChange("quality_bucket")
+  }
+
+  const verdictNow = resolveVerdict(opportunity, nowMetadata)
+  const verdictPrev = resolveVerdict(previousRow, prevMetadata)
+  if (verdictNow !== verdictPrev) {
+    markChange("verdict")
+  }
+
+  const materialHashNow = buildMaterialChangeHash(opportunity)
+  const materialHashPrev =
+    normalizeText(previousRow?.material_change_hash || previousRow?.materialChangeHash) ||
+    normalizeText(prevMetadata?.material_change_hash || prevMetadata?.materialChangeHash)
+  if (materialHashPrev && materialHashNow !== materialHashPrev) {
+    markChange("material_hash")
+  }
+
   const nowLatestMarketSignalAt =
     toIsoOrNull(
       nowMetadata?.latest_market_signal_at ??
@@ -274,12 +533,18 @@ function isMateriallyNewOpportunity(opportunity = {}, previousRow = null) {
 
 function buildFeedInsertRow(opportunity = {}, options = {}) {
   const detectedAt = options.detectedAt || new Date().toISOString()
+  const firstSeenAt = toIsoOrNull(options.firstSeenAt || detectedAt) || detectedAt
+  const lastSeenAt = toIsoOrNull(options.lastSeenAt || detectedAt) || detectedAt
+  const lastPublishedAt = toIsoOrNull(options.lastPublishedAt || detectedAt) || detectedAt
+  const timesSeen = toIntegerOrNull(options.timesSeen, 1, 1) || 1
   const scanRunId = normalizeText(options.scanRunId) || null
   const eventMeta = options.eventMeta && typeof options.eventMeta === "object" ? options.eventMeta : {}
   const flags = Array.isArray(opportunity.flags) ? opportunity.flags : []
   const badges = Array.isArray(opportunity.badges) ? opportunity.badges : []
   const rawQualityScore = clampScore(opportunity.score)
   const qualityScoreDisplay = buildDisplayQualityScore(rawQualityScore)
+  const opportunityFingerprint = buildOpportunityFingerprint(opportunity)
+  const materialChangeHash = buildMaterialChangeHash(opportunity)
 
   return {
     item_name: normalizeText(opportunity.itemName || opportunity.marketHashName || "Tracked Item"),
@@ -296,6 +561,12 @@ function buildFeedInsertRow(opportunity = {}, options = {}) {
     quality_grade: normalizeText(opportunity.qualityGrade || "SPECULATIVE") || "SPECULATIVE",
     liquidity_label: normalizeText(opportunity.liquidityBand || "Low") || "Low",
     detected_at: detectedAt,
+    first_seen_at: firstSeenAt,
+    last_seen_at: lastSeenAt,
+    last_published_at: lastPublishedAt,
+    times_seen: timesSeen,
+    opportunity_fingerprint: opportunityFingerprint,
+    material_change_hash: materialChangeHash,
     scan_run_id: scanRunId,
     is_active: true,
     is_duplicate: Boolean(eventMeta?.eventType === "duplicate"),
@@ -368,6 +639,12 @@ function buildFeedInsertRow(opportunity = {}, options = {}) {
       score_category: opportunity.scoreCategory || null,
       ...eventMeta,
       ...(opportunity.metadata && typeof opportunity.metadata === "object" ? opportunity.metadata : {}),
+      opportunity_fingerprint: opportunityFingerprint,
+      material_change_hash: materialChangeHash,
+      first_seen_at: firstSeenAt,
+      last_seen_at: lastSeenAt,
+      last_published_at: lastPublishedAt,
+      times_seen: timesSeen,
       quality_score_display: qualityScoreDisplay
     }
   }
@@ -399,11 +676,65 @@ function mapFeedRowToApiRow(row = {}) {
     normalizeText(
       row?.skinport_price_integrity_status ?? metadata?.skinport_price_integrity_status
     ).toLowerCase() || null
+  const opportunityFingerprint =
+    normalizeText(
+      row?.opportunity_fingerprint ??
+        row?.opportunityFingerprint ??
+        metadata?.opportunity_fingerprint ??
+        metadata?.opportunityFingerprint
+    ) || null
+  const firstSeenAt =
+    toIsoOrNull(
+      row?.first_seen_at ?? row?.firstSeenAt ?? metadata?.first_seen_at ?? metadata?.firstSeenAt
+    ) ||
+    discoveredAt ||
+    null
+  const lastSeenAt =
+    toIsoOrNull(
+      row?.last_seen_at ?? row?.lastSeenAt ?? metadata?.last_seen_at ?? metadata?.lastSeenAt
+    ) ||
+    detectedAt ||
+    null
+  const lastPublishedAt =
+    toIsoOrNull(
+      row?.last_published_at ??
+        row?.lastPublishedAt ??
+        metadata?.last_published_at ??
+        metadata?.lastPublishedAt
+    ) ||
+    toIsoOrNull(row?.feed_published_at) ||
+    detectedAt ||
+    null
+  const timesSeen =
+    toIntegerOrNull(
+      row?.times_seen ?? row?.timesSeen ?? metadata?.times_seen ?? metadata?.timesSeen,
+      1,
+      1
+    ) || 1
+  const materialChangeHash =
+    normalizeText(
+      row?.material_change_hash ??
+        row?.materialChangeHash ??
+        metadata?.material_change_hash ??
+        metadata?.materialChangeHash
+    ) || null
   return {
     feedId: row?.id || null,
     detectedAt,
     discoveredAt,
     discovered_at: discoveredAt,
+    firstSeenAt,
+    first_seen_at: firstSeenAt,
+    lastSeenAt,
+    last_seen_at: lastSeenAt,
+    lastPublishedAt,
+    last_published_at: lastPublishedAt,
+    timesSeen,
+    times_seen: timesSeen,
+    opportunityFingerprint,
+    opportunity_fingerprint: opportunityFingerprint,
+    materialChangeHash,
+    material_change_hash: materialChangeHash,
     scanRunId: row?.scan_run_id || null,
     isActive: row?.is_active == null ? true : Boolean(row.is_active),
     isDuplicate: Boolean(row?.is_duplicate),
@@ -606,6 +937,8 @@ function mapFeedRowToApiRow(row = {}) {
 
 module.exports = {
   buildSignature,
+  buildOpportunityFingerprint,
+  buildMaterialChangeHash,
   classifyOpportunityFeedEvent,
   isMateriallyNewOpportunity,
   buildFeedInsertRow,
