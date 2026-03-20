@@ -13628,7 +13628,6 @@ function renderGlobalOpportunitiesTableSkeleton(rowCount = 8) {
             <th>Profit</th>
             <th>Spread</th>
             <th>Quality Score</th>
-            <th>Confidence</th>
             <th>Liquidity</th>
             <th>Signals</th>
             <th>Actions</th>
@@ -13637,7 +13636,7 @@ function renderGlobalOpportunitiesTableSkeleton(rowCount = 8) {
         <tbody>
           ${Array.from({ length: Math.max(Number(rowCount) || 0, 1) }, (_row, idx) => `
             <tr class="opportunities-skeleton-row" data-skeleton-index="${idx}">
-              <td colspan="10"><div class="table-row-skeleton"></div></td>
+              <td colspan="9"><div class="table-row-skeleton"></div></td>
             </tr>
           `).join("")}
         </tbody>
@@ -13800,7 +13799,6 @@ function renderGlobalOpportunitiesTab() {
             <th>Profit</th>
             <th>Spread</th>
             <th>Quality Score</th>
-            <th>Confidence</th>
             <th>Liquidity</th>
             <th>Signals</th>
             <th>Actions</th>
@@ -13813,7 +13811,6 @@ function renderGlobalOpportunitiesTab() {
               const score = lockedPreview
                 ? null
                 : getOpportunityDisplayScore(row);
-              const executionConfidenceLabel = lockedPreview ? "Locked" : "In Insight";
               const liquidityLabel = lockedPreview
                 ? "Premium preview"
                 : formatLiquidityBandLabel(
@@ -14078,12 +14075,6 @@ function renderGlobalOpportunitiesTab() {
                   <td class="opportunity-metric-cell opportunity-score-cell">
                     <strong class="opportunity-metric-value opportunity-score-value neutral">${scoreValueMarkup}</strong>
                     <small>Quality score</small>
-                  </td>
-                  <td class="opportunity-metric-cell opportunity-confidence-cell">
-                    <strong class="opportunity-metric-value opportunity-confidence-value neutral">${escapeHtml(
-                      executionConfidenceLabel,
-                    )}</strong>
-                    <small>Execution confidence</small>
                   </td>
                   <td class="opportunity-metric-cell opportunity-liquidity-cell">
                     <strong class="opportunity-metric-value">${escapeHtml(
