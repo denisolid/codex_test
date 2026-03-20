@@ -6487,15 +6487,21 @@ a:hover {
 }
 
 .opportunity-badge.is-risk {
-  border-color: rgba(255, 186, 128, 0.4);
-  background: rgba(50, 34, 19, 0.55);
-  color: #ffd8aa;
+  border-color: rgba(136, 156, 190, 0.34);
+  background: rgba(16, 25, 40, 0.68);
+  color: #c6d7f4;
 }
 
 .opportunity-badge.signal-clean {
-  border-color: rgba(109, 225, 167, 0.44);
-  background: rgba(20, 60, 43, 0.58);
-  color: #b5f7d6;
+  border-color: rgba(136, 156, 190, 0.34);
+  background: rgba(16, 25, 40, 0.68);
+  color: #c6d7f4;
+}
+
+.opportunity-badge.primary-note {
+  border-color: rgba(136, 156, 190, 0.34);
+  background: rgba(16, 25, 40, 0.68);
+  color: #c6d7f4;
 }
 
 .opportunity-category-badge {
@@ -6594,44 +6600,12 @@ a:hover {
   height: 90px;
   cursor: zoom-in;
   border-radius: 14px;
-  border: 1px solid rgba(var(--rarity-rgb), 0.88);
-  border: 1px solid color-mix(in srgb, var(--rarity-color) 82%, #12213f 18%);
-  outline: 1px solid rgba(var(--rarity-rgb), 0.58);
-  outline: 1px solid color-mix(in srgb, var(--rarity-color) 58%, transparent);
-  outline-offset: -1px;
+  border: 1px solid rgba(126, 146, 182, 0.42);
   overflow: hidden;
-  background:
-    linear-gradient(155deg, rgba(7, 11, 20, 0.96), rgba(10, 15, 27, 0.9)) padding-box,
-    linear-gradient(
-      118deg,
-      rgba(var(--rarity-rgb), 0.94),
-      rgba(255, 255, 255, 0.38),
-      rgba(var(--rarity-rgb), 0.96),
-      rgba(var(--rarity-rgb), 0.7)
-    ) border-box;
-  background:
-    linear-gradient(155deg, rgba(7, 11, 20, 0.96), rgba(10, 15, 27, 0.9)) padding-box,
-    linear-gradient(
-      118deg,
-      color-mix(in srgb, var(--rarity-color) 94%, transparent),
-      color-mix(in srgb, var(--rarity-color) 62%, #ffffff 38%),
-      color-mix(in srgb, var(--rarity-color) 96%, transparent),
-      color-mix(in srgb, var(--rarity-color) 70%, transparent)
-    ) border-box;
-  background-size:
-    100% 100%,
-    220% 220%;
-  animation: opportunity-rarity-border-flow 7.4s linear infinite;
+  background: linear-gradient(155deg, rgba(7, 11, 20, 0.96), rgba(10, 15, 27, 0.9));
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 0 0 1px rgba(var(--rarity-rgb), 0.48),
-    0 10px 22px rgba(3, 7, 15, 0.56),
-    0 0 32px rgba(var(--rarity-rgb), 0.34);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 0 0 1px color-mix(in srgb, var(--rarity-color) 48%, transparent),
-    0 10px 22px rgba(3, 7, 15, 0.56),
-    0 0 32px color-mix(in srgb, var(--rarity-color) 34%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 8px 18px rgba(3, 7, 15, 0.48);
   transition:
     transform 200ms ease,
     box-shadow 220ms ease,
@@ -6868,41 +6842,41 @@ a:hover {
     rgba(9, 14, 26, 0.94),
     rgba(7, 11, 20, 0.9)
   );
-  --opportunity-row-border: rgba(122, 149, 200, 0.26);
+  --opportunity-row-border: rgba(126, 146, 182, 0.24);
 }
 
 .opportunity-table-row.opportunity-row-new {
   --opportunity-row-bg: linear-gradient(
     140deg,
-    rgba(8, 30, 24, 0.92),
-    rgba(8, 18, 24, 0.9)
+    rgba(10, 15, 27, 0.95),
+    rgba(8, 12, 22, 0.92)
   );
-  --opportunity-row-border: rgba(46, 229, 143, 0.34);
+  --opportunity-row-border: rgba(126, 146, 182, 0.24);
 }
 
 .opportunity-table-row.opportunity-row-locked {
   --opportunity-row-bg: linear-gradient(
     140deg,
-    rgba(31, 22, 10, 0.94),
-    rgba(22, 16, 10, 0.9)
+    rgba(13, 17, 27, 0.95),
+    rgba(9, 13, 23, 0.92)
   );
-  --opportunity-row-border: rgba(255, 208, 124, 0.4);
+  --opportunity-row-border: rgba(126, 146, 182, 0.26);
 }
 
 .opportunity-table-row.opportunity-row-verdict-strong {
-  --opportunity-row-border: rgba(82, 228, 158, 0.46);
+  --opportunity-row-border: rgba(126, 146, 182, 0.24);
 }
 
 .opportunity-table-row.opportunity-row-verdict-good {
-  --opportunity-row-border: rgba(112, 198, 255, 0.44);
+  --opportunity-row-border: rgba(126, 146, 182, 0.24);
 }
 
 .opportunity-table-row.opportunity-row-verdict-watch {
-  --opportunity-row-border: rgba(255, 205, 126, 0.44);
+  --opportunity-row-border: rgba(126, 146, 182, 0.24);
 }
 
 .opportunity-table-row.opportunity-row-verdict-risky {
-  --opportunity-row-border: rgba(255, 151, 166, 0.5);
+  --opportunity-row-border: rgba(126, 146, 182, 0.24);
 }
 
 .opportunities-table tbody td {
@@ -6936,16 +6910,16 @@ a:hover {
     rgba(13, 22, 38, 0.98),
     rgba(10, 16, 30, 0.94)
   );
-  --opportunity-row-border: rgba(102, 162, 239, 0.44);
+  --opportunity-row-border: rgba(139, 160, 196, 0.34);
 }
 
 .opportunity-table-row.opportunity-row-locked:hover {
   --opportunity-row-bg: linear-gradient(
     140deg,
-    rgba(41, 28, 12, 0.98),
-    rgba(29, 21, 12, 0.94)
+    rgba(18, 24, 37, 0.98),
+    rgba(13, 19, 31, 0.95)
   );
-  --opportunity-row-border: rgba(255, 210, 138, 0.56);
+  --opportunity-row-border: rgba(139, 160, 196, 0.34);
 }
 
 .opportunity-table-row:hover td {
@@ -6960,14 +6934,8 @@ a:hover {
   transform: translateY(-2px);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 0 0 2px rgba(var(--rarity-rgb), 0.64),
-    0 14px 26px rgba(4, 8, 18, 0.58),
-    0 0 38px rgba(var(--rarity-rgb), 0.44);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 0 0 2px color-mix(in srgb, var(--rarity-color) 64%, transparent),
-    0 14px 26px rgba(4, 8, 18, 0.58),
-    0 0 38px color-mix(in srgb, var(--rarity-color) 44%, transparent);
+    0 0 0 1px rgba(139, 160, 196, 0.4),
+    0 12px 24px rgba(4, 8, 18, 0.52);
 }
 
 .opportunity-table-row:hover .opportunity-item-media::after,
@@ -7000,7 +6968,7 @@ a:hover {
 .opportunity-table-row:hover .opportunity-rarity-tag {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 0 20px color-mix(in srgb, var(--rarity-color) 24%, transparent);
+    0 0 12px rgba(122, 145, 186, 0.18);
 }
 
 .opportunities-table-global {
@@ -7168,9 +7136,9 @@ a:hover {
 }
 
 .opportunity-verdict-badge.tone-risky {
-  color: #ffc1cd;
-  border-color: rgba(255, 128, 154, 0.54);
-  background: rgba(80, 31, 45, 0.68);
+  color: #ffd9b2;
+  border-color: rgba(218, 168, 112, 0.54);
+  background: rgba(78, 54, 26, 0.68);
 }
 
 .opportunity-verdict-badge.tone-locked {
@@ -7207,9 +7175,9 @@ a:hover {
 }
 
 .opportunity-score-value.neutral {
-  color: #9ec9ff;
-  border-color: rgba(90, 174, 255, 0.38);
-  background: rgba(19, 43, 74, 0.58);
+  color: #d3e2fb;
+  border-color: rgba(133, 152, 186, 0.36);
+  background: rgba(18, 25, 40, 0.66);
 }
 
 .opportunity-score-value.warning {
@@ -7240,6 +7208,12 @@ a:hover {
   color: #ff9cb4;
   border-color: rgba(255, 95, 134, 0.4);
   background: rgba(66, 30, 44, 0.62);
+}
+
+.opportunity-confidence-value.neutral {
+  color: #cfe0fc;
+  border-color: rgba(133, 152, 186, 0.36);
+  background: rgba(18, 25, 40, 0.66);
 }
 
 .opportunity-metric-value.positive {
@@ -7377,21 +7351,21 @@ tr.opportunity-row-new td {
 }
 
 .opportunity-freshness-pill.tone-live {
-  border-color: rgba(70, 222, 149, 0.46);
-  color: #abf5d4;
-  background: rgba(18, 64, 45, 0.62);
+  border-color: rgba(124, 167, 222, 0.36);
+  color: #bdd8ff;
+  background: rgba(17, 30, 50, 0.62);
 }
 
 .opportunity-freshness-pill.tone-stale {
-  border-color: rgba(255, 195, 112, 0.46);
-  color: #ffdca8;
-  background: rgba(77, 52, 23, 0.62);
+  border-color: rgba(133, 159, 197, 0.36);
+  color: #c5d8f6;
+  background: rgba(19, 28, 45, 0.62);
 }
 
 .opportunity-freshness-pill.tone-degraded {
-  border-color: rgba(255, 130, 158, 0.46);
-  color: #ffc1cf;
-  background: rgba(78, 32, 46, 0.64);
+  border-color: rgba(132, 154, 190, 0.36);
+  color: #c2d3ef;
+  background: rgba(18, 26, 43, 0.64);
 }
 
 .opportunity-signal-meta {
