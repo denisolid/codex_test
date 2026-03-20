@@ -8986,6 +8986,14 @@ function formatOpportunityInsightVerdict(verdict) {
   return toTitle(safe.replaceAll("_", " "));
 }
 
+function formatOpportunityInsightReason(reason) {
+  const safe = String(reason || "")
+    .trim()
+    .toLowerCase();
+  if (!safe) return "Mixed Setup";
+  return toTitle(safe.replaceAll("_", " "));
+}
+
 function normalizeOpportunityLiveStatus(value) {
   const raw = String(value || "")
     .trim()
@@ -9886,6 +9894,28 @@ function renderOpportunityInsightOverlay() {
     .toUpperCase();
   const verdictLabel = formatOpportunityInsightVerdict(payload?.verdict);
   const verdictTone = getOpportunityInsightVerdictTone(payload?.verdict);
+  const headlineToneRaw = String(payload?.headline_style || verdictTone)
+    .trim()
+    .toLowerCase();
+  const headlineTone = [
+    "positive",
+    "positive-soft",
+    "warning",
+    "danger-soft",
+    "danger",
+  ].includes(headlineToneRaw)
+    ? headlineToneRaw
+    : verdictTone;
+  const primaryReasonLabel = formatOpportunityInsightReason(
+    payload?.primary_reason,
+  );
+  const secondaryReasonLabel = formatOpportunityInsightReason(
+    payload?.secondary_reason,
+  );
+  const fallbackHeadlineText = `${verdictLabel} setup. Primary: ${primaryReasonLabel}. Secondary: ${secondaryReasonLabel}.`;
+  const headlineText = String(
+    payload?.headline_text || payload?.reason_summary || fallbackHeadlineText,
+  ).trim();
   const riskFlags = Array.isArray(payload?.risk_flags) ? payload.risk_flags : [];
   const failureConditions = Array.isArray(payload?.failure_conditions)
     ? payload.failure_conditions
@@ -9903,12 +9933,13 @@ function renderOpportunityInsightOverlay() {
       : payload
         ? `
           <div class="opportunity-insight-layout">
-            <section class="opportunity-insight-summary">
+            <section class="opportunity-insight-summary tone-${escapeHtml(headlineTone)}">
               <div class="opportunity-insight-summary-head">
                 <span class="opportunity-insight-verdict tone-${escapeHtml(verdictTone)}">${escapeHtml(verdictLabel)}</span>
                 <small class="muted">Updated ${escapeHtml(formatRelativeTime(payload?.generated_at || null))}</small>
               </div>
-              <p>${escapeHtml(payload?.reason_summary || "No summary available yet.")}</p>
+              <p>${escapeHtml(headlineText)}</p>
+              <small class="muted">Primary: ${escapeHtml(primaryReasonLabel)}${secondaryReasonLabel ? ` • Secondary: ${escapeHtml(secondaryReasonLabel)}` : ""}</small>
             </section>
             <div class="opportunity-insight-grid">
               <section class="opportunity-insight-card">
@@ -13776,12 +13807,23 @@ function renderGlobalOpportunitiesTab() {
               const scanLabel = row?.scanRunId
                 ? `Scan #${formatScanRunLabel(row.scanRunId)}`
                 : "";
-              const badges = [
+              const rawBadges = [
                 ...(row?.isNew ? ["NEW"] : []),
                 liveStatusLabel.toUpperCase(),
                 ...baseBadges,
                 ...(lockedPreview ? ["LOCKED", "FULL ACCESS"] : []),
               ];
+              const maxVisibleBadges = 5;
+              const badgeOverflowCount = Math.max(
+                rawBadges.length - maxVisibleBadges,
+                0,
+              );
+              const badges = badgeOverflowCount
+                ? [
+                    ...rawBadges.slice(0, Math.max(maxVisibleBadges - 1, 0)),
+                    `+${formatNumber(badgeOverflowCount, 0)}`,
+                  ]
+                : rawBadges;
               const fallbackImage =
                 itemCategory === "case" ? defaultCaseImage : defaultSkinImage;
               const buyUrl =
@@ -13836,7 +13878,7 @@ function renderGlobalOpportunitiesTab() {
               const liquiditySubline = lockedPreview
                 ? escapeHtml(String(row?.lockHint || "Premium high-value market category"))
                 : escapeHtml(
-                    `Coverage ${formatNumber(row?.marketCoverage || 0, 0)} market(s) | Signal ${signalAgeLabel} | Refresh ${refreshAttemptLabel}`,
+                    `Cov ${formatNumber(row?.marketCoverage || 0, 0)} | Sig ${signalAgeLabel} | Ref ${refreshAttemptLabel}`,
                   );
               const lockedMessage = String(
                 row?.lockMessage || "Unlock knife and glove opportunities with Full Access",

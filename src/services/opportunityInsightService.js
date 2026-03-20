@@ -395,6 +395,253 @@ function resolveVerdict({
   return "skip"
 }
 
+function classifyInsightReasons({
+  verdict = "",
+  confidenceScore = 0,
+  freshnessScore = 0,
+  liquidityScore = 0,
+  netProfitPct = 0,
+  exitEtaHours = null,
+  riskFlags = []
+} = {}) {
+  const flags = new Set(uniqueStringList(riskFlags))
+  const confidence = clampScore(confidenceScore)
+  const freshness = clampScore(freshnessScore)
+  const liquidity = clampScore(liquidityScore)
+  const netPct = toFiniteOrNull(netProfitPct) ?? 0
+  const eta = toFiniteOrNull(exitEtaHours)
+  const safeVerdict = normalizeText(verdict).toLowerCase()
+
+  const reasonState = {
+    stale_signal: flags.has("stale_signal") || freshness <= 50,
+    low_liquidity: flags.has("low_liquidity") || liquidity <= 52,
+    weak_exit:
+      (eta != null && eta >= 30) ||
+      (liquidity <= 52 && eta != null && eta >= 24),
+    execution_uncertainty: flags.has("execution_uncertainty") || confidence < 60,
+    fee_drag: flags.has("high_exit_fee_drag") || (netPct > 0 && netPct < 2.5),
+    strong_edge: netPct >= 6 && confidence >= 75 && freshness >= 68 && liquidity >= 68,
+    healthy_market: freshness >= 72 && liquidity >= 72,
+    mixed_setup: false
+  }
+
+  let priority = [
+    "stale_signal",
+    "low_liquidity",
+    "weak_exit",
+    "execution_uncertainty",
+    "fee_drag",
+    "mixed_setup"
+  ]
+  if (safeVerdict === "strong_buy") {
+    priority = [
+      "strong_edge",
+      "healthy_market",
+      "execution_uncertainty",
+      "stale_signal",
+      "low_liquidity",
+      "weak_exit",
+      "fee_drag",
+      "mixed_setup"
+    ]
+  } else if (safeVerdict === "good_small_size") {
+    priority = [
+      "strong_edge",
+      "healthy_market",
+      "stale_signal",
+      "low_liquidity",
+      "weak_exit",
+      "execution_uncertainty",
+      "fee_drag",
+      "mixed_setup"
+    ]
+  } else if (safeVerdict === "watch") {
+    priority = [
+      "stale_signal",
+      "low_liquidity",
+      "weak_exit",
+      "execution_uncertainty",
+      "fee_drag",
+      "mixed_setup"
+    ]
+  } else if (safeVerdict === "skip") {
+    priority = [
+      "stale_signal",
+      "execution_uncertainty",
+      "low_liquidity",
+      "weak_exit",
+      "fee_drag",
+      "mixed_setup"
+    ]
+  }
+
+  let primaryReason = priority.find((reason) => reasonState[reason]) || "mixed_setup"
+
+  const staleDominant = reasonState.stale_signal && freshness <= 52
+  const liquidityDominant =
+    (reasonState.low_liquidity || reasonState.weak_exit) &&
+    (liquidity <= 52 || (eta != null && eta >= 30))
+
+  if (staleDominant && safeVerdict !== "strong_buy") {
+    primaryReason = "stale_signal"
+  } else if (liquidityDominant && safeVerdict !== "strong_buy") {
+    primaryReason = reasonState.low_liquidity ? "low_liquidity" : "weak_exit"
+  }
+
+  let secondaryReason =
+    priority.find((reason) => reason !== primaryReason && reasonState[reason]) || null
+  if (!secondaryReason) {
+    secondaryReason =
+      primaryReason === "strong_edge"
+        ? "healthy_market"
+        : primaryReason === "healthy_market"
+          ? "strong_edge"
+          : "mixed_setup"
+  }
+
+  return {
+    primary_reason: primaryReason,
+    secondary_reason: secondaryReason
+  }
+}
+
+function describeInsightReason(reason, metrics = {}) {
+  const confidence = clampScore(metrics.confidenceScore)
+  const freshness = clampScore(metrics.freshnessScore)
+  const liquidity = clampScore(metrics.liquidityScore)
+  const netPct = toFiniteOrNull(metrics.netProfitPct)
+  const eta = toFiniteOrNull(metrics.exitEtaHours)
+
+  if (reason === "stale_signal") {
+    return `stale signal (${freshness}/100 freshness)`
+  }
+  if (reason === "low_liquidity") {
+    return `thin liquidity (${liquidity}/100 liquidity)`
+  }
+  if (reason === "weak_exit") {
+    return eta == null ? "weak exit depth" : `weak exit depth (~${round2(eta)}h ETA)`
+  }
+  if (reason === "execution_uncertainty") {
+    return `execution uncertainty (${confidence}/100 confidence)`
+  }
+  if (reason === "fee_drag") {
+    return netPct == null ? "fee drag on net edge" : `fee drag on net edge (${round2(netPct)}% net)`
+  }
+  if (reason === "strong_edge") {
+    return netPct == null ? "strong fee-adjusted edge" : `strong edge (${round2(netPct)}% net after fees)`
+  }
+  if (reason === "healthy_market") {
+    return `healthy market (${liquidity}/100 liquidity, ${freshness}/100 freshness)`
+  }
+  return "mixed setup"
+}
+
+function resolveHeadlineStyle(verdict) {
+  const safeVerdict = normalizeText(verdict).toLowerCase()
+  if (safeVerdict === "strong_buy") return "positive"
+  if (safeVerdict === "good_small_size") return "positive-soft"
+  if (safeVerdict === "watch") return "warning"
+  if (safeVerdict === "risky") return "danger-soft"
+  return "danger"
+}
+
+function buildInsightHeadline(insight = {}) {
+  try {
+    const verdict = normalizeText(insight.verdict).toLowerCase()
+    const confidenceScore = clampScore(insight.confidence_score)
+    const freshnessScore = clampScore(insight.freshness_score)
+    const liquidityScore = clampScore(insight.liquidity_score)
+    const netProfitPct = toFiniteOrNull(insight.net_profit_pct_after_fees)
+    const exitEtaHours = toFiniteOrNull(insight.exit_eta_hours)
+    const riskFlags = Array.isArray(insight.risk_flags) ? insight.risk_flags : []
+
+    const reasonClass = classifyInsightReasons({
+      verdict,
+      confidenceScore,
+      freshnessScore,
+      liquidityScore,
+      netProfitPct,
+      exitEtaHours,
+      riskFlags
+    })
+    const primaryReason = reasonClass.primary_reason
+    const secondaryReason = reasonClass.secondary_reason
+    const primaryText = describeInsightReason(primaryReason, {
+      confidenceScore,
+      freshnessScore,
+      liquidityScore,
+      netProfitPct,
+      exitEtaHours
+    })
+    const secondaryText = describeInsightReason(secondaryReason, {
+      confidenceScore,
+      freshnessScore,
+      liquidityScore,
+      netProfitPct,
+      exitEtaHours
+    })
+
+    let headlineText = "Setup needs another validation pass before acting."
+    if (verdict === "strong_buy") {
+      if (primaryReason === "stale_signal") {
+        headlineText = `Strong edge remains, but stale signal needs refresh first. Primary: ${primaryText}. Secondary: ${secondaryText}.`
+      } else if (primaryReason === "low_liquidity" || primaryReason === "weak_exit") {
+        headlineText = `Strong edge with thin exit conditions. Primary: ${primaryText}. Secondary: ${secondaryText}.`
+      } else {
+        headlineText = `Strong buy setup confirmed. Primary: ${primaryText}. Secondary: ${secondaryText}.`
+      }
+    } else if (verdict === "good_small_size") {
+      if (primaryReason === "stale_signal") {
+        headlineText = `Good small-size setup, but stale signal is forming. Primary: ${primaryText}. Secondary: ${secondaryText}.`
+      } else if (primaryReason === "low_liquidity" || primaryReason === "weak_exit") {
+        headlineText = `Good only at small size because exit is thin. Primary: ${primaryText}. Secondary: ${secondaryText}.`
+      } else {
+        headlineText = `Good small-size setup with controlled risk. Primary: ${primaryText}. Secondary: ${secondaryText}.`
+      }
+    } else if (verdict === "watch") {
+      if (primaryReason === "stale_signal") {
+        headlineText = `Watchlist candidate: stale signal is limiting conviction. Primary: ${primaryText}. Secondary: ${secondaryText}.`
+      } else if (primaryReason === "low_liquidity" || primaryReason === "weak_exit") {
+        headlineText = `Watchlist candidate: liquidity and exit depth need improvement. Primary: ${primaryText}. Secondary: ${secondaryText}.`
+      } else {
+        headlineText = `Watch setup: edge exists but needs cleaner confirmation. Primary: ${primaryText}. Secondary: ${secondaryText}.`
+      }
+    } else if (verdict === "risky") {
+      if (primaryReason === "stale_signal") {
+        headlineText = `Risky setup: stale signal is dominant and may invalidate quoted edge. Primary: ${primaryText}. Secondary: ${secondaryText}.`
+      } else if (primaryReason === "low_liquidity" || primaryReason === "weak_exit") {
+        headlineText = `Risky setup: thin liquidity points to a weak exit path. Primary: ${primaryText}. Secondary: ${secondaryText}.`
+      } else {
+        headlineText = `Risky setup: protection is weak if execution drifts. Primary: ${primaryText}. Secondary: ${secondaryText}.`
+      }
+    } else if (verdict === "skip") {
+      if (primaryReason === "stale_signal") {
+        headlineText = `Skip for now: stale signal dominance makes this non-actionable. Primary: ${primaryText}. Secondary: ${secondaryText}.`
+      } else if (primaryReason === "low_liquidity" || primaryReason === "weak_exit") {
+        headlineText = `Skip for now: thin liquidity and weak exit quality collapse reliability. Primary: ${primaryText}. Secondary: ${secondaryText}.`
+      } else {
+        headlineText = `Skip for now: risk-adjusted edge is not reliable. Primary: ${primaryText}. Secondary: ${secondaryText}.`
+      }
+    } else {
+      headlineText = `Decision support is available, but verdict is unresolved. Primary: ${primaryText}. Secondary: ${secondaryText}.`
+    }
+
+    return {
+      headline_text: headlineText,
+      headline_style: resolveHeadlineStyle(verdict),
+      primary_reason: primaryReason,
+      secondary_reason: secondaryReason
+    }
+  } catch (err) {
+    return {
+      headline_text: "Insight headline unavailable due to incomplete deterministic inputs.",
+      headline_style: "warning",
+      primary_reason: "mixed_setup",
+      secondary_reason: "mixed_setup"
+    }
+  }
+}
+
 function buildFailureConditions({
   opportunity = {},
   metrics = {},
@@ -438,14 +685,13 @@ function buildExplanationBlocks({
   freshness = {},
   liquidity = {},
   confidence = {},
-  verdict = ""
+  verdict = "",
+  headline = {}
 } = {}) {
   const buyMarket = normalizeText(opportunity.buyMarket || "buy market")
   const sellMarket = normalizeText(opportunity.sellMarket || "sell market")
   const profitUsd = metrics.netProfitUsd == null ? 0 : metrics.netProfitUsd
   const spreadPct = metrics.netProfitPct == null ? 0 : metrics.netProfitPct
-  const ageHours =
-    freshness.ageMinutes == null ? null : round2(Number(freshness.ageMinutes || 0) / 60)
 
   const whyThisTradeExists = `The opportunity exists because ${buyMarket} entry pricing is below ${sellMarket} fee-adjusted exit pricing, leaving about $${round2(
     profitUsd
@@ -472,16 +718,9 @@ function buildExplanationBlocks({
         ? "Exit is workable but likely needs patient order placement."
         : "Exit may be hard without discounting because recent fill depth is limited."
 
-  const verdictText = {
-    strong_buy: "Strong setup with good edge and execution quality.",
-    good_small_size: "Positive setup, but keep position size disciplined.",
-    watch: "Edge exists, but wait for confirmation before committing size.",
-    risky: "Trade can work, but downside/risk-of-miss is elevated.",
-    skip: "Risk-adjusted setup is not actionable right now."
-  }[verdict] || "Risk-adjusted setup is not actionable right now."
-
-  const freshnessText = ageHours == null ? "Freshness signal unavailable." : `Signal age: ${ageHours}h.`
-  const reasonSummary = `${verdictText} ${freshnessText}`
+  const reasonSummary =
+    normalizeText(headline.headline_text) ||
+    `Verdict ${normalizeText(verdict || "watch").toUpperCase()}.`
 
   return {
     reasonSummary,
@@ -537,13 +776,23 @@ function buildInsightPayloadFromOpportunity(opportunity = {}, options = {}) {
     liquidity,
     profile
   })
+  const headline = buildInsightHeadline({
+    verdict,
+    confidence_score: confidence.score,
+    freshness_score: freshness.score,
+    liquidity_score: liquidity.score,
+    net_profit_pct_after_fees: metrics.netProfitPct,
+    exit_eta_hours: exitEtaHours,
+    risk_flags: riskFlags
+  })
   const explanations = buildExplanationBlocks({
     opportunity,
     metrics,
     freshness,
     liquidity,
     confidence,
-    verdict
+    verdict,
+    headline
   })
 
   return {
@@ -557,7 +806,11 @@ function buildInsightPayloadFromOpportunity(opportunity = {}, options = {}) {
     exit_eta_hours: exitEtaHours,
     recommended_position_size: recommendedPositionSize,
     risk_flags: riskFlags,
-    reason_summary: explanations.reasonSummary,
+    reason_summary: headline.headline_text,
+    headline_text: headline.headline_text,
+    headline_style: headline.headline_style,
+    primary_reason: headline.primary_reason,
+    secondary_reason: headline.secondary_reason,
     failure_conditions: failureConditions,
     verdict,
     why_this_trade_exists: explanations.whyThisTradeExists,
@@ -729,6 +982,8 @@ exports.__testables = {
   computeConfidenceScore,
   buildRiskFlags,
   resolveVerdict,
+  classifyInsightReasons,
+  buildInsightHeadline,
   buildFailureConditions,
   buildInsightPayloadFromOpportunity,
   clearInsightCache
