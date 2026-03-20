@@ -6486,6 +6486,18 @@ a:hover {
   color: #ffcad1;
 }
 
+.opportunity-badge.is-risk {
+  border-color: rgba(255, 186, 128, 0.4);
+  background: rgba(50, 34, 19, 0.55);
+  color: #ffd8aa;
+}
+
+.opportunity-badge.signal-clean {
+  border-color: rgba(109, 225, 167, 0.44);
+  background: rgba(20, 60, 43, 0.58);
+  color: #b5f7d6;
+}
+
 .opportunity-category-badge {
   display: inline-flex;
   align-items: center;
@@ -6877,6 +6889,22 @@ a:hover {
   --opportunity-row-border: rgba(255, 208, 124, 0.4);
 }
 
+.opportunity-table-row.opportunity-row-verdict-strong {
+  --opportunity-row-border: rgba(82, 228, 158, 0.46);
+}
+
+.opportunity-table-row.opportunity-row-verdict-good {
+  --opportunity-row-border: rgba(112, 198, 255, 0.44);
+}
+
+.opportunity-table-row.opportunity-row-verdict-watch {
+  --opportunity-row-border: rgba(255, 205, 126, 0.44);
+}
+
+.opportunity-table-row.opportunity-row-verdict-risky {
+  --opportunity-row-border: rgba(255, 151, 166, 0.5);
+}
+
 .opportunities-table tbody td {
   border-bottom: 0;
   background: var(--opportunity-row-bg);
@@ -7078,6 +7106,79 @@ a:hover {
   text-shadow: 0 0 18px rgba(54, 214, 145, 0.24);
 }
 
+.opportunity-profit-value.tone-strong {
+  font-size: 1.14rem;
+  color: #a6f8cf;
+  text-shadow: 0 0 20px rgba(72, 218, 152, 0.32);
+}
+
+.opportunity-profit-value.tone-good {
+  font-size: 1.1rem;
+  color: #9ce7ff;
+  text-shadow: 0 0 18px rgba(84, 176, 255, 0.22);
+}
+
+.opportunity-profit-value.tone-watch {
+  color: #ffdca2;
+  text-shadow: 0 0 16px rgba(255, 184, 88, 0.16);
+}
+
+.opportunity-profit-value.tone-risky {
+  color: #ffb0c1;
+  text-shadow: 0 0 14px rgba(255, 108, 142, 0.14);
+}
+
+.opportunity-profit-value.tone-locked {
+  color: #ffe2af;
+  text-shadow: none;
+}
+
+.opportunity-verdict-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  margin-bottom: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(127, 153, 204, 0.34);
+  background: rgba(11, 17, 30, 0.76);
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.opportunity-verdict-badge.tone-strong {
+  color: #a9f7d2;
+  border-color: rgba(70, 222, 149, 0.52);
+  background: rgba(22, 73, 51, 0.66);
+}
+
+.opportunity-verdict-badge.tone-good {
+  color: #b9e8ff;
+  border-color: rgba(103, 181, 255, 0.52);
+  background: rgba(18, 52, 82, 0.66);
+}
+
+.opportunity-verdict-badge.tone-watch {
+  color: #ffdca8;
+  border-color: rgba(255, 191, 104, 0.54);
+  background: rgba(76, 50, 22, 0.68);
+}
+
+.opportunity-verdict-badge.tone-risky {
+  color: #ffc1cd;
+  border-color: rgba(255, 128, 154, 0.54);
+  background: rgba(80, 31, 45, 0.68);
+}
+
+.opportunity-verdict-badge.tone-locked {
+  color: #ffe7bc;
+  border-color: rgba(255, 214, 136, 0.56);
+  background: rgba(76, 54, 19, 0.7);
+}
+
 .opportunity-spread-value {
   font-size: 0.9rem;
   font-weight: 700;
@@ -7166,6 +7267,13 @@ a:hover {
   text-transform: uppercase;
 }
 
+.opportunity-profit-path {
+  color: #c7d8f5;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  font-size: 0.68rem;
+}
+
 .opportunities-table .opportunity-metric-cell .opportunity-market-action-btn {
   width: 100%;
   min-width: 0;
@@ -7246,6 +7354,52 @@ tr.opportunity-row-new td {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.opportunity-signal-stack {
+  display: grid;
+  gap: 7px;
+}
+
+.opportunity-freshness-pill {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(127, 153, 204, 0.34);
+  background: rgba(12, 19, 33, 0.76);
+  color: #c9dcfb;
+  font-size: 0.64rem;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: 0.03em;
+}
+
+.opportunity-freshness-pill.tone-live {
+  border-color: rgba(70, 222, 149, 0.46);
+  color: #abf5d4;
+  background: rgba(18, 64, 45, 0.62);
+}
+
+.opportunity-freshness-pill.tone-stale {
+  border-color: rgba(255, 195, 112, 0.46);
+  color: #ffdca8;
+  background: rgba(77, 52, 23, 0.62);
+}
+
+.opportunity-freshness-pill.tone-degraded {
+  border-color: rgba(255, 130, 158, 0.46);
+  color: #ffc1cf;
+  background: rgba(78, 32, 46, 0.64);
+}
+
+.opportunity-signal-meta {
+  margin-top: -1px;
+  color: #8ea4c5;
+  font-size: 0.63rem;
+  letter-spacing: 0.03em;
+  text-transform: none;
 }
 
 .opportunities-table-global .opportunity-badges {
