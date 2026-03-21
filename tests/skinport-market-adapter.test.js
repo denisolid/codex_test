@@ -41,12 +41,27 @@ test("skinport adapter extracts executable price from live listing fields", () =
 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].marketHashName, "AK-47 | Redline (Field-Tested)");
-  assert.equal(rows[0].price, 34.95);
-  assert.equal(rows[0].selectedPriceField, "min_price");
+  assert.equal(rows[0].price, 36.1);
+  assert.equal(rows[0].selectedPriceField, "current_price");
   assert.equal(rows[0].quoteType, "live_executable");
   assert.equal(rows[0].priceIntegrityStatus, "confirmed");
   assert.equal(rows[0].currency, "USD");
   assert.equal(rows[0].url, "https://skinport.com/item/ak-47-redline-field-tested");
+});
+
+test("skinport adapter falls back to min_price when current listing price is unavailable", () => {
+  const rows = normalizeItemsPayload([
+    {
+      market_hash_name: "AK-47 | Redline (Field-Tested)",
+      currency: "USD",
+      min_price: 34.95
+    }
+  ]);
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].price, 34.95);
+  assert.equal(rows[0].selectedPriceField, "min_price");
+  assert.equal(rows[0].quoteType, "live_executable");
 });
 
 test("skinport adapter marks history-only quotes as non-executable", () => {

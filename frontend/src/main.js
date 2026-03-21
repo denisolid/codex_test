@@ -4392,7 +4392,9 @@ function openCompareDrawerByOpportunity(opportunity, triggerElement = null) {
     return;
   }
 
-  const marketHashName = String(row?.itemName || "").trim();
+  const marketHashName = String(
+    row?.marketHashName || row?.market_hash_name || row?.itemName || "",
+  ).trim();
   if (!marketHashName) {
     openCompareDrawerMarketTarget(row?.sellUrl || row?.buyUrl, rawSkinId);
     return;
@@ -13333,7 +13335,9 @@ function renderMarketTab() {
               );
               const baseBadges = buildOpportunityBadges(row, { max: 3 });
               const itemId = Number(row?.itemId || row?.skinId || 0);
-              const marketHashName = String(row?.itemName || "").trim();
+              const marketHashName = String(
+                row?.marketHashName || row?.market_hash_name || row?.itemName || "",
+              ).trim();
               const itemCategory = normalizeOpportunityCategory(
                 row?.itemCategory,
                 marketHashName,
@@ -14008,7 +14012,9 @@ function renderGlobalOpportunitiesTab() {
                   );
               const baseBadges = buildOpportunityBadges(row, { max: 12 });
               const itemId = Number(row?.itemId || 0);
-              const marketHashName = String(row?.itemName || "").trim();
+              const marketHashName = String(
+                row?.marketHashName || row?.market_hash_name || row?.itemName || "",
+              ).trim();
               const itemCategory = normalizeOpportunityCategory(
                 row?.itemCategory,
                 marketHashName,

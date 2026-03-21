@@ -106,6 +106,22 @@ function normalizeText(value) {
   return String(value || "").trim()
 }
 
+function canonicalSkinLookupName(value) {
+  return normalizeText(value)
+    .normalize("NFKC")
+    .replace(/[™®]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+}
+
+function buildSkinLookupNameVariants(value) {
+  const normalized = normalizeText(value).normalize("NFKC").replace(/\s+/g, " ").trim()
+  if (!normalized) return []
+  const withoutMarks = normalized.replace(/[™®]/g, "").replace(/\s+/g, " ").trim()
+  return Array.from(new Set([normalized, withoutMarks].map((entry) => normalizeText(entry)).filter(Boolean)))
+}
+
 function toIsoOrNull(value) {
   const text = normalizeText(value)
   if (!text) return null
@@ -523,9 +539,15 @@ function enforceManualRefreshCooldown(userId, entitlements = {}, nowMs = Date.no
 async function enrichRowsWithSkinMetadata(rows = []) {
   const safeRows = Array.isArray(rows) ? rows : []
   if (!safeRows.length) return safeRows
-  const names = Array.from(
-    new Set(safeRows.map((row) => normalizeText(row.marketHashName || row.itemName)).filter(Boolean))
-  )
+  const names = Array.from(new Set(
+    safeRows
+      .flatMap((row) =>
+        buildSkinLookupNameVariants(
+          row?.marketHashName || row?.market_hash_name || row?.itemName || row?.item_name
+        )
+      )
+      .filter(Boolean)
+  ))
   if (!names.length) return safeRows
   let skinRows = []
   try {
@@ -534,15 +556,34 @@ async function enrichRowsWithSkinMetadata(rows = []) {
     skinRows = []
   }
   const byName = new Map((skinRows || []).map((row) => [normalizeText(row.market_hash_name), row]))
+  const byCanonicalName = new Map(
+    (skinRows || []).map((row) => [canonicalSkinLookupName(row.market_hash_name), row])
+  )
   return safeRows.map((row) => {
-    const skin = byName.get(normalizeText(row.marketHashName || row.itemName))
+    const rowName = normalizeText(
+      row?.marketHashName || row?.market_hash_name || row?.itemName || row?.item_name
+    )
+    const nameVariants = buildSkinLookupNameVariants(rowName)
+    const skin =
+      nameVariants.map((variant) => byName.get(variant)).find(Boolean) ||
+      nameVariants.map((variant) => byCanonicalName.get(canonicalSkinLookupName(variant))).find(Boolean) ||
+      null
     if (!skin) return row
+    const itemId = row.itemId || row.item_id || skin.id || null
+    const itemImageUrl = row.itemImageUrl || row.item_image_url || skin.image_url || null
+    const itemRarity = row.itemRarity || row.item_rarity || skin.rarity || null
+    const itemRarityColor =
+      row.itemRarityColor || row.item_rarity_color || skin.rarity_color || null
     return {
       ...row,
-      itemId: row.itemId || skin.id || null,
-      itemImageUrl: row.itemImageUrl || skin.image_url || null,
-      itemRarity: row.itemRarity || skin.rarity || null,
-      itemRarityColor: row.itemRarityColor || skin.rarity_color || null
+      itemId,
+      item_id: itemId,
+      itemImageUrl,
+      item_image_url: itemImageUrl,
+      itemRarity,
+      item_rarity: itemRarity,
+      itemRarityColor,
+      item_rarity_color: itemRarityColor
     }
   })
 }
@@ -568,6 +609,7 @@ function mapFeedRowToCard(rawRow = {}) {
   return {
     feedId: row?.feedId || normalizeText(rawRow?.id) || null,
     detectedAt,
+    marketHashName: row?.marketHashName || row?.itemName || rawRow?.market_hash_name || null,
     discoveredAt,
     discovered_at: discoveredAt,
     firstSeenAt,
@@ -586,8 +628,11 @@ function mapFeedRowToCard(rawRow = {}) {
     itemCategory: row?.itemCategory || "weapon_skin",
     itemSubcategory: row?.itemSubcategory || null,
     itemRarity: row?.itemRarity || null,
+    item_rarity: row?.itemRarity || null,
     itemRarityColor: row?.itemRarityColor || null,
+    item_rarity_color: row?.itemRarityColor || null,
     itemImageUrl: row?.itemImageUrl || null,
+    item_image_url: row?.itemImageUrl || null,
     buyMarket: row?.buyMarket || null,
     buyPrice: toFiniteOrNull(row?.buyPrice),
     sellMarket: row?.sellMarket || null,
@@ -1062,6 +1107,13 @@ function toSafeInteger(value, fallback = 1, min = 1) {
   return Math.max(Math.round(parsed), min)
 }
 
+function preferNonEmptyMetadataValue(nextValue, previousValue) {
+  const next = normalizeText(nextValue)
+  if (next) return next
+  const previous = normalizeText(previousValue)
+  return previous || null
+}
+
 function buildFeedUpdatePatch({
   previousRow = {},
   insertRow = {},
@@ -1080,6 +1132,38 @@ function buildFeedUpdatePatch({
   const eventType = normalizeText(event?.eventType || "updated").toLowerCase() || "updated"
   const materiallyChanged = Boolean(event?.materiallyChanged)
   const changeReasons = Array.isArray(event?.changeReasons) ? event.changeReasons : []
+  const resolvedItemId = preferNonEmptyMetadataValue(
+    insertMetadata?.item_id ?? insertMetadata?.itemId,
+    previousMetadata?.item_id ?? previousMetadata?.itemId
+  )
+  const resolvedItemSubcategory = preferNonEmptyMetadataValue(
+    insertMetadata?.item_subcategory ?? insertMetadata?.itemSubcategory,
+    previousMetadata?.item_subcategory ?? previousMetadata?.itemSubcategory
+  )
+  const resolvedItemRarity = preferNonEmptyMetadataValue(
+    insertMetadata?.item_rarity ?? insertMetadata?.itemRarity ?? insertMetadata?.rarity,
+    previousMetadata?.item_rarity ?? previousMetadata?.itemRarity ?? previousMetadata?.rarity
+  )
+  const resolvedItemRarityColor = preferNonEmptyMetadataValue(
+    insertMetadata?.item_rarity_color ??
+      insertMetadata?.itemRarityColor ??
+      insertMetadata?.rarity_color ??
+      insertMetadata?.rarityColor,
+    previousMetadata?.item_rarity_color ??
+      previousMetadata?.itemRarityColor ??
+      previousMetadata?.rarity_color ??
+      previousMetadata?.rarityColor
+  )
+  const resolvedItemImageUrl = preferNonEmptyMetadataValue(
+    insertMetadata?.item_image_url ??
+      insertMetadata?.itemImageUrl ??
+      insertMetadata?.image_url ??
+      insertMetadata?.imageUrl,
+    previousMetadata?.item_image_url ??
+      previousMetadata?.itemImageUrl ??
+      previousMetadata?.image_url ??
+      previousMetadata?.imageUrl
+  )
 
   const mergedMetadata = {
     ...previousMetadata,
@@ -1095,6 +1179,16 @@ function buildFeedUpdatePatch({
       normalizeText(insertRow?.material_change_hash) ||
       normalizeText(previousRow?.material_change_hash) ||
       null,
+    item_id: resolvedItemId,
+    itemId: resolvedItemId,
+    item_subcategory: resolvedItemSubcategory,
+    itemSubcategory: resolvedItemSubcategory,
+    item_rarity: resolvedItemRarity,
+    itemRarity: resolvedItemRarity,
+    item_rarity_color: resolvedItemRarityColor,
+    itemRarityColor: resolvedItemRarityColor,
+    item_image_url: resolvedItemImageUrl,
+    itemImageUrl: resolvedItemImageUrl,
     first_seen_at: firstSeenAt,
     last_seen_at: nowIso,
     last_published_at: nowIso,
