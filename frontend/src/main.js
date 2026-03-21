@@ -184,8 +184,8 @@ const PRICING_DISPLAY_PLANS = Object.freeze([
     badge: "Starter",
     price: "$0",
     cadence: "Forever",
-    tagline: "Starter access",
-    positioning: "Core dashboard, basic scanners, and limited compare depth.",
+    tagline: "Get started fast",
+    positioning: "Core tracking, basic scanner access, and limited compare depth.",
   },
   {
     planTier: "full_access",
@@ -193,8 +193,8 @@ const PRICING_DISPLAY_PLANS = Object.freeze([
     badge: "Most Popular",
     price: "$29",
     cadence: "Per month",
-    tagline: "For active traders",
-    positioning: "Live signals, full compare drawer, and deeper portfolio insights.",
+    tagline: "Built for active trading",
+    positioning: "Full feed access, live signals, and advanced compare insights.",
     recommended: true,
   },
   {
@@ -203,9 +203,68 @@ const PRICING_DISPLAY_PLANS = Object.freeze([
     badge: "Coming Soon",
     price: "Coming Soon",
     cadence: "Roadmap tier",
-    tagline: "Future power tier",
-    positioning: "Rare-item intelligence, automation, and API-first trader workflows.",
+    tagline: "Roadmap tier",
+    positioning: "Rare-item intelligence, automation, and API-first workflows.",
     comingSoon: true,
+  },
+]);
+const PRICING_PLAN_HIGHLIGHTS = Object.freeze({
+  free: [
+    "Portfolio and dashboard core",
+    "Limited global feed access",
+    "Up to 3 active alerts",
+  ],
+  full_access: [
+    "Full global opportunities feed",
+    "Live signals and advanced filters",
+    "Up to 25 active alerts + full compare",
+  ],
+  alpha_access: [
+    "Rare-item intelligence roadmap",
+    "Automation and API expansion",
+    "Priority roadmap access",
+  ],
+});
+const PRICING_ESSENTIAL_COMPARISON_ROWS = Object.freeze([
+  {
+    feature: "Opportunity feed",
+    values: {
+      free: { label: "Limited", tone: "limited" },
+      full_access: { label: "Full", tone: "included" },
+      alpha_access: { label: "Full + roadmap extras", tone: "premium" },
+    },
+  },
+  {
+    feature: "Signal speed",
+    values: {
+      free: { label: "Delayed", tone: "limited" },
+      full_access: { label: "Live", tone: "included" },
+      alpha_access: { label: "Live + advanced", tone: "premium" },
+    },
+  },
+  {
+    feature: "Alerts",
+    values: {
+      free: { label: "3 active", tone: "limited" },
+      full_access: { label: "25 active", tone: "included" },
+      alpha_access: { label: "Premium", tone: "premium" },
+    },
+  },
+  {
+    feature: "Compare + insights",
+    values: {
+      free: { label: "Limited", tone: "limited" },
+      full_access: { label: "Full", tone: "included" },
+      alpha_access: { label: "Advanced", tone: "premium" },
+    },
+  },
+  {
+    feature: "Knives + gloves",
+    values: {
+      free: { label: "Locked preview", tone: "locked" },
+      full_access: { label: "Included", tone: "included" },
+      alpha_access: { label: "Advanced models", tone: "premium" },
+    },
   },
 ]);
 const PRICING_COMPARISON_GROUPS = Object.freeze([
@@ -553,6 +612,9 @@ function renderPricingPlanCards(options = {}) {
           : plan.comingSoon
             ? "is-coming-soon"
             : "is-standard";
+        const highlights = Array.isArray(PRICING_PLAN_HIGHLIGHTS?.[plan.planTier])
+          ? PRICING_PLAN_HIGHLIGHTS[plan.planTier]
+          : [];
         let ctaMarkup = "";
         const badgeLabel = String(plan.badge || getPlanBadgeLabel(plan.planTier)).trim();
         if (plan.comingSoon) {
@@ -574,7 +636,12 @@ function renderPricingPlanCards(options = {}) {
           `;
         } else {
           const targetPath = signedIn ? "/account#subscription" : "/register.html";
-          const label = plan.planTier === "free" ? "Start Free" : "Upgrade to Full Access";
+          const label =
+            plan.planTier === "free"
+              ? "Start Free"
+              : plan.planTier === "full_access"
+                ? "Get Full Access"
+                : "Join waitlist";
           ctaMarkup = `
             <a class="link-btn ${plan.recommended ? "btn-primary" : "ghost"} pricing-plan-cta" href="${escapeHtml(targetPath)}">
               ${escapeHtml(label)}
@@ -594,6 +661,15 @@ function renderPricingPlanCards(options = {}) {
               <small>${escapeHtml(plan.cadence)}</small>
             </div>
             <p class="pricing-plan-positioning">${escapeHtml(plan.positioning)}</p>
+            ${
+              highlights.length
+                ? `<ul class="pricing-plan-highlights">
+                    ${highlights
+                      .map((line) => `<li>${escapeHtml(line)}</li>`)
+                      .join("")}
+                  </ul>`
+                : ""
+            }
             <div class="pricing-plan-actions">${ctaMarkup}</div>
           </article>
         `;
@@ -699,6 +775,38 @@ function renderPricingComparisonTable() {
   `;
 }
 
+function renderPricingEssentials() {
+  return `
+    <div class="pricing-essentials-wrap">
+      <table class="pricing-essentials-table">
+        <thead>
+          <tr>
+            <th scope="col">What changes</th>
+            <th scope="col">Free</th>
+            <th scope="col">Full Access</th>
+            <th scope="col">Alpha Access</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${PRICING_ESSENTIAL_COMPARISON_ROWS.map((row) => {
+            const freeCell = row.values?.free || { label: "-", tone: "neutral" };
+            const fullCell = row.values?.full_access || { label: "-", tone: "neutral" };
+            const alphaCell = row.values?.alpha_access || { label: "-", tone: "neutral" };
+            return `
+              <tr>
+                <th scope="row">${escapeHtml(row.feature)}</th>
+                <td>${renderPricingValueChip(freeCell)}</td>
+                <td>${renderPricingValueChip(fullCell)}</td>
+                <td>${renderPricingValueChip(alphaCell)}</td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 function renderPricingComparisonSection(options = {}) {
   const context = String(options.context || "public").trim().toLowerCase() || "public";
   const safeCurrentPlan = normalizePlanTier(options.currentPlanTier || "free");
@@ -709,14 +817,18 @@ function renderPricingComparisonSection(options = {}) {
   const sectionId = context === "public" ? 'id="pricing"' : "";
   const heading =
     context === "account"
-      ? "Plan Comparison & Roadmap"
-      : "Pricing";
+      ? "Plan Comparison"
+      : "Simple Pricing";
   const helperText =
     context === "account"
-      ? "Free and Full Access are active now. Alpha Access is visible as roadmap-only."
-      : "Compare active plans now, then review the Alpha Access roadmap tier.";
+      ? "Free and Full Access are active today. Alpha Access is roadmap-only."
+      : "Start free, then upgrade only when you need full feed depth and live signals.";
   const currentPlanLabel = planTierToLabel(safeCurrentPlan);
   const currentPlanMeta = getPricingDisplayPlan(safeCurrentPlan);
+  const fullMatrixMarkup = `
+    ${renderPricingComparisonTable()}
+    ${renderPricingComparisonMobile()}
+  `;
 
   return `
     <section class="pricing-comparison-shell ${context === "account" ? "is-account" : "is-public"}" ${sectionId}>
@@ -735,26 +847,45 @@ function renderPricingComparisonSection(options = {}) {
             `
             : `
               <p class="muted">
-                Full Access is the primary upgrade path. Alpha Access is roadmap-only for advanced trader tooling.
+                Full Access is the active upgrade path. Alpha Access is roadmap-only.
               </p>
             `
         }
       </div>
       <div class="pricing-section-block pricing-cards-block">
         <div class="pricing-block-head">
-          <p class="eyebrow">Plans</p>
-          <h3>Choose your access tier</h3>
+          <p class="eyebrow">Pick a plan</p>
+          <h3>Choose the access level you need now</h3>
         </div>
         ${renderPricingPlanCards({ context, currentPlanTier: currentPlanMeta.planTier, signedIn })}
       </div>
-      <div class="pricing-section-block pricing-matrix-block">
-        <div class="pricing-block-head">
-          <p class="eyebrow">Compare</p>
-          <h3>Feature matrix</h3>
-        </div>
-        ${renderPricingComparisonTable()}
-        ${renderPricingComparisonMobile()}
-      </div>
+      ${
+        context === "public"
+          ? `
+            <div class="pricing-section-block pricing-matrix-block pricing-matrix-simplified">
+              <div class="pricing-block-head">
+                <p class="eyebrow">Compare</p>
+                <h3>Essential differences</h3>
+              </div>
+              ${renderPricingEssentials()}
+              <details class="pricing-matrix-details">
+                <summary>See full plan comparison</summary>
+                <div class="pricing-matrix-details-body">
+                  ${fullMatrixMarkup}
+                </div>
+              </details>
+            </div>
+          `
+          : `
+            <div class="pricing-section-block pricing-matrix-block">
+              <div class="pricing-block-head">
+                <p class="eyebrow">Compare</p>
+                <h3>Full feature matrix</h3>
+              </div>
+              ${fullMatrixMarkup}
+            </div>
+          `
+      }
     </section>
   `;
 }
@@ -15536,22 +15667,96 @@ function renderPublicHome(options = {}) {
   const profilePlanTier = normalizePlanTier(
     state.authProfile?.planTier || state.authProfile?.plan || "free",
   );
-  const heroEyebrow = pricingView
-    ? "Pricing"
-    : "SaaS for CS2 traders and collectors";
+  const heroEyebrow = pricingView ? "Pricing" : "SkinAlpha";
   const heroTitle = pricingView
-    ? "Choose the plan that matches your trading edge."
-    : "Trade your CS2 inventory with portfolio-grade clarity.";
+    ? "Simple pricing for serious CS2 traders."
+    : "Trade faster with a clear CS2 edge.";
   const heroCopy = pricingView
-    ? "Compare Free, Full Access, and the roadmap Alpha Access tier. Full Access is the primary upgrade path today, while Alpha Access is listed as Coming Soon."
-    : "Connect Steam once, sync instantly, and monitor value, liquidity, and execution signals in a single command surface.";
-  const tertiaryCta = pricingView
-    ? '<a class="link-btn ghost btn-tertiary" href="/">Back to home</a>'
-    : '<a class="link-btn ghost btn-tertiary" href="/pricing">View pricing</a>';
+    ? "Start free, upgrade when you need full feed depth, live signals, and advanced compare workflows."
+    : "SkinAlpha turns your inventory into a decision-ready command surface with live opportunities, clear pricing paths, and actionable insights.";
+  const primaryCtaLabel = pricingView ? "Start Free" : "Start Free";
+  const primaryCtaHref = "/register.html";
+  const secondaryCtaLabel = pricingView ? "Back to Home" : "Continue with Steam";
+  const secondaryCtaHref = pricingView ? "/" : steamStartUrl;
+  const outcomesMarkup = pricingView
+    ? ""
+    : `
+      <section class="grid marketing-section marketing-outcomes">
+        <article class="panel marketing-outcome-card">
+          <h2>Know the next best move</h2>
+          <p class="muted">See buy/sell paths, expected net profit, and verdict at a glance.</p>
+        </article>
+        <article class="panel marketing-outcome-card">
+          <h2>Protect downside faster</h2>
+          <p class="muted">Surface weak positions early with signal freshness, liquidity context, and alerting.</p>
+        </article>
+        <article class="panel marketing-outcome-card">
+          <h2>Act without context switching</h2>
+          <p class="muted">Open insight, compare markets, and execute decisions from one focused workflow.</p>
+        </article>
+      </section>
+    `;
+  const previewMarkup = pricingView
+    ? ""
+    : `
+      <section class="grid marketing-section marketing-preview">
+        <article class="panel wide marketing-preview-panel">
+          <div class="marketing-preview-copy">
+            <p class="eyebrow">Product preview</p>
+            <h2>Built for fast, high-confidence execution</h2>
+            <p class="muted">
+              The feed, portfolio, and compare workflows are tuned for quick scanning and decisive action under real trading conditions.
+            </p>
+          </div>
+          <div class="marketing-preview-metrics">
+            <article>
+              <span>Signal loop</span>
+              <strong>Live + historical context</strong>
+            </article>
+            <article>
+              <span>Decision flow</span>
+              <strong>Insight → Compare → Action</strong>
+            </article>
+            <article>
+              <span>Coverage</span>
+              <strong>Skins, cases, capsules, knives, gloves</strong>
+            </article>
+          </div>
+        </article>
+      </section>
+    `;
+  const reasonsMarkup = pricingView
+    ? ""
+    : `
+      <section class="grid marketing-section marketing-reasons">
+        <article class="panel marketing-reason-card">
+          <h2>Focused opportunity feed</h2>
+          <p class="muted">Prioritized rows that keep profit, path, and confidence clear first.</p>
+        </article>
+        <article class="panel marketing-reason-card">
+          <h2>Premium-grade clarity</h2>
+          <p class="muted">Calm surfaces and stronger hierarchy so dense data stays readable.</p>
+        </article>
+        <article class="panel marketing-reason-card">
+          <h2>Multi-market compare</h2>
+          <p class="muted">Review route quality and pricing differences before committing.</p>
+        </article>
+        <article class="panel marketing-reason-card">
+          <h2>Portfolio-first risk control</h2>
+          <p class="muted">Monitor concentration, momentum, and opportunity readiness in one place.</p>
+        </article>
+      </section>
+    `;
+  const finalCtaTitle = pricingView
+    ? "Choose your plan and start in minutes."
+    : "Ready to trade with more clarity and less noise?";
+  const finalCtaBody = pricingView
+    ? "Start with Free, then move to Full Access when you need full feed depth and live execution signals."
+    : "Connect Steam once and turn your inventory into a clear, execution-ready trading surface.";
 
   app.innerHTML = `
-    <main class="layout landing-shell">
-      <nav class="topbar landing-topbar">
+    <main class="layout landing-shell marketing-shell">
+      <nav class="topbar landing-topbar marketing-topbar">
         <div class="brand">Skin Alpha</div>
         <div class="top-actions">
           ${
@@ -15560,7 +15765,7 @@ function renderPublicHome(options = {}) {
                 <span class="user-chip" title="${escapeHtml(userEmailTitle)}">${escapeHtml(
                   userEmailLabel,
                 )}</span>
-                <a class="link-btn ghost" href="/pricing">Pricing</a>
+                <a class="link-btn ghost" href="${pricingView ? "/" : "/pricing"}">${pricingView ? "Home" : "Pricing"}</a>
                 <a class="link-btn ghost" href="/">Back to Dashboard</a>
               `
               : `
@@ -15572,46 +15777,54 @@ function renderPublicHome(options = {}) {
         </div>
       </nav>
 
-      <section class="hero-block landing-hero">
-        <div class="landing-hero-copy">
+      <section class="hero-block landing-hero marketing-hero">
+        <div class="landing-hero-copy marketing-hero-copy">
           <p class="eyebrow">${escapeHtml(heroEyebrow)}</p>
           <h1>${escapeHtml(heroTitle)}</h1>
-          <p class="hero-copy">
+          <p class="hero-copy marketing-hero-subcopy">
             ${escapeHtml(heroCopy)}
           </p>
-          <div class="hero-actions">
-            <a class="link-btn btn-primary landing-primary-cta" href="/register.html">Start Free</a>
-            <a class="link-btn ghost btn-secondary" href="${escapeHtml(steamStartUrl)}">Continue with Steam</a>
-            ${tertiaryCta}
+          <div class="hero-actions marketing-hero-actions">
+            <a class="link-btn btn-primary landing-primary-cta" href="${escapeHtml(primaryCtaHref)}">${escapeHtml(
+              primaryCtaLabel,
+            )}</a>
+            <a class="link-btn ghost btn-secondary" href="${escapeHtml(secondaryCtaHref)}">${escapeHtml(
+              secondaryCtaLabel,
+            )}</a>
           </div>
-          <div class="landing-trust-grid">
+          <div class="landing-trust-grid marketing-proof-grid">
             <article class="landing-trust-item">
-              <span>Portfolio Sync</span>
-              <strong>1-click</strong>
+              <span>Setup</span>
+              <strong>Steam sync in minutes</strong>
             </article>
             <article class="landing-trust-item">
-              <span>Live Signals</span>
-              <strong>7D + 24H</strong>
+              <span>Signals</span>
+              <strong>Live + historical context</strong>
             </article>
             <article class="landing-trust-item">
-              <span>Pricing Surface</span>
-              <strong>Multi-market</strong>
+              <span>Workflow</span>
+              <strong>Insight and compare in one flow</strong>
             </article>
           </div>
         </div>
-        <div class="hero-preview panel landing-preview">
-          <h3>Why teams use it</h3>
-          <ul class="bullet-list">
-            <li>Decision-first dashboard for value and risk</li>
-            <li>Inspect modal without losing page context</li>
-            <li>Actionable alerts and transaction journal</li>
-            <li>Fast workflows tuned for trading sessions</li>
-          </ul>
+        <div class="hero-preview panel landing-preview marketing-hero-art">
+          <p class="eyebrow">Inside the product</p>
+          <h3>Decision-focused by design</h3>
+          <p class="muted">Clear hierarchy for item, route, profit, and verdict so opportunities are easy to scan under pressure.</p>
+          <div class="marketing-hero-art-points">
+            <p><span>Feed</span><strong>Prioritized opportunity rows</strong></p>
+            <p><span>Compare</span><strong>Route and market clarity</strong></p>
+            <p><span>Portfolio</span><strong>Risk and concentration context</strong></p>
+          </div>
         </div>
       </section>
 
-      <section class="grid landing-pricing-grid">
-        <article class="panel wide landing-pricing-panel">
+      ${outcomesMarkup}
+      ${previewMarkup}
+      ${reasonsMarkup}
+
+      <section class="grid landing-pricing-grid marketing-section marketing-pricing">
+        <article class="panel wide landing-pricing-panel marketing-pricing-panel">
           ${renderPricingComparisonSection({
             context: "public",
             currentPlanTier: profilePlanTier,
@@ -15620,18 +15833,17 @@ function renderPublicHome(options = {}) {
         </article>
       </section>
 
-      <section class="grid landing-feature-grid">
-        <article class="panel landing-feature-card">
-          <h2>Execution-Speed Workflow</h2>
-          <p class="muted">No spreadsheets. Sync once and act with inspect, compare, and sell guidance directly in context.</p>
-        </article>
-        <article class="panel landing-feature-card">
-          <h2>Decision-Grade Signals</h2>
-          <p class="muted">Spot winners, laggards, and concentration risk with a clear KPI hierarchy and compact analytics.</p>
-        </article>
-        <article class="panel landing-feature-card">
-          <h2>Built to Scale</h2>
-          <p class="muted">Extensible architecture for deeper market providers, automation, and creator/team operations.</p>
+      <section class="grid marketing-section marketing-final-cta">
+        <article class="panel wide marketing-final-cta-panel">
+          <div>
+            <p class="eyebrow">Start now</p>
+            <h2>${escapeHtml(finalCtaTitle)}</h2>
+            <p class="muted">${escapeHtml(finalCtaBody)}</p>
+          </div>
+          <div class="marketing-final-actions">
+            <a class="link-btn btn-primary" href="/register.html">Start Free</a>
+            <a class="link-btn ghost" href="${escapeHtml(steamStartUrl)}">Continue with Steam</a>
+          </div>
         </article>
       </section>
     </main>
