@@ -6650,7 +6650,10 @@ a:hover {
   height: 90px;
   cursor: zoom-in;
   border-radius: 14px;
+  border: 1px solid rgba(var(--rarity-rgb, 138, 147, 163), 0.54);
   border: 1px solid color-mix(in srgb, var(--rarity-color) 58%, transparent);
+  outline: 1px solid rgba(var(--rarity-rgb, 138, 147, 163), 0.16);
+  outline-offset: -1px;
   overflow: hidden;
   background: linear-gradient(155deg, rgba(7, 11, 20, 0.96), rgba(10, 15, 27, 0.9));
   box-shadow:
@@ -6809,6 +6812,7 @@ a:hover {
   object-position: center center;
   border-radius: 10px;
   background: rgba(6, 10, 19, 0.9);
+  border: 1px solid rgba(var(--rarity-rgb, 138, 147, 163), 0.44);
   border: 1px solid rgba(var(--rarity-rgb), 0.38);
   border: 1px solid color-mix(in srgb, var(--rarity-color) 38%, transparent);
   filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.48));
@@ -9093,7 +9097,10 @@ td {
   width: 132px;
   height: 94px;
   border-radius: 14px;
+  border: 1px solid rgba(var(--rarity-rgb, 138, 147, 163), 0.52);
   border: 1px solid color-mix(in srgb, var(--rarity-color, #8a93a3) 56%, transparent);
+  outline: 1px solid rgba(var(--rarity-rgb, 138, 147, 163), 0.15);
+  outline-offset: -1px;
   background: linear-gradient(160deg, rgba(10, 16, 27, 0.96), rgba(7, 12, 21, 0.94));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
@@ -9270,7 +9277,10 @@ td {
   width: 108px;
   height: 78px;
   border-radius: 12px;
+  border: 1px solid rgba(var(--rarity-rgb, 138, 147, 163), 0.5);
   border: 1px solid color-mix(in srgb, var(--rarity-color, #7f8ba5) 52%, transparent);
+  outline: 1px solid rgba(var(--rarity-rgb, 138, 147, 163), 0.14);
+  outline-offset: -1px;
   background: rgba(8, 13, 23, 0.9);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
@@ -9284,18 +9294,27 @@ td {
 
 .opportunity-item-cell[data-rarity-kind="unknown"] .opportunity-item-media,
 .opportunity-mobile-image-wrap[data-rarity-kind="unknown"] {
-  border-color: rgba(138, 150, 171, 0.3);
+  border-color: rgba(148, 161, 182, 0.52);
+  outline-color: rgba(168, 181, 200, 0.22);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 0 0 1px rgba(138, 150, 171, 0.14),
-    0 7px 14px rgba(3, 7, 15, 0.38);
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 0 1px rgba(150, 164, 186, 0.24),
+    0 9px 18px rgba(3, 7, 15, 0.4),
+    0 0 14px rgba(146, 160, 182, 0.18);
 }
 
 .opportunity-mobile-image {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  border-radius: 9px;
+  border: 1px solid rgba(var(--rarity-rgb, 138, 147, 163), 0.32);
   padding: 4px;
+}
+
+.opportunity-mobile-image-wrap[data-rarity-kind="unknown"] .opportunity-mobile-image,
+.opportunity-item-cell[data-rarity-kind="unknown"] .opportunity-item-thumb {
+  border-color: rgba(150, 164, 186, 0.42);
 }
 
 .opportunity-mobile-head {
