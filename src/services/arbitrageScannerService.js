@@ -337,6 +337,38 @@ function emptyCategoryMap() {
   return Object.fromEntries(ROUND_ROBIN_CATEGORY_ORDER.map((category) => [category, 0]))
 }
 
+function countRowsByScannerCategory(rows = []) {
+  const counts = emptyCategoryMap()
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const category = mapScannerCategory(
+      row?.category || row?.itemCategory || row?.raw?.category || ""
+    )
+    if (counts[category] == null) continue
+    counts[category] = Number(counts[category] || 0) + 1
+  }
+  return counts
+}
+
+function listMissingScannerCategories(counts = {}) {
+  return ROUND_ROBIN_CATEGORY_ORDER.filter((category) => Number(counts?.[category] || 0) <= 0)
+}
+
+function mergeUniqueScannerSourceRows(baseRows = [], extraRows = []) {
+  const merged = []
+  const seen = new Set()
+  const appendRows = (rows = []) => {
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
+      if (!marketHashName || seen.has(marketHashName)) continue
+      seen.add(marketHashName)
+      merged.push(row)
+    }
+  }
+  appendRows(baseRows)
+  appendRows(extraRows)
+  return merged
+}
+
 function incrementCounter(target, key) {
   const safeKey = normalizeText(key)
   if (!safeKey) return
@@ -619,6 +651,7 @@ function applyFeedPlanRestrictions(rows = [], entitlements = {}) {
 }
 
 async function loadScannerSourceRows() {
+  const minSourcePoolTarget = Math.max(OPPORTUNITY_BATCH_RUNTIME_TARGET * 3, 300)
   const attempts = Array.from(
     new Set([
       Math.max(UNIVERSE_DB_LIMIT, OPPORTUNITY_BATCH_RUNTIME_TARGET),
@@ -632,18 +665,76 @@ async function loadScannerSourceRows() {
     selectedLimit: null,
     fallbackUsed: false,
     statementTimeoutFallbacks: 0,
-    sourceMode: "catalog_status_scannable"
+    sourceMode: "catalog_status_scannable",
+    topup: {
+      candidatePoolAttempted: false,
+      candidatePoolFailed: false,
+      candidatePoolRowsAdded: 0,
+      activeTradableAttempted: false,
+      activeTradableFailed: false,
+      activeTradableRowsAdded: 0
+    },
+    categoryCountsBeforeTopup: emptyCategoryMap(),
+    categoryCountsAfterTopup: emptyCategoryMap(),
+    missingCategoriesBeforeTopup: [],
+    missingCategoriesAfterTopup: []
   }
   let lastError = null
   for (let index = 0; index < attempts.length; index += 1) {
     const limit = attempts[index]
     diagnostics.attemptedLimits.push(limit)
     try {
-      const rows = await marketSourceCatalogRepo.listScannerSource({
+      let rows = await marketSourceCatalogRepo.listScannerSource({
         limit,
         categories: CATALOG_SCAN_CATEGORIES
       })
+      rows = Array.isArray(rows) ? rows : []
+
+      let categoryCounts = countRowsByScannerCategory(rows)
+      let missingCategories = listMissingScannerCategories(categoryCounts)
+      diagnostics.categoryCountsBeforeTopup = categoryCounts
+      diagnostics.missingCategoriesBeforeTopup = missingCategories
+
+      if (rows.length < minSourcePoolTarget || missingCategories.length > 0) {
+        diagnostics.topup.candidatePoolAttempted = true
+        const candidateTopupCategories = missingCategories.length
+          ? missingCategories
+          : CATALOG_SCAN_CATEGORIES
+        try {
+          const candidateRows = await marketSourceCatalogRepo.listCandidatePool({
+            limit: Math.max(limit, minSourcePoolTarget * 2),
+            categories: candidateTopupCategories,
+            candidateStatuses: ["near_eligible", "enriching", "candidate"]
+          })
+          const mergedRows = mergeUniqueScannerSourceRows(rows, candidateRows)
+          diagnostics.topup.candidatePoolRowsAdded = Math.max(mergedRows.length - rows.length, 0)
+          rows = mergedRows
+        } catch (_err) {
+          diagnostics.topup.candidatePoolFailed = true
+        }
+      }
+
+      categoryCounts = countRowsByScannerCategory(rows)
+      missingCategories = listMissingScannerCategories(categoryCounts)
+      if (missingCategories.length > 0) {
+        diagnostics.topup.activeTradableAttempted = true
+        try {
+          const activeRows = await marketSourceCatalogRepo.listActiveTradable({
+            limit: Math.max(limit, minSourcePoolTarget * 2),
+            categories: missingCategories
+          })
+          const mergedRows = mergeUniqueScannerSourceRows(rows, activeRows)
+          diagnostics.topup.activeTradableRowsAdded = Math.max(mergedRows.length - rows.length, 0)
+          rows = mergedRows
+        } catch (_err) {
+          diagnostics.topup.activeTradableFailed = true
+        }
+      }
+
+      categoryCounts = countRowsByScannerCategory(rows)
       diagnostics.selectedLimit = limit
+      diagnostics.categoryCountsAfterTopup = categoryCounts
+      diagnostics.missingCategoriesAfterTopup = listMissingScannerCategories(categoryCounts)
       return { rows, diagnostics }
     } catch (err) {
       lastError = err
@@ -2059,6 +2150,7 @@ exports.__testables = {
   mapFeedRowToApiRow,
   mapFeedRowToCard,
   dedupeFeedCards,
+  loadScannerSourceRows,
   persistFeedRows,
   buildFeedUpdatePatch,
   normalizeCursorPayload,

@@ -718,6 +718,29 @@ function mapFeedRowToApiRow(row = {}) {
         metadata?.material_change_hash ??
         metadata?.materialChangeHash
     ) || null
+  const resolvedVolume7d =
+    toFiniteOrNull(
+      row?.volume_7d ??
+        row?.volume7d ??
+        metadata?.volume_7d ??
+        metadata?.volume7d ??
+        metadata?.liquidity_value ??
+        metadata?.liquidityValue
+    ) ?? null
+  const resolvedMarketCoverage =
+    toFiniteOrNull(
+      row?.market_coverage ??
+        row?.marketCoverage ??
+        metadata?.market_coverage ??
+        metadata?.marketCoverage
+    ) ?? null
+  const resolvedReferencePrice =
+    toFiniteOrNull(
+      row?.reference_price ??
+        row?.referencePrice ??
+        metadata?.reference_price ??
+        metadata?.referencePrice
+    ) ?? null
   return {
     feedId: row?.id || null,
     detectedAt,
@@ -766,12 +789,12 @@ function mapFeedRowToApiRow(row = {}) {
             : "Rejected"),
     executionConfidence: normalizeText(row?.execution_confidence || "Low") || "Low",
     qualityGrade: normalizeText(row?.quality_grade || "").toUpperCase() || "SPECULATIVE",
-    liquidity: toFiniteOrNull(metadata?.volume_7d ?? metadata?.liquidity_value),
+    liquidity: resolvedVolume7d,
     liquidityBand: normalizeText(row?.liquidity_label || "Low") || "Low",
     liquidityLabel: normalizeText(row?.liquidity_label || "Low") || "Low",
-    volume7d: toFiniteOrNull(metadata?.volume_7d ?? metadata?.liquidity_value),
-    marketCoverage: Number(metadata?.market_coverage || 0),
-    referencePrice: toFiniteOrNull(metadata?.reference_price),
+    volume7d: resolvedVolume7d,
+    marketCoverage: resolvedMarketCoverage == null ? 0 : resolvedMarketCoverage,
+    referencePrice: resolvedReferencePrice,
     latestMarketSignalAt:
       toIsoOrNull(
         row?.market_signal_observed_at ??
