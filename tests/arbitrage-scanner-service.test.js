@@ -1,6 +1,7 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
 const arbitrageFeedRepo = require("../src/repositories/arbitrageFeedRepository")
+const marketSourceCatalogRepo = require("../src/repositories/marketSourceCatalogRepository")
 
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || "https://example.supabase.co"
 process.env.SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "anon"
@@ -22,6 +23,7 @@ const {
     mapFeedRowToApiRow,
     mapFeedRowToCard,
     dedupeFeedCards,
+    loadScannerSourceRows,
     persistFeedRows,
     normalizeCursorPayload,
     encodeCursorPayload,
@@ -254,6 +256,119 @@ test("candidate selection prioritizes tier_a then tier_b then non-priority", () 
   assert.equal(Number(selection.diagnostics.selectedByPriorityTier.tier_a || 0), 1)
   assert.equal(Number(selection.diagnostics.selectedByPriorityTier.tier_b || 0), 1)
   assert.equal(Number(selection.diagnostics.selectedByPriorityTier.non_priority || 0), 1)
+})
+
+test("scanner source loader backfills missing categories from candidate pool", async () => {
+  const originals = {
+    listScannerSource: marketSourceCatalogRepo.listScannerSource,
+    listCandidatePool: marketSourceCatalogRepo.listCandidatePool,
+    listActiveTradable: marketSourceCatalogRepo.listActiveTradable
+  }
+
+  marketSourceCatalogRepo.listScannerSource = async () => [
+    {
+      market_hash_name: "AK-47 | Redline (Field-Tested)",
+      item_name: "AK-47 | Redline (Field-Tested)",
+      category: "weapon_skin",
+      tradable: true,
+      is_active: true
+    }
+  ]
+  marketSourceCatalogRepo.listCandidatePool = async () => [
+    {
+      market_hash_name: "Revolution Case",
+      item_name: "Revolution Case",
+      category: "case",
+      tradable: true,
+      is_active: true
+    },
+    {
+      market_hash_name: "Stockholm 2021 Contenders Sticker Capsule",
+      item_name: "Stockholm 2021 Contenders Sticker Capsule",
+      category: "sticker_capsule",
+      tradable: true,
+      is_active: true
+    },
+    {
+      market_hash_name: "★ Karambit | Doppler (Factory New)",
+      item_name: "★ Karambit | Doppler (Factory New)",
+      category: "knife",
+      tradable: true,
+      is_active: true
+    },
+    {
+      market_hash_name: "★ Sport Gloves | Vice (Field-Tested)",
+      item_name: "★ Sport Gloves | Vice (Field-Tested)",
+      category: "glove",
+      tradable: true,
+      is_active: true
+    }
+  ]
+  marketSourceCatalogRepo.listActiveTradable = async () => []
+
+  try {
+    const loaded = await loadScannerSourceRows()
+    const byCategory = {}
+    for (const row of loaded.rows || []) {
+      byCategory[row.category] = Number(byCategory[row.category] || 0) + 1
+    }
+    assert.equal(Number(byCategory.weapon_skin || 0) >= 1, true)
+    assert.equal(Number(byCategory.case || 0) >= 1, true)
+    assert.equal(Number(byCategory.sticker_capsule || 0) >= 1, true)
+    assert.equal(Number(byCategory.knife || 0) >= 1, true)
+    assert.equal(Number(byCategory.glove || 0) >= 1, true)
+    assert.equal(loaded?.diagnostics?.topup?.candidatePoolAttempted, true)
+    assert.equal(Number(loaded?.diagnostics?.topup?.candidatePoolRowsAdded || 0) >= 4, true)
+    assert.deepEqual(loaded?.diagnostics?.missingCategoriesAfterTopup || [], [])
+  } finally {
+    marketSourceCatalogRepo.listScannerSource = originals.listScannerSource
+    marketSourceCatalogRepo.listCandidatePool = originals.listCandidatePool
+    marketSourceCatalogRepo.listActiveTradable = originals.listActiveTradable
+  }
+})
+
+test("scanner source loader uses active tradable fallback when candidate pool fails", async () => {
+  const originals = {
+    listScannerSource: marketSourceCatalogRepo.listScannerSource,
+    listCandidatePool: marketSourceCatalogRepo.listCandidatePool,
+    listActiveTradable: marketSourceCatalogRepo.listActiveTradable
+  }
+
+  marketSourceCatalogRepo.listScannerSource = async () => [
+    {
+      market_hash_name: "AK-47 | Redline (Field-Tested)",
+      item_name: "AK-47 | Redline (Field-Tested)",
+      category: "weapon_skin",
+      tradable: true,
+      is_active: true
+    }
+  ]
+  marketSourceCatalogRepo.listCandidatePool = async () => {
+    throw new Error("candidate_pool_failed")
+  }
+  marketSourceCatalogRepo.listActiveTradable = async () => [
+    {
+      market_hash_name: "★ Broken Fang Gloves | Jade (Field-Tested)",
+      item_name: "★ Broken Fang Gloves | Jade (Field-Tested)",
+      category: "glove",
+      tradable: true,
+      is_active: true
+    }
+  ]
+
+  try {
+    const loaded = await loadScannerSourceRows()
+    const hasGlove = (loaded.rows || []).some((row) => row?.category === "glove")
+    assert.equal(hasGlove, true)
+    assert.equal(loaded?.diagnostics?.topup?.candidatePoolAttempted, true)
+    assert.equal(loaded?.diagnostics?.topup?.candidatePoolFailed, true)
+    assert.equal(loaded?.diagnostics?.topup?.activeTradableAttempted, true)
+    assert.equal(Number(loaded?.diagnostics?.topup?.activeTradableRowsAdded || 0) >= 1, true)
+  } finally {
+    marketSourceCatalogRepo.listScannerSource = originals.listScannerSource
+    marketSourceCatalogRepo.listCandidatePool = originals.listCandidatePool
+    marketSourceCatalogRepo.listActiveTradable = originals.listActiveTradable
+  }
 })
 
 test("opportunity evaluation keeps missing-liquidity items scannable with downgraded tier", () => {
@@ -797,6 +912,38 @@ test("feed mapper keeps core scanner fields stable", () => {
   assert.equal(Boolean(mapped.opportunityFingerprint), true)
   assert.equal(Boolean(mapped.materialChangeHash), true)
   assert.equal(mapped.timesSeen, 1)
+})
+
+test("feed mapper reads FEED_CARD alias fields when metadata object is absent", () => {
+  const mapped = mapFeedRowToApiRow({
+    id: "feed-row-aliased-1",
+    item_name: "AK-47 | Redline (Field-Tested)",
+    market_hash_name: "AK-47 | Redline (Field-Tested)",
+    category: "weapon_skin",
+    buy_market: "steam",
+    buy_price: 10,
+    sell_market: "skinport",
+    sell_net: 12.5,
+    profit: 2.5,
+    spread_pct: 25,
+    opportunity_score: 80,
+    execution_confidence: "Medium",
+    quality_grade: "RISKY",
+    liquidity_label: "High",
+    volume_7d: "4039",
+    market_coverage: "4",
+    reference_price: "11.2",
+    item_id: "91",
+    item_subcategory: "rifle",
+    item_rarity: "Classified",
+    item_rarity_color: "#d32ce6",
+    item_image_url: "https://cdn.example.com/redline.png"
+  })
+
+  assert.equal(mapped.volume7d, 4039)
+  assert.equal(mapped.liquidity, 4039)
+  assert.equal(mapped.marketCoverage, 4)
+  assert.equal(mapped.referencePrice, 11.2)
 })
 
 test("display score soft-normalizes visible feed values without changing raw score ordering inputs", () => {
