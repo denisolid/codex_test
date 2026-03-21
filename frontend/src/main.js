@@ -60,7 +60,7 @@ const GLOBAL_OPPORTUNITY_COUNTDOWN_TICK_MS = 1000;
 const GLOBAL_OPPORTUNITY_STALE_MULTIPLIER = 2;
 const GLOBAL_OPPORTUNITY_STALE_MIN_MS = 8 * 60 * 1000;
 const GLOBAL_OPPORTUNITY_FORCE_COOLDOWN_MS = 90 * 1000;
-const GLOBAL_OPPORTUNITY_PAGE_SIZE = 100;
+const GLOBAL_OPPORTUNITY_PAGE_SIZE = 200;
 const GLOBAL_OPPORTUNITY_HISTORY_HOURS = 24;
 const GLOBAL_OPPORTUNITY_PAGE_CACHE_MAX = 4;
 const HISTORY_RANGE_OPTIONS = [7, 30, 90, 180];
@@ -1326,7 +1326,7 @@ const APP_TABS = [
   {
     id: "opportunities",
     label: "Scanner",
-    hint: "Top 100 market scan",
+    hint: "Top 200 market scan",
     icon: "TOP",
   },
   {
@@ -8983,6 +8983,30 @@ function formatLiquidityBandLabel(value, volume7d = null) {
   return `${base} (${formatNumber(volume, 0)} / 7D)`;
 }
 
+function resolveLiquidityVolume7d(row = {}) {
+  const candidates = [
+    row?.volume7d,
+    row?.marketVolume7d,
+    row?.liquiditySample,
+    row?.liquiditySales,
+    row?.liquidity,
+  ];
+  for (const value of candidates) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric;
+    }
+  }
+  return null;
+}
+
+function formatLiquiditySummaryCompact(row = {}) {
+  const coverage = Math.max(Number(row?.marketCoverage || 0), 0);
+  const volume7d = resolveLiquidityVolume7d(row);
+  const volumeLabel = volume7d == null ? "n/a" : formatNumber(volume7d, 0);
+  return `7D qty ${volumeLabel} • ${formatNumber(coverage, 0)} mkts`;
+}
+
 function normalizeOpportunityCategory(value, marketHashName = "") {
   const raw = String(value || "")
     .trim()
@@ -13337,7 +13361,7 @@ function renderMarketTab() {
                   row?.item_rarity ||
                   row?.itemRarity ||
                   visualItem?.rarity ||
-                  "Consumer Grade",
+                  "",
                 rarityColor:
                   row?.rarityColor ||
                   row?.item_rarity_color ||
@@ -13386,13 +13410,16 @@ function renderMarketTab() {
                 : "Updated recently";
               const buyUrl =
                 String(row?.buyUrl || "").trim() ||
-                buildSteamListingUrlByName(marketHashName);
+                buildMarketListingUrlBySource(row?.buyMarket, marketHashName);
               const sellUrl =
                 String(row?.sellUrl || "").trim() ||
-                buildSteamListingUrlByName(marketHashName);
+                buildMarketListingUrlBySource(row?.sellMarket, marketHashName);
               const compareUrl =
                 String(row?.sellUrl || row?.buyUrl || "").trim() ||
-                buildSteamListingUrlByName(marketHashName);
+                buildMarketListingUrlBySource(
+                  row?.sellMarket || row?.buyMarket,
+                  marketHashName,
+                );
               const hasBuyTarget = Boolean(
                 itemId > 0 || buyUrl || marketHashName,
               );
@@ -13498,7 +13525,7 @@ function renderMarketTab() {
                       liquidityLabel,
                     )}</strong>
                     <small>${escapeHtml(
-                      `Coverage ${formatNumber(row?.marketCoverage || 0, 0)} market(s)`,
+                      formatLiquiditySummaryCompact(row),
                     )}</small>
                   </td>
                   <td class="opportunity-badges-cell">
@@ -13748,6 +13775,35 @@ function buildSteamListingUrlByName(marketHashName) {
   return `https://steamcommunity.com/market/listings/730/${encodeURIComponent(name)}`;
 }
 
+function buildSkinportListingUrlByName(marketHashName) {
+  const name = String(marketHashName || "").trim();
+  if (!name) return "";
+  return `https://skinport.com/market?search=${encodeURIComponent(name)}`;
+}
+
+function buildCsfloatListingUrlByName(marketHashName) {
+  const name = String(marketHashName || "").trim();
+  if (!name) return "";
+  return `https://csfloat.com/search?market_hash_name=${encodeURIComponent(name)}`;
+}
+
+function buildDmarketListingUrlByName(marketHashName) {
+  const name = String(marketHashName || "").trim();
+  if (!name) return "";
+  const params = new URLSearchParams();
+  params.set("title", name);
+  params.set("searchTitle", name);
+  return `https://dmarket.com/ingame-items/item-list/csgo-skins?${params.toString()}`;
+}
+
+function buildMarketListingUrlBySource(source, marketHashName) {
+  const key = getMarketSourceKey(source);
+  if (key === "skinport") return buildSkinportListingUrlByName(marketHashName);
+  if (key === "csfloat") return buildCsfloatListingUrlByName(marketHashName);
+  if (key === "dmarket") return buildDmarketListingUrlByName(marketHashName);
+  return buildSteamListingUrlByName(marketHashName);
+}
+
 function renderGlobalOpportunitiesTableSkeleton(rowCount = 8) {
   return `
     <div class="table-wrap table-wrap-opportunities opportunities-table-skeleton-wrap" aria-hidden="true">
@@ -13974,7 +14030,7 @@ function renderGlobalOpportunitiesTab() {
                   row?.item_rarity ||
                   row?.itemRarity ||
                   visualItem?.rarity ||
-                  "Consumer Grade",
+                  "",
                 rarityColor:
                   row?.rarityColor ||
                   row?.item_rarity_color ||
@@ -14056,13 +14112,16 @@ function renderGlobalOpportunitiesTab() {
                 itemCategory === "case" ? defaultCaseImage : defaultSkinImage;
               const buyUrl =
                 String(row?.buyUrl || "").trim() ||
-                buildSteamListingUrlByName(row?.itemName);
+                buildMarketListingUrlBySource(row?.buyMarket, marketHashName);
               const sellUrl =
                 String(row?.sellUrl || "").trim() ||
-                buildSteamListingUrlByName(row?.itemName);
+                buildMarketListingUrlBySource(row?.sellMarket, marketHashName);
               const compareUrl =
                 String(row?.sellUrl || row?.buyUrl || "").trim() ||
-                buildSteamListingUrlByName(row?.itemName);
+                buildMarketListingUrlBySource(
+                  row?.sellMarket || row?.buyMarket,
+                  marketHashName,
+                );
               const hasBuyTarget =
                 !lockedPreview &&
                 Boolean(itemId > 0 || buyUrl || marketHashName);
@@ -14103,15 +14162,9 @@ function renderGlobalOpportunitiesTab() {
               const scoreValueMarkup = lockedPreview
                 ? scoreValueLabel
                 : escapeHtml(scoreValueLabel);
-              const marketCoverageCount = Math.max(
-                Number(row?.marketCoverage || 0),
-                0,
-              );
               const liquiditySubline = lockedPreview
                 ? escapeHtml(String(row?.lockHint || "Premium high-value market category"))
-                : escapeHtml(
-                    `Coverage across ${formatNumber(marketCoverageCount, 0)} markets. ${freshnessSummary}.`,
-                  );
+                : escapeHtml(formatLiquiditySummaryCompact(row));
               const lockedMessage = String(
                 row?.lockMessage || "Unlock knife and glove opportunities with Full Access",
               ).trim();

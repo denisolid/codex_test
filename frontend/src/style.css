@@ -7304,6 +7304,12 @@ tr.opportunity-row-new td {
   letter-spacing: 0.03em;
 }
 
+.opportunities-table-global .opportunity-liquidity-cell small {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .opportunity-badges-cell {
   min-width: 204px;
   overflow: hidden;

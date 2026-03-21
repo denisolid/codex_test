@@ -930,8 +930,8 @@ function mapFeedRowToApiRow(row = {}) {
         : null,
     isHighConfidenceEligible: Boolean(metadata?.is_high_confidence_eligible),
     isRiskyEligible: Boolean(metadata?.is_risky_eligible),
-    buyUrl: metadata?.buy_url || null,
-    sellUrl: metadata?.sell_url || null
+    buyUrl: normalizeText(row?.buy_url || row?.buyUrl || metadata?.buy_url) || null,
+    sellUrl: normalizeText(row?.sell_url || row?.sellUrl || metadata?.sell_url) || null
   }
 }
 

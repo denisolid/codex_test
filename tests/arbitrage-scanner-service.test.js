@@ -21,6 +21,7 @@ const {
     buildFeedInsertRow,
     mapFeedRowToApiRow,
     mapFeedRowToCard,
+    dedupeFeedCards,
     persistFeedRows,
     normalizeCursorPayload,
     encodeCursorPayload,
@@ -817,6 +818,60 @@ test("display score soft-normalizes visible feed values without changing raw sco
   }
 })
 
+test("feed card dedupe keeps newest row per fingerprint and preserves stronger counters", () => {
+  const deduped = dedupeFeedCards([
+    {
+      feedId: "row-new",
+      itemName: "AK-47 | Redline (Field-Tested)",
+      buyMarket: "steam",
+      sellMarket: "skinport",
+      opportunityFingerprint: "ofp_same",
+      materialChangeHash: "mch_same",
+      detectedAt: "2026-03-21T10:00:00.000Z",
+      lastSeenAt: "2026-03-21T10:00:00.000Z",
+      timesSeen: 2
+    },
+    {
+      feedId: "row-old",
+      itemName: "AK-47 | Redline (Field-Tested)",
+      buyMarket: "steam",
+      sellMarket: "skinport",
+      opportunityFingerprint: "ofp_same",
+      materialChangeHash: "mch_same",
+      detectedAt: "2026-03-21T09:00:00.000Z",
+      lastSeenAt: "2026-03-21T09:00:00.000Z",
+      timesSeen: 7
+    }
+  ])
+
+  assert.equal(deduped.length, 1)
+  assert.equal(deduped[0].feedId, "row-new")
+  assert.equal(deduped[0].timesSeen, 7)
+  assert.equal(deduped[0].times_seen, 7)
+  assert.equal(deduped[0].lastSeenAt, "2026-03-21T10:00:00.000Z")
+})
+
+test("feed card dedupe keeps separate rows when fallback signature material hash differs", () => {
+  const deduped = dedupeFeedCards([
+    {
+      feedId: "row-a",
+      itemName: "★ Broken Fang Gloves | Jade (Field-Tested)",
+      buyMarket: "csfloat",
+      sellMarket: "steam",
+      materialChangeHash: "mch_a"
+    },
+    {
+      feedId: "row-b",
+      itemName: "★ Broken Fang Gloves | Jade (Field-Tested)",
+      buyMarket: "csfloat",
+      sellMarket: "steam",
+      materialChangeHash: "mch_b"
+    }
+  ])
+
+  assert.equal(deduped.length, 2)
+})
+
 test("persistFeedRows updates active fingerprint match instead of inserting duplicate row", async () => {
   const opportunity = {
     marketHashName: "AK-47 | Redline (Field-Tested)",
@@ -916,6 +971,112 @@ test("persistFeedRows updates active fingerprint match instead of inserting dupl
   } finally {
     arbitrageFeedRepo.getRecentRowsByItems = originals.getRecentRowsByItems
     arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
+    arbitrageFeedRepo.updateRowsById = originals.updateRowsById
+    arbitrageFeedRepo.insertRows = originals.insertRows
+    arbitrageFeedRepo.markInactiveOlderThan = originals.markInactiveOlderThan
+  }
+})
+
+test("persistFeedRows deactivates older active duplicate rows for same fingerprint before update", async () => {
+  const opportunity = {
+    marketHashName: "★ Broken Fang Gloves | Jade (Field-Tested)",
+    itemName: "★ Broken Fang Gloves | Jade (Field-Tested)",
+    itemCategory: "glove",
+    buyMarket: "csfloat",
+    buyPrice: 97.67,
+    sellMarket: "steam",
+    sellNet: 109.39,
+    profit: 11.72,
+    spread: 11.99,
+    score: 43,
+    executionConfidence: "Low",
+    qualityGrade: "RISKY",
+    liquidityBand: "High",
+    liquidity: 500,
+    marketCoverage: 2,
+    referencePrice: 103.2,
+    metadata: {
+      buy_url: "https://csfloat.com/search?market_hash_name=Broken+Fang+Gloves+Jade",
+      sell_url:
+        "https://steamcommunity.com/market/listings/730/%E2%98%85%20Broken%20Fang%20Gloves%20%7C%20Jade%20(Field-Tested)"
+    }
+  }
+  const fingerprint = buildOpportunityFingerprint(opportunity)
+  const materialHash = buildMaterialChangeHash(opportunity)
+  const existingNewest = {
+    id: "feed-row-newest",
+    item_name: opportunity.itemName,
+    category: "glove",
+    buy_market: "csfloat",
+    buy_price: 97.67,
+    sell_market: "steam",
+    sell_net: 109.39,
+    profit: 11.72,
+    spread_pct: 11.99,
+    opportunity_score: 43,
+    execution_confidence: "Low",
+    quality_grade: "RISKY",
+    is_active: true,
+    opportunity_fingerprint: fingerprint,
+    material_change_hash: materialHash,
+    times_seen: 3,
+    detected_at: "2026-03-21T10:00:00.000Z",
+    last_seen_at: "2026-03-21T10:00:00.000Z",
+    first_seen_at: "2026-03-20T10:00:00.000Z",
+    metadata: {
+      opportunity_fingerprint: fingerprint,
+      material_change_hash: materialHash
+    }
+  }
+  const existingOlder = {
+    ...existingNewest,
+    id: "feed-row-older",
+    times_seen: 1,
+    detected_at: "2026-03-21T09:00:00.000Z",
+    last_seen_at: "2026-03-21T09:00:00.000Z"
+  }
+
+  const originals = {
+    getRecentRowsByItems: arbitrageFeedRepo.getRecentRowsByItems,
+    getActiveRowsByFingerprints: arbitrageFeedRepo.getActiveRowsByFingerprints,
+    markRowsInactiveByIds: arbitrageFeedRepo.markRowsInactiveByIds,
+    updateRowsById: arbitrageFeedRepo.updateRowsById,
+    insertRows: arbitrageFeedRepo.insertRows,
+    markInactiveOlderThan: arbitrageFeedRepo.markInactiveOlderThan
+  }
+
+  let markedInactiveIds = null
+  let updateRowsPayload = null
+  let insertRowsPayload = null
+
+  arbitrageFeedRepo.getRecentRowsByItems = async () => [existingNewest, existingOlder]
+  arbitrageFeedRepo.getActiveRowsByFingerprints = async () => [existingNewest, existingOlder]
+  arbitrageFeedRepo.markRowsInactiveByIds = async (ids = []) => {
+    markedInactiveIds = ids
+    return ids.length
+  }
+  arbitrageFeedRepo.updateRowsById = async (rows = []) => {
+    updateRowsPayload = rows
+    return rows.length
+  }
+  arbitrageFeedRepo.insertRows = async (rows = []) => {
+    insertRowsPayload = rows
+    return rows.map((row, index) => ({ id: row?.id || `new-${index}` }))
+  }
+  arbitrageFeedRepo.markInactiveOlderThan = async () => 0
+
+  try {
+    const result = await persistFeedRows([opportunity], "scan-run-dup-cleanup")
+    assert.deepEqual(markedInactiveIds, ["feed-row-older"])
+    assert.equal(result.cleanup.duplicateActivesMarkedInactive, 1)
+    assert.equal(Array.isArray(updateRowsPayload), true)
+    assert.equal(updateRowsPayload.length, 1)
+    assert.equal(updateRowsPayload[0].id, "feed-row-newest")
+    assert.equal(insertRowsPayload, null)
+  } finally {
+    arbitrageFeedRepo.getRecentRowsByItems = originals.getRecentRowsByItems
+    arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
+    arbitrageFeedRepo.markRowsInactiveByIds = originals.markRowsInactiveByIds
     arbitrageFeedRepo.updateRowsById = originals.updateRowsById
     arbitrageFeedRepo.insertRows = originals.insertRows
     arbitrageFeedRepo.markInactiveOlderThan = originals.markInactiveOlderThan
