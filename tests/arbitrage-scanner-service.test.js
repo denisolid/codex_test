@@ -944,6 +944,11 @@ test("feed mapper reads FEED_CARD alias fields when metadata object is absent", 
   assert.equal(mapped.liquidity, 4039)
   assert.equal(mapped.marketCoverage, 4)
   assert.equal(mapped.referencePrice, 11.2)
+  assert.equal(mapped.itemId, "91")
+  assert.equal(mapped.itemSubcategory, "rifle")
+  assert.equal(mapped.itemRarity, "Classified")
+  assert.equal(mapped.itemRarityColor, "#d32ce6")
+  assert.equal(mapped.itemImageUrl, "https://cdn.example.com/redline.png")
 })
 
 test("display score soft-normalizes visible feed values without changing raw score ordering inputs", () => {

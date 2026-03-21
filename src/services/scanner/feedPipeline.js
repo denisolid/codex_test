@@ -761,14 +761,45 @@ function mapFeedRowToApiRow(row = {}) {
     scanRunId: row?.scan_run_id || null,
     isActive: row?.is_active == null ? true : Boolean(row.is_active),
     isDuplicate: Boolean(row?.is_duplicate),
-    itemId: metadata?.item_id || null,
+    itemId:
+      normalizeText(row?.item_id ?? row?.itemId ?? metadata?.item_id ?? metadata?.itemId) || null,
     itemName: normalizeText(row?.item_name || row?.market_hash_name || "Tracked Item"),
     marketHashName: normalizeText(row?.market_hash_name || row?.item_name || "Tracked Item"),
     itemCategory: normalizeCategory(row?.category),
-    itemSubcategory: metadata?.item_subcategory || null,
-    itemRarity: metadata?.item_rarity || null,
-    itemRarityColor: metadata?.item_rarity_color || null,
-    itemImageUrl: metadata?.item_image_url || null,
+    itemSubcategory:
+      normalizeText(
+        row?.item_subcategory ??
+          row?.itemSubcategory ??
+          metadata?.item_subcategory ??
+          metadata?.itemSubcategory
+      ) || null,
+    itemRarity:
+      normalizeText(
+        row?.item_rarity ??
+          row?.itemRarity ??
+          row?.rarity ??
+          metadata?.item_rarity ??
+          metadata?.itemRarity ??
+          metadata?.rarity
+      ) || null,
+    itemRarityColor:
+      normalizeText(
+        row?.item_rarity_color ??
+          row?.itemRarityColor ??
+          row?.rarity_color ??
+          row?.rarityColor ??
+          metadata?.item_rarity_color ??
+          metadata?.itemRarityColor ??
+          metadata?.rarity_color ??
+          metadata?.rarityColor
+      ) || null,
+    itemImageUrl:
+      normalizeText(
+        row?.item_image_url ??
+          row?.itemImageUrl ??
+          metadata?.item_image_url ??
+          metadata?.itemImageUrl
+      ) || null,
     buyMarket: normalizeText(row?.buy_market).toLowerCase() || null,
     buyPrice: toFiniteOrNull(row?.buy_price),
     sellMarket: normalizeText(row?.sell_market).toLowerCase() || null,

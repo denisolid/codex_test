@@ -552,10 +552,32 @@ function mapFeedRowToCard(rawRow = {}) {
   const qualityScoreDisplay =
     toFiniteOrNull(row?.qualityScoreDisplay ?? row?.quality_score_display) ??
     toFiniteOrNull(row?.score)
+  const detectedAt = row?.detectedAt || rawRow?.detected_at || rawRow?.created_at || null
+  const discoveredAt = row?.discoveredAt || row?.discovered_at || rawRow?.discovered_at || detectedAt || null
+  const firstSeenAt = row?.firstSeenAt || row?.first_seen_at || discoveredAt || detectedAt || null
+  const lastSeenAt = row?.lastSeenAt || row?.last_seen_at || detectedAt || null
+  const lastPublishedAt =
+    row?.lastPublishedAt ||
+    row?.last_published_at ||
+    row?.feedPublishedAt ||
+    row?.feed_published_at ||
+    detectedAt ||
+    null
+  const timesSeen = toSafeInteger(row?.timesSeen ?? row?.times_seen, 1, 1)
 
   return {
     feedId: row?.feedId || normalizeText(rawRow?.id) || null,
-    detectedAt: row?.detectedAt || rawRow?.created_at || rawRow?.detected_at || null,
+    detectedAt,
+    discoveredAt,
+    discovered_at: discoveredAt,
+    firstSeenAt,
+    first_seen_at: firstSeenAt,
+    lastSeenAt,
+    last_seen_at: lastSeenAt,
+    lastPublishedAt,
+    last_published_at: lastPublishedAt,
+    timesSeen,
+    times_seen: timesSeen,
     scanRunId: row?.scanRunId || null,
     isActive: row?.isActive == null ? true : Boolean(row.isActive),
     isDuplicate: Boolean(row?.isDuplicate),
@@ -961,6 +983,14 @@ function pickLatestIso(first, second) {
   return new Date(firstIso).getTime() >= new Date(secondIso).getTime() ? firstIso : secondIso
 }
 
+function pickEarliestIso(first, second) {
+  const firstIso = toIsoOrNull(first)
+  const secondIso = toIsoOrNull(second)
+  if (!firstIso) return secondIso
+  if (!secondIso) return firstIso
+  return new Date(firstIso).getTime() <= new Date(secondIso).getTime() ? firstIso : secondIso
+}
+
 function mergeDuplicateFeedCards(primary = {}, candidate = {}) {
   const merged = { ...primary }
   const primaryTimesSeen = toSafeInteger(primary?.timesSeen ?? primary?.times_seen, 1, 1)
@@ -968,6 +998,17 @@ function mergeDuplicateFeedCards(primary = {}, candidate = {}) {
   const timesSeen = Math.max(primaryTimesSeen, candidateTimesSeen)
   merged.timesSeen = timesSeen
   merged.times_seen = timesSeen
+
+  const mergedFirstSeenAt = pickEarliestIso(
+    primary?.firstSeenAt || primary?.first_seen_at || primary?.discoveredAt || primary?.discovered_at || primary?.detectedAt || primary?.detected_at,
+    candidate?.firstSeenAt || candidate?.first_seen_at || candidate?.discoveredAt || candidate?.discovered_at || candidate?.detectedAt || candidate?.detected_at
+  )
+  if (mergedFirstSeenAt) {
+    merged.firstSeenAt = mergedFirstSeenAt
+    merged.first_seen_at = mergedFirstSeenAt
+    merged.discoveredAt = mergedFirstSeenAt
+    merged.discovered_at = mergedFirstSeenAt
+  }
 
   const mergedLastSeenAt = pickLatestIso(
     primary?.lastSeenAt || primary?.last_seen_at || primary?.detectedAt || primary?.detected_at,
