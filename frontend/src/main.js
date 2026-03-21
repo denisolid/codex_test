@@ -15670,89 +15670,284 @@ function renderPublicHome(options = {}) {
   const heroEyebrow = pricingView ? "Pricing" : "SkinAlpha";
   const heroTitle = pricingView
     ? "Simple pricing for serious CS2 traders."
-    : "Trade faster with a clear CS2 edge.";
-  const heroCopy = pricingView
-    ? "Start free, upgrade when you need full feed depth, live signals, and advanced compare workflows."
-    : "SkinAlpha turns your inventory into a decision-ready command surface with live opportunities, clear pricing paths, and actionable insights.";
-  const primaryCtaLabel = pricingView ? "Start Free" : "Start Free";
+    : "Find CS2 arbitrage, measure inventory, and act faster.";
+  const heroCopyMarkup = pricingView
+    ? "Start free, then move to <span class=\"marketing-key key-opportunity\">Full Access</span> when you need deeper feed visibility, stronger compare coverage, and <span class=\"marketing-key key-workflow\">live execution context</span>."
+    : "Spot <span class=\"marketing-key key-opportunity\">cross-market opportunities</span> and monitor <span class=\"marketing-key key-liquidity\">inventory value</span> with <span class=\"marketing-key key-workflow\">execution context</span> from one command surface.";
+  const primaryCtaLabel = "Start Free";
   const primaryCtaHref = "/register.html";
   const secondaryCtaLabel = pricingView ? "Back to Home" : "Continue with Steam";
   const secondaryCtaHref = pricingView ? "/" : steamStartUrl;
+  const heroVisualMarkup = pricingView
+    ? `
+      <div class="hero-preview panel landing-preview marketing-hero-art">
+        <p class="eyebrow">Plan clarity</p>
+        <h3>Choose the depth that matches your trading pace</h3>
+        <div class="marketing-pricing-hero-points">
+          <p><span>Free</span><strong>Starter feed and portfolio visibility</strong></p>
+          <p><span>Full Access</span><strong>Live opportunity depth, compare, and insights</strong></p>
+          <p><span>Upgrade path</span><strong>Move up only when your volume requires it</strong></p>
+        </div>
+      </div>
+    `
+    : `
+      <div class="hero-preview panel landing-preview marketing-hero-art marketing-hero-dashboard">
+        <div class="marketing-hero-dashboard-top">
+          <p class="marketing-hero-dashboard-title">Dashboard</p>
+          <span class="marketing-hero-live-pill">Live signal</span>
+        </div>
+        <article class="marketing-hero-feature-card">
+          <div class="marketing-hero-weapon-art">
+            <span>AWP</span>
+          </div>
+          <div class="marketing-hero-feature-copy">
+            <p class="marketing-hero-item-name">
+              AWP | Blackiimov
+              <span class="marketing-hero-rarity-pill">COVERT</span>
+            </p>
+            <p class="marketing-hero-item-condition">(Minimal Wear)</p>
+            <p class="marketing-hero-item-profit">+$12.67 <small>Net profit</small></p>
+            <div class="marketing-hero-feature-meta">
+              <span>BUFF buy</span>
+              <span>Steam sell</span>
+              <span>Spread 8.1%</span>
+            </div>
+          </div>
+          <div class="marketing-hero-action-pill">Sell</div>
+        </article>
+        <div class="marketing-hero-dashboard-bottom">
+          <article>
+            <span>Portfolio value</span>
+            <strong>$583.22</strong>
+            <small>Tracked across markets</small>
+          </article>
+          <article>
+            <span>Compare drawer</span>
+            <strong>Steam, Buff, DMarket</strong>
+            <small>Execution route map</small>
+          </article>
+        </div>
+        <p class="marketing-hero-art-note">
+          Live route quality, net return, and inventory context in one view.
+        </p>
+      </div>
+    `;
+  const heroValueCardsMarkup = pricingView
+    ? `
+      <div class="landing-trust-grid marketing-proof-grid">
+        <article class="landing-trust-item is-opportunity">
+          <span>Opportunity feed</span>
+          <strong>Live cross-market routes</strong>
+        </article>
+        <article class="landing-trust-item is-profit">
+          <span>Clarity</span>
+          <strong>Net profit and spread first</strong>
+        </article>
+        <article class="landing-trust-item is-execution">
+          <span>Workflow</span>
+          <strong>Compare, insight, and execution in one flow</strong>
+        </article>
+      </div>
+    `
+    : `
+      <div class="landing-trust-grid marketing-proof-grid marketing-hero-value-grid">
+        <article class="landing-trust-item is-opportunity">
+          <span>Arbitrage Scanner</span>
+          <strong>Spot cross-market opportunities faster</strong>
+          <p>Find underpriced paths and act before spread compression kills edge.</p>
+        </article>
+        <article class="landing-trust-item is-profit">
+          <span>Profit Clarity</span>
+          <strong>See real net profit and execution risk</strong>
+          <p>Evaluate expected return with spread quality, fees, and live liquidity context.</p>
+        </article>
+        <article class="landing-trust-item is-execution">
+          <span>Portfolio Intelligence</span>
+          <strong>Manage inventory like a trader</strong>
+          <p>Track value, readiness, and route quality without spreadsheet overload.</p>
+        </article>
+      </div>
+    `;
+  const heroSectionMarkup = pricingView
+    ? `
+      <section class="hero-block landing-hero marketing-hero">
+        <div class="landing-hero-copy marketing-hero-copy">
+          <p class="eyebrow">${escapeHtml(heroEyebrow)}</p>
+          <h1>${escapeHtml(heroTitle)}</h1>
+          <p class="hero-copy marketing-hero-subcopy">
+            ${heroCopyMarkup}
+          </p>
+          <div class="hero-actions marketing-hero-actions">
+            <a class="link-btn btn-primary landing-primary-cta" href="${escapeHtml(primaryCtaHref)}">${escapeHtml(
+              primaryCtaLabel,
+            )}</a>
+            <a class="link-btn ghost btn-secondary" href="${escapeHtml(secondaryCtaHref)}">${escapeHtml(
+              secondaryCtaLabel,
+            )}</a>
+          </div>
+          ${heroValueCardsMarkup}
+        </div>
+        ${heroVisualMarkup}
+      </section>
+    `
+    : `
+      <section class="marketing-hero-stage">
+        <div class="hero-block landing-hero marketing-hero marketing-hero-main">
+          <div class="landing-hero-copy marketing-hero-copy">
+            <p class="eyebrow">${escapeHtml(heroEyebrow)}</p>
+            <h1>${escapeHtml(heroTitle)}</h1>
+            <p class="hero-copy marketing-hero-subcopy">
+              ${heroCopyMarkup}
+            </p>
+            <div class="hero-actions marketing-hero-actions">
+              <a class="link-btn btn-primary landing-primary-cta" href="${escapeHtml(primaryCtaHref)}">${escapeHtml(
+                primaryCtaLabel,
+              )}</a>
+              <a class="link-btn ghost btn-secondary" href="${escapeHtml(secondaryCtaHref)}">${escapeHtml(
+                secondaryCtaLabel,
+              )}</a>
+            </div>
+          </div>
+          ${heroVisualMarkup}
+        </div>
+        ${heroValueCardsMarkup}
+      </section>
+    `;
+  const accentBannerMarkup = pricingView
+    ? ""
+    : `
+      <section class="marketing-accent marketing-section">
+        <article class="marketing-accent-panel">
+          <div class="marketing-accent-copy">
+            <p class="eyebrow">Live Arbitrage Engine</p>
+            <h2>Scan cross-market opportunities and move while the <span class="marketing-key key-profit">spread is still open</span>.</h2>
+            <p>
+              SkinAlpha continuously maps buy/sell paths, then surfaces <span class="marketing-key key-profit">net profit</span>, <span class="marketing-key key-liquidity">liquidity context</span>, and <span class="marketing-key key-workflow">route quality</span> in one decision-ready view.
+            </p>
+          </div>
+          <div class="marketing-accent-metrics">
+            <article class="is-opportunity">
+              <span>Opportunity feed</span>
+              <strong>Live ranked routes</strong>
+            </article>
+            <article class="is-profit">
+              <span>Profit clarity</span>
+              <strong>Net after fee assumptions</strong>
+            </article>
+            <article class="is-execution">
+              <span>Execution context</span>
+              <strong>Spread + liquidity + freshness</strong>
+            </article>
+          </div>
+        </article>
+      </section>
+    `;
   const outcomesMarkup = pricingView
     ? ""
     : `
-      <section class="grid marketing-section marketing-outcomes">
-        <article class="panel marketing-outcome-card">
-          <h2>Know the next best move</h2>
-          <p class="muted">See buy/sell paths, expected net profit, and verdict at a glance.</p>
-        </article>
-        <article class="panel marketing-outcome-card">
-          <h2>Protect downside faster</h2>
-          <p class="muted">Surface weak positions early with signal freshness, liquidity context, and alerting.</p>
-        </article>
-        <article class="panel marketing-outcome-card">
-          <h2>Act without context switching</h2>
-          <p class="muted">Open insight, compare markets, and execute decisions from one focused workflow.</p>
-        </article>
+      <section class="marketing-section marketing-outcomes">
+        <div class="marketing-section-head">
+          <p class="eyebrow">Key outcomes</p>
+          <h2>Decisions get faster when the signal is cleaner</h2>
+        </div>
+        <div class="marketing-outcomes-grid">
+          <article class="marketing-outcome-card">
+            <h3>Find profitable routes early</h3>
+            <p>Catch live arbitrage paths before market repricing compresses your edge.</p>
+          </article>
+          <article class="marketing-outcome-card">
+            <h3>Protect inventory quality</h3>
+            <p>Track valuation, liquidity, and freshness so weak positions are visible sooner.</p>
+          </article>
+          <article class="marketing-outcome-card">
+            <h3>Execute with context</h3>
+            <p>Move from feed to compare to insight without losing momentum.</p>
+          </article>
+        </div>
       </section>
     `;
   const previewMarkup = pricingView
     ? ""
     : `
-      <section class="grid marketing-section marketing-preview">
-        <article class="panel wide marketing-preview-panel">
-          <div class="marketing-preview-copy">
-            <p class="eyebrow">Product preview</p>
-            <h2>Built for fast, high-confidence execution</h2>
-            <p class="muted">
-              The feed, portfolio, and compare workflows are tuned for quick scanning and decisive action under real trading conditions.
+      <section class="marketing-section marketing-showcase">
+        <div class="marketing-showcase-layout">
+          <article class="marketing-showcase-copy">
+            <p class="eyebrow">Product showcase</p>
+            <h2>One surface for scanning, comparing, and committing capital</h2>
+            <p>
+              The feed prioritizes what matters first: item, route, net profit, spread, and verdict.
+              Open insight only when needed and keep flow speed high.
             </p>
-          </div>
-          <div class="marketing-preview-metrics">
-            <article>
-              <span>Signal loop</span>
-              <strong>Live + historical context</strong>
-            </article>
-            <article>
-              <span>Decision flow</span>
-              <strong>Insight → Compare → Action</strong>
-            </article>
-            <article>
-              <span>Coverage</span>
-              <strong>Skins, cases, capsules, knives, gloves</strong>
-            </article>
-          </div>
-        </article>
+            <ul class="marketing-showcase-points">
+              <li>Live opportunity feed with clear buy/sell path context</li>
+              <li>Compare markets instantly with route-level confidence signals</li>
+              <li>Portfolio and liquidity intelligence tied directly to execution decisions</li>
+            </ul>
+          </article>
+          <article class="marketing-showcase-visual">
+            <div class="marketing-showcase-screen">
+              <header>
+                <span>Live Opportunity Feed</span>
+                <strong>Arbitrage Scanner</strong>
+              </header>
+              <div class="marketing-showcase-rows">
+                <article class="is-positive">
+                  <p class="item">M4A1-S | Player Two</p>
+                  <p class="route">Skinport -> Steam</p>
+                  <p class="profit">+$11.52</p>
+                </article>
+                <article class="is-positive">
+                  <p class="item">AK-47 | Neon Rider</p>
+                  <p class="route">CSFloat -> Steam</p>
+                  <p class="profit">+$8.93</p>
+                </article>
+                <article class="is-watch">
+                  <p class="item">AWP | Asiimov</p>
+                  <p class="route">Buff -> Steam</p>
+                  <p class="profit">Watch</p>
+                </article>
+              </div>
+              <span class="marketing-showcase-callout callout-profit">Net profit first</span>
+              <span class="marketing-showcase-callout callout-liquidity">Liquidity context</span>
+              <span class="marketing-showcase-callout callout-verdict">Execution verdict</span>
+            </div>
+          </article>
+        </div>
       </section>
     `;
-  const reasonsMarkup = pricingView
+  const pillarsMarkup = pricingView
     ? ""
     : `
-      <section class="grid marketing-section marketing-reasons">
-        <article class="panel marketing-reason-card">
-          <h2>Focused opportunity feed</h2>
-          <p class="muted">Prioritized rows that keep profit, path, and confidence clear first.</p>
-        </article>
-        <article class="panel marketing-reason-card">
-          <h2>Premium-grade clarity</h2>
-          <p class="muted">Calm surfaces and stronger hierarchy so dense data stays readable.</p>
-        </article>
-        <article class="panel marketing-reason-card">
-          <h2>Multi-market compare</h2>
-          <p class="muted">Review route quality and pricing differences before committing.</p>
-        </article>
-        <article class="panel marketing-reason-card">
-          <h2>Portfolio-first risk control</h2>
-          <p class="muted">Monitor concentration, momentum, and opportunity readiness in one place.</p>
-        </article>
+      <section class="marketing-section marketing-pillars">
+        <div class="marketing-section-head">
+          <p class="eyebrow">Product pillars</p>
+          <h2>Built around the three workflows that drive profitable trading</h2>
+        </div>
+        <div class="marketing-pillars-grid">
+          <article class="marketing-pillar-card is-opportunity">
+            <p class="eyebrow">Arbitrage Scanner</p>
+            <h3>See cross-market opportunity flow in real time</h3>
+            <p>Monitor fresh routes, spread quality, and expected net return without opening multiple tools.</p>
+          </article>
+          <article class="marketing-pillar-card is-liquidity">
+            <p class="eyebrow">Portfolio Intelligence</p>
+            <h3>Value inventory with liquidity-aware context</h3>
+            <p>Track portfolio health, concentration, and trade readiness with market depth built into every read.</p>
+          </article>
+          <article class="marketing-pillar-card is-execution">
+            <p class="eyebrow">Execution Workflow</p>
+            <h3>Compare routes, open insight, and act with confidence</h3>
+            <p>Move from opportunity discovery to final decision with context that supports execution, not noise.</p>
+          </article>
+        </div>
       </section>
     `;
   const finalCtaTitle = pricingView
     ? "Choose your plan and start in minutes."
-    : "Ready to trade with more clarity and less noise?";
-  const finalCtaBody = pricingView
-    ? "Start with Free, then move to Full Access when you need full feed depth and live execution signals."
-    : "Connect Steam once and turn your inventory into a clear, execution-ready trading surface.";
+    : "Start scanning opportunities with execution clarity today.";
+  const finalCtaBodyMarkup = pricingView
+    ? "Start with Free, then move to <span class=\"marketing-key key-opportunity\">Full Access</span> when you need full feed depth and <span class=\"marketing-key key-workflow\">live execution signals</span>."
+    : "Use the <span class=\"marketing-key key-opportunity\">live feed</span> for arbitrage opportunities, validate with <span class=\"marketing-key key-workflow\">compare and insight</span>, and trade with <span class=\"marketing-key key-liquidity\">portfolio-aware confidence</span>.";
 
   app.innerHTML = `
     <main class="layout landing-shell marketing-shell">
@@ -15777,51 +15972,12 @@ function renderPublicHome(options = {}) {
         </div>
       </nav>
 
-      <section class="hero-block landing-hero marketing-hero">
-        <div class="landing-hero-copy marketing-hero-copy">
-          <p class="eyebrow">${escapeHtml(heroEyebrow)}</p>
-          <h1>${escapeHtml(heroTitle)}</h1>
-          <p class="hero-copy marketing-hero-subcopy">
-            ${escapeHtml(heroCopy)}
-          </p>
-          <div class="hero-actions marketing-hero-actions">
-            <a class="link-btn btn-primary landing-primary-cta" href="${escapeHtml(primaryCtaHref)}">${escapeHtml(
-              primaryCtaLabel,
-            )}</a>
-            <a class="link-btn ghost btn-secondary" href="${escapeHtml(secondaryCtaHref)}">${escapeHtml(
-              secondaryCtaLabel,
-            )}</a>
-          </div>
-          <div class="landing-trust-grid marketing-proof-grid">
-            <article class="landing-trust-item">
-              <span>Setup</span>
-              <strong>Steam sync in minutes</strong>
-            </article>
-            <article class="landing-trust-item">
-              <span>Signals</span>
-              <strong>Live + historical context</strong>
-            </article>
-            <article class="landing-trust-item">
-              <span>Workflow</span>
-              <strong>Insight and compare in one flow</strong>
-            </article>
-          </div>
-        </div>
-        <div class="hero-preview panel landing-preview marketing-hero-art">
-          <p class="eyebrow">Inside the product</p>
-          <h3>Decision-focused by design</h3>
-          <p class="muted">Clear hierarchy for item, route, profit, and verdict so opportunities are easy to scan under pressure.</p>
-          <div class="marketing-hero-art-points">
-            <p><span>Feed</span><strong>Prioritized opportunity rows</strong></p>
-            <p><span>Compare</span><strong>Route and market clarity</strong></p>
-            <p><span>Portfolio</span><strong>Risk and concentration context</strong></p>
-          </div>
-        </div>
-      </section>
+      ${heroSectionMarkup}
 
+      ${accentBannerMarkup}
       ${outcomesMarkup}
       ${previewMarkup}
-      ${reasonsMarkup}
+      ${pillarsMarkup}
 
       <section class="grid landing-pricing-grid marketing-section marketing-pricing">
         <article class="panel wide landing-pricing-panel marketing-pricing-panel">
@@ -15838,7 +15994,7 @@ function renderPublicHome(options = {}) {
           <div>
             <p class="eyebrow">Start now</p>
             <h2>${escapeHtml(finalCtaTitle)}</h2>
-            <p class="muted">${escapeHtml(finalCtaBody)}</p>
+            <p class="muted">${finalCtaBodyMarkup}</p>
           </div>
           <div class="marketing-final-actions">
             <a class="link-btn btn-primary" href="/register.html">Start Free</a>
