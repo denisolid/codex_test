@@ -525,6 +525,7 @@ exports.getRecentRowsByItems = async (options = {}) => {
   if (!itemNames.length) return []
 
   const sinceIso = normalizeText(options.sinceIso)
+  const includeInactive = options.includeInactive == null ? true : Boolean(options.includeInactive)
   const limit = normalizeLimit(options.limit, 2500)
 
   const { data, error } = await runFeedQueryWithTimeColumn((timeColumn) => {
@@ -537,6 +538,9 @@ exports.getRecentRowsByItems = async (options = {}) => {
         .order("id", { ascending: false })
         .limit(limit)
 
+      if (!includeInactive) {
+        query = query.eq("is_active", true)
+      }
       if (sinceIso) {
         query = query.gte(timeColumn, sinceIso)
       }

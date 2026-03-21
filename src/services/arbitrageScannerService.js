@@ -48,7 +48,7 @@ const {
 } = require("./scanner/feedPipeline")
 
 const MAX_API_LIMIT = 200
-const FEED_PAGE_SIZE = 100
+const FEED_PAGE_SIZE = 200
 const DEFAULT_API_LIMIT = FEED_PAGE_SIZE
 const MAX_FEED_LIMIT = FEED_PAGE_SIZE
 const FEED_WINDOW_HOURS = 24
@@ -772,6 +772,151 @@ function buildFeedKey(row = {}) {
   })
 }
 
+function resolveFeedRowFingerprint(row = {}) {
+  const metadata = toJsonObject(row?.metadata)
+  return (
+    normalizeText(
+      row?.opportunity_fingerprint ??
+        row?.opportunityFingerprint ??
+        metadata?.opportunity_fingerprint ??
+        metadata?.opportunityFingerprint
+    ).toLowerCase() || ""
+  )
+}
+
+function resolveFeedRowMaterialHash(row = {}) {
+  const metadata = toJsonObject(row?.metadata)
+  return (
+    normalizeText(
+      row?.material_change_hash ??
+        row?.materialChangeHash ??
+        metadata?.material_change_hash ??
+        metadata?.materialChangeHash
+    ).toLowerCase() || ""
+  )
+}
+
+function buildFeedDedupIdentity(row = {}) {
+  const fingerprint = resolveFeedRowFingerprint(row)
+  if (fingerprint) {
+    return `fp:${fingerprint}`
+  }
+  const signature = normalizeText(buildFeedKey(row)).toLowerCase()
+  if (!signature) return ""
+  const materialHash = resolveFeedRowMaterialHash(row) || "na"
+  return `sig:${signature}::material:${materialHash}`
+}
+
+function resolveFeedRowRecencyMs(row = {}) {
+  const candidates = [
+    row?.created_at,
+    row?.createdAt,
+    row?.last_seen_at,
+    row?.lastSeenAt,
+    row?.last_published_at,
+    row?.lastPublishedAt,
+    row?.detected_at,
+    row?.detectedAt,
+    row?.discovered_at,
+    row?.discoveredAt
+  ]
+  for (const value of candidates) {
+    const iso = toIsoOrNull(value)
+    if (!iso) continue
+    const ts = new Date(iso).getTime()
+    if (Number.isFinite(ts)) return ts
+  }
+  return 0
+}
+
+function collectOlderActiveDuplicateIds(rows = []) {
+  const uniqueRows = []
+  const seenIds = new Set()
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!Boolean(row?.is_active)) continue
+    const id = normalizeText(row?.id)
+    if (!id) continue
+    if (seenIds.has(id)) continue
+    seenIds.add(id)
+    uniqueRows.push(row)
+  }
+
+  uniqueRows.sort((left, right) => {
+    const delta = resolveFeedRowRecencyMs(right) - resolveFeedRowRecencyMs(left)
+    if (delta !== 0) return delta
+    return normalizeText(right?.id).localeCompare(normalizeText(left?.id))
+  })
+
+  const seen = new Set()
+  const duplicateIds = []
+  for (const row of uniqueRows) {
+    const id = normalizeText(row?.id)
+    const dedupIdentity = buildFeedDedupIdentity(row)
+    if (!dedupIdentity) continue
+    if (seen.has(dedupIdentity)) {
+      duplicateIds.push(id)
+      continue
+    }
+    seen.add(dedupIdentity)
+  }
+  return Array.from(new Set(duplicateIds))
+}
+
+function pickLatestIso(first, second) {
+  const firstIso = toIsoOrNull(first)
+  const secondIso = toIsoOrNull(second)
+  if (!firstIso) return secondIso
+  if (!secondIso) return firstIso
+  return new Date(firstIso).getTime() >= new Date(secondIso).getTime() ? firstIso : secondIso
+}
+
+function mergeDuplicateFeedCards(primary = {}, candidate = {}) {
+  const merged = { ...primary }
+  const primaryTimesSeen = toSafeInteger(primary?.timesSeen ?? primary?.times_seen, 1, 1)
+  const candidateTimesSeen = toSafeInteger(candidate?.timesSeen ?? candidate?.times_seen, 1, 1)
+  const timesSeen = Math.max(primaryTimesSeen, candidateTimesSeen)
+  merged.timesSeen = timesSeen
+  merged.times_seen = timesSeen
+
+  const mergedLastSeenAt = pickLatestIso(
+    primary?.lastSeenAt || primary?.last_seen_at || primary?.detectedAt || primary?.detected_at,
+    candidate?.lastSeenAt || candidate?.last_seen_at || candidate?.detectedAt || candidate?.detected_at
+  )
+  if (mergedLastSeenAt) {
+    merged.lastSeenAt = mergedLastSeenAt
+    merged.last_seen_at = mergedLastSeenAt
+  }
+
+  const mergedLastPublishedAt = pickLatestIso(
+    primary?.lastPublishedAt || primary?.last_published_at || primary?.detectedAt || primary?.detected_at,
+    candidate?.lastPublishedAt || candidate?.last_published_at || candidate?.detectedAt || candidate?.detected_at
+  )
+  if (mergedLastPublishedAt) {
+    merged.lastPublishedAt = mergedLastPublishedAt
+    merged.last_published_at = mergedLastPublishedAt
+  }
+
+  return merged
+}
+
+function dedupeFeedCards(rows = []) {
+  const deduped = []
+  const byIdentity = new Map()
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const dedupIdentity =
+      buildFeedDedupIdentity(row) ||
+      `row:${normalizeText(row?.feedId || row?.id || deduped.length)}`
+    const existingIndex = byIdentity.get(dedupIdentity)
+    if (existingIndex == null) {
+      byIdentity.set(dedupIdentity, deduped.length)
+      deduped.push({ ...row })
+      continue
+    }
+    deduped[existingIndex] = mergeDuplicateFeedCards(deduped[existingIndex], row)
+  }
+  return deduped
+}
+
 function toJsonObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {}
@@ -891,6 +1036,7 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
     cleanup: {
       olderMarkedInactive: 0,
       beyondLimitMarkedInactive: 0,
+      duplicateActivesMarkedInactive: 0,
       hadTimeout: false,
       errors: []
     }
@@ -934,6 +1080,7 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
     previousRows = await arbitrageFeedRepo.getRecentRowsByItems({
       itemNames: names,
       sinceIso,
+      includeInactive: false,
       limit: 1200
     })
   } catch (err) {
@@ -965,6 +1112,30 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
         throw err
       }
     }
+  }
+
+  const duplicateActiveIds = collectOlderActiveDuplicateIds([
+    ...(previousRows || []),
+    ...(activeFingerprintRows || [])
+  ])
+  if (duplicateActiveIds.length) {
+    try {
+      counters.cleanup.duplicateActivesMarkedInactive = await arbitrageFeedRepo.markRowsInactiveByIds(
+        duplicateActiveIds
+      )
+    } catch (err) {
+      if (isStatementTimeoutError(err)) {
+        counters.cleanup.hadTimeout = true
+        counters.cleanup.errors.push("active_duplicate_cleanup_timeout")
+      } else {
+        counters.cleanup.errors.push(normalizeText(err?.message) || "active_duplicate_cleanup_failed")
+      }
+    }
+    const deactivatedIds = new Set(duplicateActiveIds.map((value) => normalizeText(value)))
+    previousRows = (previousRows || []).filter((row) => !deactivatedIds.has(normalizeText(row?.id)))
+    activeFingerprintRows = (activeFingerprintRows || []).filter(
+      (row) => !deactivatedIds.has(normalizeText(row?.id))
+    )
   }
 
   const latestByKey = {}
@@ -1668,6 +1839,7 @@ exports.getFeed = async (options = {}) => {
     mapFeedRowToCard(row)
   )
   mappedRows = await enrichRowsWithSkinMetadata(mappedRows)
+  mappedRows = dedupeFeedCards(mappedRows)
   const restricted = applyFeedPlanRestrictions(mappedRows, entitlements)
   mappedRows = restricted.rows
 
@@ -1886,6 +2058,7 @@ exports.__testables = {
   buildFeedInsertRow,
   mapFeedRowToApiRow,
   mapFeedRowToCard,
+  dedupeFeedCards,
   persistFeedRows,
   buildFeedUpdatePatch,
   normalizeCursorPayload,

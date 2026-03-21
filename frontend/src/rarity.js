@@ -22,6 +22,7 @@ const rarityAliases = Object.freeze({
   remarkable: "Restricted",
   exotic: "Classified",
   immortal: "Covert",
+  extraordinary: "Knife/Gloves",
   "consumer grade": "Consumer Grade",
   "industrial grade": "Industrial Grade",
   "mil-spec grade": "Mil-Spec Grade",
@@ -56,17 +57,29 @@ export function normalizeRarity(rarity, marketHashName = "") {
     return "Knife/Gloves";
   }
 
-  if (!raw) {
-    return "Consumer Grade";
-  }
-
   const alias = rarityAliases[lowerRaw];
   if (alias) {
     return alias;
   }
 
   const normalized = raw.replace(/\s+/g, " ").trim();
-  return rarityColors[normalized] ? normalized : "Consumer Grade";
+  if (rarityColors[normalized]) {
+    return normalized;
+  }
+
+  const source = `${lowerRaw} ${name}`.trim();
+  if (/\bextraordinary\b/.test(source)) return "Knife/Gloves";
+  if (/\bimmortal\b/.test(source)) return "Covert";
+  if (/\bexotic\b/.test(source)) return "Classified";
+  if (/\bremarkable\b/.test(source)) return "Restricted";
+  if (/\bcovert\b/.test(source)) return "Covert";
+  if (/\bclassified\b/.test(source)) return "Classified";
+  if (/\brestricted\b/.test(source)) return "Restricted";
+  if (/\bmil[- ]?spec\b/.test(source)) return "Mil-Spec Grade";
+  if (/\bindustrial grade\b/.test(source)) return "Industrial Grade";
+  if (/\bconsumer grade\b/.test(source)) return "Consumer Grade";
+  if (/\bcontraband\b/.test(source)) return "Contraband";
+  return normalized || "Default";
 }
 
 export function getRarityColor(rarity, marketHashName = "", rarityColor = "") {
@@ -78,7 +91,8 @@ export function getRarityColor(rarity, marketHashName = "", rarityColor = "") {
 }
 
 export function getRarityTheme(item = {}) {
-  const rarity = normalizeRarity(item.rarity, item.marketHashName);
+  const normalizedRarity = normalizeRarity(item.rarity, item.marketHashName);
+  const rarity = normalizedRarity === "Default" ? "Unknown" : normalizedRarity;
   const color = getRarityColor(item.rarity, item.marketHashName, item.rarityColor);
   return { rarity, color };
 }
