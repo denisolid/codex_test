@@ -62,6 +62,7 @@ const GLOBAL_OPPORTUNITY_STALE_MIN_MS = 8 * 60 * 1000;
 const GLOBAL_OPPORTUNITY_FORCE_COOLDOWN_MS = 90 * 1000;
 const GLOBAL_OPPORTUNITY_PAGE_SIZE = 100;
 const GLOBAL_OPPORTUNITY_HISTORY_HOURS = 24;
+const GLOBAL_OPPORTUNITY_PAGE_CACHE_MAX = 4;
 const HISTORY_RANGE_OPTIONS = [7, 30, 90, 180];
 const ACCOUNT_SECTION_IDS = [
   "profile",
@@ -991,14 +992,21 @@ function createGlobalOpportunitiesState() {
     showOlder: false,
     category: "all",
     page: 1,
+    cursor: "",
+    nextCursor: "",
+    cursorStack: [],
+    filterCacheKey: "",
+    pageCacheEntries: [],
     pageSize: GLOBAL_OPPORTUNITY_PAGE_SIZE,
     historyHours: GLOBAL_OPPORTUNITY_HISTORY_HOURS,
     summary: null,
     pagination: {
       page: 1,
       pageSize: GLOBAL_OPPORTUNITY_PAGE_SIZE,
-      totalCount: 0,
-      totalPages: 1,
+      cursor: null,
+      nextCursor: null,
+      returnedCount: 0,
+      totalCount: null,
       hasPrevPage: false,
       hasNextPage: false,
       historyHours: GLOBAL_OPPORTUNITY_HISTORY_HOURS,
@@ -1252,6 +1260,7 @@ function syncPlanAwareUiState() {
     state.globalOpportunities.showRisky = true;
     state.globalOpportunities.showOlder = false;
     state.globalOpportunities.category = "all";
+    resetGlobalOpportunitiesPagination(state.globalOpportunities);
     state.marketTab.opportunities.filters.showRisky = "0";
     state.marketTab.opportunities.filters.market = "all";
     state.marketTab.opportunities.filters.sortBy = "score";
@@ -5372,22 +5381,18 @@ function onAppClick(event) {
   if (button?.matches(".global-opportunities-page-btn")) {
     event.preventDefault();
     if (state.globalOpportunities?.loading) return;
-    const pagination =
-      state.globalOpportunities?.pagination &&
-      typeof state.globalOpportunities.pagination === "object"
-        ? state.globalOpportunities.pagination
-        : null;
-    const totalPages = Math.max(Number(pagination?.totalPages || 1), 1);
-    const page = clampInt(button.getAttribute("data-page"), 1, totalPages);
-    if (page === clampInt(state.globalOpportunities?.page || 1, 1, totalPages)) {
-      return;
-    }
+    const action = String(button.getAttribute("data-action") || "")
+      .trim()
+      .toLowerCase();
+    if (action !== "next" && action !== "prev") return;
     runUiTask(() =>
       refreshGlobalOpportunities({
         silent: true,
         force: false,
-        page,
-        limit: Number(state.globalOpportunities?.pageSize || GLOBAL_OPPORTUNITY_PAGE_SIZE),
+        navigation: action,
+        limit: Number(
+          state.globalOpportunities?.pageSize || GLOBAL_OPPORTUNITY_PAGE_SIZE,
+        ),
       }),
     );
     return;
@@ -6027,13 +6032,12 @@ function onAppChange(event) {
       target instanceof HTMLInputElement ? Boolean(target.checked) : false;
     const showRisky = !showHighConfidenceOnly;
     state.globalOpportunities.showRisky = showRisky;
-    state.globalOpportunities.page = 1;
     runUiTask(() =>
       refreshGlobalOpportunities({
-        force: true,
+        force: false,
         limit: GLOBAL_OPPORTUNITY_PAGE_SIZE,
         showRisky,
-        page: 1,
+        resetPagination: true,
       }),
     );
     return;
@@ -6052,13 +6056,12 @@ function onAppChange(event) {
     const checked =
       target instanceof HTMLInputElement ? Boolean(target.checked) : false;
     state.globalOpportunities.showOlder = checked;
-    state.globalOpportunities.page = 1;
     runUiTask(() =>
       refreshGlobalOpportunities({
         force: false,
         limit: GLOBAL_OPPORTUNITY_PAGE_SIZE,
         showOlder: checked,
-        page: 1,
+        resetPagination: true,
       }),
     );
     return;
@@ -6090,13 +6093,12 @@ function onAppChange(event) {
     } else {
       state.globalOpportunities.category = "all";
     }
-    state.globalOpportunities.page = 1;
     runUiTask(() =>
       refreshGlobalOpportunities({
-        force: true,
+        force: false,
         limit: GLOBAL_OPPORTUNITY_PAGE_SIZE,
         category: state.globalOpportunities.category,
-        page: 1,
+        resetPagination: true,
       }),
     );
     return;
@@ -7748,6 +7750,75 @@ async function refreshMarketOpportunities(options = {}) {
   }
 }
 
+function mapGlobalCategoryToApiValue(value) {
+  const category = String(value || "all")
+    .trim()
+    .toLowerCase();
+  if (category === "skins" || category === "skin") return "weapon_skin";
+  if (category === "cases" || category === "case") return "case";
+  if (category === "capsules" || category === "capsule") return "sticker_capsule";
+  if (category === "knives" || category === "knife") return "knife";
+  if (category === "gloves" || category === "glove") return "glove";
+  return "";
+}
+
+function buildGlobalOpportunitiesFilterCacheKey(scanner = {}) {
+  return [
+    scanner?.showRisky ? "risky" : "high_only",
+    scanner?.showOlder ? "include_older" : "active_only",
+    String(scanner?.category || "all").trim().toLowerCase() || "all",
+  ].join("::");
+}
+
+function buildGlobalOpportunitiesPageCacheKey(filterKey, cursor = "") {
+  const safeFilterKey = String(filterKey || "default");
+  const safeCursor = String(cursor || "").trim() || "__first__";
+  return `${safeFilterKey}::${safeCursor}`;
+}
+
+function readGlobalOpportunitiesPageCache(scanner = {}, key = "") {
+  const entries = Array.isArray(scanner?.pageCacheEntries)
+    ? scanner.pageCacheEntries
+    : [];
+  return (
+    entries.find((entry) => String(entry?.key || "") === String(key || ""))
+      ?.value || null
+  );
+}
+
+function writeGlobalOpportunitiesPageCache(scanner = {}, key = "", value = null) {
+  if (!scanner || typeof scanner !== "object") return;
+  const safeKey = String(key || "").trim();
+  if (!safeKey || !value || typeof value !== "object") return;
+  const existing = Array.isArray(scanner.pageCacheEntries)
+    ? scanner.pageCacheEntries
+    : [];
+  const trimmed = existing.filter(
+    (entry) => String(entry?.key || "") !== safeKey,
+  );
+  trimmed.unshift({ key: safeKey, value });
+  scanner.pageCacheEntries = trimmed.slice(0, GLOBAL_OPPORTUNITY_PAGE_CACHE_MAX);
+}
+
+function resetGlobalOpportunitiesPagination(scanner = {}) {
+  scanner.page = 1;
+  scanner.cursor = "";
+  scanner.nextCursor = "";
+  scanner.cursorStack = [];
+  scanner.pageCacheEntries = [];
+  scanner.pagination = {
+    page: 1,
+    pageSize: GLOBAL_OPPORTUNITY_PAGE_SIZE,
+    cursor: null,
+    nextCursor: null,
+    returnedCount: 0,
+    totalCount: null,
+    hasPrevPage: false,
+    hasNextPage: false,
+    historyHours: GLOBAL_OPPORTUNITY_HISTORY_HOURS,
+  };
+}
+
 async function refreshGlobalOpportunities(options = {}) {
   const {
     silent = false,
@@ -7756,6 +7827,9 @@ async function refreshGlobalOpportunities(options = {}) {
     showRisky = null,
     category = null,
     showOlder = null,
+    cursor = undefined,
+    navigation = "stay",
+    resetPagination = false,
     page = null,
     historyHours = null,
   } =
@@ -7764,15 +7838,12 @@ async function refreshGlobalOpportunities(options = {}) {
   const entitlements = getProfileEntitlements();
   const advancedFiltersEnabled = canUseAdvancedFilters(entitlements);
   const requestedPageSize = GLOBAL_OPPORTUNITY_PAGE_SIZE;
-  const requestedPage = Math.max(
+  let requestedPage = Math.max(
     Math.round(Number(page == null ? scanner.page || 1 : page) || 1),
     1,
   );
   const requestedHistoryHours = GLOBAL_OPPORTUNITY_HISTORY_HOURS;
   state.globalOpportunities = scanner;
-  scanner.pageSize = requestedPageSize;
-  scanner.page = requestedPage;
-  scanner.historyHours = requestedHistoryHours;
   if (!advancedFiltersEnabled) {
     scanner.showRisky = true;
     scanner.showOlder = false;
@@ -7787,6 +7858,51 @@ async function refreshGlobalOpportunities(options = {}) {
         ? String(scanner.category || "all")
         : String(category || "all");
   }
+
+  const previousFilterKey = String(scanner.filterCacheKey || "").trim();
+  const nextFilterKey = buildGlobalOpportunitiesFilterCacheKey(scanner);
+  const filtersChanged = nextFilterKey !== previousFilterKey;
+  scanner.filterCacheKey = nextFilterKey;
+  if (filtersChanged || resetPagination) {
+    resetGlobalOpportunitiesPagination(scanner);
+  }
+
+  let requestedCursor = String(
+    cursor == null ? scanner.cursor || "" : cursor || "",
+  ).trim();
+  let requestedCursorStack = Array.isArray(scanner.cursorStack)
+    ? [...scanner.cursorStack]
+    : [];
+
+  if (navigation === "next") {
+    const nextCursor = String(
+      cursor == null
+        ? scanner.nextCursor || scanner.pagination?.nextCursor || ""
+        : cursor,
+    ).trim();
+    if (!nextCursor) {
+      return;
+    }
+    requestedCursorStack.push(String(scanner.cursor || "").trim());
+    requestedCursor = nextCursor;
+    requestedPage = Math.max(Number(scanner.page || 1) + 1, 1);
+  } else if (navigation === "prev") {
+    if (!requestedCursorStack.length) {
+      return;
+    }
+    requestedCursor = String(
+      requestedCursorStack[requestedCursorStack.length - 1] || "",
+    ).trim();
+    requestedCursorStack = requestedCursorStack.slice(0, -1);
+    requestedPage = Math.max(Number(scanner.page || 1) - 1, 1);
+  } else if (filtersChanged || resetPagination) {
+    requestedCursor = "";
+    requestedCursorStack = [];
+    requestedPage = 1;
+  }
+
+  scanner.pageSize = requestedPageSize;
+  scanner.historyHours = requestedHistoryHours;
   scanner.loading = true;
   if (!force) {
     scanner.error = "";
@@ -7831,29 +7947,39 @@ async function refreshGlobalOpportunities(options = {}) {
         });
     }
 
-    const feedQuery = buildQuery({
-      limit: requestedPageSize,
-      page: requestedPage,
-      historyHours: requestedHistoryHours,
-      showRisky: scanner.showRisky ? "1" : "",
-      includeOlder: scanner.showOlder ? "1" : "",
-      category:
-        scanner.category === "skins"
-          ? "weapon_skin"
-          : scanner.category === "cases"
-            ? "case"
-            : scanner.category === "capsules"
-              ? "sticker_capsule"
-              : scanner.category === "knives"
-                ? "knife"
-                : scanner.category === "gloves"
-                  ? "glove"
-            : "",
-    });
-    const feedPayload = await api(`/opportunities/feed${feedQuery}`);
-    const statusPayload =
-      feedPayload?.status ||
-      (await api("/opportunities/status").catch(() => null));
+    const pageCacheKey = buildGlobalOpportunitiesPageCacheKey(
+      nextFilterKey,
+      requestedCursor,
+    );
+    const cachedPage = shouldForceRefresh
+      ? null
+      : readGlobalOpportunitiesPageCache(scanner, pageCacheKey);
+
+    let feedPayload = null;
+    let statusPayload = null;
+    if (cachedPage) {
+      feedPayload = cachedPage.feedPayload || null;
+      statusPayload = cachedPage.statusPayload || null;
+    } else {
+      const feedQuery = buildQuery({
+        limit: requestedPageSize,
+        page: requestedPage,
+        cursor: requestedCursor,
+        historyHours: requestedHistoryHours,
+        showRisky: scanner.showRisky ? "1" : "",
+        includeOlder: scanner.showOlder ? "1" : "",
+        category: mapGlobalCategoryToApiValue(scanner.category),
+      });
+      feedPayload = await api(`/opportunities/feed${feedQuery}`);
+      statusPayload =
+        feedPayload?.status ||
+        (await api("/opportunities/status").catch(() => null));
+      writeGlobalOpportunitiesPageCache(scanner, pageCacheKey, {
+        feedPayload,
+        statusPayload,
+      });
+    }
+
     const incomingRows = Array.isArray(feedPayload?.opportunities)
       ? feedPayload.opportunities
       : [];
@@ -7904,35 +8030,40 @@ async function refreshGlobalOpportunities(options = {}) {
       GLOBAL_OPPORTUNITY_HISTORY_HOURS,
       GLOBAL_OPPORTUNITY_HISTORY_HOURS,
     );
-    const totalCount = Math.max(
-      Number(
-        payloadPagination.totalCount ??
-          scanner.summary?.totalDetected ??
-          incomingRows.length,
-      ),
+    const resolvedNextCursor = String(
+      payloadPagination.nextCursor || payloadPagination.next_cursor || "",
+    ).trim();
+    const returnedCount = Math.max(
+      Number(payloadPagination.returnedCount ?? incomingRows.length),
       0,
     );
-    const totalPages = Math.max(
-      Number(payloadPagination.totalPages || Math.ceil(totalCount / resolvedPageSize) || 1),
-      1,
-    );
-    const resolvedPage = clampInt(payloadPagination.page || requestedPage, 1, totalPages);
-    scanner.page = resolvedPage;
+    const totalCount = Number.isFinite(Number(payloadPagination.totalCount))
+      ? Math.max(Number(payloadPagination.totalCount), 0)
+      : null;
+    const hasPrevPage =
+      payloadPagination.hasPrevPage == null
+        ? requestedCursorStack.length > 0
+        : Boolean(payloadPagination.hasPrevPage);
+    const hasNextPage =
+      payloadPagination.hasNextPage == null
+        ? Boolean(resolvedNextCursor)
+        : Boolean(payloadPagination.hasNextPage);
+
+    scanner.cursor = requestedCursor;
+    scanner.nextCursor = resolvedNextCursor;
+    scanner.cursorStack = requestedCursorStack;
+    scanner.page = requestedPage;
     scanner.pageSize = resolvedPageSize;
     scanner.historyHours = resolvedHistoryHours;
     scanner.pagination = {
-      page: resolvedPage,
+      page: requestedPage,
       pageSize: resolvedPageSize,
+      cursor: requestedCursor || null,
+      nextCursor: resolvedNextCursor || null,
+      returnedCount,
       totalCount,
-      totalPages,
-      hasPrevPage:
-        payloadPagination.hasPrevPage == null
-          ? resolvedPage > 1
-          : Boolean(payloadPagination.hasPrevPage),
-      hasNextPage:
-        payloadPagination.hasNextPage == null
-          ? resolvedPage < totalPages
-          : Boolean(payloadPagination.hasNextPage),
+      hasPrevPage,
+      hasNextPage,
       historyHours: resolvedHistoryHours,
     };
     if (String(scanner.status?.currentStatus || "").toLowerCase() !== "running") {
@@ -7948,6 +8079,7 @@ async function refreshGlobalOpportunities(options = {}) {
     scanner.currency = String(feedPayload?.currency || "USD")
       .trim()
       .toUpperCase();
+    scanner.filterCacheKey = nextFilterKey;
     scanner.loaded = true;
     if (triggerScanPromise) {
       triggerScanPromise.catch(() => {});
@@ -13739,46 +13871,41 @@ function renderGlobalOpportunitiesTab() {
     Number(pagination.pageSize || scanner.pageSize || GLOBAL_OPPORTUNITY_PAGE_SIZE),
     1,
   );
-  const totalCount = Math.max(
-    Number(
-      pagination.totalCount ??
-        summary?.totalDetected ??
-        rows.length,
-    ),
+  const totalCountRaw = Number(pagination.totalCount ?? summary?.totalDetected);
+  const hasKnownTotalCount = Number.isFinite(totalCountRaw) && totalCountRaw >= 0;
+  const totalCount = hasKnownTotalCount ? Math.max(Math.round(totalCountRaw), 0) : null;
+  const page = clampInt(pagination.page || scanner.page || 1, 1, 999999);
+  const returnedCount = Math.max(
+    Number(pagination.returnedCount ?? rows.length),
     0,
   );
-  const totalPages = Math.max(
-    Number(pagination.totalPages || Math.ceil(totalCount / pageSize) || 1),
-    1,
-  );
-  const page = clampInt(pagination.page || scanner.page || 1, 1, totalPages);
-  const pageStart = totalCount > 0 ? (page - 1) * pageSize + 1 : 0;
-  const pageEnd = totalCount > 0 ? Math.min((page - 1) * pageSize + rows.length, totalCount) : 0;
-  const hasPrevPage = pagination.hasPrevPage == null ? page > 1 : Boolean(pagination.hasPrevPage);
-  const hasNextPage =
-    pagination.hasNextPage == null ? page < totalPages : Boolean(pagination.hasNextPage);
+  const hasPrevPage = Boolean(pagination.hasPrevPage);
+  const hasNextPage = Boolean(pagination.hasNextPage);
+  const paginationLabel = hasKnownTotalCount
+    ? `Page ${formatNumber(page, 0)} (${formatNumber(returnedCount, 0)} shown of ${formatNumber(totalCount, 0)} in last ${formatNumber(
+        historyHours,
+        0,
+      )}h)`
+    : `Page ${formatNumber(page, 0)} (${formatNumber(returnedCount, 0)} shown in last ${formatNumber(
+        historyHours,
+        0,
+      )}h)`;
   const paginationMarkup =
-    totalCount > 0
+    rows.length || hasPrevPage || hasNextPage
       ? `<div class="pagination-bar">
           <button
             type="button"
             class="ghost-btn global-opportunities-page-btn"
-            data-page="${Math.max(page - 1, 1)}"
+            data-action="prev"
             ${scanner.loading || !hasPrevPage ? "disabled" : ""}
           >
             Previous ${formatNumber(pageSize, 0)}
           </button>
-          <span>Page ${formatNumber(page, 0)} / ${formatNumber(totalPages, 0)} (${formatNumber(
-            pageStart,
-            0,
-          )}-${formatNumber(pageEnd, 0)} of ${formatNumber(totalCount, 0)} in last ${formatNumber(
-            historyHours,
-            0,
-          )}h)</span>
+          <span>${paginationLabel}</span>
           <button
             type="button"
             class="ghost-btn global-opportunities-page-btn"
-            data-page="${Math.min(page + 1, totalPages)}"
+            data-action="next"
             ${scanner.loading || !hasNextPage ? "disabled" : ""}
           >
             Next ${formatNumber(pageSize, 0)}
@@ -14220,10 +14347,14 @@ function renderGlobalOpportunitiesTab() {
           ? `Scanned ${formatNumber(summary.scannedItems || 0, 0)} items in the latest run. Showing ${formatNumber(
               rows.length,
               0,
-            )} of ${formatNumber(totalCount, 0)} ${showRisky ? "opportunities" : "high-quality opportunities"} from the last ${formatNumber(
+            )}${
+              hasKnownTotalCount
+                ? ` of ${formatNumber(totalCount, 0)}`
+                : ""
+            } ${showRisky ? "opportunities" : "high-quality opportunities"} from the last ${formatNumber(
               historyHours,
               0,
-            )}h feed history (page ${formatNumber(page, 0)}/${formatNumber(totalPages, 0)}).`
+            )}h feed history (page ${formatNumber(page, 0)}).`
           : "Waiting for scanner summary."
       }
       ${generatedLabel} Active opportunities: ${escapeHtml(

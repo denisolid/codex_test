@@ -4,44 +4,13 @@ const opportunityInsightService = require("../services/opportunityInsightService
 
 function toOpportunityRow(row = {}) {
   const qualityScoreDisplay = row?.qualityScoreDisplay ?? row?.quality_score_display ?? null
-  return {
-    feedId: row?.feedId || null,
+  const payload = {
+    feedId: row?.feedId || row?.id || null,
     detectedAt: row?.detectedAt || null,
-    discoveredAt: row?.discoveredAt || row?.discovered_at || row?.detectedAt || null,
-    discovered_at: row?.discovered_at || row?.discoveredAt || row?.detectedAt || null,
-    firstSeenAt: row?.firstSeenAt || row?.first_seen_at || row?.discoveredAt || null,
-    first_seen_at: row?.first_seen_at || row?.firstSeenAt || row?.discoveredAt || null,
-    lastSeenAt: row?.lastSeenAt || row?.last_seen_at || row?.detectedAt || null,
-    last_seen_at: row?.last_seen_at || row?.lastSeenAt || row?.detectedAt || null,
-    lastPublishedAt:
-      row?.lastPublishedAt || row?.last_published_at || row?.feedPublishedAt || null,
-    last_published_at:
-      row?.last_published_at || row?.lastPublishedAt || row?.feedPublishedAt || null,
-    timesSeen: row?.timesSeen ?? row?.times_seen ?? 1,
-    times_seen: row?.times_seen ?? row?.timesSeen ?? 1,
-    opportunityFingerprint:
-      row?.opportunityFingerprint || row?.opportunity_fingerprint || null,
-    opportunity_fingerprint:
-      row?.opportunity_fingerprint || row?.opportunityFingerprint || null,
-    materialChangeHash: row?.materialChangeHash || row?.material_change_hash || null,
-    material_change_hash: row?.material_change_hash || row?.materialChangeHash || null,
-    marketSignalObservedAt:
-      row?.marketSignalObservedAt || row?.market_signal_observed_at || row?.latestMarketSignalAt || null,
-    market_signal_observed_at:
-      row?.market_signal_observed_at || row?.marketSignalObservedAt || row?.latestMarketSignalAt || null,
-    feedPublishedAt: row?.feedPublishedAt || row?.feed_published_at || null,
-    feed_published_at: row?.feed_published_at || row?.feedPublishedAt || null,
-    insightRefreshedAt: row?.insightRefreshedAt || row?.insight_refreshed_at || null,
-    insight_refreshed_at: row?.insight_refreshed_at || row?.insightRefreshedAt || null,
-    lastRefreshAttemptAt: row?.lastRefreshAttemptAt || row?.last_refresh_attempt_at || null,
-    last_refresh_attempt_at: row?.last_refresh_attempt_at || row?.lastRefreshAttemptAt || null,
-    latestSignalAgeHours:
-      row?.latestSignalAgeHours ?? row?.latest_signal_age_hours ?? null,
-    latest_signal_age_hours:
-      row?.latest_signal_age_hours ?? row?.latestSignalAgeHours ?? null,
     scanRunId: row?.scanRunId || null,
     isActive: row?.isActive == null ? true : Boolean(row.isActive),
     isDuplicate: Boolean(row?.isDuplicate),
+    itemId: row?.itemId || null,
     itemName: row?.itemName || "Tracked Item",
     itemCategory: row?.itemCategory || "weapon_skin",
     itemSubcategory: row?.itemSubcategory || null,
@@ -54,13 +23,8 @@ function toOpportunityRow(row = {}) {
     sellNet: row?.sellNet ?? null,
     profit: row?.profit ?? null,
     spread: row?.spread ?? null,
-    netProfitAfterFees:
-      row?.netProfitAfterFees ?? row?.net_profit_after_fees ?? row?.profit ?? null,
-    net_profit_after_fees:
-      row?.net_profit_after_fees ?? row?.netProfitAfterFees ?? row?.profit ?? null,
     score: row?.score ?? null,
     qualityScoreDisplay,
-    quality_score_display: qualityScoreDisplay,
     scoreCategory: row?.scoreCategory || null,
     executionConfidence: row?.executionConfidence || null,
     qualityGrade: row?.qualityGrade || null,
@@ -70,54 +34,15 @@ function toOpportunityRow(row = {}) {
     volume7d: row?.volume7d ?? null,
     marketCoverage: row?.marketCoverage ?? null,
     referencePrice: row?.referencePrice ?? null,
-    latestMarketSignalAt: row?.latestMarketSignalAt || row?.latest_market_signal_at || null,
-    latest_market_signal_at: row?.latest_market_signal_at || row?.latestMarketSignalAt || null,
-    latestQuoteAt: row?.latestQuoteAt || row?.latest_quote_at || null,
-    latest_quote_at: row?.latest_quote_at || row?.latestQuoteAt || null,
-    latestSnapshotAt: row?.latestSnapshotAt || row?.latest_snapshot_at || null,
-    latest_snapshot_at: row?.latest_snapshot_at || row?.latestSnapshotAt || null,
-    latestReferencePriceAt: row?.latestReferencePriceAt || row?.latest_reference_price_at || null,
-    latest_reference_price_at: row?.latest_reference_price_at || row?.latestReferencePriceAt || null,
-    staleThresholdUsed: row?.staleThresholdUsed ?? row?.stale_threshold_used ?? null,
-    stale_threshold_used: row?.stale_threshold_used ?? row?.staleThresholdUsed ?? null,
-    staleResult: row?.staleResult ?? row?.stale_result ?? null,
-    stale_result: row?.stale_result ?? row?.staleResult ?? null,
-    staleReasonSource: row?.staleReasonSource || row?.stale_reason_source || null,
-    stale_reason_source: row?.stale_reason_source || row?.staleReasonSource || null,
-    flags: Array.isArray(row?.flags) ? row.flags : [],
-    badges: Array.isArray(row?.badges) ? row.badges : [],
-    isHighConfidenceEligible: Boolean(row?.isHighConfidenceEligible),
-    isRiskyEligible: Boolean(row?.isRiskyEligible),
-    confidenceScore: row?.confidenceScore ?? row?.confidence_score ?? null,
-    confidence_score: row?.confidence_score ?? row?.confidenceScore ?? null,
-    freshnessScore: row?.freshnessScore ?? row?.freshness_score ?? null,
-    freshness_score: row?.freshness_score ?? row?.freshnessScore ?? null,
+    latestSignalAgeHours:
+      row?.latestSignalAgeHours ?? row?.latest_signal_age_hours ?? null,
     refreshStatus: row?.refreshStatus || row?.refresh_status || "pending",
-    refresh_status: row?.refresh_status || row?.refreshStatus || "pending",
     liveStatus: row?.liveStatus || row?.live_status || "degraded",
-    live_status: row?.live_status || row?.liveStatus || "degraded",
-    skinportQuotePrice: row?.skinportQuotePrice ?? row?.skinport_quote_price ?? null,
-    skinport_quote_price: row?.skinport_quote_price ?? row?.skinportQuotePrice ?? null,
-    skinportQuoteCurrency: row?.skinportQuoteCurrency ?? row?.skinport_quote_currency ?? null,
-    skinport_quote_currency: row?.skinport_quote_currency ?? row?.skinportQuoteCurrency ?? null,
-    skinportQuoteObservedAt:
-      row?.skinportQuoteObservedAt || row?.skinport_quote_observed_at || null,
-    skinport_quote_observed_at:
-      row?.skinport_quote_observed_at || row?.skinportQuoteObservedAt || null,
-    skinportQuoteType: row?.skinportQuoteType || row?.skinport_quote_type || null,
-    skinport_quote_type: row?.skinport_quote_type || row?.skinportQuoteType || null,
-    skinportItemSlug: row?.skinportItemSlug || row?.skinport_item_slug || null,
-    skinport_item_slug: row?.skinport_item_slug || row?.skinportItemSlug || null,
-    skinportListingId: row?.skinportListingId || row?.skinport_listing_id || null,
-    skinport_listing_id: row?.skinport_listing_id || row?.skinportListingId || null,
-    skinportPriceIntegrityStatus:
-      row?.skinportPriceIntegrityStatus || row?.skinport_price_integrity_status || null,
-    skinport_price_integrity_status:
-      row?.skinport_price_integrity_status || row?.skinportPriceIntegrityStatus || null,
     verdict: row?.verdict || null,
-    itemId: row?.itemId || null,
     buyUrl: row?.buyUrl || null,
     sellUrl: row?.sellUrl || null,
+    flags: Array.isArray(row?.flags) ? row.flags : [],
+    badges: Array.isArray(row?.badges) ? row.badges : [],
     isLockedPreview: Boolean(row?.isLockedPreview),
     premiumCategory: row?.premiumCategory || null,
     premiumCategoryLabel: row?.premiumCategoryLabel || null,
@@ -131,6 +56,14 @@ function toOpportunityRow(row = {}) {
     previewSpread: row?.previewSpread ?? null,
     previewScoreBand: row?.previewScoreBand || null
   }
+
+  return Object.fromEntries(
+    Object.entries(payload).filter(([, value]) => {
+      if (value == null) return false
+      if (Array.isArray(value) && !value.length) return false
+      return true
+    })
+  )
 }
 
 function toFeedResponse(data = {}) {
@@ -152,6 +85,8 @@ exports.getTopOpportunities = asyncHandler(async (req, res) => {
     userId: req.userId,
     limit: req.validated?.limit,
     page: req.validated?.page,
+    cursor: req.query?.cursor,
+    includeCount: req.query?.includeCount,
     historyHours: req.validated?.historyHours,
     showRisky: req.query?.showRisky,
     forceRefresh: req.query?.force,
@@ -167,6 +102,8 @@ exports.getFeed = asyncHandler(async (req, res) => {
     userId: req.userId,
     limit: req.validated?.limit,
     page: req.validated?.page,
+    cursor: req.query?.cursor,
+    includeCount: req.query?.includeCount,
     historyHours: req.validated?.historyHours,
     showRisky: req.query?.showRisky,
     category: req.query?.category,

@@ -20,7 +20,12 @@ const {
     isMateriallyNewOpportunity,
     buildFeedInsertRow,
     mapFeedRowToApiRow,
+    mapFeedRowToCard,
     persistFeedRows,
+    normalizeCursorPayload,
+    encodeCursorPayload,
+    buildFeedPageCacheKey,
+    clearFeedFirstPageCache,
     isScannerRunOverdue,
     DEFAULT_UNIVERSE_LIMIT,
     OPPORTUNITY_BATCH_TARGET,
@@ -55,6 +60,35 @@ test("category filter normalization keeps API aliases stable", () => {
   assert.equal(normalizeCategoryFilter("gloves"), "glove")
   assert.equal(normalizeCategoryFilter("future_knife"), "knife")
   assert.equal(normalizeCategoryFilter("future_glove"), "glove")
+})
+
+test("feed cursor helpers round-trip created_at + id payload", () => {
+  clearFeedFirstPageCache()
+  const cursor = encodeCursorPayload(
+    "2026-03-21T10:15:30.000Z",
+    "00000000-0000-0000-0000-000000000777"
+  )
+  assert.equal(Boolean(cursor), true)
+
+  const decoded = normalizeCursorPayload(cursor)
+  assert.equal(Boolean(decoded), true)
+  assert.equal(decoded.createdAt, "2026-03-21T10:15:30.000Z")
+  assert.equal(decoded.id, "00000000-0000-0000-0000-000000000777")
+  assert.equal(normalizeCursorPayload("not-a-valid-cursor"), null)
+})
+
+test("feed cache key normalization is stable across category aliases", () => {
+  const a = buildFeedPageCacheKey({
+    includeInactive: false,
+    highConfidenceOnly: false,
+    category: "skins"
+  })
+  const b = buildFeedPageCacheKey({
+    includeInactive: false,
+    highConfidenceOnly: false,
+    category: "weapon_skin"
+  })
+  assert.equal(a, b)
 })
 
 test("scan-first state model forwards rows with penalties instead of hard-blocking", () => {

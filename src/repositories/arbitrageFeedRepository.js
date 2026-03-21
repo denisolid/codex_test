@@ -5,9 +5,9 @@ const TABLE = "arbitrage_feed"
 const MAX_LIMIT = 1000
 const INSERT_BATCH_SIZE = 200
 const FEED_TIME_COLUMNS = Object.freeze([
+  "created_at",
   "last_seen_at",
   "last_published_at",
-  "created_at",
   "detected_at"
 ])
 const FEED_SELECT_FIELDS_BASE =
@@ -18,6 +18,10 @@ const RECENT_ROWS_FIELDS_BASE =
   "id, item_name, category, buy_market, buy_price, sell_market, sell_net, profit, spread_pct, opportunity_score, execution_confidence, quality_grade, liquidity_label, detected_at, discovered_at, opportunity_fingerprint, first_seen_at, last_seen_at, last_published_at, times_seen, material_change_hash, verdict, is_active, is_duplicate, metadata"
 const RECENT_ROWS_FIELDS_LEGACY =
   "id, item_name, category, buy_market, sell_market, profit, spread_pct, opportunity_score, execution_confidence, liquidity_label, detected_at, is_active, is_duplicate, metadata"
+const FEED_CARD_SELECT_FIELDS_BASE =
+  "id, item_name, market_hash_name, category, buy_market, buy_price, sell_market, sell_net, profit, spread_pct, opportunity_score, execution_confidence, quality_grade, liquidity_label, created_at, detected_at, scan_run_id, is_active, is_duplicate, refresh_status, live_status, latest_signal_age_hours, verdict, item_id:metadata->>item_id, item_subcategory:metadata->>item_subcategory, item_rarity:metadata->>item_rarity, item_rarity_color:metadata->>item_rarity_color, item_image_url:metadata->>item_image_url, volume_7d:metadata->>volume_7d, market_coverage:metadata->>market_coverage, reference_price:metadata->>reference_price, buy_url:metadata->>buy_url, sell_url:metadata->>sell_url, score_category:metadata->>score_category, quality_score_display:metadata->>quality_score_display, flags:metadata->flags, badges:metadata->badges"
+const FEED_CARD_SELECT_FIELDS_FALLBACK =
+  "id, item_name, market_hash_name, category, buy_market, buy_price, sell_market, sell_net, profit, spread_pct, opportunity_score, execution_confidence, quality_grade, liquidity_label, created_at, detected_at, scan_run_id, is_active, is_duplicate, refresh_status, live_status, latest_signal_age_hours, verdict, metadata"
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -104,6 +108,16 @@ function isMissingColumnError(error) {
   )
 }
 
+function isSelectSyntaxError(error) {
+  const message = normalizeText(error?.message).toLowerCase()
+  const code = normalizeText(error?.code).toUpperCase()
+  return (
+    code === "PGRST100" ||
+    message.includes("failed to parse select parameter") ||
+    message.includes("syntax error")
+  )
+}
+
 async function runFeedSelectWithFallback(queryBuilder) {
   const first = await queryBuilder(FEED_SELECT_FIELDS_BASE)
   if (!first?.error) {
@@ -113,6 +127,24 @@ async function runFeedSelectWithFallback(queryBuilder) {
     return queryBuilder(FEED_SELECT_FIELDS_LEGACY)
   }
   return first
+}
+
+async function runFeedCardSelectWithFallback(queryBuilder) {
+  const primary = await queryBuilder(FEED_CARD_SELECT_FIELDS_BASE)
+  if (!primary?.error) {
+    return primary
+  }
+  if (isMissingColumnError(primary.error) || isSelectSyntaxError(primary.error)) {
+    const secondary = await queryBuilder(FEED_CARD_SELECT_FIELDS_FALLBACK)
+    if (!secondary?.error) {
+      return secondary
+    }
+    if (isMissingColumnError(secondary?.error)) {
+      return queryBuilder(FEED_SELECT_FIELDS_LEGACY)
+    }
+    return secondary
+  }
+  return primary
 }
 
 async function runFeedQueryWithTimeColumn(queryBuilder) {
@@ -281,6 +313,36 @@ function normalizeRows(rows = []) {
     .filter(Boolean)
 }
 
+function applyFeedFilters(query, options = {}, timeColumn = "created_at") {
+  const includeInactive = Boolean(options.includeInactive)
+  const sinceIso = normalizeIso(options.sinceIso)
+  const category = normalizeCategory(options.category)
+  const minScore = toFiniteOrNull(options.minScore)
+  const excludeLowConfidence = Boolean(options.excludeLowConfidence)
+  const highConfidenceOnly = Boolean(options.highConfidenceOnly)
+
+  let scoped = query
+  if (!includeInactive) {
+    scoped = scoped.eq("is_active", true)
+  }
+  if (sinceIso) {
+    scoped = scoped.gte(timeColumn, sinceIso)
+  }
+  if (category) {
+    scoped = scoped.eq("category", category)
+  }
+  if (minScore != null) {
+    scoped = scoped.gte("opportunity_score", minScore)
+  }
+  if (excludeLowConfidence) {
+    scoped = scoped.neq("execution_confidence", "Low")
+  }
+  if (highConfidenceOnly) {
+    scoped = scoped.contains("metadata", { is_high_confidence_eligible: true })
+  }
+  return scoped
+}
+
 exports.insertRows = async (rows = []) => {
   const payload = normalizeRows(rows)
   if (!payload.length) return []
@@ -308,41 +370,83 @@ exports.insertRows = async (rows = []) => {
 exports.listFeed = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 100)
   const offset = normalizeOffset(options.offset, 0)
-  const sinceIso = normalizeIso(options.sinceIso)
-  const includeInactive = Boolean(options.includeInactive)
-  const category = normalizeCategory(options.category)
-  const minScore = toFiniteOrNull(options.minScore)
-  const excludeLowConfidence = Boolean(options.excludeLowConfidence)
-  const highConfidenceOnly = Boolean(options.highConfidenceOnly)
 
   const { data, error } = await runFeedQueryWithTimeColumn((timeColumn) =>
     runFeedSelectWithFallback((selectFields) => {
-      let query = supabaseAdmin
+      const query = supabaseAdmin
         .from(TABLE)
         .select(selectFields)
         .order(timeColumn, { ascending: false })
         .order("id", { ascending: false })
         .range(offset, offset + limit - 1)
+      return applyFeedFilters(query, options, timeColumn)
+    })
+  )
 
-      if (!includeInactive) {
-        query = query.eq("is_active", true)
+  if (error) {
+    throw new AppError(error.message, 500)
+  }
+
+  return data || []
+}
+
+exports.listFeedByCursor = async (options = {}) => {
+  const limit = normalizeLimit(options.limit, 100)
+  const cursorCreatedAt = normalizeIso(options.cursorCreatedAt)
+  const cursorId = normalizeId(options.cursorId)
+  const useCursor = Boolean(cursorCreatedAt && cursorId)
+
+  const { data, error } = await runFeedQueryWithTimeColumn((timeColumn) =>
+    runFeedCardSelectWithFallback((selectFields) => {
+      const buildBaseQuery = () =>
+        applyFeedFilters(
+          supabaseAdmin.from(TABLE).select(selectFields),
+          options,
+          timeColumn
+        )
+
+      if (!useCursor) {
+        return buildBaseQuery()
+          .order(timeColumn, { ascending: false })
+          .order("id", { ascending: false })
+          .limit(limit)
       }
-      if (sinceIso) {
-        query = query.gte(timeColumn, sinceIso)
-      }
-      if (category) {
-        query = query.eq("category", category)
-      }
-      if (minScore != null) {
-        query = query.gte("opportunity_score", minScore)
-      }
-      if (excludeLowConfidence) {
-        query = query.neq("execution_confidence", "Low")
-      }
-      if (highConfidenceOnly) {
-        query = query.contains("metadata", { is_high_confidence_eligible: true })
-      }
-      return query
+
+      return (async () => {
+        const sameTimestamp = await buildBaseQuery()
+          .eq(timeColumn, cursorCreatedAt)
+          .lt("id", cursorId)
+          .order("id", { ascending: false })
+          .limit(limit)
+
+        if (sameTimestamp?.error) {
+          return sameTimestamp
+        }
+        const sameRows = Array.isArray(sameTimestamp?.data) ? sameTimestamp.data : []
+        if (sameRows.length >= limit) {
+          return { data: sameRows.slice(0, limit), error: null }
+        }
+
+        const remaining = Math.max(limit - sameRows.length, 0)
+        if (remaining <= 0) {
+          return { data: sameRows, error: null }
+        }
+
+        const olderRows = await buildBaseQuery()
+          .lt(timeColumn, cursorCreatedAt)
+          .order(timeColumn, { ascending: false })
+          .order("id", { ascending: false })
+          .limit(remaining)
+
+        if (olderRows?.error) {
+          return olderRows
+        }
+
+        return {
+          data: [...sameRows, ...(Array.isArray(olderRows?.data) ? olderRows.data : [])],
+          error: null
+        }
+      })()
     })
   )
 

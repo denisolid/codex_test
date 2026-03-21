@@ -442,7 +442,13 @@ async function fetchLiveMarketData(itemsBySource = {}, displayCurrency, options 
               ? adapterMeta.failuresByName
               : {},
           sourceUnavailableReason:
-            String(adapterMeta?.sourceUnavailableReason || "").trim() || null
+            String(adapterMeta?.sourceUnavailableReason || "").trim() || null,
+          pipeline:
+            adapterMeta &&
+            adapterMeta.pipeline &&
+            typeof adapterMeta.pipeline === "object"
+              ? adapterMeta.pipeline
+              : null
         },
         upsertRows
       };
@@ -672,6 +678,14 @@ exports.compareItems = async (items = [], options = {}) => {
         blockedPremiumItems,
         arbitrageCandidatesCount: 0,
         arbitrageOpportunitiesCount: 0
+      },
+      diagnostics: {
+        liveFetch: {
+          enabled: false,
+          forceRefresh: false,
+          requestedBySource: {},
+          bySource: {}
+        }
       }
     };
   }
@@ -705,6 +719,9 @@ exports.compareItems = async (items = [], options = {}) => {
       return !isFreshTimestamp(cached.fetched_at, options.ttlMinutes || CACHE_TTL_MINUTES);
     });
   }
+  const liveFetchRequestedBySource = Object.fromEntries(
+    SOURCE_ORDER.map((source) => [source, Number(staleItemsBySource[source]?.length || 0)])
+  );
 
   let liveBySource = {};
   let liveDiagnosticsBySource = {};
@@ -900,6 +917,14 @@ exports.compareItems = async (items = [], options = {}) => {
       totalValueSteam: round2(summary.totalValueSteam),
       totalValueBestSellNet: round2(summary.totalValueBestSellNet),
       totalValueLowestBuy: round2(summary.totalValueLowestBuy)
+    },
+    diagnostics: {
+      liveFetch: {
+        enabled: allowLiveFetch,
+        forceRefresh,
+        requestedBySource: liveFetchRequestedBySource,
+        bySource: liveDiagnosticsBySource
+      }
     }
   };
 };

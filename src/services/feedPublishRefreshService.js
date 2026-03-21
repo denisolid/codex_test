@@ -9,6 +9,9 @@ const ANALYZABLE_MAX_SIGNAL_AGE_HOURS = 24
 const QUOTE_LOOKBACK_HOURS = 72
 const SKINPORT_QUOTE_TYPE_LIVE_EXECUTABLE = "live_executable"
 const SKINPORT_PRICE_INTEGRITY_CONFIRMED = "confirmed"
+const SKINPORT_VALIDATION_TIER_STRICT = "strict"
+const SKINPORT_VALIDATION_TIER_FALLBACK = "fallback"
+const SKINPORT_PUBLISH_GATE_STAGE = "publish_gate"
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -40,6 +43,30 @@ function toJsonObject(value) {
     return {}
   }
   return value
+}
+
+function incrementCounter(target, key, amount = 1) {
+  const safeKey = normalizeText(key)
+  if (!safeKey) return
+  target[safeKey] = Number(target[safeKey] || 0) + Number(amount || 0)
+}
+
+function createSkinportPublishDiagnostics() {
+  return {
+    candidates: 0,
+    admitted: 0,
+    rejected: 0,
+    strictValidated: 0,
+    fallbackValidated: 0,
+    rejectReasons: {},
+    stageCounters: {
+      [SKINPORT_PUBLISH_GATE_STAGE]: {
+        requested: 0,
+        passed: 0,
+        rejected: 0
+      }
+    }
+  }
 }
 
 function resolveLatestIso(values = []) {
@@ -120,6 +147,33 @@ function deriveSkinportItemSlug(quoteRow = {}) {
   return null
 }
 
+function normalizeComparableText(value) {
+  return normalizeText(value)
+    .replace(/\s+/g, " ")
+    .toLowerCase()
+}
+
+function resolveSkinportQuoteItemName(quoteRow = {}) {
+  return (
+    readSkinportQuoteField(quoteRow, [
+      "market_hash_name",
+      "marketHashName",
+      "item_name",
+      "itemName"
+    ]) || null
+  )
+}
+
+function resolveMappedItemName(mapped = {}) {
+  return normalizeText(mapped.marketHashName || mapped.itemName) || null
+}
+
+function isSkinportItemNameMatch(mapped = {}, quoteRow = {}) {
+  const expected = normalizeComparableText(resolveMappedItemName(mapped))
+  const actual = normalizeComparableText(resolveSkinportQuoteItemName(quoteRow))
+  return Boolean(expected && actual && expected === actual)
+}
+
 function buildSkinportValidation(mapped = {}, buyQuote = null, sellQuote = null) {
   const buyMarket = normalizeText(mapped.buyMarket).toLowerCase()
   const sellMarket = normalizeText(mapped.sellMarket).toLowerCase()
@@ -134,7 +188,12 @@ function buildSkinportValidation(mapped = {}, buyQuote = null, sellQuote = null)
       quoteType: null,
       itemSlug: null,
       listingId: null,
-      priceIntegrityStatus: null
+      priceIntegrityStatus: null,
+      validationTier: null,
+      fallbackApplied: false,
+      quoteTypeFromFallback: false,
+      integrityFromFallback: false,
+      rejectReason: null
     }
   }
 
@@ -158,7 +217,7 @@ function buildSkinportValidation(mapped = {}, buyQuote = null, sellQuote = null)
       quoteRow?.fetched_at ||
       quoteRow?.fetchedAt
   )
-  const quoteType =
+  const rawQuoteType =
     normalizeText(
       readSkinportQuoteField(quoteRow, [
         "skinport_quote_type",
@@ -174,7 +233,7 @@ function buildSkinportValidation(mapped = {}, buyQuote = null, sellQuote = null)
       "id"
     ]) || null
   const itemSlug = deriveSkinportItemSlug(quoteRow)
-  const priceIntegrityStatus =
+  const rawPriceIntegrityStatus =
     normalizeText(
       readSkinportQuoteField(quoteRow, [
         "skinport_price_integrity_status",
@@ -183,11 +242,47 @@ function buildSkinportValidation(mapped = {}, buyQuote = null, sellQuote = null)
       ])
     ).toLowerCase() || "unconfirmed"
   const hasExecutablePrice = quotePrice != null && quotePrice > 0
-  const confirmed =
-    hasExecutablePrice &&
-    quoteObservedAt != null &&
+  const quoteRowMarket = normalizeText(quoteRow?.market).toLowerCase()
+  const itemNameMatch = isSkinportItemNameMatch(mapped, quoteRow)
+
+  let quoteType = rawQuoteType
+  let quoteTypeFromFallback = false
+  if (!quoteType && hasExecutablePrice && quoteObservedAt && quoteRowMarket === "skinport") {
+    quoteType = SKINPORT_QUOTE_TYPE_LIVE_EXECUTABLE
+    quoteTypeFromFallback = true
+  }
+
+  let priceIntegrityStatus = rawPriceIntegrityStatus
+  let integrityFromFallback = false
+  if (
+    priceIntegrityStatus !== SKINPORT_PRICE_INTEGRITY_CONFIRMED &&
     quoteType === SKINPORT_QUOTE_TYPE_LIVE_EXECUTABLE &&
-    priceIntegrityStatus === SKINPORT_PRICE_INTEGRITY_CONFIRMED
+    hasExecutablePrice &&
+    quoteObservedAt &&
+    itemNameMatch
+  ) {
+    priceIntegrityStatus = SKINPORT_PRICE_INTEGRITY_CONFIRMED
+    integrityFromFallback = true
+  }
+
+  let rejectReason = null
+  if (!hasExecutablePrice) {
+    rejectReason = "missing_executable_price"
+  } else if (!quoteObservedAt) {
+    rejectReason = "missing_quote_observed_at"
+  } else if (quoteType !== SKINPORT_QUOTE_TYPE_LIVE_EXECUTABLE) {
+    rejectReason = "quote_type_not_live_executable"
+  } else if (priceIntegrityStatus !== SKINPORT_PRICE_INTEGRITY_CONFIRMED) {
+    rejectReason = "integrity_unconfirmed"
+  }
+
+  const confirmed = rejectReason == null
+  const fallbackApplied = confirmed && (quoteTypeFromFallback || integrityFromFallback)
+  const validationTier = confirmed
+    ? fallbackApplied
+      ? SKINPORT_VALIDATION_TIER_FALLBACK
+      : SKINPORT_VALIDATION_TIER_STRICT
+    : null
 
   return {
     applicable: true,
@@ -199,7 +294,12 @@ function buildSkinportValidation(mapped = {}, buyQuote = null, sellQuote = null)
     quoteType,
     itemSlug,
     listingId,
-    priceIntegrityStatus
+    priceIntegrityStatus,
+    validationTier,
+    fallbackApplied,
+    quoteTypeFromFallback,
+    integrityFromFallback,
+    rejectReason
   }
 }
 
@@ -356,6 +456,9 @@ function buildRefreshedOpportunityRow(rawRow = {}, quoteRowsByItem = {}, options
     skinport_item_slug: skinportValidation.itemSlug,
     skinport_listing_id: skinportValidation.listingId,
     skinport_price_integrity_status: skinportValidation.priceIntegrityStatus,
+    skinport_validation_tier: skinportValidation.validationTier,
+    skinport_validation_reject_reason: skinportValidation.rejectReason,
+    skinport_fallback_applied: Boolean(skinportValidation.fallbackApplied),
     publish_refresh: {
       refreshed_at: nowIso,
       refresh_status: outcome.refreshStatus,
@@ -417,6 +520,12 @@ function buildRefreshedOpportunityRow(rawRow = {}, quoteRowsByItem = {}, options
     skinport_listing_id: skinportValidation.listingId,
     skinportPriceIntegrityStatus: skinportValidation.priceIntegrityStatus,
     skinport_price_integrity_status: skinportValidation.priceIntegrityStatus,
+    skinportValidationTier: skinportValidation.validationTier,
+    skinport_validation_tier: skinportValidation.validationTier,
+    skinportValidationRejectReason: skinportValidation.rejectReason,
+    skinport_validation_reject_reason: skinportValidation.rejectReason,
+    skinportFallbackApplied: Boolean(skinportValidation.fallbackApplied),
+    skinport_fallback_applied: Boolean(skinportValidation.fallbackApplied),
     reasonSummary: insight?.reason_summary || null,
     whyThisTradeExists: insight?.why_this_trade_exists || null,
     whatCanBreakIt: insight?.what_can_break_it || null,
@@ -448,7 +557,7 @@ function buildRefreshedOpportunityRow(rawRow = {}, quoteRowsByItem = {}, options
   }
 }
 
-function shouldAdmitToFeed(row = {}, options = {}) {
+function evaluateFeedAdmission(row = {}, options = {}) {
   const includeRisky = normalizeBoolean(options.includeRisky, false)
   const refreshStatus = normalizeStatus(row.refreshStatus || row.refresh_status, "degraded")
   const liveStatus = normalizeStatus(row.liveStatus || row.live_status, "degraded")
@@ -469,6 +578,9 @@ function shouldAdmitToFeed(row = {}, options = {}) {
     ageHours <= ANALYZABLE_MAX_SIGNAL_AGE_HOURS
 
   if (skinportApplicable) {
+    const validationRejectReason = normalizeText(
+      row.skinportValidationRejectReason ?? row.skinport_validation_reject_reason
+    ).toLowerCase()
     const skinportQuoteObservedAt = toIsoOrNull(
       row.skinportQuoteObservedAt ?? row.skinport_quote_observed_at
     )
@@ -480,14 +592,42 @@ function shouldAdmitToFeed(row = {}, options = {}) {
       ageHours <= LIVE_MAX_SIGNAL_AGE_HOURS &&
       skinportQuoteAgeHours != null &&
       skinportQuoteAgeHours <= LIVE_MAX_SIGNAL_AGE_HOURS
-    if (
-      skinportQuoteType !== SKINPORT_QUOTE_TYPE_LIVE_EXECUTABLE ||
-      skinportIntegrityStatus !== SKINPORT_PRICE_INTEGRITY_CONFIRMED ||
-      !isLiveSkinport
-    ) {
-      return false
+    if (skinportQuoteType !== SKINPORT_QUOTE_TYPE_LIVE_EXECUTABLE) {
+      return {
+        admit: false,
+        stage: SKINPORT_PUBLISH_GATE_STAGE,
+        reason: validationRejectReason || "quote_type_not_live_executable",
+        skinportApplicable: true
+      }
     }
-    return true
+    if (skinportIntegrityStatus !== SKINPORT_PRICE_INTEGRITY_CONFIRMED) {
+      return {
+        admit: false,
+        stage: SKINPORT_PUBLISH_GATE_STAGE,
+        reason: validationRejectReason || "integrity_unconfirmed",
+        skinportApplicable: true
+      }
+    }
+    if (!isLiveSkinport) {
+      const reason =
+        liveStatus !== "live" || refreshStatus !== "ok"
+          ? "not_live_refresh_status"
+          : skinportQuoteAgeHours == null || skinportQuoteAgeHours > LIVE_MAX_SIGNAL_AGE_HOURS
+            ? "stale_skinport_quote"
+            : "stale_market_signal"
+      return {
+        admit: false,
+        stage: SKINPORT_PUBLISH_GATE_STAGE,
+        reason,
+        skinportApplicable: true
+      }
+    }
+    return {
+      admit: true,
+      stage: SKINPORT_PUBLISH_GATE_STAGE,
+      reason: "confirmed_live_skinport_quote",
+      skinportApplicable: true
+    }
   }
 
   if (
@@ -496,12 +636,31 @@ function shouldAdmitToFeed(row = {}, options = {}) {
     ageHours != null &&
     ageHours <= LIVE_MAX_SIGNAL_AGE_HOURS
   ) {
-    return true
+    return {
+      admit: true,
+      stage: "general",
+      reason: "live_signal_ok",
+      skinportApplicable: false
+    }
   }
   if (includeRisky && liveStatus === "stale" && analyzable) {
-    return true
+    return {
+      admit: true,
+      stage: "general",
+      reason: "stale_but_analyzable",
+      skinportApplicable: false
+    }
   }
-  return false
+  return {
+    admit: false,
+    stage: "general",
+    reason: "not_admissible",
+    skinportApplicable: false
+  }
+}
+
+function shouldAdmitToFeed(row = {}, options = {}) {
+  return Boolean(evaluateFeedAdmission(row, options).admit)
 }
 
 async function refreshForFeedPublish(feedRows = [], options = {}) {
@@ -519,7 +678,8 @@ async function refreshForFeedPublish(feedRows = [], options = {}) {
         stale: 0,
         degraded: 0,
         suppressed: 0,
-        quoteRowsFound: 0
+        quoteRowsFound: 0,
+        skinportPipeline: createSkinportPublishDiagnostics()
       }
     }
   }
@@ -593,9 +753,35 @@ async function refreshForFeedPublish(feedRows = [], options = {}) {
     }
   }
 
-  const admittedRows = refreshedRows
-    .map((row) => row.api)
-    .filter((row) => shouldAdmitToFeed(row, { includeRisky: options.includeRisky }))
+  const skinportPipeline = createSkinportPublishDiagnostics()
+  const admittedRows = []
+  for (const refreshed of refreshedRows) {
+    const row = refreshed?.api || {}
+    const decision = evaluateFeedAdmission(row, { includeRisky: options.includeRisky })
+    if (decision.skinportApplicable) {
+      skinportPipeline.candidates += 1
+      skinportPipeline.stageCounters[SKINPORT_PUBLISH_GATE_STAGE].requested += 1
+      const validationTier = normalizeText(
+        row.skinportValidationTier ?? row.skinport_validation_tier
+      ).toLowerCase()
+      if (validationTier === SKINPORT_VALIDATION_TIER_STRICT) {
+        skinportPipeline.strictValidated += 1
+      } else if (validationTier === SKINPORT_VALIDATION_TIER_FALLBACK) {
+        skinportPipeline.fallbackValidated += 1
+      }
+      if (decision.admit) {
+        skinportPipeline.admitted += 1
+        skinportPipeline.stageCounters[SKINPORT_PUBLISH_GATE_STAGE].passed += 1
+      } else {
+        skinportPipeline.rejected += 1
+        skinportPipeline.stageCounters[SKINPORT_PUBLISH_GATE_STAGE].rejected += 1
+        incrementCounter(skinportPipeline.rejectReasons, decision.reason || "rejected")
+      }
+    }
+    if (decision.admit) {
+      admittedRows.push(row)
+    }
+  }
 
   const liveCount = refreshedRows.filter(
     (row) => normalizeStatus(row.api.liveStatus, "degraded") === "live"
@@ -620,7 +806,8 @@ async function refreshForFeedPublish(feedRows = [], options = {}) {
       stale: staleCount,
       degraded: degradedCount,
       suppressed: Math.max(refreshedRows.length - admittedRows.length, 0),
-      quoteRowsFound
+      quoteRowsFound,
+      skinportPipeline
     }
   }
 }
@@ -634,6 +821,7 @@ exports.__testables = {
   computeAgeHours,
   resolveRefreshOutcome,
   buildSkinportValidation,
+  evaluateFeedAdmission,
   shouldAdmitToFeed,
   buildRefreshedOpportunityRow
 }
