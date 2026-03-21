@@ -6,10 +6,9 @@ import { initObservability } from "./observability";
 import {
   defaultCaseImage,
   defaultSkinImage,
-  getRarityColor,
+  getRarityTheme,
   isKnownBrokenImageUrl,
   isCaseLikeItem,
-  normalizeRarity,
   resolveItemImageUrl,
 } from "./rarity";
 import { renderSkinCard, renderSkinCardSkeleton } from "./components/skinCard";
@@ -1314,41 +1313,41 @@ const APP_TABS = [
   {
     id: "portfolio",
     label: "Portfolio",
-    hint: "Inventory & positions",
+    hint: "Holdings",
     icon: "\uD83D\uDCE6",
   },
   {
     id: "dashboard",
-    label: "Opportunities",
-    hint: "Arbitrage & signals",
+    label: "Dashboard",
+    hint: "Live opportunities",
     icon: "\uD83D\uDCB0",
   },
   {
     id: "opportunities",
-    label: "Scanner",
-    hint: "Top 200 market scan",
+    label: "Feed",
+    hint: "Global scanner",
     icon: "TOP",
   },
   {
     id: "market",
     label: "Market",
-    hint: "Scanner & pricing",
+    hint: "Pricing intel",
     icon: "\uD83C\uDF0D",
   },
   {
     id: "alerts",
     label: "Alerts",
-    hint: "Price triggers",
+    hint: "Price alerts",
     icon: "\uD83D\uDD14",
   },
   {
     id: "trades",
     label: "History",
-    hint: "Transactions",
+    hint: "Journal",
     icon: "\uD83D\uDCCA",
   },
-  { id: "social", label: "Watchlist", hint: "Community", icon: "\uD83D\uDC65" },
-  { id: "team", label: "Team", hint: "Creator Ops", icon: "\uD83E\uDDE9" },
+  { id: "social", label: "Watchlist", hint: "Public watchlists", icon: "\uD83D\uDC65" },
+  { id: "team", label: "Team", hint: "Team ops", icon: "\uD83E\uDDE9" },
   { id: "settings", label: "Settings", hint: "Account", icon: "\u2699\uFE0F" },
 ];
 const ACCOUNT_NAV_SECTIONS = [
@@ -1363,7 +1362,6 @@ const HEADER_NAV_TAB_IDS = new Set([
   "portfolio",
   "dashboard",
   "opportunities",
-  "market",
   "alerts",
   "trades",
 ]);
@@ -3251,14 +3249,7 @@ function formatRiskBadge(level) {
 }
 
 function getItemRarityTheme(item = {}) {
-  const normalizedRarity = normalizeRarity(item.rarity, item.marketHashName);
-  const rarity = normalizedRarity === "Default" ? "Unknown" : normalizedRarity;
-  const color = getRarityColor(
-    item.rarity,
-    item.marketHashName,
-    item.rarityColor,
-  );
-  return { rarity, color };
+  return getRarityTheme(item);
 }
 
 function toRgbTriplet(value, fallback = "90,174,255") {
@@ -4860,7 +4851,7 @@ function syncOpportunityZoomWindow(media, clientX, clientY) {
   }
   root.style.setProperty(
     "--rarity-rgb",
-    rarityRgb || toRgbTriplet(rarityColor || "#5aaeff"),
+    rarityRgb || toRgbTriplet(rarityColor || "#8a93a3", "138,147,163"),
   );
 
   positionOpportunityZoomWindow(media, clientX, clientY);
@@ -10370,7 +10361,7 @@ function renderPortfolioMobileList() {
             Number(item.sevenDayChangePercent || 0) >= 0 ? "up" : "down";
           const conditionLabel = getHoldingConditionLabel(item);
           const markup = `
-            <article class="portfolio-mobile-item">
+            <article class="portfolio-mobile-item" data-rarity-kind="${escapeHtml(rarityTheme.canonicalRarity || "unknown")}">
               <div class="portfolio-mobile-head">
                 <img
                   class="portfolio-mobile-thumb"
@@ -10383,7 +10374,7 @@ function renderPortfolioMobileList() {
                 <div class="portfolio-mobile-meta">
                   <p class="portfolio-mobile-name">${escapeHtml(item.marketHashName || "-")}</p>
                   <div class="portfolio-mobile-subline">
-                    <span class="rarity-tag" style="--rarity-color: ${rarityTheme.color};">${escapeHtml(
+                    <span class="rarity-tag" data-rarity-kind="${escapeHtml(rarityTheme.canonicalRarity || "unknown")}" style="--rarity-color: ${rarityTheme.color};">${escapeHtml(
                       rarityTheme.rarity,
                     )}</span>
                     <small class="muted portfolio-condition">${escapeHtml(conditionLabel)}</small>
@@ -10490,7 +10481,7 @@ function renderPortfolioDesktopCards() {
                 : "watch";
           const signalLabel = `${toTitle(clueAction)} ${clueConfidence}%`;
           const markup = `
-            <article class="portfolio-desktop-card ${sevenDayClass}">
+            <article class="portfolio-desktop-card ${sevenDayClass}" data-rarity-kind="${escapeHtml(rarityTheme.canonicalRarity || "unknown")}">
               <header class="portfolio-desktop-card-head">
                 <div class="portfolio-desktop-card-meta">
                   <div class="portfolio-desktop-card-title-row">
@@ -10502,7 +10493,7 @@ function renderPortfolioDesktopCards() {
                     ${renderHoldingInfoTooltip(item)}
                   </div>
                   <div class="portfolio-desktop-card-subline">
-                    <span class="rarity-tag" style="--rarity-color: ${rarityTheme.color};">${escapeHtml(
+                    <span class="rarity-tag" data-rarity-kind="${escapeHtml(rarityTheme.canonicalRarity || "unknown")}" style="--rarity-color: ${rarityTheme.color};">${escapeHtml(
                       rarityTheme.rarity,
                     )}</span>
                     <small class="muted portfolio-condition">${escapeHtml(conditionLabel)}</small>
@@ -10510,7 +10501,7 @@ function renderPortfolioDesktopCards() {
                     <span class="status-badge signal-${escapeHtml(signalBand)}">${escapeHtml(signalLabel)}</span>
                   </div>
                 </div>
-                <div class="portfolio-desktop-card-media" style="--rarity-color: ${rarityTheme.color};">
+                <div class="portfolio-desktop-card-media" data-rarity-kind="${escapeHtml(rarityTheme.canonicalRarity || "unknown")}" style="--rarity-color: ${rarityTheme.color};">
                   <img
                     class="portfolio-desktop-card-thumb"
                     src="${escapeHtml(itemImageUrl)}"
@@ -10620,7 +10611,7 @@ function renderPortfolioRows() {
         <tr class="holding-row">
           <td class="mono-cell">${formatSteamItemIdCell(item)}</td>
           <td>
-            <div class="table-item-cell">
+            <div class="table-item-cell" data-rarity-kind="${escapeHtml(rarityTheme.canonicalRarity || "unknown")}">
               <img
                 class="table-item-thumb"
                 style="--rarity-color: ${rarityTheme.color};"
@@ -10632,7 +10623,7 @@ function renderPortfolioRows() {
               <div class="table-item-info">
                 <div class="skin-name">${escapeHtml(item.marketHashName)}</div>
                 <div class="table-item-subline">
-                  <span class="rarity-tag" style="--rarity-color: ${rarityTheme.color};">
+                  <span class="rarity-tag" data-rarity-kind="${escapeHtml(rarityTheme.canonicalRarity || "unknown")}" style="--rarity-color: ${rarityTheme.color};">
                     ${escapeHtml(rarityTheme.rarity)}
                   </span>
                   <small class="muted">${escapeHtml(formatConfidence(item))}</small>
@@ -12568,7 +12559,7 @@ function renderAnalytics() {
       ${renderPanel({
         className: "dashboard-movers-panel",
         title: "Top Movers",
-        subtitle: "Actionable gainers and losers in the selected range.",
+        subtitle: "Best and worst performers in the selected range.",
         body: `
           <div class="movers-grid">
             ${buildMoverCard(gainer, "Top Gainer", "up")}
@@ -12694,8 +12685,8 @@ function renderDashboardDeepAnalytics() {
       ${renderPanel({
         wide: true,
         className: "dashboard-deep-panel",
-        title: "Deep Analytics",
-        subtitle: "Liquidity, risk, structure, and advanced diagnostics.",
+        title: "Portfolio Health",
+        subtitle: "Liquidity, risk, structure, and deeper context.",
         actions: `
           <button
             type="button"
@@ -12741,7 +12732,7 @@ function renderTeamTab() {
     return `
       <section class="grid">
         <article class="panel wide">
-          <h2>Team / Creator Dashboard</h2>
+          <h2>Team Dashboard</h2>
           <p class="muted">This dashboard is available on Full Access plan and above for larger inventories and creator operations.</p>
         </article>
       </section>
@@ -12752,8 +12743,8 @@ function renderTeamTab() {
     return `
       <section class="grid">
         <article class="panel wide">
-          <h2>Team / Creator Dashboard</h2>
-          <p class="muted">Loading team dashboard...</p>
+          <h2>Team Dashboard</h2>
+          <p class="muted">Loading team data...</p>
         </article>
       </section>
     `;
@@ -12763,11 +12754,11 @@ function renderTeamTab() {
     return `
       <section class="grid">
         <article class="panel wide">
-          <h2>Team / Creator Dashboard</h2>
+          <h2>Team Dashboard</h2>
           <div class="row">
             <button id="team-refresh-btn" type="button" class="ghost-btn">Refresh Team Metrics</button>
           </div>
-          <p class="muted">No dashboard snapshot yet. Click refresh to load team and creator KPIs.</p>
+          <p class="muted">No snapshot available yet. Refresh to load the latest team KPIs.</p>
         </article>
       </section>
     `;
@@ -12781,7 +12772,7 @@ function renderTeamTab() {
   return `
     <section class="grid">
       <article class="panel wide">
-        <h2>Team / Creator Dashboard</h2>
+        <h2>Team Dashboard</h2>
         <div class="row">
           <button id="team-refresh-btn" type="button" class="ghost-btn">Refresh Team Metrics</button>
         </div>
@@ -12995,7 +12986,7 @@ function renderAlertsCenter() {
     <section class="grid">
       <article class="panel wide">
         <h2>${isEditMode ? "Edit Alert" : "Create Alert"}</h2>
-        <p class="helper-text">Target, trigger, and direction are evaluated against <strong>USD</strong> pricing. Use cooldown to prevent notification spam.</p>
+        <p class="helper-text">Alerts evaluate against <strong>USD</strong> pricing. Use cooldown to prevent repeat notifications.</p>
         <p class="helper-text"><strong>Current Plan: ${escapeHtml(planLabel)}</strong>. Alert limit: ${escapeHtml(
           formatNumber(alertsLimit, 0),
         )} active alert(s).</p>
@@ -13366,52 +13357,25 @@ function renderMarketTab() {
                   itemCategory,
                 };
               const rarityTheme = getItemRarityTheme({
+                canonicalRarity:
+                  row?.canonicalRarity ||
+                  row?.item_canonical_rarity ||
+                  row?.itemCanonicalRarity ||
+                  visualItem?.canonicalRarity ||
+                  visualItem?.canonical_rarity ||
+                  "",
                 rarity:
                   row?.rarity ||
                   row?.item_rarity ||
                   row?.itemRarity ||
                   visualItem?.rarity ||
                   "",
-                rarityColor:
-                  row?.rarityColor ||
-                  row?.item_rarity_color ||
-                  row?.itemRarityColor ||
-                  visualItem?.rarityColor ||
-                  "",
                 marketHashName,
+                itemCategory,
+                weapon: visualItem?.weapon || "",
               });
-              const categoryAccentColor =
-                itemCategory === "case"
-                  ? "#ffbf57"
-                  : itemCategory === "sticker_capsule"
-                    ? "#7ee7cb"
-                    : itemCategory === "knife"
-                      ? "#ffc56b"
-                      : itemCategory === "glove"
-                        ? "#f596c2"
-                    : "#5aaeff";
-              const explicitRarityColor = String(
-                row?.rarityColor ||
-                  row?.item_rarity_color ||
-                  row?.itemRarityColor ||
-                  visualItem?.rarityColor ||
-                  "",
-              ).trim();
-              const rarityColorSafe = String(rarityTheme.color || "")
-                .trim()
-                .toLowerCase();
-              const isCaseOrCapsule =
-                itemCategory === "case" || itemCategory === "sticker_capsule";
-              const shouldUseCategoryAccent =
-                !explicitRarityColor &&
-                isCaseOrCapsule &&
-                (!rarityColorSafe ||
-                  rarityColorSafe === "#7f8ba5" ||
-                  rarityColorSafe === "#b0c3d9");
-              const mediaAccentColor = shouldUseCategoryAccent
-                ? categoryAccentColor
-                : rarityTheme.color;
-              const mediaAccentRgb = toRgbTriplet(mediaAccentColor);
+              const mediaAccentColor = rarityTheme.color;
+              const mediaAccentRgb = toRgbTriplet(mediaAccentColor, "138,147,163");
               const itemImage = String(
                 getOpportunityImageUrl(row, visualItem),
               ).trim();
@@ -13445,7 +13409,7 @@ function renderMarketTab() {
               return `
                 <tr class="opportunity-table-row">
                   <td>
-                    <div class="opportunity-item-cell" style="--rarity-color: ${escapeHtml(mediaAccentColor)}; --rarity-rgb: ${escapeHtml(mediaAccentRgb)};">
+                    <div class="opportunity-item-cell" data-rarity-kind="${escapeHtml(rarityTheme.canonicalRarity || "unknown")}" style="--rarity-color: ${escapeHtml(mediaAccentColor)}; --rarity-rgb: ${escapeHtml(mediaAccentRgb)};">
                       <div class="opportunity-item-media">
                         <img
                           class="opportunity-item-thumb"
@@ -13460,7 +13424,7 @@ function renderMarketTab() {
                           row?.itemName || "Tracked Item",
                         )}</strong>
                         <div class="opportunity-item-tags">
-                          <span class="rarity-tag opportunity-rarity-tag" style="--rarity-color: ${escapeHtml(
+                          <span class="rarity-tag opportunity-rarity-tag" data-rarity-kind="${escapeHtml(rarityTheme.canonicalRarity || "unknown")}" style="--rarity-color: ${escapeHtml(
                             mediaAccentColor,
                           )};">${escapeHtml(rarityTheme.rarity)}</span>
                           <span class="opportunity-category-badge ${escapeHtml(
@@ -13825,9 +13789,9 @@ function renderGlobalOpportunitiesTableSkeleton(rowCount = 8) {
             <th>Sell</th>
             <th>Profit</th>
             <th>Spread</th>
-            <th>Quality Score</th>
+            <th>Score</th>
             <th>Liquidity</th>
-            <th>Signals</th>
+            <th>Signal</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -13839,6 +13803,28 @@ function renderGlobalOpportunitiesTableSkeleton(rowCount = 8) {
           `).join("")}
         </tbody>
       </table>
+    </div>
+  `;
+}
+
+function renderGlobalOpportunitiesMobileSkeleton(cardCount = 6) {
+  return `
+    <div class="opportunity-mobile-list opportunity-mobile-skeleton-list" aria-hidden="true">
+      ${Array.from({ length: Math.max(Number(cardCount) || 0, 1) }, (_row, idx) => `
+        <article class="opportunity-mobile-card opportunity-mobile-card-skeleton" data-skeleton-index="${idx}">
+          <div class="opportunity-mobile-top">
+            <div class="opportunity-mobile-image skeleton-line"></div>
+            <div class="opportunity-mobile-head">
+              <div class="skeleton-line w-90"></div>
+              <div class="skeleton-line w-40"></div>
+            </div>
+          </div>
+          <div class="skeleton-line"></div>
+          <div class="skeleton-line w-30"></div>
+          <div class="skeleton-line w-90"></div>
+          <div class="skeleton-line"></div>
+        </article>
+      `).join("")}
     </div>
   `;
 }
@@ -13991,9 +13977,9 @@ function renderGlobalOpportunitiesTab() {
             <th>Sell</th>
             <th>Profit</th>
             <th>Spread</th>
-            <th>Quality Score</th>
+            <th>Score</th>
             <th>Liquidity</th>
-            <th>Signals</th>
+            <th>Signal</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -14037,52 +14023,25 @@ function renderGlobalOpportunitiesTab() {
                   itemCategory,
                 };
               const rarityTheme = getItemRarityTheme({
+                canonicalRarity:
+                  row?.canonicalRarity ||
+                  row?.item_canonical_rarity ||
+                  row?.itemCanonicalRarity ||
+                  visualItem?.canonicalRarity ||
+                  visualItem?.canonical_rarity ||
+                  "",
                 rarity:
                   row?.rarity ||
                   row?.item_rarity ||
                   row?.itemRarity ||
                   visualItem?.rarity ||
                   "",
-                rarityColor:
-                  row?.rarityColor ||
-                  row?.item_rarity_color ||
-                  row?.itemRarityColor ||
-                  visualItem?.rarityColor ||
-                  "",
                 marketHashName,
+                itemCategory,
+                weapon: visualItem?.weapon || "",
               });
-              const categoryAccentColor =
-                itemCategory === "case"
-                  ? "#ffbf57"
-                  : itemCategory === "sticker_capsule"
-                    ? "#7ee7cb"
-                    : itemCategory === "knife"
-                      ? "#ffc56b"
-                      : itemCategory === "glove"
-                        ? "#f596c2"
-                    : "#5aaeff";
-              const explicitRarityColor = String(
-                row?.rarityColor ||
-                  row?.item_rarity_color ||
-                  row?.itemRarityColor ||
-                  visualItem?.rarityColor ||
-                  "",
-              ).trim();
-              const rarityColorSafe = String(rarityTheme.color || "")
-                .trim()
-                .toLowerCase();
-              const isCaseOrCapsule =
-                itemCategory === "case" || itemCategory === "sticker_capsule";
-              const shouldUseCategoryAccent =
-                !explicitRarityColor &&
-                isCaseOrCapsule &&
-                (!rarityColorSafe ||
-                  rarityColorSafe === "#7f8ba5" ||
-                  rarityColorSafe === "#b0c3d9");
-              const mediaAccentColor = shouldUseCategoryAccent
-                ? categoryAccentColor
-                : rarityTheme.color;
-              const mediaAccentRgb = toRgbTriplet(mediaAccentColor);
+              const mediaAccentColor = rarityTheme.color;
+              const mediaAccentRgb = toRgbTriplet(mediaAccentColor, "138,147,163");
               const itemImage = String(
                 getOpportunityImageUrl(row, visualItem),
               ).trim();
@@ -14194,7 +14153,7 @@ function renderGlobalOpportunitiesTab() {
               return `
                 <tr class="opportunity-table-row opportunity-row-verdict-${escapeHtml(verdictKey)} ${row?.isNew ? "opportunity-row-new" : ""} ${lockedPreview ? "opportunity-row-locked" : ""}" data-feed-id="${escapeHtml(feedId)}">
                   <td>
-                    <div class="opportunity-item-cell" style="--rarity-color: ${escapeHtml(mediaAccentColor)}; --rarity-rgb: ${escapeHtml(mediaAccentRgb)};">
+                    <div class="opportunity-item-cell" data-rarity-kind="${escapeHtml(rarityTheme.canonicalRarity || "unknown")}" style="--rarity-color: ${escapeHtml(mediaAccentColor)}; --rarity-rgb: ${escapeHtml(mediaAccentRgb)};">
                       <div class="opportunity-item-media">
                         <img
                           class="opportunity-item-thumb"
@@ -14209,7 +14168,7 @@ function renderGlobalOpportunitiesTab() {
                           row?.itemName || "Tracked Item",
                         )}</strong>
                         <div class="opportunity-item-tags">
-                          <span class="rarity-tag opportunity-rarity-tag" style="--rarity-color: ${escapeHtml(
+                          <span class="rarity-tag opportunity-rarity-tag" data-rarity-kind="${escapeHtml(rarityTheme.canonicalRarity || "unknown")}" style="--rarity-color: ${escapeHtml(
                             mediaAccentColor,
                           )};">${escapeHtml(rarityTheme.rarity)}</span>
                           <span class="opportunity-category-badge ${escapeHtml(
@@ -14345,6 +14304,472 @@ function renderGlobalOpportunitiesTab() {
             : "No high-confidence opportunities matched the current feed filters."
       }</p>`;
 
+  const mobileCardsMarkup = rows.length
+    ? `
+      <div class="opportunity-mobile-list">
+        ${rows
+          .map((row, index) => {
+            const lockedPreview = isLockedPremiumPreview(row);
+            const score = lockedPreview ? null : getOpportunityDisplayScore(row);
+            const liquidityLabel = lockedPreview
+              ? "Premium preview"
+              : formatLiquidityBandLabel(
+                  row?.liquidityBand,
+                  row?.volume7d ?? row?.liquidity,
+                );
+            const baseBadges = buildOpportunityBadges(row, { max: 12 });
+            const itemId = Number(row?.itemId || 0);
+            const marketHashName = String(
+              row?.marketHashName || row?.market_hash_name || row?.itemName || "",
+            ).trim();
+            const itemCategory = normalizeOpportunityCategory(
+              row?.itemCategory,
+              marketHashName,
+            );
+            const categoryLabel = formatOpportunityCategoryLabel(
+              itemCategory,
+              marketHashName,
+            );
+            const categoryTone = getOpportunityCategoryTone(
+              itemCategory,
+              marketHashName,
+            );
+            const normalizedName = marketHashName.toLowerCase();
+            const visualItem =
+              (Number.isInteger(itemId) && itemId > 0
+                ? holdingById.get(itemId)
+                : null) ||
+              (normalizedName ? holdingByName.get(normalizedName) : null) || {
+                marketHashName,
+                itemCategory,
+              };
+            const rarityTheme = getItemRarityTheme({
+              canonicalRarity:
+                row?.canonicalRarity ||
+                row?.item_canonical_rarity ||
+                row?.itemCanonicalRarity ||
+                visualItem?.canonicalRarity ||
+                visualItem?.canonical_rarity ||
+                "",
+              rarity:
+                row?.rarity ||
+                row?.item_rarity ||
+                row?.itemRarity ||
+                visualItem?.rarity ||
+                "",
+              marketHashName,
+              itemCategory,
+              weapon: visualItem?.weapon || "",
+            });
+            const mediaAccentColor = rarityTheme.color;
+            const mediaAccentRgb = toRgbTriplet(mediaAccentColor, "138,147,163");
+            const itemImage = String(getOpportunityImageUrl(row, visualItem)).trim();
+            const fallbackImage =
+              itemCategory === "case" ? defaultCaseImage : defaultSkinImage;
+            const feedId = normalizeFeedId(row);
+            const detectedLabel = formatOpportunitySeenLabel(row);
+            const liveStatus = normalizeOpportunityLiveStatus(
+              row?.liveStatus || row?.live_status,
+            );
+            const liveStatusLabel = formatOpportunityLiveStatusLabel(liveStatus);
+            const signalAgeHoursRaw = Number(
+              row?.latestSignalAgeHours ?? row?.latest_signal_age_hours,
+            );
+            const freshnessSummary = formatOpportunityFreshnessSummary({
+              liveStatus,
+              signalAgeHours: signalAgeHoursRaw,
+              row,
+            });
+            const scanLabel = row?.scanRunId
+              ? `Scan #${formatScanRunLabel(row.scanRunId)}`
+              : "";
+            const verdictKey = lockedPreview
+              ? "locked"
+              : normalizeOpportunityFeedVerdict(row?.verdict, { score });
+            const verdictLabel = formatOpportunityFeedVerdictLabel(row?.verdict, {
+              score,
+              lockedPreview,
+            });
+            const allRiskLabels = normalizeOpportunityRiskLabels(baseBadges);
+            const primaryRiskLabel =
+              allRiskLabels[0] ||
+              (lockedPreview
+                ? String(row?.lockHint || "Premium note")
+                : String(liquidityLabel || "Liquidity note"));
+            const hiddenRiskCount = Math.max(
+              allRiskLabels.length - (allRiskLabels.length ? 1 : 0),
+              0,
+            );
+            const insightLabel = hiddenRiskCount > 0 ? `Insight +${hiddenRiskCount}` : "Insight";
+            const buyUrl =
+              String(row?.buyUrl || "").trim() ||
+              buildMarketListingUrlBySource(row?.buyMarket, marketHashName);
+            const sellUrl =
+              String(row?.sellUrl || "").trim() ||
+              buildMarketListingUrlBySource(row?.sellMarket, marketHashName);
+            const compareUrl =
+              String(row?.sellUrl || row?.buyUrl || "").trim() ||
+              buildMarketListingUrlBySource(
+                row?.sellMarket || row?.buyMarket,
+                marketHashName,
+              );
+            const hasBuyTarget =
+              !lockedPreview &&
+              Boolean(itemId > 0 || buyUrl || marketHashName);
+            const hasSellTarget =
+              !lockedPreview &&
+              Boolean(itemId > 0 || sellUrl || marketHashName);
+            const hasCompareTarget =
+              !lockedPreview &&
+              Boolean(itemId > 0 || compareUrl || marketHashName);
+            const hiddenValueMarkup =
+              '<span class="premium-value-blur" aria-hidden="true">****</span>';
+            const buyMarketLabel = lockedPreview
+              ? "Locked"
+              : formatMarketSourceLabel(row?.buyMarket);
+            const buyPriceLabel = lockedPreview
+              ? hiddenValueMarkup
+              : formatMoney(row?.buyPrice, currencyCode);
+            const sellMarketLabel = lockedPreview
+              ? "Locked"
+              : formatMarketSourceLabel(row?.sellMarket);
+            const sellNetLabel = lockedPreview
+              ? hiddenValueMarkup
+              : formatMoney(row?.sellNet, currencyCode);
+            const profitLabel = lockedPreview
+              ? hiddenValueMarkup
+              : formatSignedMoney(row?.profit, currencyCode);
+            const spreadLabel = lockedPreview
+              ? hiddenValueMarkup
+              : formatPercent(row?.spread);
+            const scoreValueLabel = lockedPreview
+              ? "Locked"
+              : `${formatNumber(score, 0)}/100`;
+            const lockedMessage = String(
+              row?.lockMessage || "Unlock knife and glove opportunities with Full Access",
+            ).trim();
+            const pathLabel = lockedPreview
+              ? "Locked route"
+              : `${buyMarketLabel} to ${sellMarketLabel}`;
+            const topMeta = [detectedLabel, liveStatusLabel, scanLabel]
+              .filter((part) => String(part || "").trim())
+              .join(" • ");
+            const supportingStatus = lockedPreview
+              ? String(row?.lockHint || "Premium high-value category")
+              : liveStatus !== "live"
+                ? freshnessSummary
+                : primaryRiskLabel || liquidityLabel || "No major risk flags";
+
+            return `
+              <article class="opportunity-mobile-card opportunity-row-verdict-${escapeHtml(
+                verdictKey,
+              )} ${lockedPreview ? "opportunity-mobile-card-locked" : ""}" data-feed-id="${escapeHtml(feedId)}">
+                <div class="opportunity-mobile-top">
+                  <div class="opportunity-mobile-image-wrap" data-rarity-kind="${escapeHtml(rarityTheme.canonicalRarity || "unknown")}" style="--rarity-color: ${escapeHtml(
+                    mediaAccentColor,
+                  )}; --rarity-rgb: ${escapeHtml(mediaAccentRgb)};">
+                    <img
+                      class="opportunity-mobile-image"
+                      src="${escapeHtml(itemImage || fallbackImage)}"
+                      alt="${escapeHtml(row?.itemName || "Tracked Item")}"
+                      loading="lazy"
+                      data-fallback-src="${escapeHtml(fallbackImage)}"
+                    />
+                  </div>
+                  <div class="opportunity-mobile-head">
+                    <p class="opportunity-mobile-title">${escapeHtml(
+                      row?.itemName || "Tracked Item",
+                    )}</p>
+                    <div class="opportunity-mobile-tags">
+                      <span class="rarity-tag opportunity-rarity-tag" data-rarity-kind="${escapeHtml(rarityTheme.canonicalRarity || "unknown")}" style="--rarity-color: ${escapeHtml(
+                        mediaAccentColor,
+                      )};">${escapeHtml(rarityTheme.rarity)}</span>
+                      <span class="opportunity-category-badge ${escapeHtml(
+                        categoryTone,
+                      )}">${escapeHtml(categoryLabel)}</span>
+                    </div>
+                    <p class="opportunity-mobile-meta">${escapeHtml(topMeta)}</p>
+                  </div>
+                </div>
+
+                <div class="opportunity-mobile-route">
+                  <p class="opportunity-mobile-leg">
+                    <span>Buy · ${escapeHtml(buyMarketLabel)}</span>
+                    <strong>${buyPriceLabel}</strong>
+                  </p>
+                  <span class="opportunity-mobile-arrow" aria-hidden="true">→</span>
+                  <p class="opportunity-mobile-leg">
+                    <span>Sell · ${escapeHtml(sellMarketLabel)}</span>
+                    <strong>${sellNetLabel}</strong>
+                  </p>
+                </div>
+
+                <div class="opportunity-mobile-primary">
+                  <div class="opportunity-mobile-profit-wrap">
+                    <span class="opportunity-mobile-profit-label">Net profit</span>
+                    <strong class="opportunity-mobile-profit">${profitLabel}</strong>
+                    <small class="opportunity-mobile-spread">Spread ${spreadLabel}</small>
+                  </div>
+                  <span class="opportunity-verdict-badge tone-${escapeHtml(
+                    verdictKey,
+                  )}">${escapeHtml(verdictLabel)}</span>
+                </div>
+
+                <p class="opportunity-mobile-support">
+                  <span>Signal</span>
+                  <strong>${escapeHtml(supportingStatus)}</strong>
+                </p>
+
+                <div class="opportunity-mobile-actions">
+                  ${
+                    lockedPreview
+                      ? `
+                        <button
+                          type="button"
+                          class="btn-primary opportunity-upgrade-btn"
+                          data-lock-message="${escapeHtml(lockedMessage)}"
+                        >
+                          Unlock Full Access
+                        </button>
+                      `
+                      : `
+                        <button
+                          type="button"
+                          class="ghost-btn opportunity-insight-btn"
+                          data-opportunity-id="${escapeHtml(feedId)}"
+                          data-opportunity-index="${escapeHtml(String(index))}"
+                          ${feedId ? "" : "disabled"}
+                        >
+                          ${escapeHtml(insightLabel)}
+                        </button>
+                        <button
+                          type="button"
+                          class="ghost-btn opportunity-compare-btn"
+                          data-opportunity-index="${escapeHtml(String(index))}"
+                          data-skin-id="${escapeHtml(String(itemId || ""))}"
+                          data-compare-url="${escapeHtml(compareUrl)}"
+                          ${hasCompareTarget ? "" : "disabled"}
+                        >
+                          Compare
+                        </button>
+                      `
+                  }
+                </div>
+
+                ${
+                  lockedPreview
+                    ? ""
+                    : `
+                      <details class="opportunity-mobile-expand">
+                        <summary>Trade actions and details</summary>
+                        <div class="opportunity-mobile-expand-body">
+                          <div class="opportunity-mobile-trade-actions">
+                            <button
+                              type="button"
+                              class="ghost-btn opportunity-market-action-btn opportunity-buy-action-btn"
+                              data-market-url="${escapeHtml(buyUrl)}"
+                              data-skin-id="${escapeHtml(String(itemId || ""))}"
+                              ${hasBuyTarget ? "" : "disabled"}
+                            >
+                              Buy on ${escapeHtml(buyMarketLabel)}
+                            </button>
+                            <button
+                              type="button"
+                              class="ghost-btn opportunity-market-action-btn opportunity-sell-action-btn"
+                              data-market-url="${escapeHtml(sellUrl)}"
+                              data-skin-id="${escapeHtml(String(itemId || ""))}"
+                              ${hasSellTarget ? "" : "disabled"}
+                            >
+                              Sell on ${escapeHtml(sellMarketLabel)}
+                            </button>
+                          </div>
+                          <div class="opportunity-mobile-detail-grid">
+                            <p><span>Quality</span><strong>${escapeHtml(scoreValueLabel)}</strong></p>
+                            <p><span>Liquidity</span><strong>${escapeHtml(liquidityLabel)}</strong></p>
+                            <p><span>Path</span><strong>${escapeHtml(pathLabel)}</strong></p>
+                            <p><span>Status</span><strong>${escapeHtml(freshnessSummary)}</strong></p>
+                          </div>
+                        </div>
+                      </details>
+                    `
+                }
+              </article>
+            `;
+          })
+          .join("")}
+      </div>
+    `
+    : "";
+
+  const qualityModeLabel = showRisky ? "All quality levels" : "High confidence only";
+  const planSummary = advancedFiltersEnabled
+    ? "Advanced filters enabled."
+    : "Advanced filters unlock on Full Access.";
+  const signalSummary = entitlements.delayedSignals
+    ? `Signals delayed by ${formatNumber(entitlements.signalDelayMinutes || 0, 0)} minute(s).`
+    : "Signals are real-time.";
+  const feedSummaryLabel = summary
+    ? `Scanned ${formatNumber(summary.scannedItems || 0, 0)} items. Showing ${formatNumber(
+        rows.length,
+        0,
+      )}${hasKnownTotalCount ? ` of ${formatNumber(totalCount, 0)}` : ""} in the last ${formatNumber(
+        historyHours,
+        0,
+      )}h.`
+    : "Waiting for scanner summary.";
+  const diagnosticsRows = [];
+  if (summary) {
+    diagnosticsRows.push(
+      `Confidence split: ${formatNumber(
+        summary.highConfidence ?? summary.opportunities ?? 0,
+        0,
+      )} high-confidence, ${formatNumber(summary.riskyEligible || 0, 0)} risky-eligible, ${formatNumber(
+        summary.newOpportunitiesAdded || 0,
+        0,
+      )} new.`,
+    );
+  }
+  if (summary?.publishRefresh) {
+    diagnosticsRows.push(
+      `Publish refresh: ${formatNumber(summary.publishRefresh.live || 0, 0)} live, ${formatNumber(
+        summary.publishRefresh.stale || 0,
+        0,
+      )} stale, ${formatNumber(summary.publishRefresh.degraded || 0, 0)} degraded, ${formatNumber(
+        summary.publishRefresh.suppressed || 0,
+        0,
+      )} suppressed.`,
+    );
+  }
+  if (Number(summary?.plan?.lockedPremiumPreviewRows || 0) > 0) {
+    diagnosticsRows.push(
+      `Locked premium previews: ${formatNumber(summary.plan.lockedPremiumPreviewRows, 0)} row(s).`,
+    );
+  }
+  if (summary?.snapshotWarmup?.triggered) {
+    diagnosticsRows.push(
+      `Snapshot warmup refreshed ${formatNumber(
+        summary.snapshotWarmup.refreshedItems || 0,
+        0,
+      )}/${formatNumber(summary.snapshotWarmup.attemptedItems || 0, 0)} items.`,
+    );
+  }
+  if (summary?.sourceCatalog?.sourceCatalog || summary?.sourceCatalog?.universeBuild) {
+    diagnosticsRows.push(
+      `Source catalog: ${formatNumber(
+        summary?.sourceCatalog?.sourceCatalog?.activeCatalogRows || 0,
+        0,
+      )} active, ${formatNumber(
+        summary?.sourceCatalog?.sourceCatalog?.candidateRows || 0,
+        0,
+      )} candidate, ${formatNumber(
+        summary?.sourceCatalog?.sourceCatalog?.enrichingRows || 0,
+        0,
+      )} enriching, ${formatNumber(
+        summary?.sourceCatalog?.sourceCatalog?.eligibleTradableRows || 0,
+        0,
+      )} eligible, ${formatNumber(
+        summary?.sourceCatalog?.sourceCatalog?.rejectedRows || 0,
+        0,
+      )} rejected.`,
+    );
+    diagnosticsRows.push(
+      `Universe built ${formatNumber(
+        summary?.sourceCatalog?.universeBuild?.activeUniverseBuilt || 0,
+        0,
+      )}/${formatNumber(
+        summary?.sourceCatalog?.universeBuild?.targetUniverseSize ||
+          summary?.sourceCatalog?.targetUniverseSize ||
+          0,
+        0,
+      )}.`,
+    );
+  }
+  if (summary?.sourceCatalog?.sourceCatalog) {
+    diagnosticsRows.push(
+      `Source funnel by category: ${formatSourceCatalogFunnelByCategory(
+        summary?.sourceCatalog?.sourceCatalog || {},
+      )}.`,
+    );
+  }
+  if (summary?.sourceCatalog?.universeBuild?.selectedByCategory) {
+    diagnosticsRows.push(
+      `Universe quota by category: ${formatUniverseQuotaActualByCategory(
+        summary?.sourceCatalog?.universeBuild || {},
+      )}.`,
+    );
+  }
+  if (
+    summary?.snapshotWarmup?.seedFilterMode === "allow_missing_snapshot_data" ||
+    summary?.snapshotWarmup?.seedFilterMode === "strict_plus_missing_snapshot_data"
+  ) {
+    diagnosticsRows.push(
+      "Seed promotion is active while enrichment catches up.",
+    );
+  }
+  const rejectionDiagnosticsMarkup = discardReasonRows.length
+    ? `<div class="opportunity-debug-rejected">
+        <p class="opportunity-debug-rejected-title">Discard reasons</p>
+        <ul class="opportunity-debug-list">
+          ${discardReasonRows
+            .map(
+              ([reason, count]) =>
+                `<li>${escapeHtml(formatArbitrageReasonLabel(reason))}: <strong>${escapeHtml(
+                  formatNumber(count, 0),
+                )}</strong></li>`,
+            )
+            .join("")}
+        </ul>
+      </div>`
+    : "";
+  const rejectedItemsMarkup = rejectionReasonsByItem.length
+    ? `<div class="opportunity-debug-rejected">
+        <p class="opportunity-debug-rejected-title">Top rejected items</p>
+        <ul class="opportunity-debug-rejected-list">
+          ${rejectionReasonsByItem
+            .map((entry) => {
+              const itemName = String(entry?.itemName || "Unknown item");
+              const rejectedCount = Number(entry?.rejectedCount || 0);
+              const itemCategory = normalizeOpportunityCategory(
+                entry?.category,
+                itemName,
+              );
+              const reasons = Object.entries(entry?.reasons || {})
+                .filter(([, value]) => Number(value || 0) > 0)
+                .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+                .slice(0, 3)
+                .map(
+                  ([reason, count]) =>
+                    `${formatArbitrageReasonLabel(reason)} (${formatNumber(count, 0)})`,
+                )
+                .join(", ");
+              return `<li><strong>${escapeHtml(itemName)}</strong> <span>${escapeHtml(
+                `${formatOpportunityCategoryLabel(itemCategory)} \u2022 `,
+              )}${escapeHtml(
+                `${reasons || "Rejected"} \u2022 ${formatNumber(rejectedCount, 0)}`,
+              )}</span></li>`;
+            })
+            .join("")}
+        </ul>
+      </div>`
+    : "";
+  const diagnosticsMarkup =
+    diagnosticsRows.length || discardReasonRows.length || rejectionReasonsByItem.length
+      ? `<details class="opportunity-debug">
+          <summary>Scanner diagnostics</summary>
+          ${
+            diagnosticsRows.length
+              ? `<ul class="opportunity-debug-list">
+                  ${diagnosticsRows
+                    .map((line) => `<li>${escapeHtml(line)}</li>`)
+                    .join("")}
+                </ul>`
+              : ""
+          }
+          ${rejectionDiagnosticsMarkup}
+          ${rejectedItemsMarkup}
+        </details>`
+      : "";
+
   const body = `
     <div class="row opportunities-toolbar">
       <button
@@ -14352,38 +14777,32 @@ function renderGlobalOpportunitiesTab() {
         type="button"
         ${scanner.loading ? "disabled" : ""}
       >
-        ${scanner.loading ? "Refreshing..." : "Refresh"}
+        ${scanner.loading ? "Refreshing..." : "Refresh feed"}
       </button>
       ${
         advancedFiltersEnabled
-          ? `<label
-              class="opportunity-risk-toggle"
-              for="global-opportunities-show-risky"
-            >
+          ? `<label class="opportunity-risk-toggle" for="global-opportunities-show-risky">
               <input
                 id="global-opportunities-show-risky"
                 type="checkbox"
                 ${showHighConfidenceOnly ? "checked" : ""}
                 ${scanner.loading ? "disabled" : ""}
               />
-              <span>Show high confidence results</span>
+              <span>High-confidence only</span>
             </label>`
           : ""
       }
-      <label
-        class="opportunity-risk-toggle"
-        for="global-opportunities-show-older"
-      >
+      <label class="opportunity-risk-toggle" for="global-opportunities-show-older">
         <input
           id="global-opportunities-show-older"
           type="checkbox"
           ${showOlder ? "checked" : ""}
           ${scanner.loading || !advancedFiltersEnabled ? "disabled" : ""}
         />
-        <span>Show older opportunities</span>
+        <span>Include older entries</span>
       </label>
       <label class="opportunity-category-filter" for="global-opportunities-category">
-        <span>Category</span>
+        <span>Item type</span>
         <select
           id="global-opportunities-category"
           ${scanner.loading || !advancedFiltersEnabled ? "disabled" : ""}
@@ -14397,139 +14816,31 @@ function renderGlobalOpportunitiesTab() {
         </select>
       </label>
     </div>
-    <p class="helper-text">
-      <strong>Current Plan: ${escapeHtml(planLabel)}</strong>. Feed window: last ${escapeHtml(
-        formatNumber(GLOBAL_OPPORTUNITY_HISTORY_HOURS, 0),
-      )}h, ${escapeHtml(formatNumber(GLOBAL_OPPORTUNITY_PAGE_SIZE, 0))} items per page.
-      ${
-        advancedFiltersEnabled
-          ? " Advanced filters unlocked."
-          : " Advanced filters are locked on Free."
-      }
-      ${
-        entitlements.delayedSignals
-          ? ` Signals delayed by ${escapeHtml(formatNumber(entitlements.signalDelayMinutes || 0, 0))} minutes.`
-          : " Signals are real-time."
-      }
-    </p>
-    <p class="helper-text">
-      ${
-        summary
-          ? `Scanned ${formatNumber(summary.scannedItems || 0, 0)} items in the latest run. Showing ${formatNumber(
-              rows.length,
-              0,
-            )}${
-              hasKnownTotalCount
-                ? ` of ${formatNumber(totalCount, 0)}`
-                : ""
-            } ${showRisky ? "opportunities" : "high-quality opportunities"} from the last ${formatNumber(
-              historyHours,
-              0,
-            )}h feed history (page ${formatNumber(page, 0)}).`
-          : "Waiting for scanner summary."
-      }
-      ${generatedLabel} Active opportunities: ${escapeHtml(
-        formatNumber(activeOpportunitiesCount, 0),
-      )}.
-    </p>
-    ${
-      summary
-        ? `<p class="helper-text">Latest diagnostics: ${escapeHtml(
-            `${formatNumber(summary.highConfidence ?? summary.opportunities ?? 0, 0)} high-confidence, ${formatNumber(
-              summary.riskyEligible || 0,
-              0,
-            )} risky-eligible, ${formatNumber(summary.newOpportunitiesAdded || 0, 0)} newly added.`,
-          )}</p>`
-        : ""
-    }
-    ${
-      summary?.publishRefresh
-        ? `<p class="helper-text">${escapeHtml(
-            `Publish refresh: ${formatNumber(summary.publishRefresh.live || 0, 0)} live, ${formatNumber(
-              summary.publishRefresh.stale || 0,
-              0,
-            )} stale, ${formatNumber(summary.publishRefresh.degraded || 0, 0)} degraded, ${formatNumber(
-              summary.publishRefresh.suppressed || 0,
-              0,
-            )} suppressed.`,
-          )}</p>`
-        : ""
-    }
-    ${
-      Number(summary?.plan?.lockedPremiumPreviewRows || 0) > 0
-        ? `<p class="helper-text">${escapeHtml(
-            `Locked premium previews: ${formatNumber(summary.plan.lockedPremiumPreviewRows, 0)} knife/glove row(s). Unlock Full Access for full inspect and compare.`,
-          )}</p>`
-        : ""
-    }
-    ${
-      summary?.snapshotWarmup?.triggered
-        ? `<p class="helper-text">Snapshot warmup: refreshed ${escapeHtml(
-            formatNumber(summary.snapshotWarmup.refreshedItems || 0, 0),
-          )}/${escapeHtml(formatNumber(summary.snapshotWarmup.attemptedItems || 0, 0))} missing/stale items this run.</p>`
-        : ""
-    }
-    ${
-      summary?.sourceCatalog?.sourceCatalog || summary?.sourceCatalog?.universeBuild
-        ? `<p class="helper-text">${escapeHtml(
-            `Source catalog: ${formatNumber(
-              summary?.sourceCatalog?.sourceCatalog?.activeCatalogRows || 0,
-              0,
-            )} active, ${formatNumber(
-              summary?.sourceCatalog?.sourceCatalog?.candidateRows || 0,
-              0,
-            )} candidate, ${formatNumber(
-              summary?.sourceCatalog?.sourceCatalog?.enrichingRows || 0,
-              0,
-            )} enriching, ${formatNumber(
-              summary?.sourceCatalog?.sourceCatalog?.eligibleTradableRows || 0,
-              0,
-            )} eligible, ${formatNumber(
-              summary?.sourceCatalog?.sourceCatalog?.rejectedRows || 0,
-              0,
-            )} rejected. Universe built ${formatNumber(
-              summary?.sourceCatalog?.universeBuild?.activeUniverseBuilt || 0,
-              0,
-            )}/${formatNumber(
-              summary?.sourceCatalog?.universeBuild?.targetUniverseSize ||
-                summary?.sourceCatalog?.targetUniverseSize ||
-                0,
-              0,
-            )}${
-              Number(summary?.sourceCatalog?.universeBuild?.missingToTarget || 0) > 0
-                ? ` (missing ${formatNumber(summary.sourceCatalog.universeBuild.missingToTarget, 0)})`
-                : ""
-            }.`,
-          )}</p>`
-        : ""
-    }
-    ${
-      summary?.sourceCatalog?.sourceCatalog
-        ? `<p class="helper-text">${escapeHtml(
-            `Source funnel by category (candidate/enriching/eligible): ${formatSourceCatalogFunnelByCategory(
-              summary?.sourceCatalog?.sourceCatalog || {},
-            )}.`,
-          )}</p>`
-        : ""
-    }
-    ${
-      summary?.sourceCatalog?.universeBuild?.selectedByCategory
-        ? `<p class="helper-text">${escapeHtml(
-            `Universe quota/actual by category: ${formatUniverseQuotaActualByCategory(
-              summary?.sourceCatalog?.universeBuild || {},
-            )}.`,
-          )}</p>`
-        : ""
-    }
-    ${
-      summary?.snapshotWarmup?.seedFilterMode === "allow_missing_snapshot_data" ||
-      summary?.snapshotWarmup?.seedFilterMode === "strict_plus_missing_snapshot_data"
-        ? '<p class="helper-text">Seed promotion active: candidate and enriching seeds were intentionally included while enrichment catches up.</p>'
-        : ""
-    }
-    <p class="helper-text">
-      ${scannerStatusMarkup}
-    </p>
+
+    <div class="opportunity-summary-grid">
+      <article class="opportunity-summary-card">
+        <span class="opportunity-summary-label">Feed</span>
+        <p class="opportunity-summary-value">${escapeHtml(
+          `${formatNumber(activeOpportunitiesCount, 0)} active opportunities`,
+        )}</p>
+        <p class="opportunity-summary-meta">${escapeHtml(feedSummaryLabel)}</p>
+      </article>
+      <article class="opportunity-summary-card">
+        <span class="opportunity-summary-label">Scan status</span>
+        <p class="opportunity-summary-value">${escapeHtml(generatedLabel)}</p>
+        <p class="opportunity-summary-meta">${scannerStatusMarkup}</p>
+      </article>
+      <article class="opportunity-summary-card">
+        <span class="opportunity-summary-label">Plan</span>
+        <p class="opportunity-summary-value">${escapeHtml(
+          `${planLabel} - ${qualityModeLabel}`,
+        )}</p>
+        <p class="opportunity-summary-meta">${escapeHtml(
+          `${planSummary} ${signalSummary}`,
+        )}</p>
+      </article>
+    </div>
+
     ${
       !rows.length && noOpportunitiesReason?.message
         ? `<p class="helper-text">${escapeHtml(noOpportunitiesReason.message)}</p>`
@@ -14537,66 +14848,26 @@ function renderGlobalOpportunitiesTab() {
     }
     ${
       !showRisky
-        ? '<p class="helper-text">High-quality mode hides low-confidence opportunities by default.</p>'
+        ? '<p class="helper-text">High-confidence mode hides low-confidence opportunities by default.</p>'
         : ""
     }
     ${scanner.error ? `<p class="muted">${escapeHtml(scanner.error)}</p>` : ""}
+    ${diagnosticsMarkup}
     ${
-      discardReasonRows.length
-        ? `<details class="opportunity-debug">
-            <summary>Discard diagnostics</summary>
-            <ul class="opportunity-debug-list">
-              ${discardReasonRows
-                .map(
-                  ([reason, count]) =>
-                    `<li>${escapeHtml(formatArbitrageReasonLabel(reason))}: <strong>${escapeHtml(
-                      formatNumber(count, 0),
-                    )}</strong></li>`,
-                )
-                .join("")}
-            </ul>
-            ${
-              rejectionReasonsByItem.length
-                ? `<div class="opportunity-debug-rejected">
-                    <p class="opportunity-debug-rejected-title">Top rejected items</p>
-                    <ul class="opportunity-debug-rejected-list">
-                      ${rejectionReasonsByItem
-                        .map((entry) => {
-                          const itemName = String(entry?.itemName || "Unknown item");
-                          const rejectedCount = Number(entry?.rejectedCount || 0);
-                          const itemCategory = normalizeOpportunityCategory(
-                            entry?.category,
-                            itemName,
-                          );
-                          const reasons = Object.entries(entry?.reasons || {})
-                            .filter(([, value]) => Number(value || 0) > 0)
-                            .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
-                            .slice(0, 3)
-                            .map(
-                              ([reason, count]) =>
-                                `${formatArbitrageReasonLabel(reason)} (${formatNumber(
-                                  count,
-                                  0,
-                                )})`,
-                            )
-                            .join(", ");
-                          return `<li><strong>${escapeHtml(
-                            itemName,
-                          )}</strong> <span>${escapeHtml(
-                            `${formatOpportunityCategoryLabel(itemCategory)} \u2022 `,
-                          )}${escapeHtml(
-                            `${reasons || "Rejected"} \u2022 ${formatNumber(rejectedCount, 0)}`,
-                          )}</span></li>`;
-                        })
-                        .join("")}
-                    </ul>
-                  </div>`
-                : ""
-            }
-          </details>`
-        : ""
+      rows.length
+        ? `<div class="opportunities-feed-layout">
+            <div class="opportunities-feed-desktop">${tableMarkup}</div>
+            <div class="opportunities-feed-mobile">${mobileCardsMarkup}</div>
+          </div>`
+        : showTableSkeleton
+          ? `<div class="opportunities-feed-layout">
+              <div class="opportunities-feed-desktop">${tableMarkup}</div>
+              <div class="opportunities-feed-mobile">${renderGlobalOpportunitiesMobileSkeleton(
+                6,
+              )}</div>
+            </div>`
+          : tableMarkup
     }
-    ${tableMarkup}
     ${paginationMarkup}
   `;
 
@@ -14604,9 +14875,9 @@ function renderGlobalOpportunitiesTab() {
     <section class="grid">
       ${renderPanel({
         className: "wide dashboard-arbitrage-panel dashboard-arbitrage-panel-live",
-        title: "Top Arbitrage Opportunities",
+        title: "Global Opportunity Feed",
         subtitle:
-          `Top ${formatNumber(summary?.universeTarget || 100, 0)} universe across skins, cases, capsules, knives, and gloves. Default view includes risky and high-confidence setups.`,
+          `Top ${formatNumber(summary?.universeTarget || 100, 0)} tradable items across skins, cases, capsules, knives, and gloves.`,
         body,
       })}
     </section>
@@ -15141,7 +15412,7 @@ function renderPublicPortfolioPage() {
               return `
                 <tr>
                   <td>
-                    <div class="table-item-cell">
+                    <div class="table-item-cell" data-rarity-kind="${escapeHtml(rarityTheme.canonicalRarity || "unknown")}">
                       <img
                         class="table-item-thumb"
                         style="--rarity-color: ${rarityTheme.color};"
@@ -15153,7 +15424,7 @@ function renderPublicPortfolioPage() {
                       <div class="table-item-info">
                         <div class="skin-name">${escapeHtml(item.marketHashName)}</div>
                         <div class="table-item-subline">
-                          <span class="rarity-tag" style="--rarity-color: ${rarityTheme.color};">
+                          <span class="rarity-tag" data-rarity-kind="${escapeHtml(rarityTheme.canonicalRarity || "unknown")}" style="--rarity-color: ${rarityTheme.color};">
                             ${escapeHtml(rarityTheme.rarity)}
                           </span>
                         </div>
@@ -15609,7 +15880,7 @@ function renderApp() {
       <article class="panel portfolio-main-panel">
         <h2>Portfolio Holdings</h2>
         <p class="helper-text">
-          Card-first execution surface for scanning, sorting, and acting without losing your place.
+          Scan, sort, and act from one holdings workspace.
         </p>
         ${renderPortfolioPricingControls()}
         ${renderSection({
@@ -15648,14 +15919,14 @@ function renderApp() {
         ${renderPortfolioArbitrageWidget()}
         <article class="panel position-inspector-panel">
           <h2>Position Inspector</h2>
-          <p class="helper-text">Paste a Steam Item ID to open the inspector modal without losing your portfolio position.</p>
+          <p class="helper-text">Open item details by Steam Item ID without leaving this view.</p>
           <form id="skin-form" class="form position-inspector-form">
             <label>Steam Item ID
               <input id="steam-item-id" inputmode="numeric" pattern="[0-9]+" placeholder="e.g. 35719462921" value="${escapeHtml(state.inspectedSteamItemId)}" />
             </label>
             <button type="submit">Open Inspector</button>
           </form>
-          <p class="muted">Item details, market sources, and exit what-if analytics open in the modal.</p>
+          <p class="muted">View pricing, market sources, and exit scenarios in one modal.</p>
         </article>
       </aside>
     </section>
@@ -15665,7 +15936,7 @@ function renderApp() {
     <section class="grid">
       <article class="panel wide">
         <h2>History & Exports</h2>
-        <p class="helper-text">Export transaction history as CSV for bookkeeping, tax workflows, and back-office analytics.</p>
+        <p class="helper-text">Export your transaction history as CSV for records and analysis.</p>
         <div class="row">
           <button id="export-transactions-btn" type="button">Export Transactions CSV</button>
         </div>

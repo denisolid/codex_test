@@ -14,8 +14,13 @@ function toOpportunityRow(row = {}) {
     itemName: row?.itemName || "Tracked Item",
     itemCategory: row?.itemCategory || "weapon_skin",
     itemSubcategory: row?.itemSubcategory || null,
+    itemCanonicalRarity: row?.itemCanonicalRarity || row?.item_canonical_rarity || null,
     itemRarity: row?.itemRarity || null,
     itemRarityColor: row?.itemRarityColor || null,
+    itemRarityUnknownReason:
+      row?.itemRarityUnknownReason || row?.item_rarity_unknown_reason || null,
+    itemRarityDiagnostics:
+      row?.itemRarityDiagnostics || row?.item_rarity_diagnostics || null,
     itemImageUrl: row?.itemImageUrl || null,
     buyMarket: row?.buyMarket || null,
     buyPrice: row?.buyPrice ?? null,

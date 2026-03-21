@@ -27,7 +27,7 @@ function formatSourceLabel(value) {
 export function renderSkinCard(item = {}, helpers = {}) {
   const escapeHtml = helpers.escapeHtml || fallbackEscape;
   const formatMoney = helpers.formatMoney || ((value) => String(value ?? "0"));
-  const { rarity, color } = getRarityTheme(item);
+  const { rarity, color, canonicalRarity } = getRarityTheme(item);
   const imageUrl = resolveItemImageUrl(item);
   const fallbackImage = isCaseLikeItem(item) ? defaultCaseImage : defaultSkinImage;
   const inspectSteamItemId = String(
@@ -45,6 +45,7 @@ export function renderSkinCard(item = {}, helpers = {}) {
     <article
       class="portfolio-skin-card ${isInspectable ? "portfolio-skin-card-clickable" : "portfolio-skin-card-disabled"}"
       style="--rarity-color: ${color};"
+      data-rarity-kind="${escapeHtml(canonicalRarity || "unknown")}"
       ${
         isInspectable
           ? `role="button" tabindex="0" data-steam-item-id="${escapeHtml(
@@ -70,7 +71,7 @@ export function renderSkinCard(item = {}, helpers = {}) {
         </p>
         <p class="portfolio-skin-card-price">${escapeHtml(unitPriceMarkup)}</p>
         <div class="portfolio-skin-card-meta">
-          <span class="rarity-tag" style="--rarity-color: ${color};">${escapeHtml(rarity)}</span>
+          <span class="rarity-tag" data-rarity-kind="${escapeHtml(canonicalRarity || "unknown")}" style="--rarity-color: ${color};">${escapeHtml(rarity)}</span>
           <span class="portfolio-skin-card-value">${formatMoney(item.lineValue, item.currency)}</span>
         </div>
       </div>

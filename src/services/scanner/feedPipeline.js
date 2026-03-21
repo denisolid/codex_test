@@ -6,6 +6,12 @@ const {
   MIN_SCORE_CHANGE,
   MIN_SPREAD_CHANGE_PCT
 } = require("./config")
+const {
+  resolveCanonicalRarity,
+  canonicalRarityToDisplay,
+  getCanonicalRarityColor,
+  buildUnknownRarityDiagnostics
+} = require("../../utils/rarityResolver")
 
 const MIN_BUY_PRICE_CHANGE_PCT = 2
 const MIN_SELL_PRICE_CHANGE_PCT = 2
@@ -255,6 +261,10 @@ function buildOpportunityFingerprint(row = {}) {
     row?.itemSubcategory,
     metadata?.item_subcategory,
     metadata?.itemSubcategory,
+    row?.item_canonical_rarity,
+    row?.itemCanonicalRarity,
+    metadata?.item_canonical_rarity,
+    metadata?.itemCanonicalRarity,
     row?.item_rarity,
     row?.itemRarity,
     metadata?.item_rarity,
@@ -545,6 +555,47 @@ function buildFeedInsertRow(opportunity = {}, options = {}) {
   const qualityScoreDisplay = buildDisplayQualityScore(rawQualityScore)
   const opportunityFingerprint = buildOpportunityFingerprint(opportunity)
   const materialChangeHash = buildMaterialChangeHash(opportunity)
+  const rarityResolution = resolveCanonicalRarity({
+    catalogRarity:
+      opportunity?.itemCanonicalRarity ??
+      opportunity?.item_canonical_rarity ??
+      opportunity?.metadata?.item_canonical_rarity ??
+      opportunity?.metadata?.itemCanonicalRarity ??
+      null,
+    sourceRarity:
+      opportunity?.itemRarity ??
+      opportunity?.item_rarity ??
+      opportunity?.rarity ??
+      opportunity?.metadata?.item_rarity ??
+      opportunity?.metadata?.itemRarity ??
+      opportunity?.metadata?.rarity ??
+      null,
+    category: opportunity.itemCategory || opportunity.category,
+    marketHashName: opportunity.marketHashName || opportunity.itemName || "",
+    weapon: opportunity?.weapon || opportunity?.metadata?.weapon || ""
+  })
+  const itemCanonicalRarity = rarityResolution.canonicalRarity
+  const itemRarity = canonicalRarityToDisplay(itemCanonicalRarity)
+  const itemRarityColor = getCanonicalRarityColor(itemCanonicalRarity)
+  const itemUnknownRarityDiagnostics = buildUnknownRarityDiagnostics(rarityResolution, {
+    category: opportunity.itemCategory || opportunity.category || null,
+    marketHashName: opportunity.marketHashName || opportunity.itemName || null,
+    weapon: opportunity?.weapon || opportunity?.metadata?.weapon || null,
+    catalogRarity:
+      opportunity?.itemCanonicalRarity ??
+      opportunity?.item_canonical_rarity ??
+      opportunity?.metadata?.item_canonical_rarity ??
+      opportunity?.metadata?.itemCanonicalRarity ??
+      null,
+    sourceRarity:
+      opportunity?.itemRarity ??
+      opportunity?.item_rarity ??
+      opportunity?.rarity ??
+      opportunity?.metadata?.item_rarity ??
+      opportunity?.metadata?.itemRarity ??
+      opportunity?.metadata?.rarity ??
+      null
+  })
 
   return {
     item_name: normalizeText(opportunity.itemName || opportunity.marketHashName || "Tracked Item"),
@@ -573,8 +624,18 @@ function buildFeedInsertRow(opportunity = {}, options = {}) {
     metadata: {
       item_id: opportunity.itemId || null,
       item_subcategory: opportunity.itemSubcategory || null,
-      item_rarity: opportunity.itemRarity || null,
-      item_rarity_color: opportunity.itemRarityColor || null,
+      item_canonical_rarity: itemCanonicalRarity,
+      itemCanonicalRarity: itemCanonicalRarity,
+      item_rarity: itemRarity,
+      itemRarity: itemRarity,
+      item_rarity_color: itemRarityColor,
+      itemRarityColor: itemRarityColor,
+      item_rarity_resolution_source: rarityResolution.source || null,
+      itemRarityResolutionSource: rarityResolution.source || null,
+      item_rarity_unknown_reason: itemUnknownRarityDiagnostics?.reason || null,
+      itemRarityUnknownReason: itemUnknownRarityDiagnostics?.reason || null,
+      item_rarity_diagnostics: itemUnknownRarityDiagnostics || null,
+      itemRarityDiagnostics: itemUnknownRarityDiagnostics || null,
       item_image_url: opportunity.itemImageUrl || null,
       volume_7d: toFiniteOrNull(opportunity.liquidity),
       liquidity_value: toFiniteOrNull(opportunity.liquidity),
@@ -741,6 +802,59 @@ function mapFeedRowToApiRow(row = {}) {
         metadata?.reference_price ??
         metadata?.referencePrice
     ) ?? null
+  const rarityResolution = resolveCanonicalRarity({
+    catalogRarity:
+      row?.item_canonical_rarity ??
+      row?.itemCanonicalRarity ??
+      metadata?.item_canonical_rarity ??
+      metadata?.itemCanonicalRarity ??
+      null,
+    sourceRarity:
+      row?.item_rarity ??
+      row?.itemRarity ??
+      row?.rarity ??
+      metadata?.item_rarity ??
+      metadata?.itemRarity ??
+      metadata?.rarity ??
+      null,
+    category: row?.category,
+    marketHashName: row?.market_hash_name || row?.item_name || "",
+    weapon: metadata?.weapon || ""
+  })
+  const itemCanonicalRarity = rarityResolution.canonicalRarity
+  const itemRarity = canonicalRarityToDisplay(itemCanonicalRarity)
+  const itemRarityColor = getCanonicalRarityColor(itemCanonicalRarity)
+  const metadataRarityDiagnostics = toJsonObject(
+    metadata?.item_rarity_diagnostics ?? metadata?.itemRarityDiagnostics
+  )
+  const autoUnknownRarityDiagnostics = buildUnknownRarityDiagnostics(rarityResolution, {
+    category: row?.category || null,
+    marketHashName: row?.market_hash_name || row?.item_name || null,
+    weapon: metadata?.weapon || null,
+    catalogRarity:
+      row?.item_canonical_rarity ??
+      row?.itemCanonicalRarity ??
+      metadata?.item_canonical_rarity ??
+      metadata?.itemCanonicalRarity ??
+      null,
+    sourceRarity:
+      row?.item_rarity ??
+      row?.itemRarity ??
+      row?.rarity ??
+      metadata?.item_rarity ??
+      metadata?.itemRarity ??
+      metadata?.rarity ??
+      null
+  })
+  const itemRarityDiagnostics = Object.keys(metadataRarityDiagnostics).length
+    ? metadataRarityDiagnostics
+    : autoUnknownRarityDiagnostics
+  const itemRarityUnknownReason =
+    normalizeText(
+      metadata?.item_rarity_unknown_reason ??
+        metadata?.itemRarityUnknownReason ??
+        itemRarityDiagnostics?.reason
+    ) || null
   return {
     feedId: row?.id || null,
     detectedAt,
@@ -773,26 +887,16 @@ function mapFeedRowToApiRow(row = {}) {
           metadata?.item_subcategory ??
           metadata?.itemSubcategory
       ) || null,
-    itemRarity:
-      normalizeText(
-        row?.item_rarity ??
-          row?.itemRarity ??
-          row?.rarity ??
-          metadata?.item_rarity ??
-          metadata?.itemRarity ??
-          metadata?.rarity
-      ) || null,
-    itemRarityColor:
-      normalizeText(
-        row?.item_rarity_color ??
-          row?.itemRarityColor ??
-          row?.rarity_color ??
-          row?.rarityColor ??
-          metadata?.item_rarity_color ??
-          metadata?.itemRarityColor ??
-          metadata?.rarity_color ??
-          metadata?.rarityColor
-      ) || null,
+    itemCanonicalRarity,
+    item_canonical_rarity: itemCanonicalRarity,
+    itemRarity,
+    item_rarity: itemRarity,
+    itemRarityColor,
+    item_rarity_color: itemRarityColor,
+    itemRarityDiagnostics,
+    item_rarity_diagnostics: itemRarityDiagnostics,
+    itemRarityUnknownReason,
+    item_rarity_unknown_reason: itemRarityUnknownReason,
     itemImageUrl:
       normalizeText(
         row?.item_image_url ??

@@ -18,6 +18,12 @@ const {
   ensureFreshFxRates
 } = require("./currencyService");
 const marketComparisonService = require("./marketComparisonService");
+const {
+  resolveCanonicalRarity,
+  canonicalRarityToDisplay,
+  getCanonicalRarityColor,
+  buildUnknownRarityDiagnostics
+} = require("../utils/rarityResolver");
 
 function round2(n) {
   return Number((n || 0).toFixed(2));
@@ -273,6 +279,21 @@ exports.getPortfolio = async (userId, options = {}) => {
     const lineValue = h.quantity * currentPrice;
     const lineValue7d = h.quantity * oldPrice;
     const lineValue1d = h.quantity * oneDayPrice;
+    const rarityResolution = resolveCanonicalRarity({
+      catalogRarity: h?.skins?.canonical_rarity || h?.skins?.rarity || null,
+      sourceRarity: h?.skins?.rarity || null,
+      marketHashName: h?.skins?.market_hash_name || "",
+      category: null,
+      weapon: null
+    });
+    const canonicalRarity = rarityResolution.canonicalRarity;
+    const unknownRarityDiagnostics = buildUnknownRarityDiagnostics(rarityResolution, {
+      marketHashName: h?.skins?.market_hash_name || null,
+      category: null,
+      weapon: null,
+      catalogRarity: h?.skins?.canonical_rarity || h?.skins?.rarity || null,
+      sourceRarity: h?.skins?.rarity || null
+    });
 
     totalValue += lineValue;
     value7d += lineValue7d;
@@ -309,8 +330,11 @@ exports.getPortfolio = async (userId, options = {}) => {
           : null,
       steamItemIds: Array.isArray(h.steam_item_ids) ? h.steam_item_ids : [],
       marketHashName: h.skins.market_hash_name,
-      rarity: h?.skins?.rarity || "Consumer Grade",
-      rarityColor: h?.skins?.rarity_color || null,
+      rarity: canonicalRarityToDisplay(canonicalRarity),
+      canonicalRarity,
+      rarityColor: getCanonicalRarityColor(canonicalRarity),
+      rarityUnknownReason: unknownRarityDiagnostics?.reason || null,
+      rarityDiagnostics: unknownRarityDiagnostics,
       imageUrl: h?.skins?.image_url || null,
       imageUrlLarge: h?.skins?.image_url_large || h?.skins?.image_url || null,
       quantity: h.quantity,
