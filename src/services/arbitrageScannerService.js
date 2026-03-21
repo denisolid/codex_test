@@ -6,7 +6,6 @@ const scannerRunRepo = require("../repositories/scannerRunRepository")
 const marketComparisonService = require("./marketComparisonService")
 const marketSourceCatalogService = require("./marketSourceCatalogService")
 const marketImageService = require("./marketImageService")
-const feedPublishRefreshService = require("./feedPublishRefreshService")
 const planService = require("./planService")
 const premiumCategoryAccessService = require("./premiumCategoryAccessService")
 const {
@@ -65,6 +64,18 @@ const CATALOG_SCAN_CATEGORIES = Object.freeze([
   ITEM_CATEGORIES.KNIFE,
   ITEM_CATEGORIES.GLOVE
 ])
+const FEED_FIRST_PAGE_CACHE_TTL_MS = 20 * 1000
+const FEED_FIRST_PAGE_CACHE_MAX = 24
+const FEED_CURSOR_DELIMITER = "|"
+const FEED_CACHEABLE_CATEGORY_FILTERS = Object.freeze(
+  new Set([
+    "all",
+    ITEM_CATEGORIES.WEAPON_SKIN,
+    ITEM_CATEGORIES.CASE,
+    ITEM_CATEGORIES.STICKER_CAPSULE,
+    ITEM_CATEGORIES.KNIFE
+  ])
+)
 
 const scannerState = {
   timer: null,
@@ -89,6 +100,7 @@ const rotationState = {
 
 const manualRefreshTracker = new Map()
 const scannerEntitlements = planService.getEntitlements("alpha_access")
+const feedFirstPageCache = new Map()
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -157,6 +169,107 @@ async function countFeedSafely(options = {}) {
     }
     throw err
   }
+}
+
+function toFiniteOrNull(value) {
+  if (value == null || value === "") return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function normalizeCursorPayload(value) {
+  const raw = normalizeText(value)
+  if (!raw) return null
+  try {
+    const decoded = Buffer.from(raw, "base64url").toString("utf8")
+    const [createdAtRaw, idRaw] = decoded.split(FEED_CURSOR_DELIMITER)
+    const createdAt = toIsoOrNull(createdAtRaw)
+    const id = normalizeText(idRaw)
+    if (!createdAt || !id) return null
+    return {
+      createdAt,
+      id
+    }
+  } catch (_err) {
+    return null
+  }
+}
+
+function encodeCursorPayload(createdAt, id) {
+  const safeCreatedAt = toIsoOrNull(createdAt)
+  const safeId = normalizeText(id)
+  if (!safeCreatedAt || !safeId) return null
+  const payload = `${safeCreatedAt}${FEED_CURSOR_DELIMITER}${safeId}`
+  return Buffer.from(payload, "utf8").toString("base64url")
+}
+
+function buildFeedPageCacheKey(options = {}) {
+  const category = normalizeCategoryFilter(options.category)
+  return [
+    options.includeInactive ? "1" : "0",
+    options.highConfidenceOnly ? "1" : "0",
+    category || "all",
+    FEED_WINDOW_HOURS
+  ].join("::")
+}
+
+function shouldCacheFirstPage(options = {}) {
+  if (options.cursorCreatedAt || options.cursorId) return false
+  if (Boolean(options.includeInactive)) return false
+  const category = normalizeCategoryFilter(options.category)
+  return FEED_CACHEABLE_CATEGORY_FILTERS.has(category)
+}
+
+function pruneFeedFirstPageCache(nowMs = Date.now()) {
+  for (const [key, entry] of feedFirstPageCache.entries()) {
+    if (Number(entry?.expiresAt || 0) <= nowMs) {
+      feedFirstPageCache.delete(key)
+    }
+  }
+
+  if (feedFirstPageCache.size <= FEED_FIRST_PAGE_CACHE_MAX) return
+  const overflow = feedFirstPageCache.size - FEED_FIRST_PAGE_CACHE_MAX
+  const oldestKeys = Array.from(feedFirstPageCache.entries())
+    .sort((a, b) => Number(a?.[1]?.createdAtMs || 0) - Number(b?.[1]?.createdAtMs || 0))
+    .slice(0, overflow)
+    .map(([key]) => key)
+  for (const key of oldestKeys) {
+    feedFirstPageCache.delete(key)
+  }
+}
+
+function getFeedFirstPageCache(options = {}) {
+  if (!shouldCacheFirstPage(options)) return null
+  const key = buildFeedPageCacheKey(options)
+  const cached = feedFirstPageCache.get(key)
+  if (!cached) return null
+  if (Date.now() >= Number(cached.expiresAt || 0)) {
+    feedFirstPageCache.delete(key)
+    return null
+  }
+  return {
+    rows: Array.isArray(cached.rows) ? cached.rows.map((row) => ({ ...row })) : [],
+    hasNextPage: Boolean(cached.hasNextPage),
+    nextCursor: normalizeText(cached.nextCursor) || null
+  }
+}
+
+function setFeedFirstPageCache(options = {}, payload = {}) {
+  if (!shouldCacheFirstPage(options)) return
+  const key = buildFeedPageCacheKey(options)
+  const rows = Array.isArray(payload?.rows) ? payload.rows.map((row) => ({ ...row })) : []
+  feedFirstPageCache.set(key, {
+    createdAtMs: Date.now(),
+    expiresAt: Date.now() + FEED_FIRST_PAGE_CACHE_TTL_MS,
+    rows,
+    hasNextPage: Boolean(payload?.hasNextPage),
+    nextCursor: normalizeText(payload?.nextCursor) || null
+  })
+  pruneFeedFirstPageCache(Date.now())
+}
+
+function clearFeedFirstPageCache() {
+  feedFirstPageCache.clear()
 }
 
 function normalizeCategoryFilter(value) {
@@ -228,6 +341,62 @@ function incrementCounter(target, key) {
   const safeKey = normalizeText(key)
   if (!safeKey) return
   target[safeKey] = Number(target[safeKey] || 0) + 1
+}
+
+function incrementCounterBy(target, key, amount = 1) {
+  const safeKey = normalizeText(key)
+  if (!safeKey) return
+  target[safeKey] = Number(target[safeKey] || 0) + Number(amount || 0)
+}
+
+function mergeCounterMap(target = {}, patch = {}) {
+  for (const [key, value] of Object.entries(patch || {})) {
+    incrementCounterBy(target, key, Number(value || 0))
+  }
+}
+
+function createSkinportPipelineSummary() {
+  return {
+    enabled: false,
+    chunksWithDiagnostics: 0,
+    requestedItems: 0,
+    mappedItems: 0,
+    strictConfirmed: 0,
+    fallbackConfirmed: 0,
+    stageCounters: {},
+    rejectReasons: {},
+    sourceUnavailableReasonCounts: {},
+    failureReasonCounts: {}
+  }
+}
+
+function mergeSkinportPipelineSummary(target = {}, sourceDiagnostics = null) {
+  if (!sourceDiagnostics || typeof sourceDiagnostics !== "object") return
+  target.chunksWithDiagnostics = Number(target.chunksWithDiagnostics || 0) + 1
+  const sourceUnavailableReason = normalizeText(sourceDiagnostics?.sourceUnavailableReason)
+  if (sourceUnavailableReason) {
+    incrementCounter(target.sourceUnavailableReasonCounts, sourceUnavailableReason)
+  }
+  for (const reason of Object.values(sourceDiagnostics?.failuresByName || {})) {
+    incrementCounter(target.failureReasonCounts, reason)
+  }
+  const pipeline =
+    sourceDiagnostics?.pipeline && typeof sourceDiagnostics.pipeline === "object"
+      ? sourceDiagnostics.pipeline
+      : null
+  if (!pipeline) return
+
+  target.requestedItems = Number(target.requestedItems || 0) + Number(pipeline.requestedItems || 0)
+  target.mappedItems = Number(target.mappedItems || 0) + Number(pipeline.mappedItems || 0)
+  target.strictConfirmed =
+    Number(target.strictConfirmed || 0) + Number(pipeline.strictConfirmed || 0)
+  target.fallbackConfirmed =
+    Number(target.fallbackConfirmed || 0) + Number(pipeline.fallbackConfirmed || 0)
+  for (const [stage, counters] of Object.entries(pipeline.stageCounters || {})) {
+    if (!target.stageCounters[stage]) target.stageCounters[stage] = {}
+    mergeCounterMap(target.stageCounters[stage], counters || {})
+  }
+  mergeCounterMap(target.rejectReasons, pipeline.rejectReasons || {})
 }
 
 function confidenceLevel(value) {
@@ -346,6 +515,77 @@ async function enrichRowsWithSkinMetadata(rows = []) {
   })
 }
 
+function mapFeedRowToCard(rawRow = {}) {
+  const row = mapFeedRowToApiRow(rawRow)
+  const qualityScoreDisplay =
+    toFiniteOrNull(row?.qualityScoreDisplay ?? row?.quality_score_display) ??
+    toFiniteOrNull(row?.score)
+
+  return {
+    feedId: row?.feedId || normalizeText(rawRow?.id) || null,
+    detectedAt: row?.detectedAt || rawRow?.created_at || rawRow?.detected_at || null,
+    scanRunId: row?.scanRunId || null,
+    isActive: row?.isActive == null ? true : Boolean(row.isActive),
+    isDuplicate: Boolean(row?.isDuplicate),
+    itemId: row?.itemId || null,
+    itemName: row?.itemName || row?.marketHashName || "Tracked Item",
+    itemCategory: row?.itemCategory || "weapon_skin",
+    itemSubcategory: row?.itemSubcategory || null,
+    itemRarity: row?.itemRarity || null,
+    itemRarityColor: row?.itemRarityColor || null,
+    itemImageUrl: row?.itemImageUrl || null,
+    buyMarket: row?.buyMarket || null,
+    buyPrice: toFiniteOrNull(row?.buyPrice),
+    sellMarket: row?.sellMarket || null,
+    sellNet: toFiniteOrNull(row?.sellNet),
+    profit: toFiniteOrNull(row?.profit),
+    spread: toFiniteOrNull(row?.spread),
+    score: toFiniteOrNull(row?.score),
+    qualityScoreDisplay,
+    quality_score_display: qualityScoreDisplay,
+    scoreCategory: row?.scoreCategory || null,
+    executionConfidence: row?.executionConfidence || null,
+    qualityGrade: row?.qualityGrade || null,
+    liquidity: toFiniteOrNull(row?.liquidity),
+    liquidityBand: row?.liquidityBand || row?.liquidityLabel || null,
+    liquidityLabel: row?.liquidityLabel || row?.liquidityBand || null,
+    volume7d: toFiniteOrNull(row?.volume7d ?? row?.liquidity),
+    marketCoverage: toFiniteOrNull(row?.marketCoverage),
+    referencePrice: toFiniteOrNull(row?.referencePrice),
+    latestSignalAgeHours:
+      toFiniteOrNull(row?.latestSignalAgeHours ?? row?.latest_signal_age_hours) ?? null,
+    latest_signal_age_hours:
+      toFiniteOrNull(row?.latestSignalAgeHours ?? row?.latest_signal_age_hours) ?? null,
+    refreshStatus: row?.refreshStatus || row?.refresh_status || "pending",
+    refresh_status: row?.refreshStatus || row?.refresh_status || "pending",
+    liveStatus: row?.liveStatus || row?.live_status || "degraded",
+    live_status: row?.liveStatus || row?.live_status || "degraded",
+    verdict: row?.verdict || null,
+    buyUrl: row?.buyUrl || null,
+    sellUrl: row?.sellUrl || null,
+    flags: Array.isArray(row?.flags) ? row.flags : [],
+    badges: Array.isArray(row?.badges) ? row.badges : []
+  }
+}
+
+function toStatusRunSnapshot(run = null) {
+  if (!run || typeof run !== "object") return null
+  const itemsScanned = toFiniteOrNull(run?.items_scanned)
+  const opportunitiesFound = toFiniteOrNull(run?.opportunities_found)
+  const newOpportunitiesAdded = toFiniteOrNull(run?.new_opportunities_added)
+  return {
+    id: run?.id || null,
+    status: run?.status || null,
+    started_at: run?.started_at || null,
+    completed_at: run?.completed_at || null,
+    items_scanned: itemsScanned == null ? null : Math.max(Math.round(itemsScanned), 0),
+    opportunities_found:
+      opportunitiesFound == null ? null : Math.max(Math.round(opportunitiesFound), 0),
+    new_opportunities_added:
+      newOpportunitiesAdded == null ? null : Math.max(Math.round(newOpportunitiesAdded), 0)
+  }
+}
+
 function applyFeedPlanRestrictions(rows = [], entitlements = {}) {
   const nowMs = Date.now()
   const delayedSignals = Boolean(entitlements?.delayedSignals)
@@ -445,6 +685,8 @@ function buildCompareInput(candidate = {}) {
 async function compareCandidates(candidates = [], forceRefresh = false) {
   const byName = {}
   const allowLiveFetch = OPPORTUNITY_SCAN_ALLOW_LIVE_FETCH && Boolean(forceRefresh)
+  const skinportPipeline = createSkinportPipelineSummary()
+  skinportPipeline.enabled = allowLiveFetch
   const diagnostics = {
     batchesAttempted: 0,
     batchesCompleted: 0,
@@ -452,7 +694,8 @@ async function compareCandidates(candidates = [], forceRefresh = false) {
     batchesFailed: 0,
     chunkSize: SCAN_CHUNK_SIZE,
     allowLiveFetch,
-    forceRefresh: allowLiveFetch
+    forceRefresh: allowLiveFetch,
+    skinportPipeline
   }
   for (const chunk of chunkArray(candidates, SCAN_CHUNK_SIZE)) {
     diagnostics.batchesAttempted += 1
@@ -468,6 +711,10 @@ async function compareCandidates(candidates = [], forceRefresh = false) {
         "SCANNER_BATCH_TIMEOUT"
       )
       const rows = Array.isArray(compared?.items) ? compared.items : []
+      const skinportSourceDiagnostics = compared?.diagnostics?.liveFetch?.bySource?.skinport
+      if (skinportSourceDiagnostics && typeof skinportSourceDiagnostics === "object") {
+        mergeSkinportPipelineSummary(skinportPipeline, skinportSourceDiagnostics)
+      }
       for (const row of rows) {
         const name = normalizeText(row?.marketHashName)
         if (name) byName[name] = row
@@ -1289,14 +1536,17 @@ async function enqueueEnrichment(options = {}) {
   })
 }
 
-async function getScannerStatusInternal() {
+async function getScannerStatusInternal(options = {}) {
+  const includeActiveCount = options.includeActiveCount !== false
   const [latestRun, latestCompletedRun, latestEnrichmentRun, latestEnrichmentCompletedRun, activeOpportunities] =
     await Promise.all([
       scannerRunRepo.getLatestRun(SCANNER_TYPES.OPPORTUNITY_SCAN),
       scannerRunRepo.getLatestCompletedRun(SCANNER_TYPES.OPPORTUNITY_SCAN),
       scannerRunRepo.getLatestRun(SCANNER_TYPES.ENRICHMENT),
       scannerRunRepo.getLatestCompletedRun(SCANNER_TYPES.ENRICHMENT),
-      arbitrageFeedRepo.countFeed({ includeInactive: false }).catch(() => 0)
+      includeActiveCount
+        ? arbitrageFeedRepo.countFeed({ includeInactive: false }).catch(() => 0)
+        : Promise.resolve(null)
     ])
 
   const currentStatus =
@@ -1314,7 +1564,8 @@ async function getScannerStatusInternal() {
         ? Date.now() - new Date(scannerState.currentRunStartedAt).getTime()
         : null,
     nextScheduledAt: scannerState.nextScheduledAt,
-    activeOpportunities: Number(activeOpportunities || 0),
+    activeOpportunities:
+      activeOpportunities == null ? null : Number(activeOpportunities || 0),
     latestRun: latestRun || null,
     latestCompletedRun: latestCompletedRun || null,
     coordination: {
@@ -1352,10 +1603,11 @@ exports.getFeed = async (options = {}) => {
 
   const requestedLimit = normalizeLimit(options.limit, DEFAULT_API_LIMIT, MAX_API_LIMIT)
   const limit = FEED_PAGE_SIZE
-  const requestedPage = normalizePage(options.page, 1)
   const requestedHistoryHours = normalizeHistoryHours(options.historyHours, FEED_WINDOW_HOURS)
   const historyWindowHours = FEED_WINDOW_HOURS
   const historySinceIso = buildSinceIso(historyWindowHours)
+  const requestedCursor = normalizeCursorPayload(options.cursor)
+  const includeCount = normalizeBoolean(options.includeCount, false)
 
   const requestedShowRisky =
     options.showRisky == null ? true : normalizeBoolean(options.showRisky)
@@ -1364,144 +1616,112 @@ exports.getFeed = async (options = {}) => {
   const showRisky = advancedFiltersEnabled ? requestedShowRisky : true
   const includeOlder = advancedFiltersEnabled ? requestedIncludeOlder : false
   const categoryFilter = advancedFiltersEnabled ? requestedCategory : "all"
+  const canonicalCategory = categoryFilter === "all" ? "" : categoryFilter
 
-  const totalCountPromise = countFeedSafely({
-    includeInactive: includeOlder,
-    category: categoryFilter === "all" ? "" : categoryFilter,
-    minScore: 0,
-    excludeLowConfidence: false,
-    highConfidenceOnly: !showRisky,
-    sinceIso: historySinceIso
-  })
-  const activeCountPromise = includeOlder
+  const statusPromise = getScannerStatusInternal({ includeActiveCount: false })
+  const countPromise = includeCount
     ? countFeedSafely({
-        includeInactive: false,
-        category: categoryFilter === "all" ? "" : categoryFilter,
+        includeInactive: includeOlder,
+        category: canonicalCategory,
         minScore: 0,
         excludeLowConfidence: false,
         highConfidenceOnly: !showRisky,
         sinceIso: historySinceIso
       })
-    : totalCountPromise
+    : Promise.resolve({
+        count: null,
+        timedOut: false,
+        skipped: true
+      })
 
-  const [status, totalCountResult, activeCountResult] = await Promise.all([
-    getScannerStatusInternal(),
-    totalCountPromise,
-    activeCountPromise
-  ])
-
-  const knownTotalCount = Number.isFinite(Number(totalCountResult?.count))
-    ? Math.max(Number(totalCountResult.count), 0)
-    : null
-  const knownActiveCount = Number.isFinite(Number(activeCountResult?.count))
-    ? Math.max(Number(activeCountResult.count), 0)
-    : null
-  const knownTotalPages =
-    knownTotalCount == null ? null : Math.max(Math.ceil(knownTotalCount / limit), 1)
-  const page = knownTotalPages == null ? requestedPage : Math.min(requestedPage, knownTotalPages)
-  const offset = (page - 1) * limit
-
-  const rawFeedRows = await arbitrageFeedRepo.listFeed({
-    limit: knownTotalCount == null ? limit + 1 : limit,
-    offset,
+  const feedQuery = {
+    limit: limit + 1,
+    cursorCreatedAt: requestedCursor?.createdAt || "",
+    cursorId: requestedCursor?.id || "",
     includeInactive: includeOlder,
-    category: categoryFilter === "all" ? "" : categoryFilter,
+    category: canonicalCategory,
     minScore: 0,
     excludeLowConfidence: false,
     highConfidenceOnly: !showRisky,
     sinceIso: historySinceIso
-  })
-  const hasExtraRow = knownTotalCount == null && rawFeedRows.length > limit
-  const feedRows = hasExtraRow ? rawFeedRows.slice(0, limit) : rawFeedRows
-
-  const derivedTotalCount =
-    knownTotalCount == null
-      ? Math.max(offset + feedRows.length + (hasExtraRow ? 1 : 0), 0)
-      : knownTotalCount
-  const totalPages =
-    knownTotalPages == null ? Math.max(page + (hasExtraRow ? 1 : 0), 1) : knownTotalPages
-  const hasNextPage = knownTotalPages == null ? hasExtraRow : page < totalPages
-  const activeCount =
-    includeOlder
-      ? knownActiveCount == null
-        ? Number(status?.activeOpportunities || 0)
-        : knownActiveCount
-      : derivedTotalCount
-
-  const countDiagnostics = {
-    totalCountTimedOut: Boolean(totalCountResult?.timedOut),
-    activeCountTimedOut: Boolean(activeCountResult?.timedOut)
   }
 
-  let publishRefreshDiagnostics = {
-    attempted: 0,
-    refreshed: 0,
-    admitted: 0,
-    live: 0,
-    stale: 0,
-    degraded: 0,
-    suppressed: 0,
-    quoteRowsFound: 0
-  }
-  let mappedRows = []
-  try {
-    const refreshed = await feedPublishRefreshService.refreshForFeedPublish(feedRows, {
-      includeRisky: showRisky,
-      persist: true
-    })
-    publishRefreshDiagnostics =
-      refreshed?.diagnostics && typeof refreshed.diagnostics === "object"
-        ? refreshed.diagnostics
-        : publishRefreshDiagnostics
-    mappedRows = Array.isArray(refreshed?.rows) ? refreshed.rows : []
-  } catch (_err) {
-    mappedRows = (feedRows || []).map((row) => ({
-      ...mapFeedRowToApiRow(row),
-      refreshStatus: "failed",
-      liveStatus: "degraded"
-    }))
+  let pagePayload = getFeedFirstPageCache(feedQuery)
+  if (!pagePayload) {
+    const rawRows = await arbitrageFeedRepo.listFeedByCursor(feedQuery)
+    const hasExtraRow = rawRows.length > limit
+    const rows = hasExtraRow ? rawRows.slice(0, limit) : rawRows
+    const lastRow = rows.length ? rows[rows.length - 1] : null
+    pagePayload = {
+      rows,
+      hasNextPage: hasExtraRow,
+      nextCursor: hasExtraRow
+        ? encodeCursorPayload(lastRow?.created_at || lastRow?.detected_at, lastRow?.id)
+        : null
+    }
+    setFeedFirstPageCache(feedQuery, pagePayload)
   }
 
+  const [status, countResult] = await Promise.all([statusPromise, countPromise])
+
+  let mappedRows = (Array.isArray(pagePayload?.rows) ? pagePayload.rows : []).map((row) =>
+    mapFeedRowToCard(row)
+  )
   mappedRows = await enrichRowsWithSkinMetadata(mappedRows)
   const restricted = applyFeedPlanRestrictions(mappedRows, entitlements)
   mappedRows = restricted.rows
 
   const latestCompleted = status?.latestCompletedRun || null
-  const diagnostics = latestCompleted?.diagnostics_summary || {}
+  const totalCount =
+    includeCount && Number.isFinite(Number(countResult?.count))
+      ? Math.max(Number(countResult.count), 0)
+      : null
+  const requestedPage = normalizePage(options.page, requestedCursor ? 2 : 1)
+  const currentCursor = requestedCursor
+    ? encodeCursorPayload(requestedCursor.createdAt, requestedCursor.id)
+    : null
+
+  const pagination = {
+    page: requestedPage,
+    pageSize: limit,
+    cursor: currentCursor,
+    nextCursor: normalizeText(pagePayload?.nextCursor) || null,
+    hasPrevPage: Boolean(currentCursor),
+    hasNextPage: Boolean(pagePayload?.hasNextPage),
+    historyHours: historyWindowHours,
+    returnedCount: mappedRows.length,
+    totalCount,
+    countMode: includeCount ? "exact" : "skipped",
+    totalCountTimedOut: Boolean(includeCount && countResult?.timedOut)
+  }
+
+  const noRowsReason = noOpportunitiesReason(
+    {
+      scannedItems: Number(latestCompleted?.items_scanned || 0),
+      discardedReasons: {}
+    },
+    status,
+    mappedRows
+  )
+
   const summary = {
-    scannedItems: Number(diagnostics.scannedItems || latestCompleted?.items_scanned || 0),
+    scannedItems: Number(latestCompleted?.items_scanned || 0),
     opportunities: mappedRows.length,
-    totalDetected: Number(derivedTotalCount || 0),
-    activeOpportunities: Number(activeCount || 0),
-    candidateItems: Number(diagnostics.candidatePoolSize || 0),
-    discardedReasons: diagnostics.rejectedByReason || {},
-    discardedReasonsByCategory: diagnostics.rejectedByCategory || {},
-    rejectedByCategory: diagnostics.rejectedByCategory || {},
-    opportunitiesByCategory: diagnostics.opportunitiesByCategory || {},
-    sourceCatalog: diagnostics.sourceCatalog || {},
-    scanStateCounts: diagnostics.scanStateCounts || {},
-    scanStateByCategory: diagnostics.scanStateByCategory || {},
-    scanProgress: diagnostics.scanProgress || {},
-    batchScan: diagnostics.batchScan || {},
-    timing: diagnostics.timing || {},
-    runtimeConfig: diagnostics.runtimeConfig || {},
-    highConfidence: Number(diagnostics.strongFound || 0),
-    riskyEligible: Number(diagnostics.riskyFound || 0),
-    speculativeEligible: Number(diagnostics.speculativeFound || 0),
-    newOpportunitiesAdded: Number(latestCompleted?.new_opportunities_added || diagnostics?.persisted?.newCount || 0),
-    updatedOpportunities: Number(diagnostics?.persisted?.updatedCount || 0),
-    reactivatedOpportunities: Number(diagnostics?.persisted?.reactivatedCount || 0),
-    signalEventsAdded: Number(diagnostics?.persisted?.insertedCount || 0),
+    totalDetected: totalCount,
+    activeOpportunities: Number(
+      status?.activeOpportunities ?? totalCount ?? mappedRows.length
+    ),
     feedRetentionHours: FEED_WINDOW_HOURS,
     historyWindowHours,
-    countDiagnostics,
-    publishRefresh: publishRefreshDiagnostics,
+    noOpportunitiesReason: noRowsReason,
+    countDiagnostics: {
+      totalCountTimedOut: Boolean(includeCount && countResult?.timedOut),
+      totalCountSkipped: !includeCount
+    },
     plan: {
       planTier: planContext?.planTier || "free",
       requestedLimit,
       appliedLimit: limit,
-      requestedPage,
-      appliedPage: page,
       requestedHistoryHours,
       appliedHistoryHours: historyWindowHours,
       requestedShowRisky,
@@ -1510,23 +1730,18 @@ exports.getFeed = async (options = {}) => {
       appliedIncludeOlder: includeOlder,
       requestedCategory,
       appliedCategory: categoryFilter,
-      liveSignalMaxAgeHours: Number(feedPublishRefreshService.LIVE_MAX_SIGNAL_AGE_HOURS || 2),
+      requestedCursor: normalizeText(options.cursor) || null,
+      appliedCursor: currentCursor,
       ...restricted.planLimits
     }
   }
-  summary.noOpportunitiesReason = noOpportunitiesReason(summary, status, mappedRows)
-  const pagination = {
-    page,
-    pageSize: limit,
-    totalCount: Number(derivedTotalCount || 0),
-    totalPages,
-    hasPrevPage: page > 1,
-    hasNextPage,
-    historyHours: historyWindowHours
-  }
 
   return {
-    generatedAt: latestCompleted?.completed_at || latestCompleted?.started_at || null,
+    generatedAt:
+      latestCompleted?.completed_at ||
+      latestCompleted?.started_at ||
+      status?.latestRun?.started_at ||
+      null,
     ttlSeconds: Math.round(OPPORTUNITY_SCAN_INTERVAL_MS / 1000),
     currency: "USD",
     summary,
@@ -1540,10 +1755,11 @@ exports.getFeed = async (options = {}) => {
       currentStatus: status?.currentStatus || "idle",
       currentRunId: status?.currentRunId || null,
       nextScheduledAt: status?.nextScheduledAt || null,
-      activeOpportunities: Number(status?.activeOpportunities || 0),
-      latestRun: status?.latestRun || null,
-      latestCompletedRun: latestCompleted,
-      jobs: status?.jobs || {}
+      activeOpportunities: Number(
+        status?.activeOpportunities ?? totalCount ?? mappedRows.length
+      ),
+      latestRun: toStatusRunSnapshot(status?.latestRun),
+      latestCompletedRun: toStatusRunSnapshot(latestCompleted)
     }
   }
 }
@@ -1563,6 +1779,8 @@ exports.triggerRefresh = async (options = {}) => {
     runOpportunity ? enqueueScan({ forceRefresh, trigger }) : Promise.resolve(null),
     runEnrichment ? enqueueEnrichment({ forceRefresh, trigger }) : Promise.resolve(null)
   ])
+
+  clearFeedFirstPageCache()
 
   return {
     scanRunId: opportunity?.scanRunId || enrichment?.scanRunId || null,
@@ -1667,8 +1885,13 @@ exports.__testables = {
   isMateriallyNewOpportunity,
   buildFeedInsertRow,
   mapFeedRowToApiRow,
+  mapFeedRowToCard,
   persistFeedRows,
   buildFeedUpdatePatch,
+  normalizeCursorPayload,
+  encodeCursorPayload,
+  buildFeedPageCacheKey,
+  clearFeedFirstPageCache,
   confidenceLevel,
   clampScore,
   isScannerRunOverdue,

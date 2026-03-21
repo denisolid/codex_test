@@ -13,7 +13,9 @@ const {
     extractHistoricalSummaryQuote,
     normalizeItemsPayload,
     resolveApiCurrency,
-    resolvePriceIntegrityStatus
+    resolvePriceIntegrityStatus,
+    resolvePriceIntegrityDecision,
+    validateLiveQuoteForFeed
   }
 } = require("../src/markets/skinport.market");
 
@@ -84,4 +86,48 @@ test("skinport price integrity requires live executable quote with identifier", 
     }),
     "unconfirmed"
   );
+});
+
+test("skinport integrity fallback confirms exact market search mapping when listing identity is absent", () => {
+  const decision = resolvePriceIntegrityDecision({
+    quoteType: "live_executable",
+    marketHashName: "AK-47 | Redline (Field-Tested)",
+    currency: "USD",
+    itemSlug: null,
+    listingId: null,
+    itemUrl:
+      "https://skinport.com/market?search=AK-47%20%7C%20Redline%20(Field-Tested)"
+  });
+
+  assert.equal(decision.status, "confirmed");
+  assert.equal(decision.mode, "safe_fallback_market_search");
+});
+
+test("skinport live validation rejects stale quotes even when integrity is confirmed", () => {
+  const staleIso = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+  const decision = validateLiveQuoteForFeed({
+    quoteType: "live_executable",
+    priceIntegrityStatus: "confirmed",
+    observedAt: staleIso
+  });
+
+  assert.equal(decision.confirmed, false);
+  assert.equal(decision.reason, "stale_quote");
+});
+
+test("normalizeItemsPayload records fallback confirmation mode for search-mapped live quote", () => {
+  const payload = [
+    {
+      market_hash_name: "AK-47 | Redline (Field-Tested)",
+      currency: "USD",
+      market_page:
+        "https://skinport.com/market?search=AK-47%20%7C%20Redline%20(Field-Tested)",
+      min_price: 11.25
+    }
+  ];
+  const rows = normalizeItemsPayload(payload);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].quoteType, "live_executable");
+  assert.equal(rows[0].priceIntegrityStatus, "confirmed");
+  assert.equal(rows[0].priceIntegrityMode, "safe_fallback_market_search");
 });

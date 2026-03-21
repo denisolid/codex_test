@@ -10,6 +10,8 @@ const {
   __testables: {
     computeAgeHours,
     resolveRefreshOutcome,
+    buildSkinportValidation,
+    evaluateFeedAdmission,
     shouldAdmitToFeed,
     buildRefreshedOpportunityRow
   },
@@ -200,4 +202,48 @@ test("shouldAdmitToFeed blocks skinport rows when quote timestamp is stale", () 
   }
 
   assert.equal(shouldAdmitToFeed(row, { includeRisky: false }), false)
+})
+
+test("skinport validation applies safe fallback when quality flags are missing but quote row identity matches", () => {
+  const mapped = {
+    marketHashName: "AK-47 | Vulcan (Field-Tested)",
+    itemName: "AK-47 | Vulcan (Field-Tested)",
+    buyMarket: "steam",
+    sellMarket: "skinport"
+  }
+  const sellQuote = {
+    market: "skinport",
+    item_name: "AK-47 | Vulcan (Field-Tested)",
+    best_sell_net: 22.7,
+    fetched_at: new Date().toISOString(),
+    quality_flags: {}
+  }
+  const validation = buildSkinportValidation(mapped, null, sellQuote)
+
+  assert.equal(validation.applicable, true)
+  assert.equal(validation.confirmed, true)
+  assert.equal(validation.validationTier, "fallback")
+  assert.equal(validation.quoteType, "live_executable")
+  assert.equal(validation.priceIntegrityStatus, "confirmed")
+})
+
+test("admission decision returns publish-gate reject reason for skinport", () => {
+  const decision = evaluateFeedAdmission(
+    {
+      buyMarket: "skinport",
+      sellMarket: "steam",
+      liveStatus: "live",
+      refreshStatus: "ok",
+      latestSignalAgeHours: 0.5,
+      netProfitAfterFees: 1.2,
+      skinportQuoteType: "live_executable",
+      skinportPriceIntegrityStatus: "confirmed",
+      skinportQuoteObservedAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
+    },
+    { includeRisky: false }
+  )
+
+  assert.equal(decision.admit, false)
+  assert.equal(decision.stage, "publish_gate")
+  assert.equal(decision.reason, "stale_skinport_quote")
 })
