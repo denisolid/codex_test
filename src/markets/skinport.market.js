@@ -6,12 +6,12 @@ const SOURCE = "skinport";
 const DEFAULT_API_URL = "https://api.skinport.com/v1";
 const SUPPORTED_API_CURRENCIES = new Set(["USD", "EUR"]);
 const LIVE_EXECUTABLE_PRICE_FIELDS = Object.freeze([
-  { key: "min_price", label: "min_price" },
-  { key: "minPrice", label: "minPrice" },
-  { key: "lowest_price", label: "lowest_price" },
-  { key: "lowestPrice", label: "lowestPrice" },
   { key: "current_price", label: "current_price" },
   { key: "currentPrice", label: "currentPrice" },
+  { key: "lowest_price", label: "lowest_price" },
+  { key: "lowestPrice", label: "lowestPrice" },
+  { key: "min_price", label: "min_price" },
+  { key: "minPrice", label: "minPrice" },
   { key: "price", label: "price" }
 ]);
 const HISTORY_SUMMARY_PRICE_FIELDS = Object.freeze([

@@ -1070,6 +1070,8 @@ test("persistFeedRows updates active fingerprint match instead of inserting dupl
     first_seen_at: "2026-03-19T10:00:00.000Z",
     metadata: {
       liquidity_value: 150,
+      item_rarity: "Classified",
+      item_rarity_color: "#d32ce6",
       skinport_listing_id: "sp-live-1",
       buy_url: "https://steamcommunity.com/market/listings/730/AK-47",
       sell_url: "https://skinport.com/item/ak-47-redline-field-tested",
@@ -1120,6 +1122,8 @@ test("persistFeedRows updates active fingerprint match instead of inserting dupl
       updateRowsPayload[0]?.patch?.opportunity_fingerprint,
       fingerprint
     )
+    assert.equal(updateRowsPayload[0]?.patch?.metadata?.item_rarity, "Classified")
+    assert.equal(updateRowsPayload[0]?.patch?.metadata?.item_rarity_color, "#d32ce6")
   } finally {
     arbitrageFeedRepo.getRecentRowsByItems = originals.getRecentRowsByItems
     arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
