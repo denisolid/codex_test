@@ -48,16 +48,39 @@ function formatSupabaseError(error, fallbackMessage = "database_error") {
   return parts.join(" | ")
 }
 
+function isMissingColumnError(error, columnName = "") {
+  const message = String(error?.message || "").toLowerCase()
+  const code = String(error?.code || "").toUpperCase()
+  return (
+    code === "42703" ||
+    (message.includes("does not exist") &&
+      (!columnName || message.includes(String(columnName || "").toLowerCase())))
+  )
+}
+
 exports.upsertSkins = async (rows = []) => {
   const payload = (Array.isArray(rows) ? rows : []).filter(Boolean)
   if (!payload.length) return []
 
   const mergedRows = []
   for (const chunk of chunkArray(payload, UPSERT_BATCH_SIZE)) {
-    const { data, error } = await supabaseAdmin
+    let { data, error } = await supabaseAdmin
       .from("skins")
       .upsert(chunk, { onConflict: "market_hash_name" })
       .select("*")
+    if (error && isMissingColumnError(error, "canonical_rarity")) {
+      const compatibilityChunk = chunk.map((row) => {
+        const clone = { ...row }
+        delete clone.canonical_rarity
+        return clone
+      })
+      const retried = await supabaseAdmin
+        .from("skins")
+        .upsert(compatibilityChunk, { onConflict: "market_hash_name" })
+        .select("*")
+      data = retried.data
+      error = retried.error
+    }
 
     if (error) {
       throw new AppError(formatSupabaseError(error, "skins_upsert_failed"), 500)

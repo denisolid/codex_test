@@ -1,41 +1,14 @@
 const { fetchJsonWithRetry, mapWithConcurrency } = require("../markets/marketHttp");
+const {
+  resolveCanonicalRarity,
+  canonicalRarityToDisplay,
+  getCanonicalRarityColor
+} = require("../utils/rarityResolver");
 
 const STEAM_SEARCH_BASE_URL = "https://steamcommunity.com/market/search/render/";
 const STEAM_IMAGE_BASE_URL = "https://community.akamai.steamstatic.com/economy/image/";
 const DEFAULT_STEAM_SEARCH_COUNT = 50;
 const MAX_STEAM_SEARCH_COUNT = 100;
-
-const RARITY_COLORS = Object.freeze({
-  "Consumer Grade": "#b0c3d9",
-  "Industrial Grade": "#5e98d9",
-  "Mil-Spec Grade": "#4b69ff",
-  Restricted: "#8847ff",
-  Classified: "#d32ce6",
-  Covert: "#eb4b4b",
-  Contraband: "#e4ae39",
-  "Knife/Gloves": "#f7ca63",
-  Default: "#7f8ba5"
-});
-
-const RARITY_ALIASES = Object.freeze({
-  "base grade": "Consumer Grade",
-  "high grade": "Industrial Grade",
-  remarkable: "Restricted",
-  exotic: "Classified",
-  immortal: "Covert",
-  extraordinary: "Knife/Gloves",
-  "consumer grade": "Consumer Grade",
-  "industrial grade": "Industrial Grade",
-  "mil-spec grade": "Mil-Spec Grade",
-  "mil spec grade": "Mil-Spec Grade",
-  "mil-spec": "Mil-Spec Grade",
-  restricted: "Restricted",
-  classified: "Classified",
-  covert: "Covert",
-  contraband: "Contraband",
-  knife: "Knife/Gloves",
-  gloves: "Knife/Gloves"
-});
 
 const MARKET_NAME_STOP_WORDS = new Set([
   "field",
@@ -81,26 +54,12 @@ function normalizeHexColor(value) {
 }
 
 function normalizeRarity(value, marketHashName = "") {
-  const raw = normalizeText(value);
-  if (!raw) return null;
-  const lowerRaw = raw.toLowerCase();
-  const alias = RARITY_ALIASES[lowerRaw];
-  if (alias) return alias;
-
-  if (RARITY_COLORS[raw]) return raw;
-
-  const source = `${lowerRaw} ${normalizeText(marketHashName).toLowerCase()}`;
-  if (/\b(?:knife|glove|gloves|wraps|bayonet|karambit|butterfly|talon)\b/.test(source)) {
-    return "Knife/Gloves";
-  }
-  if (/\bcovert\b/.test(source)) return "Covert";
-  if (/\bclassified\b/.test(source)) return "Classified";
-  if (/\brestricted\b/.test(source)) return "Restricted";
-  if (/\bmil[- ]?spec\b/.test(source)) return "Mil-Spec Grade";
-  if (/\bindustrial grade\b/.test(source)) return "Industrial Grade";
-  if (/\bconsumer grade\b/.test(source)) return "Consumer Grade";
-  if (/\bcontraband\b/.test(source)) return "Contraband";
-  return null;
+  const resolution = resolveCanonicalRarity({
+    sourceRarity: value,
+    marketHashName
+  });
+  if (resolution.source === "unknown") return null;
+  return canonicalRarityToDisplay(resolution.canonicalRarity);
 }
 
 function extractDistinctiveTokens(value) {
@@ -303,20 +262,18 @@ function resolveRarityFromSearchResult(result = {}, marketHashName = "") {
   const rarityTag = tags.find(
     (tag) => String(tag?.category || "").trim().toLowerCase() === "rarity"
   );
-  const rarityFromTag = normalizeRarity(
-    rarityTag?.localized_tag_name || rarityTag?.name || "",
+  const rarityResolution = resolveCanonicalRarity({
+    sourceRarity:
+      rarityTag?.localized_tag_name ||
+      rarityTag?.name ||
+      String(asset?.type || result?.type || "").trim(),
     marketHashName
-  );
-  const rarityFromType = normalizeRarity(
-    String(asset?.type || result?.type || "").trim(),
-    marketHashName
-  );
-  const rarity = rarityFromTag || rarityFromType || null;
-  const rarityColor =
-    normalizeHexColor(asset?.name_color) ||
-    normalizeHexColor(result?.name_color) ||
-    (rarity ? RARITY_COLORS[rarity] || null : null);
-  return { rarity, rarityColor };
+  });
+  const canonicalRarity =
+    rarityResolution.source === "unknown" ? null : rarityResolution.canonicalRarity;
+  const rarity = canonicalRarity ? canonicalRarityToDisplay(canonicalRarity) : null;
+  const rarityColor = canonicalRarity ? getCanonicalRarityColor(canonicalRarity) : null;
+  return { rarity, canonicalRarity, rarityColor };
 }
 
 async function fetchSteamSearchPayload(query, options = {}) {
@@ -362,6 +319,7 @@ async function fetchSteamSearchMetadataByMarketHashName(marketHashName, options 
       imageUrl: image?.imageUrl || null,
       imageUrlLarge: image?.imageUrlLarge || image?.imageUrl || null,
       rarity: rarityMeta.rarity || null,
+      canonicalRarity: rarityMeta.canonicalRarity || null,
       rarityColor: rarityMeta.rarityColor || null
     };
   }
@@ -454,11 +412,12 @@ async function fetchSteamSearchMetadataBatch(marketHashNames = [], options = {})
   for (const row of rows) {
     const key = normalizeText(row?.marketHashName);
     if (!key) continue;
-    if (!row?.imageUrl && !row?.imageUrlLarge && !row?.rarity) continue;
+    if (!row?.imageUrl && !row?.imageUrlLarge && !row?.rarity && !row?.canonicalRarity) continue;
     byName[key] = {
       imageUrl: row.imageUrl || null,
       imageUrlLarge: row.imageUrlLarge || row.imageUrl || null,
       rarity: row.rarity || null,
+      canonicalRarity: row.canonicalRarity || null,
       rarityColor: normalizeHexColor(row.rarityColor) || null
     };
   }

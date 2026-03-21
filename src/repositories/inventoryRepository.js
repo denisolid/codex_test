@@ -28,6 +28,16 @@ function withTimeout(promise, timeoutMs = PRIMARY_JOIN_TIMEOUT_MS) {
   ]);
 }
 
+function isMissingColumnError(error, columnName = "") {
+  const message = String(error?.message || "").toLowerCase();
+  const code = String(error?.code || "").toUpperCase();
+  return (
+    code === "42703" ||
+    (message.includes("does not exist") &&
+      (!columnName || message.includes(String(columnName || "").toLowerCase())))
+  );
+}
+
 exports.syncInventorySnapshot = async (userId, items) => {
   const skinIds = items.map((i) => i.skin_id);
 
@@ -80,12 +90,22 @@ exports.getUserHoldings = async (userId) => {
       supabaseAdmin
         .from("inventories")
         .select(
-          "skin_id, quantity, steam_item_ids, purchase_price, skins!inner(market_hash_name, rarity, rarity_color, image_url, image_url_large)"
+          "skin_id, quantity, steam_item_ids, purchase_price, skins!inner(market_hash_name, rarity, canonical_rarity, rarity_color, image_url, image_url_large)"
         )
         .eq("user_id", safeUserId)
     );
   } catch (_err) {
     primaryRes = { data: null, error: { message: "inventory_join_query_timeout" } };
+  }
+  if (primaryRes?.error && isMissingColumnError(primaryRes.error, "canonical_rarity")) {
+    primaryRes = await withTimeout(
+      supabaseAdmin
+        .from("inventories")
+        .select(
+          "skin_id, quantity, steam_item_ids, purchase_price, skins!inner(market_hash_name, rarity, rarity_color, image_url, image_url_large)"
+        )
+        .eq("user_id", safeUserId)
+    );
   }
 
   if (!primaryRes.error) {
@@ -137,11 +157,19 @@ exports.getUserHoldings = async (userId) => {
       skinsRes = await withTimeout(
         supabaseAdmin
           .from("skins")
-          .select("id, market_hash_name, rarity, rarity_color, image_url, image_url_large")
+          .select("id, market_hash_name, rarity, canonical_rarity, rarity_color, image_url, image_url_large")
           .in("id", chunk)
       );
     } catch (_err) {
       skinsRes = { data: null, error: { message: "inventory_skin_lookup_timeout" } };
+    }
+    if (skinsRes?.error && isMissingColumnError(skinsRes.error, "canonical_rarity")) {
+      skinsRes = await withTimeout(
+        supabaseAdmin
+          .from("skins")
+          .select("id, market_hash_name, rarity, rarity_color, image_url, image_url_large")
+          .in("id", chunk)
+      );
     }
 
     if (skinsRes.error) {
@@ -154,6 +182,7 @@ exports.getUserHoldings = async (userId) => {
       skinsById[skinId] = {
         market_hash_name: row.market_hash_name || null,
         rarity: row.rarity || null,
+        canonical_rarity: row.canonical_rarity || null,
         rarity_color: row.rarity_color || null,
         image_url: row.image_url || null,
         image_url_large: row.image_url_large || null
@@ -166,6 +195,7 @@ exports.getUserHoldings = async (userId) => {
     skins: skinsById[Number(row.skin_id)] || {
       market_hash_name: null,
       rarity: null,
+      canonical_rarity: null,
       rarity_color: null,
       image_url: null,
       image_url_large: null

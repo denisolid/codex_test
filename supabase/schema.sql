@@ -45,6 +45,19 @@ create table if not exists public.skins (
   skin_name text,
   exterior text,
   rarity text,
+  canonical_rarity text check (
+    canonical_rarity is null or canonical_rarity in (
+      'consumer_grade',
+      'industrial_grade',
+      'mil_spec_grade',
+      'restricted',
+      'classified',
+      'covert',
+      'contraband',
+      'knife_gloves',
+      'unknown'
+    )
+  ),
   rarity_color text,
   image_url text,
   image_url_large text,
@@ -57,6 +70,7 @@ before update on public.skins
 for each row execute function public.set_updated_at();
 
 create index if not exists idx_skins_rarity on public.skins(rarity);
+create index if not exists idx_skins_canonical_rarity on public.skins(canonical_rarity);
 create index if not exists idx_skins_updated_at on public.skins(updated_at desc);
 
 create table if not exists public.inventories (

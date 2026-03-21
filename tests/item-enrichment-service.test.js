@@ -17,7 +17,7 @@ test("normalizeRarityName handles aliases and knife special-case", () => {
   assert.equal(normalizeRarityName("Remarkable"), "Restricted");
   assert.equal(
     normalizeRarityName("Covert", "Karambit | Doppler (Factory New)", "Karambit"),
-    "Knife/Gloves"
+    "Covert"
   );
   assert.equal(getRarityColor("Covert"), "#eb4b4b");
 });
@@ -31,6 +31,7 @@ test("enrichInventoryItems reuses fresh metadata from cache", () => {
       image_url_large:
         "https://community.akamai.steamstatic.com/economy/image/icon123/512fx512f",
       rarity: "Classified",
+      canonical_rarity: "classified",
       rarity_color: "#d32ce6",
       updated_at: nowIso
     }
@@ -52,12 +53,14 @@ test("enrichInventoryItems reuses fresh metadata from cache", () => {
   );
 
   assert.equal(enrichedItems[0].rarity, "Classified");
+  assert.equal(enrichedItems[0].canonicalRarity, "classified");
   assert.equal(enrichedItems[0].rarityColor, "#d32ce6");
   assert.equal(
     enrichedItems[0].imageUrl,
     "https://community.akamai.steamstatic.com/economy/image/icon123"
   );
   assert.equal(skinRows[0].rarity_color, "#d32ce6");
+  assert.equal(skinRows[0].canonical_rarity, "classified");
 });
 
 test("enrichInventoryItems refreshes stale entries and derives steam image from icon", () => {
@@ -92,8 +95,10 @@ test("enrichInventoryItems refreshes stale entries and derives steam image from 
     buildSteamImageUrlFromIcon(iconUrl)
   );
   assert.equal(enrichedItems[0].imageUrlLarge.endsWith("/512fx512f"), true);
-  assert.equal(enrichedItems[0].rarity, "Classified");
-  assert.equal(skinRows[0].rarity_color, "#d32ce6");
+  assert.equal(enrichedItems[0].rarity, "Consumer Grade");
+  assert.equal(enrichedItems[0].canonicalRarity, "consumer_grade");
+  assert.equal(skinRows[0].rarity_color, "#b0c3d9");
+  assert.equal(skinRows[0].canonical_rarity, "consumer_grade");
 });
 
 test("enrichInventoryItems uses placeholder when no image is available", () => {
@@ -109,6 +114,7 @@ test("enrichInventoryItems uses placeholder when no image is available", () => {
 
   assert.match(enrichedItems[0].imageUrl, /^https:\/\//);
   assert.equal(enrichedItems[0].rarity, "Consumer Grade");
+  assert.equal(enrichedItems[0].canonicalRarity, "consumer_grade");
 });
 
 test("enrichInventoryItems refreshes fresh rows with known bad image hosts", () => {
@@ -143,3 +149,19 @@ test("enrichInventoryItems refreshes fresh rows with known bad image hosts", () 
     buildSteamImageUrlFromIcon(iconUrl)
   );
 });
+
+test("enrichInventoryItems emits unknown rarity diagnostics only as last resort", () => {
+  const { enrichedItems } = enrichInventoryItems([
+    {
+      marketHashName: "Mystery Item",
+      weapon: "Unknown Weapon",
+      skinName: "Mystery Item",
+      rarity: "",
+      quantity: 1
+    }
+  ])
+
+  assert.equal(enrichedItems[0].canonicalRarity, "unknown")
+  assert.equal(enrichedItems[0].rarity, "Unknown")
+  assert.equal(Boolean(enrichedItems[0].rarityDiagnostics?.reason), true)
+})

@@ -78,6 +78,7 @@ test("rarity resolver extracts rarity and color from steam search result", () =>
     "Desert Eagle | Printstream (Field-Tested)"
   );
   assert.equal(rarity.rarity, "Covert");
+  assert.equal(rarity.canonicalRarity, "covert");
   assert.equal(rarity.rarityColor, "#eb4b4b");
 });
 

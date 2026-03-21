@@ -9,6 +9,12 @@ const marketImageService = require("./marketImageService")
 const planService = require("./planService")
 const premiumCategoryAccessService = require("./premiumCategoryAccessService")
 const {
+  resolveCanonicalRarity,
+  canonicalRarityToDisplay,
+  getCanonicalRarityColor,
+  buildUnknownRarityDiagnostics
+} = require("../utils/rarityResolver")
+const {
   SCANNER_TYPES,
   ITEM_CATEGORIES,
   ROUND_ROBIN_CATEGORY_ORDER,
@@ -101,6 +107,16 @@ const rotationState = {
 const manualRefreshTracker = new Map()
 const scannerEntitlements = planService.getEntitlements("alpha_access")
 const feedFirstPageCache = new Map()
+const UNKNOWN_RARITY_TEXT_SET = new Set([
+  "unknown",
+  "default",
+  "none",
+  "n/a",
+  "na",
+  "null",
+  "-",
+  "?"
+])
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -571,19 +587,44 @@ async function enrichRowsWithSkinMetadata(rows = []) {
     if (!skin) return row
     const itemId = row.itemId || row.item_id || skin.id || null
     const itemImageUrl = row.itemImageUrl || row.item_image_url || skin.image_url || null
-    const itemRarity = row.itemRarity || row.item_rarity || skin.rarity || null
-    const itemRarityColor =
-      row.itemRarityColor || row.item_rarity_color || skin.rarity_color || null
+    const rarityResolution = resolveCanonicalRarity({
+      catalogRarity:
+        row.itemCanonicalRarity ||
+        row.item_canonical_rarity ||
+        skin.canonical_rarity ||
+        skin.rarity ||
+        null,
+      sourceRarity: row.itemRarity || row.item_rarity || skin.rarity || null,
+      category: row.itemCategory || row.category || null,
+      marketHashName: rowName,
+      weapon: null
+    })
+    const itemCanonicalRarity = rarityResolution.canonicalRarity
+    const itemRarity = canonicalRarityToDisplay(itemCanonicalRarity)
+    const itemRarityColor = getCanonicalRarityColor(itemCanonicalRarity)
+    const unknownRarityDiagnostics = buildUnknownRarityDiagnostics(rarityResolution, {
+      category: row.itemCategory || row.category || null,
+      marketHashName: rowName,
+      weapon: null,
+      catalogRarity: skin.canonical_rarity || skin.rarity || null,
+      sourceRarity: row.itemRarity || row.item_rarity || null
+    })
     return {
       ...row,
       itemId,
       item_id: itemId,
       itemImageUrl,
       item_image_url: itemImageUrl,
+      itemCanonicalRarity,
+      item_canonical_rarity: itemCanonicalRarity,
       itemRarity,
       item_rarity: itemRarity,
       itemRarityColor,
-      item_rarity_color: itemRarityColor
+      item_rarity_color: itemRarityColor,
+      itemRarityDiagnostics: unknownRarityDiagnostics,
+      item_rarity_diagnostics: unknownRarityDiagnostics,
+      itemRarityUnknownReason: unknownRarityDiagnostics?.reason || null,
+      item_rarity_unknown_reason: unknownRarityDiagnostics?.reason || null
     }
   })
 }
@@ -627,10 +668,16 @@ function mapFeedRowToCard(rawRow = {}) {
     itemName: row?.itemName || row?.marketHashName || "Tracked Item",
     itemCategory: row?.itemCategory || "weapon_skin",
     itemSubcategory: row?.itemSubcategory || null,
+    itemCanonicalRarity: row?.itemCanonicalRarity || null,
+    item_canonical_rarity: row?.itemCanonicalRarity || null,
     itemRarity: row?.itemRarity || null,
     item_rarity: row?.itemRarity || null,
     itemRarityColor: row?.itemRarityColor || null,
     item_rarity_color: row?.itemRarityColor || null,
+    itemRarityDiagnostics: row?.itemRarityDiagnostics || null,
+    item_rarity_diagnostics: row?.itemRarityDiagnostics || null,
+    itemRarityUnknownReason: row?.itemRarityUnknownReason || null,
+    item_rarity_unknown_reason: row?.itemRarityUnknownReason || null,
     itemImageUrl: row?.itemImageUrl || null,
     item_image_url: row?.itemImageUrl || null,
     buyMarket: row?.buyMarket || null,
@@ -1114,6 +1161,20 @@ function preferNonEmptyMetadataValue(nextValue, previousValue) {
   return previous || null
 }
 
+function normalizeRarityCandidate(value) {
+  const raw = normalizeText(value)
+  if (!raw) return ""
+  if (UNKNOWN_RARITY_TEXT_SET.has(raw.toLowerCase())) return ""
+  return raw
+}
+
+function preferNonEmptyRarityValue(nextValue, previousValue) {
+  const next = normalizeRarityCandidate(nextValue)
+  if (next) return next
+  const previous = normalizeRarityCandidate(previousValue)
+  return previous || null
+}
+
 function buildFeedUpdatePatch({
   previousRow = {},
   insertRow = {},
@@ -1140,20 +1201,41 @@ function buildFeedUpdatePatch({
     insertMetadata?.item_subcategory ?? insertMetadata?.itemSubcategory,
     previousMetadata?.item_subcategory ?? previousMetadata?.itemSubcategory
   )
-  const resolvedItemRarity = preferNonEmptyMetadataValue(
+  const resolvedItemCanonicalRarityRaw = preferNonEmptyRarityValue(
+    insertMetadata?.item_canonical_rarity ?? insertMetadata?.itemCanonicalRarity,
+    previousMetadata?.item_canonical_rarity ?? previousMetadata?.itemCanonicalRarity
+  )
+  const resolvedItemRarityRaw = preferNonEmptyRarityValue(
     insertMetadata?.item_rarity ?? insertMetadata?.itemRarity ?? insertMetadata?.rarity,
     previousMetadata?.item_rarity ?? previousMetadata?.itemRarity ?? previousMetadata?.rarity
   )
-  const resolvedItemRarityColor = preferNonEmptyMetadataValue(
-    insertMetadata?.item_rarity_color ??
-      insertMetadata?.itemRarityColor ??
-      insertMetadata?.rarity_color ??
-      insertMetadata?.rarityColor,
-    previousMetadata?.item_rarity_color ??
-      previousMetadata?.itemRarityColor ??
-      previousMetadata?.rarity_color ??
-      previousMetadata?.rarityColor
-  )
+  const rarityResolution = resolveCanonicalRarity({
+    catalogRarity: resolvedItemCanonicalRarityRaw,
+    sourceRarity: resolvedItemRarityRaw,
+    category: insertRow?.category || previousRow?.category || null,
+    marketHashName:
+      insertRow?.market_hash_name ||
+      previousRow?.market_hash_name ||
+      insertRow?.item_name ||
+      previousRow?.item_name ||
+      null,
+    weapon: insertMetadata?.weapon || previousMetadata?.weapon || null
+  })
+  const resolvedItemCanonicalRarity = rarityResolution.canonicalRarity
+  const resolvedItemRarity = canonicalRarityToDisplay(resolvedItemCanonicalRarity)
+  const resolvedItemRarityColor = getCanonicalRarityColor(resolvedItemCanonicalRarity)
+  const unknownRarityDiagnostics = buildUnknownRarityDiagnostics(rarityResolution, {
+    category: insertRow?.category || previousRow?.category || null,
+    marketHashName:
+      insertRow?.market_hash_name ||
+      previousRow?.market_hash_name ||
+      insertRow?.item_name ||
+      previousRow?.item_name ||
+      null,
+    weapon: insertMetadata?.weapon || previousMetadata?.weapon || null,
+    catalogRarity: resolvedItemCanonicalRarityRaw,
+    sourceRarity: resolvedItemRarityRaw
+  })
   const resolvedItemImageUrl = preferNonEmptyMetadataValue(
     insertMetadata?.item_image_url ??
       insertMetadata?.itemImageUrl ??
@@ -1183,10 +1265,18 @@ function buildFeedUpdatePatch({
     itemId: resolvedItemId,
     item_subcategory: resolvedItemSubcategory,
     itemSubcategory: resolvedItemSubcategory,
+    item_canonical_rarity: resolvedItemCanonicalRarity,
+    itemCanonicalRarity: resolvedItemCanonicalRarity,
     item_rarity: resolvedItemRarity,
     itemRarity: resolvedItemRarity,
     item_rarity_color: resolvedItemRarityColor,
     itemRarityColor: resolvedItemRarityColor,
+    item_rarity_resolution_source: rarityResolution.source || null,
+    itemRarityResolutionSource: rarityResolution.source || null,
+    item_rarity_unknown_reason: unknownRarityDiagnostics?.reason || null,
+    itemRarityUnknownReason: unknownRarityDiagnostics?.reason || null,
+    item_rarity_diagnostics: unknownRarityDiagnostics || null,
+    itemRarityDiagnostics: unknownRarityDiagnostics || null,
     item_image_url: resolvedItemImageUrl,
     itemImageUrl: resolvedItemImageUrl,
     first_seen_at: firstSeenAt,
@@ -1624,12 +1714,21 @@ async function runEnrichmentJob({ forceRefresh = false } = {}) {
         20000,
         "SCANNER_IMAGE_ENRICH_TIMEOUT"
       )
-      const upserts = Object.entries(byName || {}).map(([name, metadata]) => ({
-        market_hash_name: name,
-        image_url: metadata?.imageUrl || null,
-        rarity: metadata?.rarity || null,
-        rarity_color: metadata?.rarityColor || null
-      }))
+      const upserts = Object.entries(byName || {}).map(([name, metadata]) => {
+        const rarityResolution = resolveCanonicalRarity({
+          catalogRarity: metadata?.canonicalRarity || metadata?.rarity || null,
+          sourceRarity: metadata?.rarity || null,
+          marketHashName: name
+        })
+        const canonicalRarity = rarityResolution.canonicalRarity
+        return {
+          market_hash_name: name,
+          image_url: metadata?.imageUrl || null,
+          rarity: canonicalRarityToDisplay(canonicalRarity),
+          canonical_rarity: canonicalRarity,
+          rarity_color: getCanonicalRarityColor(canonicalRarity)
+        }
+      })
       if (upserts.length) {
         await skinRepo.upsertSkins(upserts)
       }

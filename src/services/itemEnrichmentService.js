@@ -3,43 +3,20 @@ const {
   skinEnrichmentMaxAgeDays,
   defaultSkinImageUrl
 } = require("../config/env");
+const {
+  resolveCanonicalRarity,
+  buildUnknownRarityDiagnostics,
+  canonicalRarityToDisplay,
+  getCanonicalRarityColor,
+  normalizeRarityColor,
+  normalizeCanonicalRarity
+} = require("../utils/rarityResolver");
 
 const STEAM_IMAGE_BASE = "https://community.akamai.steamstatic.com/economy/image/";
 const DEFAULT_PLACEHOLDER = String(defaultSkinImageUrl || "").trim();
 const ENRICHMENT_MAX_AGE_DAYS = Math.max(Number(skinEnrichmentMaxAgeDays || 14), 1);
 const ENRICHMENT_MAX_AGE_MS = ENRICHMENT_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
 const KNOWN_BAD_IMAGE_HOSTS = new Set(["example.com", "www.example.com"]);
-
-const RARITY_COLORS = Object.freeze({
-  "Consumer Grade": "#b0c3d9",
-  "Industrial Grade": "#5e98d9",
-  "Mil-Spec Grade": "#4b69ff",
-  Restricted: "#8847ff",
-  Classified: "#d32ce6",
-  Covert: "#eb4b4b",
-  Contraband: "#e4ae39",
-  "Knife/Gloves": "#f7ca63",
-  Default: "#7f8ba5"
-});
-
-const RARITY_ALIASES = Object.freeze({
-  "base grade": "Consumer Grade",
-  "high grade": "Industrial Grade",
-  remarkable: "Restricted",
-  exotic: "Classified",
-  immortal: "Covert",
-  "consumer grade": "Consumer Grade",
-  "industrial grade": "Industrial Grade",
-  "mil-spec grade": "Mil-Spec Grade",
-  "mil spec grade": "Mil-Spec Grade",
-  "mil-spec": "Mil-Spec Grade",
-  restricted: "Restricted",
-  classified: "Classified",
-  covert: "Covert",
-  contraband: "Contraband",
-  knife: "Knife/Gloves",
-  gloves: "Knife/Gloves"
-});
 
 function sanitizeHexColor(value) {
   const raw = String(value || "").trim();
@@ -49,37 +26,17 @@ function sanitizeHexColor(value) {
 }
 
 function normalizeRarityName(value, marketHashName = "", weapon = "") {
-  const raw = String(value || "").trim();
-  const lowerRaw = raw.toLowerCase();
-  const composite = `${String(marketHashName || "")} ${String(weapon || "")}`.toLowerCase();
-
-  const hasKnifeGloveToken =
-    /(?:^|\s)(?:knife|glove|gloves|wraps|bayonet|karambit|butterfly|talon|ursus|navaja|stiletto|falchion|daggers|hand wraps)(?:\s|$)/i.test(
-      composite
-    ) || raw.includes("\u2605");
-  if (hasKnifeGloveToken) {
-    return "Knife/Gloves";
-  }
-
-  if (!raw) {
-    return "Consumer Grade";
-  }
-
-  const alias = RARITY_ALIASES[lowerRaw];
-  if (alias) {
-    return alias;
-  }
-
-  const normalized = raw.replace(/\s+/g, " ").trim();
-  if (RARITY_COLORS[normalized]) {
-    return normalized;
-  }
-
-  return "Consumer Grade";
+  const resolution = resolveCanonicalRarity({
+    sourceRarity: value,
+    marketHashName,
+    weapon
+  });
+  return canonicalRarityToDisplay(resolution.canonicalRarity);
 }
 
 function getRarityColor(rarity) {
-  return sanitizeHexColor(RARITY_COLORS[rarity]) || RARITY_COLORS.Default;
+  const canonical = normalizeCanonicalRarity(rarity) || null;
+  return getCanonicalRarityColor(canonical);
 }
 
 function sanitizeHttpUrl(value) {
@@ -137,7 +94,14 @@ function shouldRefreshMetadata(existingSkin) {
   const hasValidImage = Boolean(
     sanitizeImageUrl(existingSkin.image_url) || sanitizeImageUrl(existingSkin.image_url_large)
   );
-  if (!hasValidImage || !existingSkin.rarity || !existingSkin.rarity_color) return true;
+  if (
+    !hasValidImage ||
+    !existingSkin.rarity ||
+    !existingSkin.rarity_color ||
+    !existingSkin.canonical_rarity
+  ) {
+    return true;
+  }
   const updatedAt = new Date(existingSkin.updated_at || existingSkin.created_at || 0).getTime();
   if (!Number.isFinite(updatedAt) || updatedAt <= 0) return true;
   return Date.now() - updatedAt >= ENRICHMENT_MAX_AGE_MS;
@@ -162,15 +126,29 @@ function buildSkinMetadata(item, existingSkin = null) {
     sanitizeImageUrl(existingSkin?.image_url_large) ||
     sourceImage;
 
-  const sourceRarity = normalizeRarityName(
-    item.rarity,
-    item.marketHashName,
-    item.weapon
-  );
-  const sourceColor = getRarityColor(sourceRarity);
+  const rarityResolution = resolveCanonicalRarity({
+    catalogRarity: existingSkin?.canonical_rarity || existingSkin?.rarity,
+    sourceRarity: item.rarity,
+    category: item.itemCategory || item.category || null,
+    marketHashName: item.marketHashName,
+    weapon: item.weapon
+  });
+  const resolvedCanonicalRarity = rarityResolution.canonicalRarity;
+  const resolvedRarity = canonicalRarityToDisplay(resolvedCanonicalRarity);
+  const resolvedColor = getCanonicalRarityColor(resolvedCanonicalRarity);
+  const unknownDiagnostics = buildUnknownRarityDiagnostics(rarityResolution, {
+    category: item.itemCategory || item.category || null,
+    marketHashName: item.marketHashName,
+    weapon: item.weapon,
+    catalogRarity: existingSkin?.canonical_rarity || existingSkin?.rarity || null,
+    sourceRarity: item.rarity || null
+  });
 
   if (!refresh) {
-    const existingColor = sanitizeHexColor(existingSkin.rarity_color);
+    const existingColor = normalizeRarityColor(
+      existingSkin?.rarity_color,
+      resolvedCanonicalRarity
+    );
     return {
       imageUrl:
         sanitizeImageUrl(existingSkin.image_url) ||
@@ -180,16 +158,20 @@ function buildSkinMetadata(item, existingSkin = null) {
         sanitizeImageUrl(existingSkin.image_url_large) ||
         buildLargeImageUrl(sanitizeImageUrl(existingSkin.image_url)) ||
         sourceLargeImage,
-      rarity: String(existingSkin.rarity || sourceRarity),
-      rarityColor: existingColor || sourceColor
+      rarity: resolvedRarity,
+      canonicalRarity: resolvedCanonicalRarity,
+      rarityColor: existingColor,
+      rarityDiagnostics: unknownDiagnostics
     };
   }
 
   return {
     imageUrl: sourceImage,
     imageUrlLarge: sourceLargeImage,
-    rarity: sourceRarity,
-    rarityColor: sourceColor
+    rarity: resolvedRarity,
+    canonicalRarity: resolvedCanonicalRarity,
+    rarityColor: resolvedColor,
+    rarityDiagnostics: unknownDiagnostics
   };
 }
 
@@ -228,7 +210,9 @@ function enrichInventoryItems(items, existingSkinByName = {}) {
     return {
       ...item,
       rarity: metadata.rarity,
+      canonicalRarity: metadata.canonicalRarity,
       rarityColor: metadata.rarityColor,
+      rarityDiagnostics: metadata.rarityDiagnostics,
       imageUrl: metadata.imageUrl,
       imageUrlLarge: metadata.imageUrlLarge
     };
@@ -240,8 +224,10 @@ function enrichInventoryItems(items, existingSkinByName = {}) {
     skin_name: item.skinName || null,
     exterior: item.exterior || null,
     rarity: item.rarity || null,
+    canonical_rarity: item.canonicalRarity || null,
     rarity_color:
-      sanitizeHexColor(item.rarityColor) || getRarityColor(item.rarity),
+      sanitizeHexColor(item.rarityColor) ||
+      getCanonicalRarityColor(item.canonicalRarity || item.rarity),
     image_url: item.imageUrl || DEFAULT_PLACEHOLDER,
     image_url_large: item.imageUrlLarge || item.imageUrl || DEFAULT_PLACEHOLDER
   }));

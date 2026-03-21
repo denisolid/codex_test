@@ -946,6 +946,7 @@ test("feed mapper reads FEED_CARD alias fields when metadata object is absent", 
   assert.equal(mapped.referencePrice, 11.2)
   assert.equal(mapped.itemId, "91")
   assert.equal(mapped.itemSubcategory, "rifle")
+  assert.equal(mapped.itemCanonicalRarity, "classified")
   assert.equal(mapped.itemRarity, "Classified")
   assert.equal(mapped.itemRarityColor, "#d32ce6")
   assert.equal(mapped.itemImageUrl, "https://cdn.example.com/redline.png")
@@ -1122,6 +1123,7 @@ test("persistFeedRows updates active fingerprint match instead of inserting dupl
       updateRowsPayload[0]?.patch?.opportunity_fingerprint,
       fingerprint
     )
+    assert.equal(updateRowsPayload[0]?.patch?.metadata?.item_canonical_rarity, "classified")
     assert.equal(updateRowsPayload[0]?.patch?.metadata?.item_rarity, "Classified")
     assert.equal(updateRowsPayload[0]?.patch?.metadata?.item_rarity_color, "#d32ce6")
   } finally {
