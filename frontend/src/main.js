@@ -2886,30 +2886,18 @@ function formatRelativeTime(isoValue) {
 }
 
 function formatOpportunitySeenLabel(row = {}) {
-  const timesSeen = Number(row?.timesSeen ?? row?.times_seen ?? 1);
   const firstSeenAt =
     String(
       row?.firstSeenAt ||
         row?.first_seen_at ||
         row?.discoveredAt ||
         row?.discovered_at ||
+        row?.createdAt ||
+        row?.created_at ||
         row?.detectedAt ||
         row?.detected_at ||
         "",
     ).trim() || null;
-  const lastSeenAt =
-    String(
-      row?.lastPublishedAt ||
-        row?.last_published_at ||
-        row?.lastSeenAt ||
-        row?.last_seen_at ||
-        row?.feedPublishedAt ||
-        row?.feed_published_at ||
-        "",
-    ).trim() || null;
-  if (timesSeen > 1 && lastSeenAt) {
-    return `Updated ${formatRelativeTime(lastSeenAt)}`;
-  }
   return firstSeenAt ? `Added ${formatRelativeTime(firstSeenAt)}` : "Added -";
 }
 
@@ -3263,7 +3251,8 @@ function formatRiskBadge(level) {
 }
 
 function getItemRarityTheme(item = {}) {
-  const rarity = normalizeRarity(item.rarity, item.marketHashName);
+  const normalizedRarity = normalizeRarity(item.rarity, item.marketHashName);
+  const rarity = normalizedRarity === "Default" ? "Unknown" : normalizedRarity;
   const color = getRarityColor(
     item.rarity,
     item.marketHashName,
@@ -8877,9 +8866,9 @@ function renderMarketSourceIcon(source) {
 
 function getOpportunityScoreTone(score) {
   const value = Number(score || 0);
-  if (value >= 90) return "positive";
-  if (value >= 70) return "neutral";
-  if (value >= 30) return "warning";
+  if (value < 30) return "negative";
+  if (value < 59) return "warning";
+  if (value <= 100) return "positive";
   return "negative";
 }
 
@@ -9270,26 +9259,43 @@ function formatOpportunityFreshnessSummary(options = {}) {
   const liveStatus = normalizeOpportunityLiveStatus(options.liveStatus);
   const signalAgeHours = Number(options.signalAgeHours);
   const hasAge = Number.isFinite(signalAgeHours) && signalAgeHours >= 0;
+  const row = options?.row && typeof options.row === "object" ? options.row : {};
+  const coverage = Math.max(Number(row?.marketCoverage || row?.market_coverage || 0), 0);
+  const volume7d = resolveLiquidityVolume7d(row);
+  const hasCoverage = coverage > 0;
+  const hasVolume = Number.isFinite(Number(volume7d)) && Number(volume7d) > 0;
 
   if (liveStatus === "live") {
     if (hasAge && signalAgeHours < 0.5) {
-      return "Fresh signal updated in the last 30 minutes";
-    }
-    if (hasAge && signalAgeHours < 2) {
-      return `Fresh signal updated ${formatNumber(signalAgeHours, 1)}h ago`;
+      return "Fresh • <30m";
     }
     if (hasAge) {
-      return `Live signal last updated ${formatNumber(signalAgeHours, 1)}h ago`;
+      return `Live • ${formatNumber(signalAgeHours, 1)}h`;
     }
-    return "Fresh live market signal";
+    if (hasCoverage) {
+      return `Live • ${formatNumber(coverage, 0)} mkts`;
+    }
+    return "Live signal";
   }
   if (liveStatus === "stale") {
     if (hasAge) {
-      return `Aging signal from ${formatNumber(signalAgeHours, 1)}h ago`;
+      return `Aging • ${formatNumber(signalAgeHours, 1)}h`;
     }
-    return "Aging signal; verify in Insight";
+    if (hasCoverage) {
+      return `Aging • ${formatNumber(coverage, 0)} mkts`;
+    }
+    return "Aging signal";
   }
-  return "Signal quality degraded; review in Insight";
+  if (hasVolume) {
+    return `Degraded • ${formatNumber(volume7d, 0)}/7D`;
+  }
+  if (hasCoverage) {
+    return `Degraded • ${formatNumber(coverage, 0)} mkts`;
+  }
+  if (hasAge) {
+    return `Degraded • ${formatNumber(signalAgeHours, 1)}h`;
+  }
+  return "Signal degraded";
 }
 
 function formatArbitrageReasonLabel(reasonCode) {
@@ -14086,6 +14092,7 @@ function renderGlobalOpportunitiesTab() {
               const freshnessSummary = formatOpportunityFreshnessSummary({
                 liveStatus,
                 signalAgeHours: signalAgeHoursRaw,
+                row,
               });
               const scanLabel = row?.scanRunId
                 ? `Scan #${formatScanRunLabel(row.scanRunId)}`
@@ -14156,6 +14163,9 @@ function renderGlobalOpportunitiesTab() {
                 : formatPercent(
                     row?.spread,
                   );
+              const scoreTone = lockedPreview
+                ? "neutral"
+                : getOpportunityScoreTone(score);
               const scoreValueLabel = lockedPreview
                 ? hiddenValueMarkup
                 : `${formatNumber(score, 0)}/100`;
@@ -14253,7 +14263,9 @@ function renderGlobalOpportunitiesTab() {
                     <small>Price spread</small>
                   </td>
                   <td class="opportunity-metric-cell opportunity-score-cell">
-                    <strong class="opportunity-metric-value opportunity-score-value neutral">${scoreValueMarkup}</strong>
+                    <strong class="opportunity-metric-value opportunity-score-value ${escapeHtml(
+                      scoreTone,
+                    )}">${scoreValueMarkup}</strong>
                     <small>Quality score</small>
                   </td>
                   <td class="opportunity-metric-cell opportunity-liquidity-cell">
