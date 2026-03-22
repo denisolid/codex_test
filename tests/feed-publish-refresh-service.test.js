@@ -1,5 +1,7 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
+const arbitrageFeedRepo = require("../src/repositories/arbitrageFeedRepository")
+const marketQuoteRepo = require("../src/repositories/marketQuoteRepository")
 
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || "https://example.supabase.co"
 process.env.SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "anon"
@@ -15,7 +17,8 @@ const {
     shouldAdmitToFeed,
     buildRefreshedOpportunityRow
   },
-  LIVE_MAX_SIGNAL_AGE_HOURS
+  LIVE_MAX_SIGNAL_AGE_HOURS,
+  refreshForFeedPublish
 } = require("../src/services/feedPublishRefreshService")
 
 function buildRawFeedRow(overrides = {}) {
@@ -246,4 +249,173 @@ test("admission decision returns publish-gate reject reason for skinport", () =>
   assert.equal(decision.admit, false)
   assert.equal(decision.stage, "publish_gate")
   assert.equal(decision.reason, "stale_skinport_quote")
+})
+
+test("refreshForFeedPublish deactivates stale active feed rows", async () => {
+  const nowMs = Date.now()
+  const staleIso = new Date(nowMs - 3 * 60 * 60 * 1000).toISOString()
+  const raw = buildRawFeedRow({
+    id: "00000000-0000-0000-0000-000000000123",
+    detected_at: new Date(nowMs - 20 * 60 * 1000).toISOString(),
+    market_signal_observed_at: new Date(nowMs - 2 * 60 * 1000).toISOString()
+  })
+
+  const originals = {
+    getLatestRowsByItemNames: marketQuoteRepo.getLatestRowsByItemNames,
+    updatePublishRefreshState: arbitrageFeedRepo.updatePublishRefreshState
+  }
+
+  const quoteRows = {
+    [raw.item_name]: {
+      steam: {
+        market: "steam",
+        best_buy: 19.8,
+        best_sell: 20.9,
+        best_sell_net: 18.1,
+        volume_7d: 181,
+        fetched_at: staleIso
+      },
+      skinport: {
+        market: "skinport",
+        best_buy: 23.9,
+        best_sell: 26.2,
+        best_sell_net: 23.1,
+        volume_7d: 177,
+        fetched_at: staleIso,
+        quality_flags: {
+          skinport_quote_type: "live_executable",
+          skinport_price_integrity_status: "confirmed",
+          skinport_listing_id: "sp-live-123"
+        }
+      }
+    }
+  }
+
+  let patchRowsPayload = null
+  marketQuoteRepo.getLatestRowsByItemNames = async () => quoteRows
+  arbitrageFeedRepo.updatePublishRefreshState = async (rows = []) => {
+    patchRowsPayload = rows
+    return rows.length
+  }
+
+  try {
+    const result = await refreshForFeedPublish([raw], { includeRisky: true })
+    assert.equal(result.rows.length, 0)
+    assert.equal(result.diagnostics.publishValidation.blocked, 1)
+    assert.equal(result.diagnostics.publishValidation.deactivated, 1)
+    assert.equal(result.diagnostics.publishValidation.reasons.buy_and_sell_route_stale, 1)
+    assert.equal(Array.isArray(patchRowsPayload), true)
+    assert.equal(patchRowsPayload.length, 1)
+    assert.equal(patchRowsPayload[0].id, raw.id)
+    assert.equal(patchRowsPayload[0].patch.is_active, false)
+    assert.equal(patchRowsPayload[0].patch.refresh_status, "stale")
+    assert.equal(patchRowsPayload[0].patch.live_status, "stale")
+  } finally {
+    marketQuoteRepo.getLatestRowsByItemNames = originals.getLatestRowsByItemNames
+    arbitrageFeedRepo.updatePublishRefreshState = originals.updatePublishRefreshState
+  }
+})
+
+test("fresh generic signal cannot override stale route timestamps", () => {
+  const nowMs = Date.now()
+  const nowIso = new Date(nowMs).toISOString()
+  const staleIso = new Date(nowMs - 3 * 60 * 60 * 1000).toISOString()
+  const raw = buildRawFeedRow({
+    detected_at: new Date(nowMs - 5 * 60 * 1000).toISOString(),
+    market_signal_observed_at: nowIso,
+    metadata: {
+      latest_market_signal_at: nowIso,
+      volume_7d: 200
+    }
+  })
+
+  const refreshed = buildRefreshedOpportunityRow(
+    raw,
+    {
+      [raw.item_name]: {
+        steam: {
+          market: "steam",
+          best_buy: 19.9,
+          best_sell: 20.7,
+          best_sell_net: 18.2,
+          volume_7d: 120,
+          fetched_at: staleIso
+        },
+        skinport: {
+          market: "skinport",
+          best_buy: 24.1,
+          best_sell: 26.9,
+          best_sell_net: 23.3,
+          volume_7d: 118,
+          fetched_at: staleIso,
+          quality_flags: {
+            skinport_quote_type: "live_executable",
+            skinport_price_integrity_status: "confirmed",
+            skinport_listing_id: "sp-stale-1"
+          }
+        }
+      }
+    },
+    { nowIso, nowMs }
+  )
+
+  assert.equal(refreshed.api.publishFreshnessState, "stale")
+  assert.equal(refreshed.api.requiredRoutePublishable, false)
+  assert.equal(
+    Number(refreshed.api.latestSignalAgeHours || 0) > LIVE_MAX_SIGNAL_AGE_HOURS,
+    true
+  )
+  assert.equal(refreshed.api.marketSignalObservedAt, staleIso)
+})
+
+test("buildRefreshedOpportunityRow keeps legacy feed fields while adding publish metadata", () => {
+  const nowMs = Date.now()
+  const nowIso = new Date(nowMs).toISOString()
+  const freshIso = new Date(nowMs - 30 * 60 * 1000).toISOString()
+  const raw = buildRawFeedRow({
+    detected_at: new Date(nowMs - 40 * 60 * 1000).toISOString()
+  })
+
+  const refreshed = buildRefreshedOpportunityRow(
+    raw,
+    {
+      [raw.item_name]: {
+        steam: {
+          market: "steam",
+          best_buy: 19.7,
+          best_sell: 20.5,
+          best_sell_net: 18,
+          volume_7d: 130,
+          fetched_at: freshIso
+        },
+        skinport: {
+          market: "skinport",
+          best_buy: 24.2,
+          best_sell: 26.8,
+          best_sell_net: 23.2,
+          volume_7d: 126,
+          fetched_at: freshIso,
+          quality_flags: {
+            skinport_quote_type: "live_executable",
+            skinport_price_integrity_status: "confirmed",
+            skinport_listing_id: "sp-fresh-1"
+          }
+        }
+      }
+    },
+    { nowIso, nowMs }
+  )
+
+  assert.equal(Number(refreshed.api.buyPrice) > 0, true)
+  assert.equal(Number(refreshed.api.sellNet) > 0, true)
+  assert.equal(Number(refreshed.api.profit) > 0, true)
+  assert.equal(Number(refreshed.api.spread) > 0, true)
+  assert.equal(Boolean(refreshed.api.itemName), true)
+  assert.equal(Boolean(refreshed.api.marketHashName), true)
+  assert.equal(Boolean(refreshed.api.qualityGrade), true)
+  assert.equal(Boolean(refreshed.api.executionConfidence), true)
+  assert.equal(refreshed.api.requiredRoutePublishable, true)
+  assert.equal(refreshed.api.publishFreshnessState, "fresh")
+  assert.equal(typeof refreshed.api.signalAgeMs, "number")
+  assert.equal(Boolean(refreshed.patch?.metadata?.publish_validation), true)
 })

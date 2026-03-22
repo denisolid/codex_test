@@ -52,6 +52,7 @@ const {
   buildFeedInsertRow,
   mapFeedRowToApiRow
 } = require("./scanner/feedPipeline")
+const { evaluatePublishValidation } = require("./scanner/publishValidation")
 
 const MAX_API_LIMIT = 200
 const FEED_PAGE_SIZE = 200
@@ -1359,6 +1360,159 @@ function toJsonObject(value) {
   return value
 }
 
+function toBooleanOrNull(value) {
+  if (value === true) return true
+  if (value === false) return false
+  if (value == null || value === "") return null
+  const parsed = Number(value)
+  if (Number.isFinite(parsed)) {
+    if (parsed === 1) return true
+    if (parsed === 0) return false
+  }
+  const raw = normalizeText(value).toLowerCase()
+  if (!raw) return null
+  if (raw === "true" || raw === "yes" || raw === "on") return true
+  if (raw === "false" || raw === "no" || raw === "off") return false
+  return null
+}
+
+function buildPublishValidationMetadata(validation = {}) {
+  const signalAgeMs = toFiniteOrNull(validation?.signalAgeMs)
+  const publishValidatedAt = toIsoOrNull(validation?.publishValidatedAt)
+  const publishFreshnessState = normalizeText(validation?.publishFreshnessState) || "missing"
+  const requiredRouteState = normalizeText(validation?.requiredRouteState) || "missing_buy_and_sell_route"
+  const listingAvailabilityState = normalizeText(validation?.listingAvailabilityState) || "unknown"
+  const staleReason = normalizeText(validation?.staleReason) || null
+  const routeSignalObservedAt = toIsoOrNull(validation?.routeSignalObservedAt)
+  return {
+    signal_age_ms: signalAgeMs,
+    signalAgeMs: signalAgeMs,
+    publish_validated_at: publishValidatedAt,
+    publishValidatedAt: publishValidatedAt,
+    publish_freshness_state: publishFreshnessState,
+    publishFreshnessState: publishFreshnessState,
+    required_route_state: requiredRouteState,
+    requiredRouteState: requiredRouteState,
+    listing_availability_state: listingAvailabilityState,
+    listingAvailabilityState: listingAvailabilityState,
+    stale_reason: staleReason,
+    staleReason: staleReason,
+    route_signal_observed_at: routeSignalObservedAt,
+    routeSignalObservedAt: routeSignalObservedAt,
+    publish_validation: {
+      is_publishable: Boolean(validation?.isPublishable),
+      signal_age_ms: signalAgeMs,
+      publish_validated_at: publishValidatedAt,
+      publish_freshness_state: publishFreshnessState,
+      required_route_state: requiredRouteState,
+      listing_availability_state: listingAvailabilityState,
+      stale_reason: staleReason,
+      route_signal_observed_at: routeSignalObservedAt
+    }
+  }
+}
+
+function resolvePublishValidationContextForOpportunity(opportunity = {}, nowMs = Date.now(), nowIso = null) {
+  const metadata = toJsonObject(opportunity?.metadata)
+  const buyMarket = normalizeText(opportunity?.buyMarket || opportunity?.buy_market).toLowerCase()
+  const sellMarket = normalizeText(opportunity?.sellMarket || opportunity?.sell_market).toLowerCase()
+
+  let buyRouteAvailable = toBooleanOrNull(
+    opportunity?.buyRouteAvailable ??
+      opportunity?.buy_route_available ??
+      metadata?.buy_route_available ??
+      metadata?.buyRouteAvailable
+  )
+  let sellRouteAvailable = toBooleanOrNull(
+    opportunity?.sellRouteAvailable ??
+      opportunity?.sell_route_available ??
+      metadata?.sell_route_available ??
+      metadata?.sellRouteAvailable
+  )
+
+  if (buyRouteAvailable == null) {
+    buyRouteAvailable = Boolean(
+      buyMarket &&
+        toPositiveOrNull(
+          opportunity?.buyPrice ??
+            opportunity?.buy_price ??
+            metadata?.buy_route_price ??
+            metadata?.buyRoutePrice
+        ) != null
+    )
+  }
+  if (sellRouteAvailable == null) {
+    sellRouteAvailable = Boolean(
+      sellMarket &&
+        toPositiveOrNull(
+          opportunity?.sellNet ??
+            opportunity?.sell_net ??
+            metadata?.sell_route_price ??
+            metadata?.sellRoutePrice
+        ) != null
+    )
+  }
+
+  let buyListingAvailable = toBooleanOrNull(
+    opportunity?.buyListingAvailable ??
+      opportunity?.buy_listing_available ??
+      metadata?.buy_listing_available ??
+      metadata?.buyListingAvailable
+  )
+  let sellListingAvailable = toBooleanOrNull(
+    opportunity?.sellListingAvailable ??
+      opportunity?.sell_listing_available ??
+      metadata?.sell_listing_available ??
+      metadata?.sellListingAvailable
+  )
+
+  if (buyListingAvailable == null && buyMarket === "skinport") {
+    buyListingAvailable = Boolean(
+      normalizeText(
+        metadata?.buy_listing_id ||
+          metadata?.buyListingId ||
+          opportunity?.buyUrl ||
+          opportunity?.buy_url ||
+          metadata?.buy_url ||
+          metadata?.buyUrl
+      )
+    )
+  }
+  if (sellListingAvailable == null && sellMarket === "skinport") {
+    sellListingAvailable = Boolean(
+      normalizeText(
+        metadata?.sell_listing_id ||
+          metadata?.sellListingId ||
+          opportunity?.sellUrl ||
+          opportunity?.sell_url ||
+          metadata?.sell_url ||
+          metadata?.sellUrl
+      )
+    )
+  }
+
+  return evaluatePublishValidation({
+    nowMs,
+    nowIso,
+    buyMarket,
+    sellMarket,
+    buyRouteAvailable,
+    sellRouteAvailable,
+    buyRouteUpdatedAt:
+      opportunity?.buyRouteUpdatedAt ??
+      opportunity?.buy_route_updated_at ??
+      metadata?.buy_route_updated_at ??
+      metadata?.buyRouteUpdatedAt,
+    sellRouteUpdatedAt:
+      opportunity?.sellRouteUpdatedAt ??
+      opportunity?.sell_route_updated_at ??
+      metadata?.sell_route_updated_at ??
+      metadata?.sellRouteUpdatedAt,
+    buyListingAvailable,
+    sellListingAvailable
+  })
+}
+
 function toSafeInteger(value, fallback = 1, min = 1) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
@@ -1560,6 +1714,11 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
     reactivatedCount: 0,
     duplicateCount: 0,
     skippedUnchanged: 0,
+    publishValidation: {
+      blocked: 0,
+      deactivated: 0,
+      reasons: {}
+    },
     cleanup: {
       olderMarkedInactive: 0,
       beyondLimitMarkedInactive: 0,
@@ -1684,6 +1843,7 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
 
   const insertRows = []
   const updateRows = []
+  const deactivateRowsById = new Map()
   const pendingInsertFingerprints = new Set()
 
   for (const prepared of preparedRows) {
@@ -1697,7 +1857,87 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
       matchedBy = previous ? "signature" : null
     }
 
-    const baseEvent = classifyOpportunityFeedEvent(opportunity, previous)
+    const publishValidation = resolvePublishValidationContextForOpportunity(
+      opportunity,
+      Date.now(),
+      nowIso
+    )
+    const publishValidationMetadata = buildPublishValidationMetadata(publishValidation)
+    const routeSignalObservedAt =
+      toIsoOrNull(publishValidation?.routeSignalObservedAt) ||
+      toIsoOrNull(prepared.insertRow?.market_signal_observed_at) ||
+      null
+    const opportunityWithValidation = {
+      ...opportunity,
+      metadata: {
+        ...toJsonObject(opportunity?.metadata),
+        latest_market_signal_at:
+          routeSignalObservedAt ||
+          toIsoOrNull(opportunity?.metadata?.latest_market_signal_at) ||
+          toIsoOrNull(opportunity?.latestMarketSignalAt) ||
+          null,
+        ...publishValidationMetadata
+      }
+    }
+    const insertRowForPublish = {
+      ...prepared.insertRow,
+      market_signal_observed_at: routeSignalObservedAt,
+      metadata: {
+        ...toJsonObject(prepared.insertRow?.metadata),
+        latest_market_signal_at:
+          routeSignalObservedAt ||
+          toIsoOrNull(prepared.insertRow?.metadata?.latest_market_signal_at) ||
+          null,
+        ...publishValidationMetadata
+      }
+    }
+
+    if (!publishValidation.isPublishable) {
+      counters.publishValidation.blocked += 1
+      incrementCounterBy(
+        counters.publishValidation.reasons,
+        normalizeText(publishValidation.staleReason) || "publish_validation_failed",
+        1
+      )
+      if (previous && Boolean(previous?.is_active) && normalizeText(previous?.id)) {
+        const existingMetadata = toJsonObject(previous?.metadata)
+        const refreshStatus = publishValidation.publishFreshnessState === "stale" ? "stale" : "degraded"
+        const liveStatus = publishValidation.publishFreshnessState === "stale" ? "stale" : "degraded"
+        const latestSignalAgeHours =
+          publishValidation.signalAgeMs == null
+            ? null
+            : Number((Number(publishValidation.signalAgeMs) / (60 * 60 * 1000)).toFixed(3))
+        deactivateRowsById.set(previous.id, {
+          id: previous.id,
+          patch: {
+            is_active: false,
+            last_seen_at: nowIso,
+            last_published_at: nowIso,
+            feed_published_at: nowIso,
+            refresh_status: refreshStatus,
+            live_status: liveStatus,
+            latest_signal_age_hours: latestSignalAgeHours,
+            metadata: {
+              ...existingMetadata,
+              ...publishValidationMetadata,
+              publish_validation: {
+                ...(toJsonObject(existingMetadata?.publish_validation)),
+                ...(toJsonObject(publishValidationMetadata?.publish_validation)),
+                is_publishable: false
+              },
+              feed_event: "expired",
+              feed_event_reasons: [
+                normalizeText(publishValidation.staleReason) || "publish_validation_failed"
+              ],
+              feed_event_materially_changed: true
+            }
+          }
+        })
+      }
+      continue
+    }
+
+    const baseEvent = classifyOpportunityFeedEvent(opportunityWithValidation, previous)
     const previousMaterialHash = normalizeText(
       previous?.material_change_hash ||
         previous?.materialChangeHash ||
@@ -1736,7 +1976,11 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
         new Set([...(Array.isArray(baseEvent?.changeReasons) ? baseEvent.changeReasons : []), ...extraReasons])
       )
     }
-    const insertRowWithEvent = attachEventMetaToInsertRow(prepared.insertRow, normalizedEvent)
+    const insertRowWithEvent = attachEventMetaToInsertRow(insertRowForPublish, normalizedEvent)
+    insertRowWithEvent.metadata = {
+      ...toJsonObject(insertRowWithEvent.metadata),
+      ...publishValidationMetadata
+    }
 
     if (!previous) {
       if (fingerprint && pendingInsertFingerprints.has(fingerprint)) {
@@ -1781,6 +2025,10 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
     if (fingerprint) activeByFingerprint[fingerprint] = cachedUpdatedRow
   }
 
+  if (deactivateRowsById.size) {
+    await arbitrageFeedRepo.updateRowsById(Array.from(deactivateRowsById.values()))
+    counters.publishValidation.deactivated = deactivateRowsById.size
+  }
   if (updateRows.length) {
     await arbitrageFeedRepo.updateRowsById(updateRows)
   }
@@ -1838,6 +2086,11 @@ function mergeDiagnostics({
       reactivatedCount: Number(persisted.reactivatedCount || 0),
       duplicateCount: Number(persisted.duplicateCount || 0),
       skippedUnchanged: Number(persisted.skippedUnchanged || 0),
+      publishValidation: {
+        blocked: Number(persisted?.publishValidation?.blocked || 0),
+        deactivated: Number(persisted?.publishValidation?.deactivated || 0),
+        reasons: persisted?.publishValidation?.reasons || {}
+      },
       cleanup: persisted.cleanup || {}
     },
     sourceCatalog,
