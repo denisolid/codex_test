@@ -46,6 +46,11 @@ function toFiniteOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function toPositiveOrNull(value) {
+  const parsed = toFiniteOrNull(value)
+  return parsed != null && parsed > 0 ? parsed : null
+}
+
 function toIsoOrNull(value) {
   if (value == null || value === "") return null
   if (value instanceof Date) {
@@ -639,6 +644,24 @@ function buildFeedInsertRow(opportunity = {}, options = {}) {
       item_image_url: opportunity.itemImageUrl || null,
       volume_7d: toFiniteOrNull(opportunity.liquidity),
       liquidity_value: toFiniteOrNull(opportunity.liquidity),
+      sell_volume_7d:
+        toFiniteOrNull(opportunity.sellVolume7d ?? opportunity?.metadata?.sell_volume_7d) ?? null,
+      sellVolume7d:
+        toFiniteOrNull(opportunity.sellVolume7d ?? opportunity?.metadata?.sell_volume_7d) ?? null,
+      buy_volume_7d:
+        toFiniteOrNull(opportunity.buyVolume7d ?? opportunity?.metadata?.buy_volume_7d) ?? null,
+      buyVolume7d:
+        toFiniteOrNull(opportunity.buyVolume7d ?? opportunity?.metadata?.buy_volume_7d) ?? null,
+      market_max_volume_7d:
+        toFiniteOrNull(opportunity.marketMaxVolume7d ?? opportunity?.metadata?.market_max_volume_7d) ??
+        null,
+      marketMaxVolume7d:
+        toFiniteOrNull(opportunity.marketMaxVolume7d ?? opportunity?.metadata?.market_max_volume_7d) ??
+        null,
+      liquidity_source:
+        normalizeText(opportunity.liquiditySource ?? opportunity?.metadata?.liquidity_source) || null,
+      liquiditySource:
+        normalizeText(opportunity.liquiditySource ?? opportunity?.metadata?.liquidity_source) || null,
       market_coverage: Number(opportunity.marketCoverage || 0),
       reference_price: toFiniteOrNull(opportunity.referencePrice),
       flags,
@@ -779,15 +802,51 @@ function mapFeedRowToApiRow(row = {}) {
         metadata?.material_change_hash ??
         metadata?.materialChangeHash
     ) || null
+  const resolvedSellVolume7d =
+    toPositiveOrNull(
+      row?.sell_volume_7d ??
+        row?.sellVolume7d ??
+        row?.sell_route_volume_7d ??
+        row?.sellRouteVolume7d ??
+        metadata?.sell_volume_7d ??
+        metadata?.sellVolume7d ??
+        metadata?.sell_route_volume_7d ??
+        metadata?.sellRouteVolume7d
+    ) ?? null
+  const resolvedBuyVolume7d =
+    toPositiveOrNull(
+      row?.buy_volume_7d ??
+        row?.buyVolume7d ??
+        metadata?.buy_volume_7d ??
+        metadata?.buyVolume7d
+    ) ?? null
+  const resolvedMarketMaxVolume7d =
+    toPositiveOrNull(
+      row?.market_max_volume_7d ??
+        row?.marketMaxVolume7d ??
+        metadata?.market_max_volume_7d ??
+        metadata?.marketMaxVolume7d
+    ) ?? null
   const resolvedVolume7d =
-    toFiniteOrNull(
+    resolvedSellVolume7d ??
+    resolvedMarketMaxVolume7d ??
+    resolvedBuyVolume7d ??
+    toPositiveOrNull(
       row?.volume_7d ??
         row?.volume7d ??
         metadata?.volume_7d ??
         metadata?.volume7d ??
         metadata?.liquidity_value ??
         metadata?.liquidityValue
-    ) ?? null
+    ) ??
+    null
+  const resolvedLiquiditySource =
+    normalizeText(
+      row?.liquidity_source ??
+        row?.liquiditySource ??
+        metadata?.liquidity_source ??
+        metadata?.liquiditySource
+    ) || null
   const resolvedMarketCoverage =
     toFiniteOrNull(
       row?.market_coverage ??
@@ -928,6 +987,14 @@ function mapFeedRowToApiRow(row = {}) {
     liquidityBand: normalizeText(row?.liquidity_label || "Low") || "Low",
     liquidityLabel: normalizeText(row?.liquidity_label || "Low") || "Low",
     volume7d: resolvedVolume7d,
+    sellVolume7d: resolvedSellVolume7d,
+    sell_volume_7d: resolvedSellVolume7d,
+    buyVolume7d: resolvedBuyVolume7d,
+    buy_volume_7d: resolvedBuyVolume7d,
+    marketMaxVolume7d: resolvedMarketMaxVolume7d,
+    market_max_volume_7d: resolvedMarketMaxVolume7d,
+    liquiditySource: resolvedLiquiditySource,
+    liquidity_source: resolvedLiquiditySource,
     marketCoverage: resolvedMarketCoverage == null ? 0 : resolvedMarketCoverage,
     referencePrice: resolvedReferencePrice,
     latestMarketSignalAt:

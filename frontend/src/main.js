@@ -4712,9 +4712,24 @@ function openCompareDrawerByOpportunity(opportunity, triggerElement = null) {
       currentPriceSource: seedSourceLabel,
       itemCategory: row?.itemCategory || "",
       itemSubcategory: row?.itemSubcategory || "",
-      volume7d: row?.volume7d ?? row?.liquidity ?? null,
-      marketVolume7d: row?.volume7d ?? row?.liquidity ?? null,
-      liquiditySales: row?.volume7d ?? row?.liquidity ?? null,
+      volume7d:
+        row?.sellVolume7d ??
+        row?.sell_volume_7d ??
+        row?.volume7d ??
+        row?.liquidity ??
+        null,
+      marketVolume7d:
+        row?.sellVolume7d ??
+        row?.sell_volume_7d ??
+        row?.volume7d ??
+        row?.liquidity ??
+        null,
+      liquiditySales:
+        row?.sellVolume7d ??
+        row?.sell_volume_7d ??
+        row?.volume7d ??
+        row?.liquidity ??
+        null,
       liquidityScore: row?.liquidityScore ?? null,
       imageUrl: fallbackImage,
     }),
@@ -9267,15 +9282,37 @@ function formatLiquidityBandLabel(value, volume7d = null) {
   const base = safe === "high" ? "High" : safe === "medium" ? "Medium" : "Low";
   const volume = Number(volume7d || 0);
   if (!Number.isFinite(volume) || volume <= 0) {
-    return `${base} liquidity`;
+    return `Sell ${base} liquidity`;
   }
-  return `${base} (${formatNumber(volume, 0)} / 7D)`;
+  return `Sell ${base} (${formatNumber(volume, 0)} / 7D)`;
+}
+
+function resolveSellLiquidityVolume7d(row = {}) {
+  const candidates = [
+    row?.sellVolume7d,
+    row?.sell_volume_7d,
+    row?.sellRouteVolume7d,
+    row?.sell_route_volume_7d,
+  ];
+  for (const value of candidates) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric;
+    }
+  }
+  return null;
 }
 
 function resolveLiquidityVolume7d(row = {}) {
+  const sellVolume = resolveSellLiquidityVolume7d(row);
+  if (sellVolume != null) return sellVolume;
   const candidates = [
     row?.volume7d,
     row?.marketVolume7d,
+    row?.marketMaxVolume7d,
+    row?.market_max_volume_7d,
+    row?.buyVolume7d,
+    row?.buy_volume_7d,
     row?.liquiditySample,
     row?.liquiditySales,
     row?.liquidity,
@@ -9291,8 +9328,12 @@ function resolveLiquidityVolume7d(row = {}) {
 
 function formatLiquiditySummaryCompact(row = {}) {
   const coverage = Math.max(Number(row?.marketCoverage || 0), 0);
-  const volume7d = resolveLiquidityVolume7d(row);
+  const sellVolume7d = resolveSellLiquidityVolume7d(row);
+  const volume7d = sellVolume7d == null ? resolveLiquidityVolume7d(row) : sellVolume7d;
   const volumeLabel = volume7d == null ? "n/a" : formatNumber(volume7d, 0);
+  if (sellVolume7d != null) {
+    return `Sell 7D ${volumeLabel} • ${formatNumber(coverage, 0)} mkts`;
+  }
   return `7D qty ${volumeLabel} • ${formatNumber(coverage, 0)} mkts`;
 }
 
@@ -12505,7 +12546,7 @@ function renderDashboardArbitragePanel() {
               getExecutionConfidenceTone(executionConfidence);
             const liquidityLabel = formatLiquidityBandLabel(
               row?.liquidityBand,
-              row?.volume7d ?? row?.liquiditySample ?? row?.liquidity,
+              resolveLiquidityVolume7d(row),
             );
             const badges = buildOpportunityBadges(row, { max: 3 });
             const categoryLabel = formatOpportunityCategoryLabel(
@@ -12681,7 +12722,7 @@ function renderPortfolioArbitrageWidget() {
               getExecutionConfidenceTone(executionConfidence);
             const liquidityLabel = formatLiquidityBandLabel(
               row?.liquidityBand,
-              row?.volume7d ?? row?.liquiditySample ?? row?.liquidity,
+              resolveLiquidityVolume7d(row),
             );
             const badges = buildOpportunityBadges(row, { max: 3 });
             const categoryLabel = formatOpportunityCategoryLabel(
@@ -13651,7 +13692,7 @@ function renderMarketTab() {
                 getExecutionConfidenceTone(executionConfidence);
               const liquidityLabel = formatLiquidityBandLabel(
                 row?.liquidityBand,
-                row?.volume7d ?? row?.liquiditySample ?? row?.liquidity,
+                resolveLiquidityVolume7d(row),
               );
               const baseBadges = buildOpportunityBadges(row, { max: 3 });
               const itemId = Number(row?.itemId || row?.skinId || 0);
@@ -14343,7 +14384,7 @@ function renderGlobalOpportunitiesTab() {
                 ? "Premium preview"
                 : formatLiquidityBandLabel(
                     row?.liquidityBand,
-                    row?.volume7d ?? row?.liquidity,
+                    resolveLiquidityVolume7d(row),
                   );
               const baseBadges = buildOpportunityBadges(row, { max: 12 });
               const itemId = Number(row?.itemId || 0);
@@ -14676,7 +14717,7 @@ function renderGlobalOpportunitiesTab() {
               ? "Premium preview"
               : formatLiquidityBandLabel(
                   row?.liquidityBand,
-                  row?.volume7d ?? row?.liquidity,
+                  resolveLiquidityVolume7d(row),
                 );
             const baseBadges = buildOpportunityBadges(row, { max: 12 });
             const itemId = Number(row?.itemId || 0);

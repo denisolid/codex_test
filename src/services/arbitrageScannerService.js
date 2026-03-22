@@ -57,6 +57,7 @@ const MAX_API_LIMIT = 200
 const FEED_PAGE_SIZE = 200
 const DEFAULT_API_LIMIT = FEED_PAGE_SIZE
 const MAX_FEED_LIMIT = FEED_PAGE_SIZE
+const FEED_FAMILY_STREAK_CAP = 2
 const FEED_WINDOW_HOURS = 24
 const DEFAULT_HISTORY_WINDOW_HOURS = 24
 const MAX_HISTORY_WINDOW_HOURS = 168
@@ -265,6 +266,11 @@ function toFiniteOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function toPositiveOrNull(value) {
+  const parsed = toFiniteOrNull(value)
+  return parsed != null && parsed > 0 ? parsed : null
+}
+
 function normalizeCursorPayload(value) {
   const raw = normalizeText(value)
   if (!raw) return null
@@ -437,8 +443,125 @@ function countRowsByScannerCategory(rows = []) {
   return counts
 }
 
+function countScannableRowsByScannerCategory(rows = []) {
+  const counts = emptyCategoryMap()
+  for (const row of Array.isArray(rows) ? rows : []) {
+    let classification = null
+    try {
+      classification = classifyCatalogState({
+        ...row,
+        marketHashName:
+          row?.marketHashName ||
+          row?.market_hash_name ||
+          row?.itemName ||
+          row?.item_name ||
+          "",
+        itemName:
+          row?.itemName ||
+          row?.item_name ||
+          row?.marketHashName ||
+          row?.market_hash_name ||
+          "",
+        category: row?.category || row?.itemCategory || row?.raw?.category || ""
+      })
+    } catch (_err) {
+      classification = null
+    }
+    if (!classification || classification.state === SCAN_STATE.HARD_REJECT) {
+      continue
+    }
+    const category = mapScannerCategory(
+      classification.category || row?.category || row?.itemCategory || row?.raw?.category || ""
+    )
+    if (counts[category] == null) continue
+    counts[category] = Number(counts[category] || 0) + 1
+  }
+  return counts
+}
+
+function sumCategoryCounts(counts = {}) {
+  return Object.values(counts || {}).reduce((sum, value) => sum + Number(value || 0), 0)
+}
+
 function listMissingScannerCategories(counts = {}) {
   return ROUND_ROBIN_CATEGORY_ORDER.filter((category) => Number(counts?.[category] || 0) <= 0)
+}
+
+function normalizeSelectionFamilyName(value = "") {
+  return normalizeText(value)
+    .replace(/^stattrak(?:\u2122|â„¢)?\s*/i, "")
+    .replace(/^souvenir\s+/i, "")
+    .replace(/\((factory new|minimal wear|field-tested|well-worn|battle-scarred)\)\s*$/i, "")
+    .replace(/^\u2605\s*/u, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+}
+
+function resolveScannerFamilyKey(row = {}) {
+  const category = mapScannerCategory(row?.category || row?.itemCategory || row?.raw?.category || "")
+  const subcategory = normalizeText(
+    row?.itemSubcategory || row?.subcategory || row?.raw?.subcategory
+  ).toLowerCase()
+  const marketHashName = normalizeText(
+    row?.marketHashName || row?.market_hash_name || row?.itemName || row?.item_name
+  )
+
+  let family = subcategory
+  if (
+    !family &&
+    (category === ITEM_CATEGORIES.WEAPON_SKIN ||
+      category === ITEM_CATEGORIES.KNIFE ||
+      category === ITEM_CATEGORIES.GLOVE)
+  ) {
+    const [prefix] = marketHashName.split("|")
+    family = normalizeSelectionFamilyName(prefix || marketHashName)
+  }
+  if (!family) family = category
+
+  return `${category}:${family || "unknown"}`
+}
+
+function rebalanceSelectionForFeedDiversity(rows = [], options = {}) {
+  const safeRows = Array.isArray(rows) ? rows.filter(Boolean) : []
+  if (!safeRows.length) return []
+  const maxConsecutiveFamily = Math.max(
+    Math.round(Number(options.maxConsecutiveFamily || FEED_FAMILY_STREAK_CAP)),
+    1
+  )
+  if (safeRows.length <= maxConsecutiveFamily) {
+    return safeRows.slice()
+  }
+
+  const queue = safeRows.slice()
+  const reordered = []
+  let activeFamily = ""
+  let activeFamilyStreak = 0
+
+  while (queue.length) {
+    let pickIndex = 0
+    const firstFamily = resolveScannerFamilyKey(queue[0])
+    if (activeFamilyStreak >= maxConsecutiveFamily && firstFamily === activeFamily) {
+      const alternativeIndex = queue.findIndex(
+        (candidate) => resolveScannerFamilyKey(candidate) !== activeFamily
+      )
+      if (alternativeIndex >= 0) {
+        pickIndex = alternativeIndex
+      }
+    }
+
+    const [picked] = queue.splice(pickIndex, 1)
+    reordered.push(picked)
+    const pickedFamily = resolveScannerFamilyKey(picked)
+    if (pickedFamily === activeFamily) {
+      activeFamilyStreak += 1
+    } else {
+      activeFamily = pickedFamily
+      activeFamilyStreak = 1
+    }
+  }
+
+  return reordered
 }
 
 function mergeUniqueScannerSourceRows(baseRows = [], extraRows = []) {
@@ -712,6 +835,14 @@ function mapFeedRowToCard(rawRow = {}) {
     detectedAt ||
     null
   const timesSeen = toSafeInteger(row?.timesSeen ?? row?.times_seen, 1, 1)
+  const sellVolume7d = toPositiveOrNull(row?.sellVolume7d ?? row?.sell_volume_7d)
+  const buyVolume7d = toPositiveOrNull(row?.buyVolume7d ?? row?.buy_volume_7d)
+  const marketMaxVolume7d = toPositiveOrNull(row?.marketMaxVolume7d ?? row?.market_max_volume_7d)
+  const resolvedVolume7d =
+    sellVolume7d ??
+    marketMaxVolume7d ??
+    buyVolume7d ??
+    toPositiveOrNull(row?.volume7d ?? row?.liquidity)
 
   return {
     feedId: row?.feedId || normalizeText(rawRow?.id) || null,
@@ -758,10 +889,14 @@ function mapFeedRowToCard(rawRow = {}) {
     scoreCategory: row?.scoreCategory || null,
     executionConfidence: row?.executionConfidence || null,
     qualityGrade: row?.qualityGrade || null,
-    liquidity: toFiniteOrNull(row?.liquidity),
+    liquidity: resolvedVolume7d,
     liquidityBand: row?.liquidityBand || row?.liquidityLabel || null,
     liquidityLabel: row?.liquidityLabel || row?.liquidityBand || null,
-    volume7d: toFiniteOrNull(row?.volume7d ?? row?.liquidity),
+    volume7d: resolvedVolume7d,
+    sellVolume7d,
+    buyVolume7d,
+    marketMaxVolume7d,
+    liquiditySource: normalizeText(row?.liquiditySource || row?.liquidity_source) || null,
     marketCoverage: toFiniteOrNull(row?.marketCoverage),
     referencePrice: toFiniteOrNull(row?.referencePrice),
     latestSignalAgeHours:
@@ -856,6 +991,8 @@ async function loadScannerSourceRows() {
     },
     categoryCountsBeforeTopup: emptyCategoryMap(),
     categoryCountsAfterTopup: emptyCategoryMap(),
+    scannablePoolBeforeTopup: 0,
+    scannablePoolAfterTopup: 0,
     missingCategoriesBeforeTopup: [],
     missingCategoriesAfterTopup: []
   }
@@ -870,12 +1007,14 @@ async function loadScannerSourceRows() {
       })
       rows = Array.isArray(rows) ? rows : []
 
-      let categoryCounts = countRowsByScannerCategory(rows)
+      let categoryCounts = countScannableRowsByScannerCategory(rows)
+      let scannablePoolSize = sumCategoryCounts(categoryCounts)
       let missingCategories = listMissingScannerCategories(categoryCounts)
       diagnostics.categoryCountsBeforeTopup = categoryCounts
+      diagnostics.scannablePoolBeforeTopup = scannablePoolSize
       diagnostics.missingCategoriesBeforeTopup = missingCategories
 
-      if (rows.length < minSourcePoolTarget || missingCategories.length > 0) {
+      if (scannablePoolSize < minSourcePoolTarget || missingCategories.length > 0) {
         diagnostics.topup.candidatePoolAttempted = true
         const candidateTopupCategories = missingCategories.length
           ? missingCategories
@@ -894,14 +1033,18 @@ async function loadScannerSourceRows() {
         }
       }
 
-      categoryCounts = countRowsByScannerCategory(rows)
+      categoryCounts = countScannableRowsByScannerCategory(rows)
+      scannablePoolSize = sumCategoryCounts(categoryCounts)
       missingCategories = listMissingScannerCategories(categoryCounts)
-      if (missingCategories.length > 0) {
+      if (missingCategories.length > 0 || scannablePoolSize < minSourcePoolTarget) {
         diagnostics.topup.activeTradableAttempted = true
+        const activeTopupCategories = missingCategories.length
+          ? missingCategories
+          : CATALOG_SCAN_CATEGORIES
         try {
           const activeRows = await marketSourceCatalogRepo.listActiveTradable({
             limit: Math.max(limit, minSourcePoolTarget * 2),
-            categories: missingCategories
+            categories: activeTopupCategories
           })
           const mergedRows = mergeUniqueScannerSourceRows(rows, activeRows)
           diagnostics.topup.activeTradableRowsAdded = Math.max(mergedRows.length - rows.length, 0)
@@ -911,9 +1054,11 @@ async function loadScannerSourceRows() {
         }
       }
 
-      categoryCounts = countRowsByScannerCategory(rows)
+      categoryCounts = countScannableRowsByScannerCategory(rows)
+      scannablePoolSize = sumCategoryCounts(categoryCounts)
       diagnostics.selectedLimit = limit
       diagnostics.categoryCountsAfterTopup = categoryCounts
+      diagnostics.scannablePoolAfterTopup = scannablePoolSize
       diagnostics.missingCategoriesAfterTopup = listMissingScannerCategories(categoryCounts)
       return { rows, diagnostics }
     } catch (err) {
@@ -1832,6 +1977,26 @@ async function runOpportunityJob({ forceRefresh = false } = {}) {
     cursor: rotationState.cursor,
     lastScannedAtByName: rotationState.lastScannedAtByName
   })
+  const preDiversifiedSelection = Array.isArray(selection?.selected) ? selection.selected : []
+  selection.selected = rebalanceSelectionForFeedDiversity(preDiversifiedSelection, {
+    maxConsecutiveFamily: FEED_FAMILY_STREAK_CAP
+  })
+  if (selection?.diagnostics && typeof selection.diagnostics === "object") {
+    const beforeKeys = preDiversifiedSelection.map(
+      (row) =>
+        normalizeText(
+          row?.marketHashName || row?.market_hash_name || row?.itemName || row?.item_name
+        ) || "unknown"
+    )
+    const afterKeys = (selection.selected || []).map(
+      (row) =>
+        normalizeText(
+          row?.marketHashName || row?.market_hash_name || row?.itemName || row?.item_name
+        ) || "unknown"
+    )
+    selection.diagnostics.diversityStreakCap = FEED_FAMILY_STREAK_CAP
+    selection.diagnostics.diversityReordered = beforeKeys.join("|") !== afterKeys.join("|")
+  }
   selection.cursorBefore = rotationState.cursor
   rotationState.cursor = selection.nextCursor
   trimRotationMap()
@@ -1843,7 +2008,12 @@ async function runOpportunityJob({ forceRefresh = false } = {}) {
     evaluateCandidateOpportunity(candidate, compared.byName?.[candidate.marketHashName] || {})
   )
   const evaluationSummary = summarizeEvaluations(evaluated)
-  const opportunities = evaluated.filter((row) => row.rejected !== true)
+  const opportunities = rebalanceSelectionForFeedDiversity(
+    evaluated.filter((row) => row.rejected !== true),
+    {
+      maxConsecutiveFamily: FEED_FAMILY_STREAK_CAP
+    }
+  )
   const computeMs = Date.now() - computeStartedAtMs
 
   const writeStartedAtMs = Date.now()
@@ -2450,6 +2620,10 @@ exports.__testables = {
   mapFeedRowToApiRow,
   mapFeedRowToCard,
   dedupeFeedCards,
+  countRowsByScannerCategory,
+  countScannableRowsByScannerCategory,
+  resolveScannerFamilyKey,
+  rebalanceSelectionForFeedDiversity,
   loadScannerSourceRows,
   persistFeedRows,
   buildFeedUpdatePatch,

@@ -16,6 +16,25 @@ function toFiniteOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function toPositiveOrNull(value) {
+  const parsed = toFiniteOrNull(value)
+  return parsed != null && parsed > 0 ? parsed : null
+}
+
+function resolveVolume7d(row = {}) {
+  return (
+    toPositiveOrNull(
+      row.sell_volume_7d ??
+        row.sellVolume7d ??
+        row.sell_route_volume_7d ??
+        row.sellRouteVolume7d
+    ) ??
+    toPositiveOrNull(row.market_max_volume_7d ?? row.marketMaxVolume7d) ??
+    toPositiveOrNull(row.buy_volume_7d ?? row.buyVolume7d) ??
+    toPositiveOrNull(row.volume_7d ?? row.volume7d)
+  )
+}
+
 function normalizePriorityTier(value) {
   const tier = normalizeText(value).toLowerCase()
   if (tier === "tier_a" || tier === "tier_b") return tier
@@ -53,7 +72,16 @@ function normalizeCatalogRow(row = {}) {
       Number(toFiniteOrNull(row.market_coverage_count ?? row.marketCoverageCount) || 0),
       0
     ),
-    volume7d: toFiniteOrNull(row.volume_7d ?? row.volume7d),
+    volume7d: resolveVolume7d(row),
+    sellVolume7d: toPositiveOrNull(
+      row.sell_volume_7d ??
+        row.sellVolume7d ??
+        row.sell_route_volume_7d ??
+        row.sellRouteVolume7d
+    ),
+    buyVolume7d: toPositiveOrNull(row.buy_volume_7d ?? row.buyVolume7d),
+    marketMaxVolume7d: toPositiveOrNull(row.market_max_volume_7d ?? row.marketMaxVolume7d),
+    liquiditySource: normalizeText(row.liquidity_source || row.liquiditySource) || null,
     liquidityRank: toFiniteOrNull(row.liquidity_rank ?? row.liquidityRank),
     snapshotStale: row.snapshot_stale == null ? Boolean(row.snapshotStale) : Boolean(row.snapshot_stale),
     snapshotCapturedAt: row.snapshot_captured_at || row.snapshotCapturedAt || null,
@@ -159,6 +187,52 @@ function incrementCounter(target, key, amount = 1) {
   const safeKey = normalizeText(key)
   if (!safeKey) return
   target[safeKey] = Number(target[safeKey] || 0) + Number(amount || 0)
+}
+
+const PREMIUM_RESERVE_CATEGORY_ORDER = Object.freeze([
+  ITEM_CATEGORIES.KNIFE,
+  ITEM_CATEGORIES.GLOVE
+])
+const PREMIUM_RESERVE_MIN_REFERENCE_PRICE = 20
+
+function hasPremiumReserveQuality(row = {}) {
+  const category = normalizeCategory(row.category || row.itemCategory, row.itemName)
+  if (!PREMIUM_RESERVE_CATEGORY_ORDER.includes(category)) return false
+  if (row.scanState !== SCAN_STATE.SCANABLE) return false
+
+  const referencePrice = toFiniteOrNull(row.referencePrice)
+  const marketCoverageCount = Math.max(Number(toFiniteOrNull(row.marketCoverageCount) || 0), 0)
+  const freshnessState = normalizeText(row?.scanFreshness?.state).toLowerCase()
+
+  if (referencePrice == null || referencePrice < PREMIUM_RESERVE_MIN_REFERENCE_PRICE) return false
+  if (marketCoverageCount < 2) return false
+  if (freshnessState && freshnessState !== "fresh" && freshnessState !== "aging") return false
+
+  return hasStrongScanEvidence(row)
+}
+
+function pickPremiumReserveRows(pool = [], maxCount = 0) {
+  const safePool = Array.isArray(pool) ? pool : []
+  const safeMaxCount = Math.max(Math.round(Number(maxCount || 0)), 0)
+  if (!safePool.length || safeMaxCount <= 0) return []
+
+  const selected = []
+  const selectedNames = new Set()
+  for (const category of PREMIUM_RESERVE_CATEGORY_ORDER) {
+    if (selected.length >= safeMaxCount) break
+    const match = safePool.find((row) => {
+      const marketHashName = normalizeText(row?.marketHashName)
+      if (!marketHashName || selectedNames.has(marketHashName)) return false
+      if (normalizeCategory(row?.category || row?.itemCategory, row?.itemName) !== category) {
+        return false
+      }
+      return hasPremiumReserveQuality(row)
+    })
+    if (!match) continue
+    selected.push(match)
+    selectedNames.add(match.marketHashName)
+  }
+  return selected
 }
 
 function buildRoundRobinPool(scannableRows = [], options = {}) {
@@ -314,24 +388,54 @@ function selectScanCandidates(options = {}) {
   const hasScanHistory = lastScannedAtByName instanceof Map && lastScannedAtByName.size > 0
   const startCursor = hasScanHistory ? 0 : previousCursor % pool.length
   const maxSelection = Math.min(batchSize, pool.length)
-  for (let offset = 0; offset < maxSelection; offset += 1) {
-    const index = (startCursor + offset) % pool.length
-    const selectedRow = pool[index]
-    if (!selectedRow) continue
+
+  diagnostics.reservedPremiumByCategory = Object.fromEntries(
+    PREMIUM_RESERVE_CATEGORY_ORDER.map((category) => [category, 0])
+  )
+
+  const selectedNames = new Set()
+  const recordSelectedRow = (selectedRow, { reserved = false } = {}) => {
+    if (!selectedRow) return
+    const marketHashName = normalizeText(selectedRow.marketHashName)
+    if (!marketHashName || selectedNames.has(marketHashName)) return
     selected.push(selectedRow)
+    selectedNames.add(marketHashName)
     diagnostics.selectedByCategory[selectedRow.category] =
       Number(diagnostics.selectedByCategory[selectedRow.category] || 0) + 1
     const priorityBucket = resolvePriorityTierBucket(selectedRow)
     diagnostics.selectedByPriorityTier[priorityBucket] =
       Number(diagnostics.selectedByPriorityTier[priorityBucket] || 0) + 1
+    if (reserved && diagnostics.reservedPremiumByCategory[selectedRow.category] != null) {
+      diagnostics.reservedPremiumByCategory[selectedRow.category] =
+        Number(diagnostics.reservedPremiumByCategory[selectedRow.category] || 0) + 1
+    }
     lastScannedAtByName.set(selectedRow.marketHashName, nowMs)
+  }
+
+  const reservedPremiumRows = pickPremiumReserveRows(
+    pool,
+    Math.min(maxSelection, PREMIUM_RESERVE_CATEGORY_ORDER.length)
+  )
+  for (const row of reservedPremiumRows) {
+    if (selected.length >= maxSelection) break
+    recordSelectedRow(row, { reserved: true })
+  }
+
+  let traversed = 0
+  for (let offset = 0; offset < pool.length && selected.length < maxSelection; offset += 1) {
+    traversed += 1
+    const index = (startCursor + offset) % pool.length
+    const selectedRow = pool[index]
+    if (!selectedRow) continue
+    if (selectedNames.has(selectedRow.marketHashName)) continue
+    recordSelectedRow(selectedRow)
   }
 
   return {
     selected,
     poolSize: pool.length,
     attemptedBatchSize: batchSize,
-    nextCursor: hasScanHistory ? 0 : (startCursor + selected.length) % Math.max(pool.length, 1),
+    nextCursor: hasScanHistory ? 0 : (startCursor + traversed) % Math.max(pool.length, 1),
     diagnostics
   }
 }

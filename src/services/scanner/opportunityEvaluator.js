@@ -40,6 +40,11 @@ function toFiniteOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function toPositiveOrNull(value) {
+  const parsed = toFiniteOrNull(value)
+  return parsed != null && parsed > 0 ? parsed : null
+}
+
 function clampScore(value) {
   const numeric = toFiniteOrNull(value)
   if (numeric == null) return 0
@@ -126,17 +131,59 @@ function countAvailableMarkets(perMarket = []) {
   return toArray(perMarket).filter((row) => Boolean(row?.available)).length
 }
 
-function resolveVolume7d(comparedItem = {}, candidate = {}) {
-  const fromArbitrage = toFiniteOrNull(comparedItem?.arbitrage?.liquiditySample)
-  if (fromArbitrage != null && fromArbitrage >= 0) return fromArbitrage
-  const perMarketMax = toArray(comparedItem?.perMarket)
-    .map((row) => toFiniteOrNull(row?.volume7d ?? row?.volume_7d))
-    .filter((value) => value != null && value >= 0)
+function resolveLiquiditySignal(
+  comparedItem = {},
+  candidate = {},
+  { buyMarket = "", sellMarket = "" } = {}
+) {
+  const perMarket = toArray(comparedItem?.perMarket)
+  const normalizedBuyMarket = normalizeSource(buyMarket)
+  const normalizedSellMarket = normalizeSource(sellMarket)
+  const resolvePerMarketSource = (row = {}) => normalizeSource(row?.source || row?.market)
+  const resolvePerMarketVolume = (row = {}) => toPositiveOrNull(row?.volume7d ?? row?.volume_7d)
+  const isUsableMarketRow = (row = {}) =>
+    Boolean(row?.available) &&
+    (toFiniteOrNull(row?.grossPrice) != null || toFiniteOrNull(row?.netPriceAfterFees) != null)
+
+  const sellRouteVolume = normalizedSellMarket
+    ? resolvePerMarketVolume(
+        perMarket.find(
+          (row) => resolvePerMarketSource(row) === normalizedSellMarket && isUsableMarketRow(row)
+        ) || {}
+      )
+    : null
+  const buyRouteVolume = normalizedBuyMarket
+    ? resolvePerMarketVolume(
+        perMarket.find(
+          (row) => resolvePerMarketSource(row) === normalizedBuyMarket && isUsableMarketRow(row)
+        ) || {}
+      )
+    : null
+  const marketMaxVolume = perMarket
+    .filter((row) => isUsableMarketRow(row))
+    .map((row) => resolvePerMarketVolume(row))
+    .filter((value) => value != null)
     .sort((a, b) => b - a)[0]
-  if (perMarketMax != null) return perMarketMax
-  const fromCandidate = toFiniteOrNull(candidate?.volume7d)
-  if (fromCandidate != null && fromCandidate >= 0) return fromCandidate
-  return null
+  const arbitrageSampleVolume = toPositiveOrNull(comparedItem?.arbitrage?.liquiditySample)
+  const candidateVolume = toPositiveOrNull(candidate?.volume7d)
+
+  const selected = [
+    { source: "sell_route", value: sellRouteVolume },
+    { source: "market_max", value: marketMaxVolume },
+    { source: "buy_route", value: buyRouteVolume },
+    { source: "arbitrage_sample", value: arbitrageSampleVolume },
+    { source: "candidate_volume", value: candidateVolume }
+  ].find((entry) => entry.value != null)
+
+  return {
+    volume7d: selected?.value ?? null,
+    source: selected?.source || null,
+    sellVolume7d: sellRouteVolume,
+    buyVolume7d: buyRouteVolume,
+    marketMaxVolume7d: marketMaxVolume,
+    arbitrageSampleVolume7d: arbitrageSampleVolume,
+    candidateVolume7d: candidateVolume
+  }
 }
 
 function resolveLatestIso(values = []) {
@@ -770,7 +817,11 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
   const category = normalizeCategory(candidate.category, candidate.itemName)
   const profile = resolveCategoryProfile(category)
   const base = resolveBaseMetrics(comparedItem, candidate)
-  const volume7d = resolveVolume7d(comparedItem, candidate)
+  const liquiditySignal = resolveLiquiditySignal(comparedItem, candidate, {
+    buyMarket: base.buyMarket,
+    sellMarket: base.sellMarket
+  })
+  const volume7d = liquiditySignal.volume7d
   const usedSignalFreshness = resolveUsedSignalFreshness({
     category,
     comparedItem,
@@ -900,6 +951,13 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
     score: finalScore,
     executionConfidence: confidenceLabel(confidence),
     liquidity: volume7d == null ? null : round2(volume7d),
+    sellVolume7d:
+      liquiditySignal.sellVolume7d == null ? null : round2(liquiditySignal.sellVolume7d),
+    buyVolume7d:
+      liquiditySignal.buyVolume7d == null ? null : round2(liquiditySignal.buyVolume7d),
+    marketMaxVolume7d:
+      liquiditySignal.marketMaxVolume7d == null ? null : round2(liquiditySignal.marketMaxVolume7d),
+    liquiditySource: liquiditySignal.source,
     liquidityBand,
     marketCoverageBand,
     marketCoverageLabel: marketCoverageBand,
@@ -944,6 +1002,18 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
       stale_result:
         usedSignalFreshness?.staleResult == null ? null : Boolean(usedSignalFreshness?.staleResult),
       stale_reason_source: normalizeText(usedSignalFreshness?.staleReasonSource) || null,
+      liquidity_source: liquiditySignal.source,
+      sell_volume_7d:
+        liquiditySignal.sellVolume7d == null ? null : round2(liquiditySignal.sellVolume7d),
+      buy_volume_7d: liquiditySignal.buyVolume7d == null ? null : round2(liquiditySignal.buyVolume7d),
+      market_max_volume_7d:
+        liquiditySignal.marketMaxVolume7d == null ? null : round2(liquiditySignal.marketMaxVolume7d),
+      arbitrage_sample_volume_7d:
+        liquiditySignal.arbitrageSampleVolume7d == null
+          ? null
+          : round2(liquiditySignal.arbitrageSampleVolume7d),
+      candidate_volume_7d:
+        liquiditySignal.candidateVolume7d == null ? null : round2(liquiditySignal.candidateVolume7d),
       reference_deviation_ratio: referenceDeviation.ratio,
       anti_fake_reasons: base.antiFakeReasons,
       depth_flags: base.depthFlags,
@@ -957,6 +1027,19 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
         market_coverage_score: Number(diagnostics?.market_coverage?.score || 0),
         data_freshness_score: Number(diagnostics?.data_freshness?.score || 0),
         market_coverage_band: marketCoverageBand,
+        liquidity_source: liquiditySignal.source,
+        sell_volume_7d:
+          liquiditySignal.sellVolume7d == null ? null : round2(liquiditySignal.sellVolume7d),
+        buy_volume_7d:
+          liquiditySignal.buyVolume7d == null ? null : round2(liquiditySignal.buyVolume7d),
+        market_max_volume_7d:
+          liquiditySignal.marketMaxVolume7d == null ? null : round2(liquiditySignal.marketMaxVolume7d),
+        arbitrage_sample_volume_7d:
+          liquiditySignal.arbitrageSampleVolume7d == null
+            ? null
+            : round2(liquiditySignal.arbitrageSampleVolume7d),
+        candidate_volume_7d:
+          liquiditySignal.candidateVolume7d == null ? null : round2(liquiditySignal.candidateVolume7d),
         latest_market_signal_at:
           usedSignalFreshness?.latestMarketSignalAt || usedSignalFreshness?.latestSignalAt || null,
         stale_threshold_used:

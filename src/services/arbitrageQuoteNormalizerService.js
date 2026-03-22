@@ -29,6 +29,17 @@ function toNonNegativeOrNull(value) {
   return parsed != null && parsed >= 0 ? parsed : null;
 }
 
+function toCountOrNull(value) {
+  const direct = toNonNegativeOrNull(value);
+  if (direct != null) return direct;
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const digits = text.replace(/[^\d]/g, "");
+  if (!digits) return null;
+  const parsed = Number(digits);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
 function readPath(obj, path) {
   let current = obj;
   for (const token of path) {
@@ -78,6 +89,12 @@ function resolveRawVolume7d(raw = {}) {
     readPath(raw, ["last7days", "sales"])
   ]);
   if (direct != null) return direct;
+
+  const fromSteamOverview24h = scaleToSevenDayVolume(
+    toCountOrNull(raw?.volume ?? raw?.sales),
+    1
+  );
+  if (fromSteamOverview24h != null) return fromSteamOverview24h;
 
   const from24h = scaleToSevenDayVolume(
     pickFirstNonNegative([

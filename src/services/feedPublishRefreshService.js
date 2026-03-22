@@ -1,6 +1,7 @@
 const arbitrageFeedRepo = require("../repositories/arbitrageFeedRepository")
 const marketQuoteRepo = require("../repositories/marketQuoteRepository")
 const { mapFeedRowToApiRow } = require("./scanner/feedPipeline")
+const { CATEGORY_PROFILES, ITEM_CATEGORIES } = require("./scanner/config")
 const { sourceFeePercent, round2, roundPrice } = require("../markets/marketUtils")
 const { deriveInsightPayloadFromOpportunity } = require("./opportunityInsightService")
 
@@ -21,6 +22,11 @@ function toFiniteOrNull(value) {
   if (value == null || value === "") return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
+}
+
+function toPositiveOrNull(value) {
+  const parsed = toFiniteOrNull(value)
+  return parsed != null && parsed > 0 ? parsed : null
 }
 
 function toIsoOrNull(value) {
@@ -91,6 +97,33 @@ function normalizeStatus(value, fallback = "degraded") {
   const raw = normalizeText(value).toLowerCase()
   if (!raw) return fallback
   return raw
+}
+
+function normalizeItemCategory(value) {
+  const raw = normalizeText(value).toLowerCase()
+  if (
+    raw === ITEM_CATEGORIES.WEAPON_SKIN ||
+    raw === ITEM_CATEGORIES.CASE ||
+    raw === ITEM_CATEGORIES.STICKER_CAPSULE ||
+    raw === ITEM_CATEGORIES.KNIFE ||
+    raw === ITEM_CATEGORIES.GLOVE ||
+    raw === ITEM_CATEGORIES.FUTURE_KNIFE ||
+    raw === ITEM_CATEGORIES.FUTURE_GLOVE
+  ) {
+    return raw
+  }
+  return ITEM_CATEGORIES.WEAPON_SKIN
+}
+
+function resolveLiquidityLabel(volume7d, category) {
+  const value = toPositiveOrNull(volume7d)
+  if (value == null) return "Low"
+  const normalizedCategory = normalizeItemCategory(category)
+  const profile = CATEGORY_PROFILES[normalizedCategory] || CATEGORY_PROFILES[ITEM_CATEGORIES.WEAPON_SKIN]
+  const minVolume = Math.max(Number(profile?.minVolume7d || 1), 1)
+  if (value >= minVolume * 3) return "High"
+  if (value >= minVolume * 1.5) return "Medium"
+  return "Low"
 }
 
 function resolveNetSellFromQuote(quoteRow = {}, sellMarket = "", fallback = null) {
@@ -413,11 +446,28 @@ function buildRefreshedOpportunityRow(rawRow = {}, quoteRowsByItem = {}, options
     mapped.detectedAt
   ])
   const latestSignalAgeHours = computeAgeHours(marketSignalObservedAt, nowMs)
-  const volume7d = [
-    toFiniteOrNull(sellQuote?.volume_7d),
-    toFiniteOrNull(buyQuote?.volume_7d),
-    toFiniteOrNull(mapped.volume7d)
-  ].find((value) => value != null && value >= 0)
+  const sellVolume7d =
+    toPositiveOrNull(sellQuote?.volume_7d) ??
+    toPositiveOrNull(mapped.sellVolume7d ?? mapped.sell_volume_7d) ??
+    null
+  const buyVolume7d =
+    toPositiveOrNull(buyQuote?.volume_7d) ??
+    toPositiveOrNull(mapped.buyVolume7d ?? mapped.buy_volume_7d) ??
+    null
+  const marketMaxVolume7d = Object.values(itemQuotes || {})
+    .map((row) => toPositiveOrNull(row?.volume_7d))
+    .filter((value) => value != null)
+    .sort((a, b) => b - a)[0]
+  const mappedVolume7d = toPositiveOrNull(mapped.volume7d)
+  const selectedLiquiditySignal = [
+    { source: "sell_quote", value: sellVolume7d },
+    { source: "market_max_quote", value: marketMaxVolume7d },
+    { source: "buy_quote", value: buyVolume7d },
+    { source: "mapped_volume", value: mappedVolume7d }
+  ].find((entry) => entry.value != null)
+  const volume7d = selectedLiquiditySignal?.value ?? null
+  const liquiditySource = selectedLiquiditySignal?.source || null
+  const liquidityLabel = resolveLiquidityLabel(volume7d, mapped.itemCategory || rawRow?.category)
 
   const insight = deriveInsightPayloadFromOpportunity({
     ...mapped,
@@ -449,6 +499,25 @@ function buildRefreshedOpportunityRow(rawRow = {}, quoteRowsByItem = {}, options
     latest_market_signal_at: marketSignalObservedAt || metadata?.latest_market_signal_at || null,
     latest_quote_at: marketSignalObservedAt || metadata?.latest_quote_at || null,
     volume_7d: volume7d == null ? metadata?.volume_7d || null : round2(volume7d),
+    liquidity_value: volume7d == null ? metadata?.liquidity_value || null : round2(volume7d),
+    sell_volume_7d:
+      sellVolume7d == null ? metadata?.sell_volume_7d || metadata?.sellVolume7d || null : round2(sellVolume7d),
+    sellVolume7d:
+      sellVolume7d == null ? metadata?.sellVolume7d || metadata?.sell_volume_7d || null : round2(sellVolume7d),
+    buy_volume_7d:
+      buyVolume7d == null ? metadata?.buy_volume_7d || metadata?.buyVolume7d || null : round2(buyVolume7d),
+    buyVolume7d:
+      buyVolume7d == null ? metadata?.buyVolume7d || metadata?.buy_volume_7d || null : round2(buyVolume7d),
+    market_max_volume_7d:
+      marketMaxVolume7d == null
+        ? metadata?.market_max_volume_7d || metadata?.marketMaxVolume7d || null
+        : round2(marketMaxVolume7d),
+    marketMaxVolume7d:
+      marketMaxVolume7d == null
+        ? metadata?.marketMaxVolume7d || metadata?.market_max_volume_7d || null
+        : round2(marketMaxVolume7d),
+    liquidity_source: normalizeText(liquiditySource) || metadata?.liquidity_source || null,
+    liquiditySource: normalizeText(liquiditySource) || metadata?.liquiditySource || null,
     skinport_quote_price: skinportValidation.quotePrice,
     skinport_quote_currency: skinportValidation.quoteCurrency,
     skinport_quote_observed_at: skinportValidation.quoteObservedAt,
@@ -486,6 +555,7 @@ function buildRefreshedOpportunityRow(rawRow = {}, quoteRowsByItem = {}, options
     confidence_score: insight?.confidence_score ?? null,
     freshness_score: insight?.freshness_score ?? null,
     verdict: normalizeText(insight?.verdict).toLowerCase() || null,
+    liquidity_label: liquidityLabel,
     refresh_status: outcome.refreshStatus,
     live_status: outcome.liveStatus,
     metadata: mergedMetadata
@@ -550,6 +620,7 @@ function buildRefreshedOpportunityRow(rawRow = {}, quoteRowsByItem = {}, options
       confidence_score: refreshedRaw.confidence_score,
       freshness_score: refreshedRaw.freshness_score,
       verdict: refreshedRaw.verdict,
+      liquidity_label: refreshedRaw.liquidity_label,
       refresh_status: refreshedRaw.refresh_status,
       live_status: refreshedRaw.live_status,
       metadata: refreshedRaw.metadata
