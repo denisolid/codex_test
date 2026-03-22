@@ -259,16 +259,20 @@ function clampScore(value) {
   return round2(Math.min(Math.max(parsed, 0), 100))
 }
 
-function resolveLiquiditySample(item = {}, quotes = []) {
-  const volume7d = toFiniteOrNull(resolveVolume7d(item))
-  if (volume7d != null && volume7d >= 0) return volume7d
+function resolveLiquiditySample(item = {}, quotes = [], options = {}) {
+  const sellRouteVolume = toPositiveOrNull(options?.sellQuote?.volume_7d)
+  if (sellRouteVolume != null) return sellRouteVolume
+  const buyRouteVolume = toPositiveOrNull(options?.buyQuote?.volume_7d)
+  if (buyRouteVolume != null) return buyRouteVolume
   const quoteVolume = (Array.isArray(quotes) ? quotes : [])
-    .map((row) => toFiniteOrNull(row?.volume_7d))
-    .filter((row) => row != null && row >= 0)
+    .map((row) => toPositiveOrNull(row?.volume_7d))
+    .filter((row) => row != null)
     .sort((a, b) => b - a)[0]
   if (quoteVolume != null) return quoteVolume
-  const score = toFiniteOrNull(resolveLiquidityScore(item))
-  if (score != null && score >= 0) {
+  const volume7d = toPositiveOrNull(resolveVolume7d(item))
+  if (volume7d != null) return volume7d
+  const score = toPositiveOrNull(resolveLiquidityScore(item))
+  if (score != null) {
     // Backward compatibility for UI filters that use a numeric liquidity sample.
     return round2(Math.min(score, 100) * 2)
   }
@@ -469,17 +473,17 @@ function evaluateLiquidityFilter({
   const rules = getCategoryLiquidityRules(itemCategory)
   const quoteList = Array.isArray(quotes) ? quotes : []
   const bestVolumeAcrossMarkets = quoteList
-    .map((row) => toFiniteOrNull(row?.volume_7d))
-    .filter((value) => value != null && value >= 0)
+    .map((row) => toPositiveOrNull(row?.volume_7d))
+    .filter((value) => value != null)
     .sort((a, b) => b - a)[0]
 
-  const fallbackVolume = toFiniteOrNull(resolveVolume7d(item))
+  const fallbackVolume = toPositiveOrNull(resolveVolume7d(item))
   const volume7d = [
-    toFiniteOrNull(sellQuote?.volume_7d),
-    toFiniteOrNull(buyQuote?.volume_7d),
+    toPositiveOrNull(sellQuote?.volume_7d),
+    toPositiveOrNull(buyQuote?.volume_7d),
     bestVolumeAcrossMarkets,
     fallbackVolume
-  ].find((value) => value != null && value >= 0)
+  ].find((value) => value != null)
 
   if (volume7d == null) {
     if (isPremiumCategory(itemCategory) && Boolean(rules.allowMissing)) {
@@ -981,7 +985,7 @@ function evaluateItemOpportunity(item = {}, options = {}) {
     item,
     itemCategory
   })
-  const liquiditySample = resolveLiquiditySample(item, quotes)
+  const liquiditySample = resolveLiquiditySample(item, quotes, { buyQuote, sellQuote })
   const depthGapSignals = resolveDepthGapSignals({
     buyOutlierRatio: buyCandidate?.buyOutlierRatio,
     sellOutlierRatio: sellCandidate?.sellOutlierRatio,

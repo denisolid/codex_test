@@ -51,6 +51,25 @@ function toFiniteOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function toPositiveOrNull(value) {
+  const parsed = toFiniteOrNull(value)
+  return parsed != null && parsed > 0 ? parsed : null
+}
+
+function resolveSeedVolume7d(seed = {}) {
+  return (
+    toPositiveOrNull(
+      seed?.sellVolume7d ??
+        seed?.sell_volume_7d ??
+        seed?.sellRouteVolume7d ??
+        seed?.sell_route_volume_7d
+    ) ??
+    toPositiveOrNull(seed?.marketMaxVolume7d ?? seed?.market_max_volume_7d) ??
+    toPositiveOrNull(seed?.buyVolume7d ?? seed?.buy_volume_7d) ??
+    toPositiveOrNull(seed?.volume7d ?? seed?.volume_7d)
+  )
+}
+
 function toIsoOrNull(value) {
   if (value == null || value === "") return null
   if (value instanceof Date) {
@@ -207,7 +226,7 @@ function hasStructuralInvalidReason(seed = {}) {
 function buildPenaltyFlags(seed = {}, category = ITEM_CATEGORIES.WEAPON_SKIN) {
   const flags = []
   const profile = getCategoryProfile(category)
-  const volume7d = toFiniteOrNull(seed.volume7d ?? seed.volume_7d)
+  const volume7d = resolveSeedVolume7d(seed)
   const referencePrice = toFiniteOrNull(seed.referencePrice ?? seed.reference_price)
   const marketCoverageCount = Math.max(
     Number(toFiniteOrNull(seed.marketCoverageCount ?? seed.market_coverage_count) || 0),

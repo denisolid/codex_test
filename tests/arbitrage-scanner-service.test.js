@@ -23,6 +23,9 @@ const {
     mapFeedRowToApiRow,
     mapFeedRowToCard,
     dedupeFeedCards,
+    countScannableRowsByScannerCategory,
+    resolveScannerFamilyKey,
+    rebalanceSelectionForFeedDiversity,
     loadScannerSourceRows,
     persistFeedRows,
     normalizeCursorPayload,
@@ -112,6 +115,24 @@ test("scan-first state model forwards rows with penalties instead of hard-blocki
   assert.equal(result.hardRejectReasons.length, 0)
   assert.equal(result.penaltyFlags.includes("missing_liquidity"), true)
   assert.equal(result.penaltyFlags.includes("weak_coverage"), true)
+})
+
+test("state model accepts sell-side volume aliases as liquidity evidence", () => {
+  const result = classifyCatalogState({
+    marketHashName: "M4A1-S | Decimator (Field-Tested)",
+    itemName: "M4A1-S | Decimator (Field-Tested)",
+    category: "weapon_skin",
+    tradable: true,
+    isActive: true,
+    referencePrice: 12.4,
+    marketCoverageCount: 2,
+    volume7d: 0,
+    sell_volume_7d: 46,
+    quoteFetchedAt: new Date().toISOString()
+  })
+
+  assert.equal(result.state, SCAN_STATE.SCANABLE)
+  assert.equal(result.penaltyFlags.includes("missing_liquidity"), false)
 })
 
 test("state model still keeps true hard rejects narrow and explicit", () => {
@@ -258,6 +279,164 @@ test("candidate selection prioritizes tier_a then tier_b then non-priority", () 
   assert.equal(Number(selection.diagnostics.selectedByPriorityTier.non_priority || 0), 1)
 })
 
+test("candidate selection preserves sell-side volume when generic volume is zero", () => {
+  const nowIso = new Date().toISOString()
+  const selection = selectScanCandidates({
+    catalogRows: [
+      {
+        ...buildCatalogRow(101, "weapon_skin"),
+        market_hash_name: "USP-S | Ticket to Hell (Field-Tested)",
+        item_name: "USP-S | Ticket to Hell (Field-Tested)",
+        volume_7d: 0,
+        sell_volume_7d: 37,
+        snapshot_captured_at: nowIso,
+        quote_fetched_at: nowIso
+      }
+    ],
+    batchSize: 1,
+    cursor: 0,
+    lastScannedAtByName: new Map()
+  })
+
+  assert.equal(selection.selected.length, 1)
+  assert.equal(selection.selected[0].volume7d, 37)
+})
+
+test("candidate selection reserves one knife and one glove when quality gates pass", () => {
+  const nowIso = new Date().toISOString()
+  const catalogRows = []
+  for (let index = 0; index < 12; index += 1) {
+    catalogRows.push({
+      ...buildCatalogRow(index + 1, "weapon_skin"),
+      reference_price: 40 + index
+    })
+  }
+  catalogRows.push({
+    ...buildCatalogRow(999, "knife"),
+    market_hash_name: "★ Karambit | Fade (Factory New)",
+    item_name: "★ Karambit | Fade (Factory New)",
+    reference_price: 1200,
+    market_coverage_count: 3,
+    volume_7d: 12,
+    snapshot_captured_at: nowIso,
+    quote_fetched_at: nowIso
+  })
+  catalogRows.push({
+    ...buildCatalogRow(1000, "glove"),
+    market_hash_name: "★ Sport Gloves | Vice (Field-Tested)",
+    item_name: "★ Sport Gloves | Vice (Field-Tested)",
+    reference_price: 1800,
+    market_coverage_count: 3,
+    volume_7d: 10,
+    snapshot_captured_at: nowIso,
+    quote_fetched_at: nowIso
+  })
+
+  const selection = selectScanCandidates({
+    catalogRows,
+    batchSize: 6,
+    cursor: 0,
+    lastScannedAtByName: new Map()
+  })
+  const selectedCategories = selection.selected.map((row) => row.category)
+
+  assert.equal(selectedCategories.includes("knife"), true)
+  assert.equal(selectedCategories.includes("glove"), true)
+  assert.equal(Number(selection.diagnostics?.reservedPremiumByCategory?.knife || 0), 1)
+  assert.equal(Number(selection.diagnostics?.reservedPremiumByCategory?.glove || 0), 1)
+})
+
+test("scannable category counts ignore hard-reject placeholder rows", () => {
+  const nowIso = new Date().toISOString()
+  const counts = countScannableRowsByScannerCategory([
+    {
+      market_hash_name: "★ Karambit | Doppler (Factory New)",
+      item_name: "★ Karambit | Doppler (Factory New)",
+      category: "knife",
+      tradable: true,
+      is_active: true,
+      reference_price: null,
+      market_coverage_count: 0,
+      snapshot_captured_at: null,
+      quote_fetched_at: null
+    },
+    {
+      market_hash_name: "★ Karambit | Fade (Factory New)",
+      item_name: "★ Karambit | Fade (Factory New)",
+      category: "knife",
+      tradable: true,
+      is_active: true,
+      reference_price: 900,
+      market_coverage_count: 3,
+      volume_7d: 12,
+      snapshot_captured_at: nowIso,
+      quote_fetched_at: nowIso
+    }
+  ])
+
+  assert.equal(Number(counts.knife || 0), 1)
+})
+
+test("feed diversity rebalance caps family streaks when alternatives exist", () => {
+  const rows = [
+    {
+      marketHashName: "USP-S | Neo-Noir (Field-Tested)",
+      itemName: "USP-S | Neo-Noir (Field-Tested)",
+      category: "weapon_skin",
+      itemSubcategory: "pistol"
+    },
+    {
+      marketHashName: "Glock-18 | Fade (Factory New)",
+      itemName: "Glock-18 | Fade (Factory New)",
+      category: "weapon_skin",
+      itemSubcategory: "pistol"
+    },
+    {
+      marketHashName: "P250 | See Ya Later (Minimal Wear)",
+      itemName: "P250 | See Ya Later (Minimal Wear)",
+      category: "weapon_skin",
+      itemSubcategory: "pistol"
+    },
+    {
+      marketHashName: "AWP | Asiimov (Field-Tested)",
+      itemName: "AWP | Asiimov (Field-Tested)",
+      category: "weapon_skin",
+      itemSubcategory: "sniper"
+    },
+    {
+      marketHashName: "AK-47 | Redline (Field-Tested)",
+      itemName: "AK-47 | Redline (Field-Tested)",
+      category: "weapon_skin",
+      itemSubcategory: "rifle"
+    },
+    {
+      marketHashName: "Desert Eagle | Blaze (Factory New)",
+      itemName: "Desert Eagle | Blaze (Factory New)",
+      category: "weapon_skin",
+      itemSubcategory: "pistol"
+    }
+  ]
+
+  const reordered = rebalanceSelectionForFeedDiversity(rows, { maxConsecutiveFamily: 2 })
+  assert.equal(reordered.length, rows.length)
+
+  let previousFamily = ""
+  let streak = 0
+  let maxStreak = 0
+  for (const row of reordered) {
+    const family = resolveScannerFamilyKey(row)
+    if (family === previousFamily) {
+      streak += 1
+    } else {
+      previousFamily = family
+      streak = 1
+    }
+    maxStreak = Math.max(maxStreak, streak)
+  }
+
+  assert.equal(maxStreak <= 2, true)
+})
+
 test("scanner source loader backfills missing categories from candidate pool", async () => {
   const originals = {
     listScannerSource: marketSourceCatalogRepo.listScannerSource,
@@ -271,7 +450,12 @@ test("scanner source loader backfills missing categories from candidate pool", a
       item_name: "AK-47 | Redline (Field-Tested)",
       category: "weapon_skin",
       tradable: true,
-      is_active: true
+      is_active: true,
+      reference_price: 18,
+      market_coverage_count: 3,
+      volume_7d: 140,
+      snapshot_captured_at: new Date().toISOString(),
+      quote_fetched_at: new Date().toISOString()
     }
   ]
   marketSourceCatalogRepo.listCandidatePool = async () => [
@@ -280,28 +464,48 @@ test("scanner source loader backfills missing categories from candidate pool", a
       item_name: "Revolution Case",
       category: "case",
       tradable: true,
-      is_active: true
+      is_active: true,
+      reference_price: 2.6,
+      market_coverage_count: 3,
+      volume_7d: 550,
+      snapshot_captured_at: new Date().toISOString(),
+      quote_fetched_at: new Date().toISOString()
     },
     {
       market_hash_name: "Stockholm 2021 Contenders Sticker Capsule",
       item_name: "Stockholm 2021 Contenders Sticker Capsule",
       category: "sticker_capsule",
       tradable: true,
-      is_active: true
+      is_active: true,
+      reference_price: 3.1,
+      market_coverage_count: 3,
+      volume_7d: 210,
+      snapshot_captured_at: new Date().toISOString(),
+      quote_fetched_at: new Date().toISOString()
     },
     {
       market_hash_name: "★ Karambit | Doppler (Factory New)",
       item_name: "★ Karambit | Doppler (Factory New)",
       category: "knife",
       tradable: true,
-      is_active: true
+      is_active: true,
+      reference_price: 1200,
+      market_coverage_count: 3,
+      volume_7d: 9,
+      snapshot_captured_at: new Date().toISOString(),
+      quote_fetched_at: new Date().toISOString()
     },
     {
       market_hash_name: "★ Sport Gloves | Vice (Field-Tested)",
       item_name: "★ Sport Gloves | Vice (Field-Tested)",
       category: "glove",
       tradable: true,
-      is_active: true
+      is_active: true,
+      reference_price: 1600,
+      market_coverage_count: 3,
+      volume_7d: 8,
+      snapshot_captured_at: new Date().toISOString(),
+      quote_fetched_at: new Date().toISOString()
     }
   ]
   marketSourceCatalogRepo.listActiveTradable = async () => []
@@ -950,6 +1154,37 @@ test("feed mapper reads FEED_CARD alias fields when metadata object is absent", 
   assert.equal(mapped.itemRarity, "Classified")
   assert.equal(mapped.itemRarityColor, "#d32ce6")
   assert.equal(mapped.itemImageUrl, "https://cdn.example.com/redline.png")
+})
+
+test("feed mapper prefers sell-side liquidity over stale generic volume aliases", () => {
+  const mapped = mapFeedRowToApiRow({
+    id: "feed-row-sell-liquidity",
+    item_name: "AWP | Hyper Beast (Field-Tested)",
+    market_hash_name: "AWP | Hyper Beast (Field-Tested)",
+    category: "weapon_skin",
+    buy_market: "steam",
+    buy_price: 18.2,
+    sell_market: "skinport",
+    sell_net: 21.7,
+    profit: 3.5,
+    spread_pct: 19.23,
+    opportunity_score: 77,
+    execution_confidence: "Medium",
+    quality_grade: "RISKY",
+    liquidity_label: "Medium",
+    volume_7d: "0",
+    sell_volume_7d: "148",
+    buy_volume_7d: "22",
+    market_max_volume_7d: "201",
+    liquidity_source: "sell_route"
+  })
+
+  assert.equal(mapped.volume7d, 148)
+  assert.equal(mapped.liquidity, 148)
+  assert.equal(mapped.sellVolume7d, 148)
+  assert.equal(mapped.buyVolume7d, 22)
+  assert.equal(mapped.marketMaxVolume7d, 201)
+  assert.equal(mapped.liquiditySource, "sell_route")
 })
 
 test("display score soft-normalizes visible feed values without changing raw score ordering inputs", () => {

@@ -2,8 +2,32 @@ const asyncHandler = require("../utils/asyncHandler")
 const scannerService = require("../services/arbitrageScannerService")
 const opportunityInsightService = require("../services/opportunityInsightService")
 
+function toFiniteOrNull(value) {
+  if (value == null || value === "") return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function toPositiveOrNull(value) {
+  const parsed = toFiniteOrNull(value)
+  return parsed != null && parsed > 0 ? parsed : null
+}
+
+function resolveFeedVolume7d(row = {}) {
+  return (
+    toPositiveOrNull(row?.sellVolume7d ?? row?.sell_volume_7d) ??
+    toPositiveOrNull(row?.marketMaxVolume7d ?? row?.market_max_volume_7d) ??
+    toPositiveOrNull(row?.buyVolume7d ?? row?.buy_volume_7d) ??
+    toPositiveOrNull(row?.volume7d ?? row?.liquidity)
+  )
+}
+
 function toOpportunityRow(row = {}) {
   const qualityScoreDisplay = row?.qualityScoreDisplay ?? row?.quality_score_display ?? null
+  const sellVolume7d = toPositiveOrNull(row?.sellVolume7d ?? row?.sell_volume_7d)
+  const buyVolume7d = toPositiveOrNull(row?.buyVolume7d ?? row?.buy_volume_7d)
+  const marketMaxVolume7d = toPositiveOrNull(row?.marketMaxVolume7d ?? row?.market_max_volume_7d)
+  const volume7d = resolveFeedVolume7d(row)
   const payload = {
     feedId: row?.feedId || row?.id || null,
     detectedAt: row?.detectedAt || null,
@@ -33,10 +57,14 @@ function toOpportunityRow(row = {}) {
     scoreCategory: row?.scoreCategory || null,
     executionConfidence: row?.executionConfidence || null,
     qualityGrade: row?.qualityGrade || null,
-    liquidity: row?.liquidity ?? null,
+    liquidity: volume7d,
     liquidityBand: row?.liquidityBand || null,
     liquidityLabel: row?.liquidityLabel || row?.liquidityBand || null,
-    volume7d: row?.volume7d ?? null,
+    volume7d: volume7d ?? null,
+    sellVolume7d: sellVolume7d ?? null,
+    buyVolume7d: buyVolume7d ?? null,
+    marketMaxVolume7d: marketMaxVolume7d ?? null,
+    liquiditySource: row?.liquiditySource || row?.liquidity_source || null,
     marketCoverage: row?.marketCoverage ?? null,
     referencePrice: row?.referencePrice ?? null,
     latestSignalAgeHours:
