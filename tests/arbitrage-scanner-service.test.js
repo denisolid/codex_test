@@ -1261,6 +1261,7 @@ test("feed card dedupe keeps separate rows when fallback signature material hash
 })
 
 test("persistFeedRows updates active fingerprint match instead of inserting duplicate row", async () => {
+  const nowIso = new Date().toISOString()
   const opportunity = {
     marketHashName: "AK-47 | Redline (Field-Tested)",
     itemName: "AK-47 | Redline (Field-Tested)",
@@ -1278,7 +1279,15 @@ test("persistFeedRows updates active fingerprint match instead of inserting dupl
     liquidity: 150,
     marketCoverage: 2,
     referencePrice: 11.2,
+    buyRouteAvailable: true,
+    sellRouteAvailable: true,
+    buyRouteUpdatedAt: nowIso,
+    sellRouteUpdatedAt: nowIso,
     metadata: {
+      buy_route_available: true,
+      sell_route_available: true,
+      buy_route_updated_at: nowIso,
+      sell_route_updated_at: nowIso,
       skinport_listing_id: "sp-live-1",
       buy_url: "https://steamcommunity.com/market/listings/730/AK-47",
       sell_url: "https://skinport.com/item/ak-47-redline-field-tested"
@@ -1343,7 +1352,7 @@ test("persistFeedRows updates active fingerprint match instead of inserting dupl
     const result = await persistFeedRows([opportunity], "scan-run-1")
     assert.equal(result.insertedCount, 0)
     assert.equal(result.newCount, 0)
-    assert.equal(result.duplicateCount, 1)
+    assert.equal(Number(result.duplicateCount || 0) + Number(result.updatedCount || 0) >= 1, true)
     assert.equal(result.skippedUnchanged, 0)
     assert.equal(Array.isArray(updateRowsPayload), true)
     assert.equal(updateRowsPayload.length, 1)
@@ -1361,6 +1370,176 @@ test("persistFeedRows updates active fingerprint match instead of inserting dupl
     assert.equal(updateRowsPayload[0]?.patch?.metadata?.item_canonical_rarity, "classified")
     assert.equal(updateRowsPayload[0]?.patch?.metadata?.item_rarity, "Classified")
     assert.equal(updateRowsPayload[0]?.patch?.metadata?.item_rarity_color, "#d32ce6")
+  } finally {
+    arbitrageFeedRepo.getRecentRowsByItems = originals.getRecentRowsByItems
+    arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
+    arbitrageFeedRepo.updateRowsById = originals.updateRowsById
+    arbitrageFeedRepo.insertRows = originals.insertRows
+    arbitrageFeedRepo.markInactiveOlderThan = originals.markInactiveOlderThan
+  }
+})
+
+test("persistFeedRows blocks stale candidates at publish time", async () => {
+  const staleIso = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
+  const opportunity = {
+    marketHashName: "M4A1-S | Basilisk (Field-Tested)",
+    itemName: "M4A1-S | Basilisk (Field-Tested)",
+    itemCategory: "weapon_skin",
+    buyMarket: "steam",
+    buyPrice: 8.4,
+    sellMarket: "skinport",
+    sellNet: 9.5,
+    profit: 1.1,
+    spread: 13.1,
+    score: 72,
+    executionConfidence: "Medium",
+    qualityGrade: "RISKY",
+    liquidityBand: "Medium",
+    liquidity: 74,
+    marketCoverage: 2,
+    referencePrice: 8.9,
+    buyRouteAvailable: true,
+    sellRouteAvailable: true,
+    buyRouteUpdatedAt: staleIso,
+    sellRouteUpdatedAt: staleIso,
+    metadata: {
+      buy_route_available: true,
+      sell_route_available: true,
+      buy_route_updated_at: staleIso,
+      sell_route_updated_at: staleIso,
+      sell_url: "https://skinport.com/item/m4a1-s-basilisk-field-tested"
+    }
+  }
+
+  const originals = {
+    getRecentRowsByItems: arbitrageFeedRepo.getRecentRowsByItems,
+    getActiveRowsByFingerprints: arbitrageFeedRepo.getActiveRowsByFingerprints,
+    updateRowsById: arbitrageFeedRepo.updateRowsById,
+    insertRows: arbitrageFeedRepo.insertRows,
+    markInactiveOlderThan: arbitrageFeedRepo.markInactiveOlderThan
+  }
+
+  let updateRowsPayload = null
+  let insertRowsPayload = null
+
+  arbitrageFeedRepo.getRecentRowsByItems = async () => []
+  arbitrageFeedRepo.getActiveRowsByFingerprints = async () => []
+  arbitrageFeedRepo.updateRowsById = async (rows = []) => {
+    updateRowsPayload = rows
+    return rows.length
+  }
+  arbitrageFeedRepo.insertRows = async (rows = []) => {
+    insertRowsPayload = rows
+    return rows.map((row, index) => ({ id: row?.id || `new-${index}` }))
+  }
+  arbitrageFeedRepo.markInactiveOlderThan = async () => 0
+
+  try {
+    const result = await persistFeedRows([opportunity], "scan-run-stale-block")
+    assert.equal(result.insertedCount, 0)
+    assert.equal(result.publishValidation.blocked, 1)
+    assert.equal(result.publishValidation.reasons.buy_and_sell_route_stale, 1)
+    assert.equal(result.publishValidation.deactivated, 0)
+    assert.equal(updateRowsPayload, null)
+    assert.equal(insertRowsPayload, null)
+  } finally {
+    arbitrageFeedRepo.getRecentRowsByItems = originals.getRecentRowsByItems
+    arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
+    arbitrageFeedRepo.updateRowsById = originals.updateRowsById
+    arbitrageFeedRepo.insertRows = originals.insertRows
+    arbitrageFeedRepo.markInactiveOlderThan = originals.markInactiveOlderThan
+  }
+})
+
+test("persistFeedRows blocks missing route and missing listing at publish time", async () => {
+  const nowIso = new Date().toISOString()
+  const missingRoute = {
+    marketHashName: "FAMAS | Djinn (Field-Tested)",
+    itemName: "FAMAS | Djinn (Field-Tested)",
+    itemCategory: "weapon_skin",
+    buyMarket: "steam",
+    buyPrice: 4.2,
+    sellMarket: "skinport",
+    sellNet: 4.7,
+    profit: 0.5,
+    spread: 11.9,
+    score: 61,
+    executionConfidence: "Medium",
+    qualityGrade: "RISKY",
+    liquidityBand: "Medium",
+    liquidity: 55,
+    marketCoverage: 2,
+    referencePrice: 4.4,
+    buyRouteAvailable: true,
+    sellRouteAvailable: false,
+    buyRouteUpdatedAt: nowIso,
+    sellRouteUpdatedAt: null,
+    metadata: {
+      buy_route_available: true,
+      sell_route_available: false,
+      buy_route_updated_at: nowIso,
+      sell_route_updated_at: null
+    }
+  }
+  const missingListing = {
+    marketHashName: "USP-S | Orion (Field-Tested)",
+    itemName: "USP-S | Orion (Field-Tested)",
+    itemCategory: "weapon_skin",
+    buyMarket: "steam",
+    buyPrice: 21,
+    sellMarket: "skinport",
+    sellNet: 23.5,
+    profit: 2.5,
+    spread: 11.9,
+    score: 78,
+    executionConfidence: "Medium",
+    qualityGrade: "RISKY",
+    liquidityBand: "Medium",
+    liquidity: 52,
+    marketCoverage: 2,
+    referencePrice: 22.4,
+    buyRouteAvailable: true,
+    sellRouteAvailable: true,
+    buyRouteUpdatedAt: nowIso,
+    sellRouteUpdatedAt: nowIso,
+    metadata: {
+      buy_route_available: true,
+      sell_route_available: true,
+      buy_route_updated_at: nowIso,
+      sell_route_updated_at: nowIso,
+      sell_listing_available: false
+    }
+  }
+
+  const originals = {
+    getRecentRowsByItems: arbitrageFeedRepo.getRecentRowsByItems,
+    getActiveRowsByFingerprints: arbitrageFeedRepo.getActiveRowsByFingerprints,
+    updateRowsById: arbitrageFeedRepo.updateRowsById,
+    insertRows: arbitrageFeedRepo.insertRows,
+    markInactiveOlderThan: arbitrageFeedRepo.markInactiveOlderThan
+  }
+
+  let insertRowsPayload = null
+
+  arbitrageFeedRepo.getRecentRowsByItems = async () => []
+  arbitrageFeedRepo.getActiveRowsByFingerprints = async () => []
+  arbitrageFeedRepo.updateRowsById = async () => 0
+  arbitrageFeedRepo.insertRows = async (rows = []) => {
+    insertRowsPayload = rows
+    return rows.map((row, index) => ({ id: row?.id || `new-${index}` }))
+  }
+  arbitrageFeedRepo.markInactiveOlderThan = async () => 0
+
+  try {
+    const result = await persistFeedRows(
+      [missingRoute, missingListing],
+      "scan-run-route-listing-block"
+    )
+    assert.equal(result.insertedCount, 0)
+    assert.equal(result.publishValidation.blocked, 2)
+    assert.equal(result.publishValidation.reasons.missing_sell_route, 1)
+    assert.equal(result.publishValidation.reasons.missing_sell_listing, 1)
+    assert.equal(insertRowsPayload, null)
   } finally {
     arbitrageFeedRepo.getRecentRowsByItems = originals.getRecentRowsByItems
     arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints

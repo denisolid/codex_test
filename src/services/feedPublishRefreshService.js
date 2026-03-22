@@ -1,11 +1,17 @@
 const arbitrageFeedRepo = require("../repositories/arbitrageFeedRepository")
 const marketQuoteRepo = require("../repositories/marketQuoteRepository")
 const { mapFeedRowToApiRow } = require("./scanner/feedPipeline")
+const {
+  evaluatePublishValidation,
+  DEFAULT_PUBLISH_MAX_SIGNAL_AGE_MS
+} = require("./scanner/publishValidation")
 const { CATEGORY_PROFILES, ITEM_CATEGORIES } = require("./scanner/config")
 const { sourceFeePercent, round2, roundPrice } = require("../markets/marketUtils")
 const { deriveInsightPayloadFromOpportunity } = require("./opportunityInsightService")
 
-const LIVE_MAX_SIGNAL_AGE_HOURS = 2
+const LIVE_MAX_SIGNAL_AGE_HOURS = Number(
+  (DEFAULT_PUBLISH_MAX_SIGNAL_AGE_MS / (60 * 60 * 1000)).toFixed(3)
+)
 const ANALYZABLE_MAX_SIGNAL_AGE_HOURS = 24
 const QUOTE_LOOKBACK_HOURS = 72
 const SKINPORT_QUOTE_TYPE_LIVE_EXECUTABLE = "live_executable"
@@ -97,6 +103,58 @@ function normalizeStatus(value, fallback = "degraded") {
   const raw = normalizeText(value).toLowerCase()
   if (!raw) return fallback
   return raw
+}
+
+function toBooleanOrNull(value) {
+  if (value === true) return true
+  if (value === false) return false
+  if (value == null || value === "") return null
+  const parsed = Number(value)
+  if (Number.isFinite(parsed)) {
+    if (parsed === 1) return true
+    if (parsed === 0) return false
+  }
+  const raw = normalizeText(value).toLowerCase()
+  if (!raw) return null
+  if (raw === "true" || raw === "yes" || raw === "on") return true
+  if (raw === "false" || raw === "no" || raw === "off") return false
+  return null
+}
+
+function buildPublishValidationMetadata(validation = {}) {
+  const signalAgeMs = toFiniteOrNull(validation?.signalAgeMs)
+  const publishValidatedAt = toIsoOrNull(validation?.publishValidatedAt)
+  const publishFreshnessState = normalizeText(validation?.publishFreshnessState) || "missing"
+  const requiredRouteState = normalizeText(validation?.requiredRouteState) || "missing_buy_and_sell_route"
+  const listingAvailabilityState = normalizeText(validation?.listingAvailabilityState) || "unknown"
+  const staleReason = normalizeText(validation?.staleReason) || null
+  const routeSignalObservedAt = toIsoOrNull(validation?.routeSignalObservedAt)
+  return {
+    signal_age_ms: signalAgeMs,
+    signalAgeMs: signalAgeMs,
+    publish_validated_at: publishValidatedAt,
+    publishValidatedAt: publishValidatedAt,
+    publish_freshness_state: publishFreshnessState,
+    publishFreshnessState: publishFreshnessState,
+    required_route_state: requiredRouteState,
+    requiredRouteState: requiredRouteState,
+    listing_availability_state: listingAvailabilityState,
+    listingAvailabilityState: listingAvailabilityState,
+    stale_reason: staleReason,
+    staleReason: staleReason,
+    route_signal_observed_at: routeSignalObservedAt,
+    routeSignalObservedAt: routeSignalObservedAt,
+    publish_validation: {
+      is_publishable: Boolean(validation?.isPublishable),
+      signal_age_ms: signalAgeMs,
+      publish_validated_at: publishValidatedAt,
+      publish_freshness_state: publishFreshnessState,
+      required_route_state: requiredRouteState,
+      listing_availability_state: listingAvailabilityState,
+      stale_reason: staleReason,
+      route_signal_observed_at: routeSignalObservedAt
+    }
+  }
 }
 
 function normalizeItemCategory(value) {
@@ -437,15 +495,51 @@ function buildRefreshedOpportunityRow(rawRow = {}, quoteRowsByItem = {}, options
     spreadPct = null
   }
 
-  const marketSignalObservedAt = resolveLatestIso([
-    buyQuote?.fetched_at,
-    sellQuote?.fetched_at,
-    rawRow?.market_signal_observed_at,
-    metadata?.latest_market_signal_at,
-    mapped.latestMarketSignalAt,
-    mapped.detectedAt
-  ])
-  const latestSignalAgeHours = computeAgeHours(marketSignalObservedAt, nowMs)
+  const buyRouteUpdatedAt = toIsoOrNull(
+    buyQuote?.fetched_at || buyQuote?.updated_at || buyQuote?.updatedAt
+  )
+  const sellRouteUpdatedAt = toIsoOrNull(
+    sellQuote?.fetched_at || sellQuote?.updated_at || sellQuote?.updatedAt
+  )
+  const buyRouteAvailable = buyPriceFromQuote != null && Number(buyPriceFromQuote) > 0
+  const sellRouteAvailable = sellNetFromQuote != null && Number(sellNetFromQuote) > 0
+  const buyListingAvailable =
+    buyMarket === "skinport"
+      ? Boolean(skinportValidation.confirmed)
+      : toBooleanOrNull(
+          mapped?.buyListingAvailable ??
+            mapped?.buy_listing_available ??
+            metadata?.buy_listing_available ??
+            metadata?.buyListingAvailable
+        )
+  const sellListingAvailable =
+    sellMarket === "skinport"
+      ? Boolean(skinportValidation.confirmed)
+      : toBooleanOrNull(
+          mapped?.sellListingAvailable ??
+            mapped?.sell_listing_available ??
+            metadata?.sell_listing_available ??
+            metadata?.sellListingAvailable
+        )
+  const publishValidation = evaluatePublishValidation({
+    nowIso,
+    nowMs,
+    maxSignalAgeMs: LIVE_MAX_SIGNAL_AGE_HOURS * 60 * 60 * 1000,
+    buyMarket,
+    sellMarket,
+    buyRouteAvailable,
+    sellRouteAvailable,
+    buyRouteUpdatedAt,
+    sellRouteUpdatedAt,
+    buyListingAvailable,
+    sellListingAvailable
+  })
+  const publishValidationMetadata = buildPublishValidationMetadata(publishValidation)
+  const marketSignalObservedAt = publishValidation.routeSignalObservedAt || null
+  const latestSignalAgeHours =
+    publishValidation.signalAgeMs == null
+      ? null
+      : Number((Number(publishValidation.signalAgeMs) / (60 * 60 * 1000)).toFixed(3))
   const sellVolume7d =
     toPositiveOrNull(sellQuote?.volume_7d) ??
     toPositiveOrNull(mapped.sellVolume7d ?? mapped.sell_volume_7d) ??
@@ -479,15 +573,24 @@ function buildRefreshedOpportunityRow(rawRow = {}, quoteRowsByItem = {}, options
     liquidity: volume7d,
     latestMarketSignalAt: marketSignalObservedAt,
     latestQuoteAt: marketSignalObservedAt,
-    staleResult:
-      latestSignalAgeHours == null ? true : latestSignalAgeHours > LIVE_MAX_SIGNAL_AGE_HOURS
+    staleResult: publishValidation.publishFreshnessState !== "fresh"
   })
 
-  const outcome = resolveRefreshOutcome({
+  const baseOutcome = resolveRefreshOutcome({
     ageHours: latestSignalAgeHours,
     netProfitAfterFees,
     verdict: insight?.verdict
   })
+  const publishBlocked = !publishValidation.isPublishable
+  const outcome = publishBlocked
+    ? {
+        refreshStatus:
+          publishValidation.publishFreshnessState === "stale" ? "stale" : "degraded",
+        liveStatus:
+          publishValidation.publishFreshnessState === "stale" ? "stale" : "degraded",
+        admission: "suppressed"
+      }
+    : baseOutcome
 
   const discoveredAt =
     toIsoOrNull(rawRow?.discovered_at) ||
@@ -496,8 +599,14 @@ function buildRefreshedOpportunityRow(rawRow = {}, quoteRowsByItem = {}, options
 
   const mergedMetadata = {
     ...metadata,
-    latest_market_signal_at: marketSignalObservedAt || metadata?.latest_market_signal_at || null,
-    latest_quote_at: marketSignalObservedAt || metadata?.latest_quote_at || null,
+    latest_market_signal_at: marketSignalObservedAt || null,
+    latest_quote_at: marketSignalObservedAt || null,
+    buy_route_updated_at: buyRouteUpdatedAt || null,
+    sell_route_updated_at: sellRouteUpdatedAt || null,
+    buy_route_available: Boolean(buyRouteAvailable),
+    sell_route_available: Boolean(sellRouteAvailable),
+    buy_listing_available: buyListingAvailable == null ? null : Boolean(buyListingAvailable),
+    sell_listing_available: sellListingAvailable == null ? null : Boolean(sellListingAvailable),
     volume_7d: volume7d == null ? metadata?.volume_7d || null : round2(volume7d),
     liquidity_value: volume7d == null ? metadata?.liquidity_value || null : round2(volume7d),
     sell_volume_7d:
@@ -528,13 +637,18 @@ function buildRefreshedOpportunityRow(rawRow = {}, quoteRowsByItem = {}, options
     skinport_validation_tier: skinportValidation.validationTier,
     skinport_validation_reject_reason: skinportValidation.rejectReason,
     skinport_fallback_applied: Boolean(skinportValidation.fallbackApplied),
+    ...publishValidationMetadata,
     publish_refresh: {
       refreshed_at: nowIso,
       refresh_status: outcome.refreshStatus,
       live_status: outcome.liveStatus,
       latest_signal_age_hours: latestSignalAgeHours,
       admission: outcome.admission,
-      verdict: normalizeText(insight?.verdict).toLowerCase() || null
+      verdict: normalizeText(insight?.verdict).toLowerCase() || null,
+      publish_freshness_state: publishValidation.publishFreshnessState,
+      required_route_state: publishValidation.requiredRouteState,
+      listing_availability_state: publishValidation.listingAvailabilityState,
+      stale_reason: publishValidation.staleReason || null
     }
   }
 
@@ -576,6 +690,22 @@ function buildRefreshedOpportunityRow(rawRow = {}, quoteRowsByItem = {}, options
     refreshStatus: outcome.refreshStatus,
     liveStatus: outcome.liveStatus,
     admission: outcome.admission,
+    signalAgeMs:
+      publishValidation.signalAgeMs == null ? null : Number(publishValidation.signalAgeMs),
+    signal_age_ms:
+      publishValidation.signalAgeMs == null ? null : Number(publishValidation.signalAgeMs),
+    publishValidatedAt: publishValidation.publishValidatedAt || null,
+    publish_validated_at: publishValidation.publishValidatedAt || null,
+    publishFreshnessState: publishValidation.publishFreshnessState || "missing",
+    publish_freshness_state: publishValidation.publishFreshnessState || "missing",
+    requiredRouteState: publishValidation.requiredRouteState || "missing_buy_and_sell_route",
+    required_route_state: publishValidation.requiredRouteState || "missing_buy_and_sell_route",
+    listingAvailabilityState: publishValidation.listingAvailabilityState || "unknown",
+    listing_availability_state: publishValidation.listingAvailabilityState || "unknown",
+    staleReason: publishValidation.staleReason || null,
+    stale_reason: publishValidation.staleReason || null,
+    requiredRoutePublishable: Boolean(publishValidation.isPublishable),
+    required_route_publishable: Boolean(publishValidation.isPublishable),
     skinportQuotePrice: skinportValidation.quotePrice,
     skinport_quote_price: skinportValidation.quotePrice,
     skinportQuoteCurrency: skinportValidation.quoteCurrency,
@@ -812,23 +942,32 @@ async function refreshForFeedPublish(feedRows = [], options = {}) {
     buildRefreshedOpportunityRow(row, quoteRowsByItem, { nowIso, nowMs })
   )
 
-  if (options.persist !== false) {
-    const patchRows = refreshedRows
-      .filter((row) => normalizeText(row?.raw?.id))
-      .map((row) => ({
-        id: row.raw.id,
-        patch: row.patch
-      }))
-    if (patchRows.length) {
-      await arbitrageFeedRepo.updatePublishRefreshState(patchRows).catch(() => 0)
-    }
-  }
-
   const skinportPipeline = createSkinportPublishDiagnostics()
+  const publishValidationDiagnostics = {
+    blocked: 0,
+    deactivated: 0,
+    reasons: {}
+  }
   const admittedRows = []
+  const patchRows = []
   for (const refreshed of refreshedRows) {
     const row = refreshed?.api || {}
     const decision = evaluateFeedAdmission(row, { includeRisky: options.includeRisky })
+    const publishBlocked = !Boolean(
+      row?.requiredRoutePublishable ?? row?.required_route_publishable
+    )
+    const publishReason =
+      normalizeText(row?.staleReason ?? row?.stale_reason) || "publish_validation_failed"
+    const finalAdmit = decision.admit && !publishBlocked
+
+    if (publishBlocked) {
+      publishValidationDiagnostics.blocked += 1
+      incrementCounter(publishValidationDiagnostics.reasons, publishReason)
+      if (Boolean(refreshed?.raw?.is_active)) {
+        publishValidationDiagnostics.deactivated += 1
+      }
+    }
+
     if (decision.skinportApplicable) {
       skinportPipeline.candidates += 1
       skinportPipeline.stageCounters[SKINPORT_PUBLISH_GATE_STAGE].requested += 1
@@ -840,18 +979,40 @@ async function refreshForFeedPublish(feedRows = [], options = {}) {
       } else if (validationTier === SKINPORT_VALIDATION_TIER_FALLBACK) {
         skinportPipeline.fallbackValidated += 1
       }
-      if (decision.admit) {
+      if (finalAdmit) {
         skinportPipeline.admitted += 1
         skinportPipeline.stageCounters[SKINPORT_PUBLISH_GATE_STAGE].passed += 1
       } else {
         skinportPipeline.rejected += 1
         skinportPipeline.stageCounters[SKINPORT_PUBLISH_GATE_STAGE].rejected += 1
-        incrementCounter(skinportPipeline.rejectReasons, decision.reason || "rejected")
+        incrementCounter(
+          skinportPipeline.rejectReasons,
+          publishBlocked ? publishReason : decision.reason || "rejected"
+        )
       }
     }
-    if (decision.admit) {
+    if (finalAdmit) {
       admittedRows.push(row)
     }
+
+    if (normalizeText(refreshed?.raw?.id)) {
+      const patch = {
+        ...refreshed.patch
+      }
+      if (publishBlocked) {
+        patch.is_active = false
+        patch.refresh_status = normalizeStatus(row.refreshStatus || row.refresh_status, "degraded")
+        patch.live_status = normalizeStatus(row.liveStatus || row.live_status, "degraded")
+      }
+      patchRows.push({
+        id: refreshed.raw.id,
+        patch
+      })
+    }
+  }
+
+  if (options.persist !== false && patchRows.length) {
+    await arbitrageFeedRepo.updatePublishRefreshState(patchRows).catch(() => 0)
   }
 
   const liveCount = refreshedRows.filter(
@@ -878,6 +1039,7 @@ async function refreshForFeedPublish(feedRows = [], options = {}) {
       degraded: degradedCount,
       suppressed: Math.max(refreshedRows.length - admittedRows.length, 0),
       quoteRowsFound,
+      publishValidation: publishValidationDiagnostics,
       skinportPipeline
     }
   }

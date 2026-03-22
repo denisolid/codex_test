@@ -813,10 +813,104 @@ function resolveBaseMetrics(comparedItem = {}, candidate = {}) {
   }
 }
 
+function resolveRouteMarketRow(perMarket = [], source = "") {
+  const normalizedSource = normalizeSource(source)
+  if (!normalizedSource) return null
+  return (
+    toArray(perMarket).find(
+      (row) =>
+        normalizeSource(row?.source || row?.market) === normalizedSource &&
+        Boolean(row?.available)
+    ) || null
+  )
+}
+
+function resolveRouteUpdatedAt(row = {}) {
+  return toIsoOrNull(row?.updatedAt || row?.updated_at || row?.fetched_at || row?.fetchedAt)
+}
+
+function resolveRouteListingId(row = {}) {
+  const raw = row?.raw || {}
+  return (
+    normalizeText(
+      row?.listing_id ??
+        row?.listingId ??
+        raw?.listing_id ??
+        raw?.listingId ??
+        raw?.skinport_listing_id ??
+        raw?.skinportListingId
+    ) || null
+  )
+}
+
+function resolveRouteAvailabilityContext(comparedItem = {}, base = {}) {
+  const perMarket = toArray(comparedItem?.perMarket)
+  const buyMarket = normalizeSource(base?.buyMarket)
+  const sellMarket = normalizeSource(base?.sellMarket)
+  const buyRow = resolveRouteMarketRow(perMarket, buyMarket)
+  const sellRow = resolveRouteMarketRow(perMarket, sellMarket)
+  const buyRoutePrice = toPositiveOrNull(buyRow?.grossPrice)
+  const sellRoutePrice = toPositiveOrNull(sellRow?.netPriceAfterFees)
+  const buyRouteAvailable = Boolean(buyRow && buyRoutePrice != null)
+  const sellRouteAvailable = Boolean(sellRow && sellRoutePrice != null)
+  const buyRouteUpdatedAt = resolveRouteUpdatedAt(buyRow)
+  const sellRouteUpdatedAt = resolveRouteUpdatedAt(sellRow)
+  const buyListingId = resolveRouteListingId(buyRow)
+  const sellListingId = resolveRouteListingId(sellRow)
+  const buyListingAvailable =
+    buyMarket === "skinport"
+      ? Boolean(buyListingId || normalizeText(base?.buyUrl))
+      : null
+  const sellListingAvailable =
+    sellMarket === "skinport"
+      ? Boolean(sellListingId || normalizeText(base?.sellUrl))
+      : null
+
+  const missingBuyRoute = Boolean(buyMarket) && !buyRouteAvailable
+  const missingSellRoute = Boolean(sellMarket) && !sellRouteAvailable
+  const requiredRouteState =
+    missingBuyRoute && missingSellRoute
+      ? "missing_buy_and_sell_route"
+      : missingBuyRoute
+        ? "missing_buy_route"
+        : missingSellRoute
+          ? "missing_sell_route"
+          : "ready"
+
+  const requiresBuyListing = buyMarket === "skinport"
+  const requiresSellListing = sellMarket === "skinport"
+  const missingBuyListing = requiresBuyListing && buyRouteAvailable && buyListingAvailable === false
+  const missingSellListing = requiresSellListing && sellRouteAvailable && sellListingAvailable === false
+  const listingAvailabilityState =
+    !requiresBuyListing && !requiresSellListing
+      ? "not_required"
+      : missingBuyListing && missingSellListing
+        ? "missing_buy_and_sell_listing"
+        : missingBuyListing
+          ? "missing_buy_listing"
+          : missingSellListing
+            ? "missing_sell_listing"
+            : "available"
+
+  return {
+    buyRouteAvailable,
+    sellRouteAvailable,
+    buyRouteUpdatedAt,
+    sellRouteUpdatedAt,
+    buyListingAvailable,
+    sellListingAvailable,
+    buyListingId,
+    sellListingId,
+    requiredRouteState,
+    listingAvailabilityState
+  }
+}
+
 function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
   const category = normalizeCategory(candidate.category, candidate.itemName)
   const profile = resolveCategoryProfile(category)
   const base = resolveBaseMetrics(comparedItem, candidate)
+  const routeContext = resolveRouteAvailabilityContext(comparedItem, base)
   const liquiditySignal = resolveLiquiditySignal(comparedItem, candidate, {
     buyMarket: base.buyMarket,
     sellMarket: base.sellMarket
@@ -969,6 +1063,14 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
     referencePrice: base.referencePrice == null ? null : roundPrice(base.referencePrice),
     buyUrl: base.buyUrl,
     sellUrl: base.sellUrl,
+    buyRouteUpdatedAt: routeContext.buyRouteUpdatedAt,
+    sellRouteUpdatedAt: routeContext.sellRouteUpdatedAt,
+    buyRouteAvailable: routeContext.buyRouteAvailable,
+    sellRouteAvailable: routeContext.sellRouteAvailable,
+    buyListingAvailable: routeContext.buyListingAvailable,
+    sellListingAvailable: routeContext.sellListingAvailable,
+    requiredRouteState: routeContext.requiredRouteState,
+    listingAvailabilityState: routeContext.listingAvailabilityState,
     itemImageUrl: null,
     itemRarity: null,
     itemRarityColor: null,
@@ -1002,6 +1104,18 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
       stale_result:
         usedSignalFreshness?.staleResult == null ? null : Boolean(usedSignalFreshness?.staleResult),
       stale_reason_source: normalizeText(usedSignalFreshness?.staleReasonSource) || null,
+      buy_route_updated_at: routeContext.buyRouteUpdatedAt || null,
+      sell_route_updated_at: routeContext.sellRouteUpdatedAt || null,
+      buy_route_available: Boolean(routeContext.buyRouteAvailable),
+      sell_route_available: Boolean(routeContext.sellRouteAvailable),
+      buy_listing_available:
+        routeContext.buyListingAvailable == null ? null : Boolean(routeContext.buyListingAvailable),
+      sell_listing_available:
+        routeContext.sellListingAvailable == null ? null : Boolean(routeContext.sellListingAvailable),
+      buy_listing_id: routeContext.buyListingId || null,
+      sell_listing_id: routeContext.sellListingId || null,
+      required_route_state: routeContext.requiredRouteState,
+      listing_availability_state: routeContext.listingAvailabilityState,
       liquidity_source: liquiditySignal.source,
       sell_volume_7d:
         liquiditySignal.sellVolume7d == null ? null : round2(liquiditySignal.sellVolume7d),
@@ -1050,6 +1164,12 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
         stale_reason_source:
           normalizeText(usedSignalFreshness?.staleReasonSource) || "no_usable_market_timestamp",
         used_market_signals: toArray(usedSignalFreshness?.usedSignals),
+        buy_route_updated_at: routeContext.buyRouteUpdatedAt || null,
+        sell_route_updated_at: routeContext.sellRouteUpdatedAt || null,
+        buy_route_available: Boolean(routeContext.buyRouteAvailable),
+        sell_route_available: Boolean(routeContext.sellRouteAvailable),
+        required_route_state: routeContext.requiredRouteState,
+        listing_availability_state: routeContext.listingAvailabilityState,
         raw_reasons: {
           sales_liquidity: toArray(diagnostics?.sales_liquidity?.reasons),
           executable_depth: toArray(diagnostics?.executable_depth?.reasons),
