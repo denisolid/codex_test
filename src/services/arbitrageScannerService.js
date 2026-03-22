@@ -117,25 +117,81 @@ const UNKNOWN_RARITY_TEXT_SET = new Set([
   "-",
   "?"
 ])
+const TRADEMARK_SYMBOL_REGEX = /[\u2122\u00ae]/g
+const TRADEMARK_MOJIBAKE_REGEX = /\u00e2\u201e\u00a2|\u00c2\u00ae/g
+const TRADEMARK_TEXT_REGEX = /\bTM\b/gi
+const PLACEHOLDER_IMAGE_MARKERS = Object.freeze([
+  "/skin-placeholder.svg",
+  "/case-placeholder.svg",
+  "/public/images/apps/730/header.jpg",
+  "apps/730/header.jpg"
+])
 
 function normalizeText(value) {
   return String(value || "").trim()
 }
 
-function canonicalSkinLookupName(value) {
+function stripTrademarkArtifacts(value) {
   return normalizeText(value)
-    .normalize("NFKC")
-    .replace(/[™®]/g, "")
+    .replace(TRADEMARK_SYMBOL_REGEX, "")
+    .replace(TRADEMARK_MOJIBAKE_REGEX, "")
+    .replace(TRADEMARK_TEXT_REGEX, "")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function canonicalSkinLookupName(value) {
+  return stripTrademarkArtifacts(normalizeText(value).normalize("NFKC"))
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase()
 }
 
 function buildSkinLookupNameVariants(value) {
-  const normalized = normalizeText(value).normalize("NFKC").replace(/\s+/g, " ").trim()
-  if (!normalized) return []
-  const withoutMarks = normalized.replace(/[™®]/g, "").replace(/\s+/g, " ").trim()
-  return Array.from(new Set([normalized, withoutMarks].map((entry) => normalizeText(entry)).filter(Boolean)))
+  const raw = normalizeText(value).replace(/\s+/g, " ").trim()
+  if (!raw) return []
+  const nfc = raw.normalize("NFC").replace(/\s+/g, " ").trim()
+  const nfkc = raw.normalize("NFKC").replace(/\s+/g, " ").trim()
+  const withoutMarksRaw = stripTrademarkArtifacts(raw)
+  const withoutMarksNfkc = stripTrademarkArtifacts(nfkc)
+  return Array.from(
+    new Set(
+      [raw, nfc, nfkc, withoutMarksRaw, withoutMarksNfkc]
+        .map((entry) => normalizeText(entry))
+        .filter(Boolean)
+    )
+  )
+}
+
+function pickPreferredRarityValue(...values) {
+  for (const candidate of values) {
+    const text = normalizeText(candidate)
+    if (!text) continue
+    if (UNKNOWN_RARITY_TEXT_SET.has(text.toLowerCase())) continue
+    return text
+  }
+  return null
+}
+
+function isHttpImageUrl(value) {
+  return /^https?:\/\//i.test(normalizeText(value))
+}
+
+function isPlaceholderImageUrl(value) {
+  const text = normalizeText(value).toLowerCase()
+  if (!text) return true
+  return PLACEHOLDER_IMAGE_MARKERS.some((marker) => text.includes(marker))
+}
+
+function pickPreferredImageUrl(...values) {
+  for (const candidate of values) {
+    const text = normalizeText(candidate)
+    if (!text) continue
+    if (!isHttpImageUrl(text)) continue
+    if (isPlaceholderImageUrl(text)) continue
+    return text
+  }
+  return null
 }
 
 function toIsoOrNull(value) {
@@ -586,15 +642,20 @@ async function enrichRowsWithSkinMetadata(rows = []) {
       null
     if (!skin) return row
     const itemId = row.itemId || row.item_id || skin.id || null
-    const itemImageUrl = row.itemImageUrl || row.item_image_url || skin.image_url || null
+    const itemImageUrl = pickPreferredImageUrl(
+      row.itemImageUrl,
+      row.item_image_url,
+      skin.image_url_large,
+      skin.image_url
+    )
     const rarityResolution = resolveCanonicalRarity({
-      catalogRarity:
-        row.itemCanonicalRarity ||
-        row.item_canonical_rarity ||
-        skin.canonical_rarity ||
-        skin.rarity ||
-        null,
-      sourceRarity: row.itemRarity || row.item_rarity || skin.rarity || null,
+      catalogRarity: pickPreferredRarityValue(
+        row.itemCanonicalRarity,
+        row.item_canonical_rarity,
+        skin.canonical_rarity,
+        skin.rarity
+      ),
+      sourceRarity: pickPreferredRarityValue(row.itemRarity, row.item_rarity, skin.rarity),
       category: row.itemCategory || row.category || null,
       marketHashName: rowName,
       weapon: null
@@ -606,8 +667,13 @@ async function enrichRowsWithSkinMetadata(rows = []) {
       category: row.itemCategory || row.category || null,
       marketHashName: rowName,
       weapon: null,
-      catalogRarity: skin.canonical_rarity || skin.rarity || null,
-      sourceRarity: row.itemRarity || row.item_rarity || null
+      catalogRarity: pickPreferredRarityValue(
+        row.itemCanonicalRarity,
+        row.item_canonical_rarity,
+        skin.canonical_rarity,
+        skin.rarity
+      ),
+      sourceRarity: pickPreferredRarityValue(row.itemRarity, row.item_rarity, skin.rarity)
     })
     return {
       ...row,
