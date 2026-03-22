@@ -92,7 +92,8 @@ const ACCOUNT_PLAN_SWITCH_OPTIONS = Object.freeze([
   {
     value: "full_access",
     label: "Full Access",
-    description: "Full Access - unlock all scanner categories and premium workflows",
+    description:
+      "Full Access - unlock all scanner categories and premium workflows",
   },
 ]);
 const ACCOUNT_PLAN_LIMITS = Object.freeze({
@@ -161,7 +162,13 @@ const ACCOUNT_PLAN_ENTITLEMENT_FALLBACKS = Object.freeze({
     fullOpportunitiesFeed: true,
     premiumCategoryAccess: true,
     knivesGlovesAccess: true,
-    scannerCategories: ["weapon_skin", "case", "sticker_capsule", "knife", "glove"],
+    scannerCategories: [
+      "weapon_skin",
+      "case",
+      "sticker_capsule",
+      "knife",
+      "glove",
+    ],
     scannerCategoryAccessNote:
       "All scanner categories unlocked, including knives and gloves.",
     teamDashboard: true,
@@ -185,7 +192,8 @@ const PRICING_DISPLAY_PLANS = Object.freeze([
     price: "$0",
     cadence: "Forever",
     tagline: "Get started fast",
-    positioning: "Core tracking, basic scanner access, and limited compare depth.",
+    positioning:
+      "Core tracking, basic scanner access, and limited compare depth.",
   },
   {
     planTier: "full_access",
@@ -194,7 +202,8 @@ const PRICING_DISPLAY_PLANS = Object.freeze([
     price: "$29",
     cadence: "Per month",
     tagline: "Built for active trading",
-    positioning: "Full feed access, live signals, and advanced compare insights.",
+    positioning:
+      "Full feed access, live signals, and advanced compare insights.",
     recommended: true,
   },
   {
@@ -449,7 +458,8 @@ function normalizePlanTier(value) {
 function cloneDefaultNotificationPrefs() {
   return {
     priceAlerts: ACCOUNT_DEFAULT_NOTIFICATION_PREFS.priceAlerts,
-    arbitrageOpportunities: ACCOUNT_DEFAULT_NOTIFICATION_PREFS.arbitrageOpportunities,
+    arbitrageOpportunities:
+      ACCOUNT_DEFAULT_NOTIFICATION_PREFS.arbitrageOpportunities,
     marketSignals: ACCOUNT_DEFAULT_NOTIFICATION_PREFS.marketSignals,
     emailNotifications: ACCOUNT_DEFAULT_NOTIFICATION_PREFS.emailNotifications,
   };
@@ -466,8 +476,7 @@ function normalizeAccountSection(rawValue) {
 }
 
 function normalizeAccountNotificationPrefs(rawValue) {
-  const payload =
-    rawValue && typeof rawValue === "object" ? rawValue : {};
+  const payload = rawValue && typeof rawValue === "object" ? rawValue : {};
   return {
     priceAlerts: Boolean(
       Object.prototype.hasOwnProperty.call(payload, "priceAlerts")
@@ -516,7 +525,9 @@ function persistAccountNotificationPrefs(prefs = {}) {
 }
 
 function parseAccountSectionFromHash(hashValue = window.location.hash) {
-  const hash = String(hashValue || "").trim().replace(/^#/, "");
+  const hash = String(hashValue || "")
+    .trim()
+    .replace(/^#/, "");
   if (!hash) return "profile";
   return normalizeAccountSection(hash);
 }
@@ -567,9 +578,14 @@ function getPricingDisplayPlan(planTier) {
 function normalizePricingValueLabel(label, tone) {
   const raw = String(label || "").trim();
   const normalized = raw.toLowerCase();
-  const safeTone = String(tone || "").trim().toLowerCase();
+  const safeTone = String(tone || "")
+    .trim()
+    .toLowerCase();
   if (!raw) return "-";
-  if (safeTone === "included" && (normalized === "yes" || normalized === "included")) {
+  if (
+    safeTone === "included" &&
+    (normalized === "yes" || normalized === "included")
+  ) {
     return "Included";
   }
   if (safeTone === "no" && normalized === "no") {
@@ -582,7 +598,10 @@ function normalizePricingValueLabel(label, tone) {
 }
 
 function renderPricingValueChip(value) {
-  const payload = value && typeof value === "object" ? value : { label: value, tone: "neutral" };
+  const payload =
+    value && typeof value === "object"
+      ? value
+      : { label: value, tone: "neutral" };
   const label = String(payload.label || "-").trim() || "-";
   const tone = String(payload.tone || "neutral")
     .trim()
@@ -597,11 +616,16 @@ function renderPricingValueChip(value) {
 }
 
 function renderPricingPlanCards(options = {}) {
-  const context = String(options.context || "public").trim().toLowerCase() || "public";
+  const context =
+    String(options.context || "public")
+      .trim()
+      .toLowerCase() || "public";
   const safeCurrentPlan = normalizePlanTier(options.currentPlanTier || "free");
   const preferredUpgradeTarget = getPlanUpgradeTarget(safeCurrentPlan);
   const signedIn =
-    typeof options.signedIn === "boolean" ? options.signedIn : Boolean(state.authenticated);
+    typeof options.signedIn === "boolean"
+      ? options.signedIn
+      : Boolean(state.authenticated);
 
   return `
     <div class="pricing-plan-grid">
@@ -612,11 +636,15 @@ function renderPricingPlanCards(options = {}) {
           : plan.comingSoon
             ? "is-coming-soon"
             : "is-standard";
-        const highlights = Array.isArray(PRICING_PLAN_HIGHLIGHTS?.[plan.planTier])
+        const highlights = Array.isArray(
+          PRICING_PLAN_HIGHLIGHTS?.[plan.planTier],
+        )
           ? PRICING_PLAN_HIGHLIGHTS[plan.planTier]
           : [];
         let ctaMarkup = "";
-        const badgeLabel = String(plan.badge || getPlanBadgeLabel(plan.planTier)).trim();
+        const badgeLabel = String(
+          plan.badge || getPlanBadgeLabel(plan.planTier),
+        ).trim();
         if (plan.comingSoon) {
           ctaMarkup = `
             <button type="button" class="ghost-btn pricing-plan-cta pricing-plan-cta-waitlist" data-alpha-waitlist="1">
@@ -635,7 +663,9 @@ function renderPricingPlanCards(options = {}) {
             </button>
           `;
         } else {
-          const targetPath = signedIn ? "/account#subscription" : "/register.html";
+          const targetPath = signedIn
+            ? "/account#subscription"
+            : "/register.html";
           const label =
             plan.planTier === "free"
               ? "Start Free"
@@ -687,9 +717,18 @@ function renderPricingComparisonMobile() {
             <h3>${escapeHtml(group.label)}</h3>
             ${group.rows
               .map((row) => {
-                const freeCell = row.values?.free || { label: "-", tone: "neutral" };
-                const fullCell = row.values?.full_access || { label: "-", tone: "neutral" };
-                const alphaCell = row.values?.alpha_access || { label: "-", tone: "neutral" };
+                const freeCell = row.values?.free || {
+                  label: "-",
+                  tone: "neutral",
+                };
+                const fullCell = row.values?.full_access || {
+                  label: "-",
+                  tone: "neutral",
+                };
+                const alphaCell = row.values?.alpha_access || {
+                  label: "-",
+                  tone: "neutral",
+                };
                 return `
                   <article class="pricing-mobile-row">
                     <p class="pricing-mobile-feature">${escapeHtml(row.feature)}</p>
@@ -754,9 +793,18 @@ function renderPricingComparisonTable() {
               </tr>
               ${group.rows
                 .map((row) => {
-                  const freeCell = row.values?.free || { label: "-", tone: "neutral" };
-                  const fullCell = row.values?.full_access || { label: "-", tone: "neutral" };
-                  const alphaCell = row.values?.alpha_access || { label: "-", tone: "neutral" };
+                  const freeCell = row.values?.free || {
+                    label: "-",
+                    tone: "neutral",
+                  };
+                  const fullCell = row.values?.full_access || {
+                    label: "-",
+                    tone: "neutral",
+                  };
+                  const alphaCell = row.values?.alpha_access || {
+                    label: "-",
+                    tone: "neutral",
+                  };
                   return `
                     <tr class="pricing-feature-row">
                       <th scope="row">${escapeHtml(row.feature)}</th>
@@ -789,9 +837,18 @@ function renderPricingEssentials() {
         </thead>
         <tbody>
           ${PRICING_ESSENTIAL_COMPARISON_ROWS.map((row) => {
-            const freeCell = row.values?.free || { label: "-", tone: "neutral" };
-            const fullCell = row.values?.full_access || { label: "-", tone: "neutral" };
-            const alphaCell = row.values?.alpha_access || { label: "-", tone: "neutral" };
+            const freeCell = row.values?.free || {
+              label: "-",
+              tone: "neutral",
+            };
+            const fullCell = row.values?.full_access || {
+              label: "-",
+              tone: "neutral",
+            };
+            const alphaCell = row.values?.alpha_access || {
+              label: "-",
+              tone: "neutral",
+            };
             return `
               <tr>
                 <th scope="row">${escapeHtml(row.feature)}</th>
@@ -808,17 +865,19 @@ function renderPricingEssentials() {
 }
 
 function renderPricingComparisonSection(options = {}) {
-  const context = String(options.context || "public").trim().toLowerCase() || "public";
+  const context =
+    String(options.context || "public")
+      .trim()
+      .toLowerCase() || "public";
   const safeCurrentPlan = normalizePlanTier(options.currentPlanTier || "free");
   const upgradeTarget = getPlanUpgradeTarget(safeCurrentPlan);
   const upgradeTargetLabel = planTierToLabel(upgradeTarget);
   const signedIn =
-    typeof options.signedIn === "boolean" ? options.signedIn : Boolean(state.authenticated);
+    typeof options.signedIn === "boolean"
+      ? options.signedIn
+      : Boolean(state.authenticated);
   const sectionId = context === "public" ? 'id="pricing"' : "";
-  const heading =
-    context === "account"
-      ? "Plan Comparison"
-      : "Simple Pricing";
+  const heading = context === "account" ? "Plan Comparison" : "Simple Pricing";
   const helperText =
     context === "account"
       ? "Free and Full Access are active today. Alpha Access is roadmap-only."
@@ -966,9 +1025,10 @@ function readAuthBootstrapCache() {
 
 function persistAuthBootstrapCache(payload) {
   const safePayload = payload && typeof payload === "object" ? payload : null;
-  const safeUser = safePayload?.user && typeof safePayload.user === "object"
-    ? safePayload.user
-    : null;
+  const safeUser =
+    safePayload?.user && typeof safePayload.user === "object"
+      ? safePayload.user
+      : null;
   if (!safeUser?.id) {
     clearAuthBootstrapCache();
     return;
@@ -1040,7 +1100,9 @@ function persistAuthBootstrapCache(payload) {
       publicPortfolioEnabled: profile.publicPortfolioEnabled !== false,
       ownershipAlertsEnabled: profile.ownershipAlertsEnabled !== false,
       planTier: normalizePlanTier(profile.planTier || profile.plan || "free"),
-      plan: normalizePlanTier(profile.plan || onboarding.plan || profile.planTier || "free"),
+      plan: normalizePlanTier(
+        profile.plan || onboarding.plan || profile.planTier || "free",
+      ),
       planStatus: profile.planStatus || onboarding.planStatus || "active",
       billingStatus: profile.billingStatus || "inactive",
       planSeats: Number(profile.planSeats || 1),
@@ -1377,7 +1439,9 @@ const state = {
 
 function syncPlanAwareUiState() {
   const profile = state.authProfile || {};
-  const planTier = normalizePlanTier(profile.planTier || profile.plan || "free");
+  const planTier = normalizePlanTier(
+    profile.planTier || profile.plan || "free",
+  );
   const entitlements = getProfileEntitlements({
     ...profile,
     planTier,
@@ -1396,7 +1460,10 @@ function syncPlanAwareUiState() {
     state.marketTab.opportunities.filters.sortBy = "score";
   }
 
-  const visibleFeedLimit = Math.max(Number(entitlements.visibleFeedLimit || 10), 1);
+  const visibleFeedLimit = Math.max(
+    Number(entitlements.visibleFeedLimit || 10),
+    1,
+  );
   const currentMarketLimit = Math.max(
     Number(state.marketTab.opportunities.filters.limit || 250),
     1,
@@ -1477,7 +1544,12 @@ const APP_TABS = [
     hint: "Journal",
     icon: "\uD83D\uDCCA",
   },
-  { id: "social", label: "Watchlist", hint: "Public watchlists", icon: "\uD83D\uDC65" },
+  {
+    id: "social",
+    label: "Watchlist",
+    hint: "Public watchlists",
+    icon: "\uD83D\uDC65",
+  },
   { id: "team", label: "Team", hint: "Team ops", icon: "\uD83E\uDDE9" },
   { id: "settings", label: "Settings", hint: "Account", icon: "\u2699\uFE0F" },
 ];
@@ -2001,7 +2073,9 @@ function applyImageFallbacks(root = app) {
     img.dataset.fallbackBound = "1";
 
     const applyFallback = () => {
-      const fallbackSrc = String(img.getAttribute("data-fallback-src") || "").trim();
+      const fallbackSrc = String(
+        img.getAttribute("data-fallback-src") || "",
+      ).trim();
       if (!fallbackSrc) return;
       if (img.dataset.fallbackApplied === "1") return;
       img.dataset.fallbackApplied = "1";
@@ -2054,10 +2128,10 @@ function isEmailOnboardingRequired() {
 function isInitialPortfolioHydration() {
   return Boolean(
     state.authenticated &&
-      !state.publicPage.steamId64 &&
-      !isEmailOnboardingRequired() &&
-      state.portfolioLoading &&
-      !state.portfolio,
+    !state.publicPage.steamId64 &&
+    !isEmailOnboardingRequired() &&
+    state.portfolioLoading &&
+    !state.portfolio,
   );
 }
 
@@ -2067,8 +2141,12 @@ function getOnboardingRedirectTarget() {
 
 function syncEmailOnboardingStateFromProfile() {
   const profile = state.authProfile || {};
-  const pendingEmail = String(profile.pendingEmail || "").trim().toLowerCase();
-  const verifiedEmail = String(profile.email || "").trim().toLowerCase();
+  const pendingEmail = String(profile.pendingEmail || "")
+    .trim()
+    .toLowerCase();
+  const verifiedEmail = String(profile.email || "")
+    .trim()
+    .toLowerCase();
   const isSteamPlaceholderEmail = /^steam_\d{17}@steam\.local$/i.test(
     verifiedEmail,
   );
@@ -2486,7 +2564,12 @@ function trapOpportunityInsightModalFocus(event) {
 }
 
 function rememberInputFocusState(target) {
-  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
+  if (
+    !(
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement
+    )
+  ) {
     state.pendingInputFocus = null;
     return;
   }
@@ -2498,7 +2581,8 @@ function rememberInputFocusState(target) {
     id: target.id,
     selectionStart:
       typeof target.selectionStart === "number" ? target.selectionStart : null,
-    selectionEnd: typeof target.selectionEnd === "number" ? target.selectionEnd : null,
+    selectionEnd:
+      typeof target.selectionEnd === "number" ? target.selectionEnd : null,
     selectionDirection:
       typeof target.selectionDirection === "string"
         ? target.selectionDirection
@@ -2517,7 +2601,12 @@ function restoreInputFocusIfNeeded() {
   }
 
   const target = document.getElementById(pending.id);
-  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
+  if (
+    !(
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement
+    )
+  ) {
     return;
   }
 
@@ -2726,7 +2815,8 @@ function calculateTodayPnl(totalValue, oneDayChangePercent) {
   const percent = Number(oneDayChangePercent || 0);
   if (!Number.isFinite(total) || !Number.isFinite(percent)) return 0;
   const denominator = 1 + percent / 100;
-  if (!Number.isFinite(denominator) || Math.abs(denominator) < 0.00001) return 0;
+  if (!Number.isFinite(denominator) || Math.abs(denominator) < 0.00001)
+    return 0;
   const priorValue = total / denominator;
   return total - priorValue;
 }
@@ -2738,10 +2828,12 @@ function renderHeaderQuickStats() {
   const oneDayPercent = Number(portfolio.oneDayChangePercent || 0);
   const todayPnl = calculateTodayPnl(totalValue, oneDayPercent);
   const todayPnlClass = todayPnl >= 0 ? "up" : "down";
-  const activeAlerts = (Array.isArray(state.alertsFeed) ? state.alertsFeed : [])
-    .filter((row) => row?.enabled !== false)
-    .length;
-  const topOpportunities = Array.isArray(state.portfolio?.arbitrage?.topOpportunities)
+  const activeAlerts = (
+    Array.isArray(state.alertsFeed) ? state.alertsFeed : []
+  ).filter((row) => row?.enabled !== false).length;
+  const topOpportunities = Array.isArray(
+    state.portfolio?.arbitrage?.topOpportunities,
+  )
     ? state.portfolio.arbitrage.topOpportunities
     : [];
   const topOpportunity = topOpportunities[0] || null;
@@ -2960,7 +3052,9 @@ function buildAuthProfile(payload) {
     publicPortfolioEnabled: profile.publicPortfolioEnabled !== false,
     ownershipAlertsEnabled: profile.ownershipAlertsEnabled !== false,
     planTier: normalizePlanTier(profile.planTier || profile.plan || "free"),
-    plan: normalizePlanTier(profile.plan || onboarding.plan || profile.planTier || "free"),
+    plan: normalizePlanTier(
+      profile.plan || onboarding.plan || profile.planTier || "free",
+    ),
     planStatus: String(
       profile.planStatus || onboarding.planStatus || "active",
     ).toLowerCase(),
@@ -3127,7 +3221,9 @@ function updateGlobalOpportunitiesCountdownLabel() {
   const target = app.querySelector("[data-next-scan-at]");
   if (!(target instanceof HTMLElement)) return false;
 
-  const nextScanAt = String(target.getAttribute("data-next-scan-at") || "").trim();
+  const nextScanAt = String(
+    target.getAttribute("data-next-scan-at") || "",
+  ).trim();
   if (!nextScanAt) return false;
 
   target.textContent = formatTimeUntil(nextScanAt);
@@ -3154,18 +3250,21 @@ function scheduleGlobalOpportunitiesFollowUpPoll(
   delayMs = GLOBAL_OPPORTUNITY_RUNNING_POLL_MS,
 ) {
   clearGlobalOpportunitiesFollowUpPoll();
-  globalOpportunitiesFollowUpTimer = window.setTimeout(() => {
-    globalOpportunitiesFollowUpTimer = 0;
-    if (!state.authenticated) return;
-    if (state.activeTab !== "opportunities") return;
-    if (state.globalOpportunities?.loading) return;
-    runUiTask(() =>
-      refreshGlobalOpportunities({
-        silent: true,
-        limit: GLOBAL_OPPORTUNITY_PAGE_SIZE,
-      }),
-    );
-  }, Math.max(Number(delayMs || 0), 1000));
+  globalOpportunitiesFollowUpTimer = window.setTimeout(
+    () => {
+      globalOpportunitiesFollowUpTimer = 0;
+      if (!state.authenticated) return;
+      if (state.activeTab !== "opportunities") return;
+      if (state.globalOpportunities?.loading) return;
+      runUiTask(() =>
+        refreshGlobalOpportunities({
+          silent: true,
+          limit: GLOBAL_OPPORTUNITY_PAGE_SIZE,
+        }),
+      );
+    },
+    Math.max(Number(delayMs || 0), 1000),
+  );
 }
 
 function formatDateTime(isoValue) {
@@ -3384,7 +3483,9 @@ function getItemRarityTheme(item = {}) {
 }
 
 function toRgbTriplet(value, fallback = "90,174,255") {
-  const raw = String(value || "").trim().replace(/^#/, "");
+  const raw = String(value || "")
+    .trim()
+    .replace(/^#/, "");
   if (!/^[\da-f]{6}$/i.test(raw)) return fallback;
   const r = Number.parseInt(raw.slice(0, 2), 16);
   const g = Number.parseInt(raw.slice(2, 4), 16);
@@ -3406,15 +3507,9 @@ function getOpportunityImageUrl(row = {}, visualItem = {}) {
       row?.item_image_url,
     imageUrl: row?.itemImageUrl || row?.item_image_url,
     marketHashName:
-      row?.itemName ||
-      visualItem?.marketHashName ||
-      visualItem?.skinName ||
-      "",
+      row?.itemName || visualItem?.marketHashName || visualItem?.skinName || "",
     skinName:
-      row?.itemName ||
-      visualItem?.skinName ||
-      visualItem?.marketHashName ||
-      "",
+      row?.itemName || visualItem?.skinName || visualItem?.marketHashName || "",
     weapon: visualItem?.weapon || "",
   });
 
@@ -3946,8 +4041,9 @@ function buildComparisonItemsPayload(items = []) {
         item?.arbitrage?.antiFake?.liquidity ||
         {};
       const volume7dFromSignal =
-        String(liquiditySignal?.signalType || "").trim().toLowerCase() ===
-        "volume_7d"
+        String(liquiditySignal?.signalType || "")
+          .trim()
+          .toLowerCase() === "volume_7d"
           ? Number(liquiditySignal?.signalValue)
           : null;
       const volume7d = [
@@ -3983,7 +4079,9 @@ function buildComparisonItemsPayload(items = []) {
           item?.itemCategory || item?.category,
           marketHashName,
         ),
-        itemSubcategory: String(item?.itemSubcategory || item?.subcategory || "").trim() || null,
+        itemSubcategory:
+          String(item?.itemSubcategory || item?.subcategory || "").trim() ||
+          null,
         quantity: Number(item.quantity || 0),
         steamPrice: Number(item.steamPrice || item.currentPrice || 0),
         steamCurrency: state.portfolio?.currency || state.currency,
@@ -4043,9 +4141,10 @@ function buildCompareDrawerSnapshotFromComparisonItem(
 ) {
   if (!comparisonItem || typeof comparisonItem !== "object") return null;
 
-  const marketHashName = String(
-    options.marketHashName || comparisonItem.marketHashName || "Tracked Item",
-  ).trim() || "Tracked Item";
+  const marketHashName =
+    String(
+      options.marketHashName || comparisonItem.marketHashName || "Tracked Item",
+    ).trim() || "Tracked Item";
   const visualItem = { marketHashName };
   const fallbackImage = isCaseLikeItem(visualItem)
     ? defaultCaseImage
@@ -4067,18 +4166,21 @@ function buildCompareDrawerSnapshotFromComparisonItem(
     : currentPrice * quantity;
   const rawSkinId = Number(options.skinId ?? comparisonItem.skinId ?? 0);
   const skinId = Number.isFinite(rawSkinId) ? rawSkinId : 0;
-  const currency = String(
-    options.currency || comparisonItem?.bestBuy?.currency || state.currency,
-  )
-    .trim()
-    .toUpperCase() || state.currency;
+  const currency =
+    String(
+      options.currency || comparisonItem?.bestBuy?.currency || state.currency,
+    )
+      .trim()
+      .toUpperCase() || state.currency;
 
   return {
     skinId,
     marketHashName,
     condition: getHoldingConditionLabel(visualItem),
     itemCategory: normalizeOpportunityCategory(
-      options.itemCategory || comparisonItem?.itemCategory || comparisonItem?.category,
+      options.itemCategory ||
+        comparisonItem?.itemCategory ||
+        comparisonItem?.category,
       marketHashName,
     ),
     quantity,
@@ -4172,7 +4274,8 @@ function closeOpportunityInsightModal(options = {}) {
 async function refreshOpportunityInsightModal(options = {}) {
   const {
     forceRefresh = false,
-    opportunityId: rawOpportunityId = state.opportunityInsightModal.opportunityId,
+    opportunityId: rawOpportunityId = state.opportunityInsightModal
+      .opportunityId,
   } = options;
   const opportunityId = String(rawOpportunityId || "").trim();
   if (!opportunityId) return;
@@ -4207,12 +4310,19 @@ async function refreshOpportunityInsightModal(options = {}) {
   }
 }
 
-function openOpportunityInsightModalByOpportunity(opportunity, triggerElement = null) {
-  const row = opportunity && typeof opportunity === "object" ? opportunity : null;
+function openOpportunityInsightModalByOpportunity(
+  opportunity,
+  triggerElement = null,
+) {
+  const row =
+    opportunity && typeof opportunity === "object" ? opportunity : null;
   if (!row) return;
   if (isLockedPremiumPreview(row)) {
     openPremiumUpgradePanel(
-      String(row?.lockMessage || "Unlock knife and glove opportunities with Full Access"),
+      String(
+        row?.lockMessage ||
+          "Unlock knife and glove opportunities with Full Access",
+      ),
     );
     return;
   }
@@ -4232,11 +4342,15 @@ function openOpportunityInsightModalByOpportunity(opportunity, triggerElement = 
   state.opportunityInsightModal.loading = true;
   state.opportunityInsightModal.error = "";
   state.opportunityInsightModal.opportunityId = opportunityId;
-  state.opportunityInsightModal.itemName = String(row?.itemName || "Opportunity Insight").trim();
+  state.opportunityInsightModal.itemName = String(
+    row?.itemName || "Opportunity Insight",
+  ).trim();
   state.opportunityInsightModal.payload = null;
   render();
 
-  runUiTask(() => refreshOpportunityInsightModal({ opportunityId, forceRefresh: false }));
+  runUiTask(() =>
+    refreshOpportunityInsightModal({ opportunityId, forceRefresh: false }),
+  );
 }
 
 function openPremiumUpgradePanel(
@@ -4289,9 +4403,10 @@ async function refreshCompareDrawerDataForItemSeed(itemSeed = {}) {
   const seedSkinId = Number(itemSeed.skinId || 0);
   const seedQuantity = Math.max(Number(itemSeed.quantity || 1), 1);
   const seedSteamPrice = Math.max(Number(itemSeed.steamPrice || 0), 0);
-  const seedSteamCurrency = String(itemSeed.steamCurrency || state.currency)
-    .trim()
-    .toUpperCase() || state.currency;
+  const seedSteamCurrency =
+    String(itemSeed.steamCurrency || state.currency)
+      .trim()
+      .toUpperCase() || state.currency;
   const seedVolume7d = Number(
     itemSeed.volume7d ?? itemSeed.marketVolume7d ?? itemSeed.liquiditySales,
   );
@@ -4383,7 +4498,10 @@ async function refreshCompareDrawerDataForItemSeed(itemSeed = {}) {
     if (ticket !== compareDrawerRequestTicket) return;
     state.compareDrawer.error =
       err.message || "Failed to load comparison data.";
-    if (String(err?.code || "").trim() === "PLAN_UPGRADE_REQUIRED" || Number(err?.status || 0) === 402) {
+    if (
+      String(err?.code || "").trim() === "PLAN_UPGRADE_REQUIRED" ||
+      Number(err?.status || 0) === 402
+    ) {
       openPremiumUpgradePanel(state.compareDrawer.error);
     }
     notify("error", state.compareDrawer.error, {
@@ -4480,7 +4598,10 @@ async function refreshCompareDrawerData(options = {}) {
     if (ticket !== compareDrawerRequestTicket) return;
     state.compareDrawer.error =
       err.message || "Failed to load comparison data.";
-    if (String(err?.code || "").trim() === "PLAN_UPGRADE_REQUIRED" || Number(err?.status || 0) === 402) {
+    if (
+      String(err?.code || "").trim() === "PLAN_UPGRADE_REQUIRED" ||
+      Number(err?.status || 0) === 402
+    ) {
       openPremiumUpgradePanel(state.compareDrawer.error);
     }
     notify("error", state.compareDrawer.error, {
@@ -4495,11 +4616,15 @@ async function refreshCompareDrawerData(options = {}) {
 }
 
 function openCompareDrawerByOpportunity(opportunity, triggerElement = null) {
-  const row = opportunity && typeof opportunity === "object" ? opportunity : null;
+  const row =
+    opportunity && typeof opportunity === "object" ? opportunity : null;
   if (!row) return;
   if (isLockedPremiumPreview(row)) {
     openPremiumUpgradePanel(
-      String(row?.lockMessage || "Unlock knife and glove opportunities with Full Access"),
+      String(
+        row?.lockMessage ||
+          "Unlock knife and glove opportunities with Full Access",
+      ),
     );
     return;
   }
@@ -4534,14 +4659,13 @@ function openCompareDrawerByOpportunity(opportunity, triggerElement = null) {
   const fallbackImage = isCaseLikeItem(visualItem)
     ? defaultCaseImage
     : defaultSkinImage;
-  const seedCurrency = String(state.globalOpportunities?.currency || state.currency)
-    .trim()
-    .toUpperCase() || state.currency;
+  const seedCurrency =
+    String(state.globalOpportunities?.currency || state.currency)
+      .trim()
+      .toUpperCase() || state.currency;
   const seedBuyPrice = Number(row?.buyPrice || 0);
   const seedCurrentPrice = Number.isFinite(seedBuyPrice) ? seedBuyPrice : 0;
-  const seedSourceLabel = formatMarketSourceLabel(
-    row?.buyMarket || "market",
-  );
+  const seedSourceLabel = formatMarketSourceLabel(row?.buyMarket || "market");
 
   state.compareDrawer.open = true;
   state.compareDrawer.focusPending = true;
@@ -4554,7 +4678,10 @@ function openCompareDrawerByOpportunity(opportunity, triggerElement = null) {
     skinId: state.compareDrawer.skinId,
     marketHashName,
     condition: getHoldingConditionLabel(visualItem),
-    itemCategory: normalizeOpportunityCategory(row?.itemCategory, marketHashName),
+    itemCategory: normalizeOpportunityCategory(
+      row?.itemCategory,
+      marketHashName,
+    ),
     quantity: 1,
     imageUrl: fallbackImage,
     currency: seedCurrency,
@@ -4568,19 +4695,20 @@ function openCompareDrawerByOpportunity(opportunity, triggerElement = null) {
       arbitrage: null,
     },
     fees: state.portfolio?.pricing?.fees || null,
-    generatedAt: row?.detectedAt || state.globalOpportunities?.generatedAt || null,
+    generatedAt:
+      row?.detectedAt || state.globalOpportunities?.generatedAt || null,
   };
   render();
 
   runUiTask(() =>
     refreshCompareDrawerDataForItemSeed({
-      skinId:
-        Number.isInteger(rawSkinId) && rawSkinId > 0 ? rawSkinId : null,
+      skinId: Number.isInteger(rawSkinId) && rawSkinId > 0 ? rawSkinId : null,
       marketHashName,
       quantity: 1,
       steamPrice: seedCurrentPrice,
       steamCurrency: seedCurrency,
-      steamRecordedAt: row?.detectedAt || state.globalOpportunities?.generatedAt || null,
+      steamRecordedAt:
+        row?.detectedAt || state.globalOpportunities?.generatedAt || null,
       currentPriceSource: seedSourceLabel,
       itemCategory: row?.itemCategory || "",
       itemSubcategory: row?.itemSubcategory || "",
@@ -4905,8 +5033,10 @@ function positionOpportunityZoomWindow(media, clientX, clientY) {
   const sourceRect = media.getBoundingClientRect();
   if (!sourceRect?.width || !sourceRect?.height) return;
 
-  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
-  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const viewportWidth =
+    window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight =
+    window.innerHeight || document.documentElement.clientHeight || 0;
   const windowWidth = Number(root.offsetWidth || 340);
   const windowHeight = Number(root.offsetHeight || 246);
   const gap = 16;
@@ -4918,8 +5048,14 @@ function positionOpportunityZoomWindow(media, clientX, clientY) {
   }
   let top = sourceRect.top + sourceRect.height / 2 - windowHeight / 2;
 
-  left = Math.max(edgePadding, Math.min(left, viewportWidth - windowWidth - edgePadding));
-  top = Math.max(edgePadding, Math.min(top, viewportHeight - windowHeight - edgePadding));
+  left = Math.max(
+    edgePadding,
+    Math.min(left, viewportWidth - windowWidth - edgePadding),
+  );
+  top = Math.max(
+    edgePadding,
+    Math.min(top, viewportHeight - windowHeight - edgePadding),
+  );
 
   root.style.left = `${left.toFixed(1)}px`;
   root.style.top = `${top.toFixed(1)}px`;
@@ -4960,11 +5096,16 @@ function syncOpportunityZoomWindow(media, clientX, clientY) {
   if (!(thumb instanceof HTMLImageElement)) return;
 
   const { root, image } = ensureOpportunityZoomWindow();
-  if (!(root instanceof HTMLElement) || !(image instanceof HTMLImageElement)) return;
+  if (!(root instanceof HTMLElement) || !(image instanceof HTMLImageElement))
+    return;
   root.style.setProperty("--zoom-scale", String(OPPORTUNITY_ZOOM_SCALE));
 
-  const sourceUrl = String(thumb.currentSrc || thumb.getAttribute("src") || "").trim();
-  const fallbackUrl = String(thumb.getAttribute("data-fallback-src") || "").trim();
+  const sourceUrl = String(
+    thumb.currentSrc || thumb.getAttribute("src") || "",
+  ).trim();
+  const fallbackUrl = String(
+    thumb.getAttribute("data-fallback-src") || "",
+  ).trim();
   const nextUrl = sourceUrl || fallbackUrl;
   if (!nextUrl) return;
   if (image.getAttribute("src") !== nextUrl) {
@@ -4975,8 +5116,12 @@ function syncOpportunityZoomWindow(media, clientX, clientY) {
   const cell = media.closest(".opportunity-item-cell");
   const sourceNode = cell instanceof HTMLElement ? cell : media;
   const computed = window.getComputedStyle(sourceNode);
-  const rarityColor = String(computed.getPropertyValue("--rarity-color") || "").trim();
-  const rarityRgb = String(computed.getPropertyValue("--rarity-rgb") || "").trim();
+  const rarityColor = String(
+    computed.getPropertyValue("--rarity-color") || "",
+  ).trim();
+  const rarityRgb = String(
+    computed.getPropertyValue("--rarity-rgb") || "",
+  ).trim();
   if (rarityColor) {
     root.style.setProperty("--rarity-color", rarityColor);
   }
@@ -4992,7 +5137,8 @@ function syncOpportunityZoomWindow(media, clientX, clientY) {
 
 function onAppPointerOver(event) {
   if (!app) return;
-  if (event.pointerType && !["mouse", "pen"].includes(event.pointerType)) return;
+  if (event.pointerType && !["mouse", "pen"].includes(event.pointerType))
+    return;
   const target = event.target instanceof Element ? event.target : null;
   if (!target) return;
   const media = target.closest(".opportunity-item-media");
@@ -5006,7 +5152,8 @@ function onAppPointerOver(event) {
 
 function onAppPointerMove(event) {
   if (!app) return;
-  if (event.pointerType && !["mouse", "pen"].includes(event.pointerType)) return;
+  if (event.pointerType && !["mouse", "pen"].includes(event.pointerType))
+    return;
   const target = event.target instanceof Element ? event.target : null;
   if (!target) return;
   const media = target.closest(".opportunity-item-media");
@@ -5022,12 +5169,14 @@ function onAppPointerMove(event) {
 
 function onAppPointerOut(event) {
   if (!app) return;
-  if (event.pointerType && !["mouse", "pen"].includes(event.pointerType)) return;
+  if (event.pointerType && !["mouse", "pen"].includes(event.pointerType))
+    return;
   const target = event.target instanceof Element ? event.target : null;
   if (!target) return;
   const media = target.closest(".opportunity-item-media");
   if (!(media instanceof HTMLElement)) return;
-  const related = event.relatedTarget instanceof Element ? event.relatedTarget : null;
+  const related =
+    event.relatedTarget instanceof Element ? event.relatedTarget : null;
   if (related && media.contains(related)) return;
   media.classList.remove("is-hovered");
   resetOpportunityItemLensPosition(media);
@@ -5040,7 +5189,8 @@ function onAppPointerOut(event) {
 }
 
 function onAppPointerLeave(event) {
-  if (event.pointerType && !["mouse", "pen"].includes(event.pointerType)) return;
+  if (event.pointerType && !["mouse", "pen"].includes(event.pointerType))
+    return;
   hideOpportunityZoomWindow();
 }
 
@@ -5571,11 +5721,7 @@ function onAppClick(event) {
     }
     const skinId = Number(button.getAttribute("data-skin-id") || 0);
     const compareUrl = button.getAttribute("data-compare-url");
-    if (
-      Number.isInteger(skinId) &&
-      skinId > 0 &&
-      getHoldingBySkinId(skinId)
-    ) {
+    if (Number.isInteger(skinId) && skinId > 0 && getHoldingBySkinId(skinId)) {
       openCompareDrawerBySkinId(skinId, button);
       return;
     }
@@ -6524,7 +6670,8 @@ async function syncInventory(options = {}) {
   } catch (err) {
     const status = Number(err?.status || 0);
     const isSyncRouteRateLimit =
-      status === 429 && String(err?.code || "").toUpperCase() === "RATE_LIMITED";
+      status === 429 &&
+      String(err?.code || "").toUpperCase() === "RATE_LIMITED";
     const providerRetryAfter = Math.max(
       Math.ceil(Number(err?.retryAfterSeconds || 0)),
       0,
@@ -6590,7 +6737,9 @@ function shouldAutoSyncInventoryOnSessionBoot() {
 function maybeShowSteamSyncHintAfterSteamLogin() {
   const shouldShowHint =
     steamSyncHintRequestedAfterSteamLogin &&
-    String(state.authProfile?.provider || "").trim().toLowerCase() === "steam";
+    String(state.authProfile?.provider || "")
+      .trim()
+      .toLowerCase() === "steam";
 
   steamSyncHintRequestedAfterSteamLogin = false;
 
@@ -6602,7 +6751,9 @@ function maybeShowSteamSyncHintAfterSteamLogin() {
   const syncHint =
     "Steam connected, but inventory is not synced yet. Click Sync Inventory to import your items.";
   const existingNotice = String(state.accountNotice || "").trim();
-  state.accountNotice = existingNotice ? `${existingNotice} ${syncHint}` : syncHint;
+  state.accountNotice = existingNotice
+    ? `${existingNotice} ${syncHint}`
+    : syncHint;
   render();
 }
 
@@ -6618,7 +6769,9 @@ function maybeShowSteamLinkHintAfterLogin() {
   const linkHint =
     "Steam account is not linked yet. Link Steam Account to enable inventory sync.";
   const existingNotice = String(state.accountNotice || "").trim();
-  state.accountNotice = existingNotice ? `${existingNotice} ${linkHint}` : linkHint;
+  state.accountNotice = existingNotice
+    ? `${existingNotice} ${linkHint}`
+    : linkHint;
   render();
 }
 
@@ -6920,9 +7073,9 @@ async function submitEmailOnboarding(event) {
 
   clearError();
   const inputEl = document.querySelector("#onboarding-email");
-  const email = String(
-    inputEl?.value || state.emailOnboarding.email || "",
-  ).trim().toLowerCase();
+  const email = String(inputEl?.value || state.emailOnboarding.email || "")
+    .trim()
+    .toLowerCase();
 
   state.emailOnboarding.submitting = true;
   state.emailOnboarding.error = "";
@@ -7088,7 +7241,9 @@ async function createAccountApiKey(event) {
 
     state.accountPage.apiKeys.loaded = true;
     state.accountPage.apiKeys.createLabel = "";
-    state.accountPage.apiKeys.revealValue = String(payload?.apiKey || "").trim();
+    state.accountPage.apiKeys.revealValue = String(
+      payload?.apiKey || "",
+    ).trim();
     state.accountPage.apiKeys.revealLabel = createdKey?.label || label;
     notify("success", "API key created. Copy it now, it is shown only once.");
     render();
@@ -7558,7 +7713,8 @@ async function submitAccountPlanSwitcher(event) {
 
   const currentPlan = normalizePlanTier(state.authProfile?.planTier || "free");
   const selectedFromDom =
-    document.querySelector('input[name="account-plan-switcher"]:checked')?.value || "";
+    document.querySelector('input[name="account-plan-switcher"]:checked')
+      ?.value || "";
   const selectedPlan = normalizePlanTier(
     state.accountPage.planSwitcher.selected || selectedFromDom || currentPlan,
   );
@@ -7654,8 +7810,7 @@ async function fetchInspectionBundleBySteamItemId(rawId) {
   )
     .trim()
     .toLowerCase();
-  const allowAdvancedInspectInsights =
-    portfolioInsightsLevel !== "basic";
+  const allowAdvancedInspectInsights = portfolioInsightsLevel !== "basic";
 
   let marketInsight = null;
   if (allowAdvancedInspectInsights) {
@@ -7802,7 +7957,10 @@ async function refreshMarketOpportunities(options = {}) {
   const scanner = state.marketTab.opportunities;
   const entitlements = getProfileEntitlements();
   const advancedFiltersEnabled = canUseAdvancedFilters(entitlements);
-  const visibleFeedLimit = Math.max(Number(entitlements.visibleFeedLimit || 250), 1);
+  const visibleFeedLimit = Math.max(
+    Number(entitlements.visibleFeedLimit || 250),
+    1,
+  );
   scanner.loading = true;
   scanner.error = "";
   if (!silent) {
@@ -7869,7 +8027,8 @@ function mapGlobalCategoryToApiValue(value) {
     .toLowerCase();
   if (category === "skins" || category === "skin") return "weapon_skin";
   if (category === "cases" || category === "case") return "case";
-  if (category === "capsules" || category === "capsule") return "sticker_capsule";
+  if (category === "capsules" || category === "capsule")
+    return "sticker_capsule";
   if (category === "knives" || category === "knife") return "knife";
   if (category === "gloves" || category === "glove") return "glove";
   return "";
@@ -7879,7 +8038,9 @@ function buildGlobalOpportunitiesFilterCacheKey(scanner = {}) {
   return [
     scanner?.showRisky ? "risky" : "high_only",
     scanner?.showOlder ? "include_older" : "active_only",
-    String(scanner?.category || "all").trim().toLowerCase() || "all",
+    String(scanner?.category || "all")
+      .trim()
+      .toLowerCase() || "all",
   ].join("::");
 }
 
@@ -7899,7 +8060,11 @@ function readGlobalOpportunitiesPageCache(scanner = {}, key = "") {
   );
 }
 
-function writeGlobalOpportunitiesPageCache(scanner = {}, key = "", value = null) {
+function writeGlobalOpportunitiesPageCache(
+  scanner = {},
+  key = "",
+  value = null,
+) {
   if (!scanner || typeof scanner !== "object") return;
   const safeKey = String(key || "").trim();
   if (!safeKey || !value || typeof value !== "object") return;
@@ -7910,7 +8075,10 @@ function writeGlobalOpportunitiesPageCache(scanner = {}, key = "", value = null)
     (entry) => String(entry?.key || "") !== safeKey,
   );
   trimmed.unshift({ key: safeKey, value });
-  scanner.pageCacheEntries = trimmed.slice(0, GLOBAL_OPPORTUNITY_PAGE_CACHE_MAX);
+  scanner.pageCacheEntries = trimmed.slice(
+    0,
+    GLOBAL_OPPORTUNITY_PAGE_CACHE_MAX,
+  );
 }
 
 function resetGlobalOpportunitiesPagination(scanner = {}) {
@@ -7945,8 +8113,7 @@ async function refreshGlobalOpportunities(options = {}) {
     resetPagination = false,
     page = null,
     historyHours = null,
-  } =
-    options;
+  } = options;
   const scanner = state.globalOpportunities || createGlobalOpportunitiesState();
   const entitlements = getProfileEntitlements();
   const advancedFiltersEnabled = canUseAdvancedFilters(entitlements);
@@ -8056,7 +8223,10 @@ async function refreshGlobalOpportunities(options = {}) {
           if (force) {
             scanner.error = err.message || "Failed to trigger scanner refresh.";
           }
-          console.error("[global-opportunities] Failed to trigger refresh", err.message);
+          console.error(
+            "[global-opportunities] Failed to trigger refresh",
+            err.message,
+          );
         });
     }
 
@@ -8179,7 +8349,9 @@ async function refreshGlobalOpportunities(options = {}) {
       hasNextPage,
       historyHours: resolvedHistoryHours,
     };
-    if (String(scanner.status?.currentStatus || "").toLowerCase() !== "running") {
+    if (
+      String(scanner.status?.currentStatus || "").toLowerCase() !== "running"
+    ) {
       scanner.pendingScanRunId = "";
     } else if (pendingScanRunId || scanner.pendingScanRunId) {
       scanner.pendingScanRunId = scanner.pendingScanRunId || pendingScanRunId;
@@ -8250,8 +8422,13 @@ async function analyzeMarketItemBySkinId(rawSkinId) {
     ]);
     state.marketTab.insight = { sellSuggestion, liquidity, skinId };
   } catch (err) {
-    if (String(err?.code || "").trim() === "PLAN_UPGRADE_REQUIRED" || Number(err?.status || 0) === 402) {
-      openPremiumUpgradePanel(err.message || "Unlock premium categories with Full Access.");
+    if (
+      String(err?.code || "").trim() === "PLAN_UPGRADE_REQUIRED" ||
+      Number(err?.status || 0) === 402
+    ) {
+      openPremiumUpgradePanel(
+        err.message || "Unlock premium categories with Full Access.",
+      );
     }
     setError(err.message);
   } finally {
@@ -9087,8 +9264,7 @@ function formatLiquidityBandLabel(value, volume7d = null) {
   const safe = String(value || "")
     .trim()
     .toLowerCase();
-  const base =
-    safe === "high" ? "High" : safe === "medium" ? "Medium" : "Low";
+  const base = safe === "high" ? "High" : safe === "medium" ? "Medium" : "Low";
   const volume = Number(volume7d || 0);
   if (!Number.isFinite(volume) || volume <= 0) {
     return `${base} liquidity`;
@@ -9142,7 +9318,8 @@ function normalizeOpportunityCategory(value, marketHashName = "") {
   if (raw === "weapon_skin") return "weapon_skin";
   const normalizedName = String(marketHashName || "").trim();
   if (/\b(gloves|glove|hand wraps)\b/i.test(normalizedName)) return "glove";
-  if (/\b(knife|bayonet|karambit|daggers)\b/i.test(normalizedName)) return "knife";
+  if (/\b(knife|bayonet|karambit|daggers)\b/i.test(normalizedName))
+    return "knife";
   if (/sticker capsule$/i.test(normalizedName)) return "sticker_capsule";
   const fallbackItem = { marketHashName: normalizedName };
   return isCaseLikeItem(fallbackItem) ? "case" : "weapon_skin";
@@ -9176,24 +9353,24 @@ function isLockedPremiumPreview(row = {}) {
 
 function formatUniverseQuotaActualByCategory(universeBuild = {}) {
   const selectedByCategory =
-    universeBuild?.selectedByCategory && typeof universeBuild.selectedByCategory === "object"
+    universeBuild?.selectedByCategory &&
+    typeof universeBuild.selectedByCategory === "object"
       ? universeBuild.selectedByCategory
       : {};
   const quotaByCategory =
-    universeBuild?.quotaTargetByCategory && typeof universeBuild.quotaTargetByCategory === "object"
+    universeBuild?.quotaTargetByCategory &&
+    typeof universeBuild.quotaTargetByCategory === "object"
       ? universeBuild.quotaTargetByCategory
       : universeBuild?.quotas && typeof universeBuild.quotas === "object"
         ? universeBuild.quotas
         : {};
 
-  const parts = UNIVERSE_CATEGORY_DIAGNOSTIC_ORDER
-    .map((entry) => {
-      const actual = Number(selectedByCategory?.[entry.key] || 0);
-      const quota = Number(quotaByCategory?.[entry.key] || 0);
-      if (actual <= 0 && quota <= 0) return "";
-      return `${entry.label} ${formatNumber(actual, 0)}/${formatNumber(quota, 0)}`;
-    })
-    .filter(Boolean);
+  const parts = UNIVERSE_CATEGORY_DIAGNOSTIC_ORDER.map((entry) => {
+    const actual = Number(selectedByCategory?.[entry.key] || 0);
+    const quota = Number(quotaByCategory?.[entry.key] || 0);
+    if (actual <= 0 && quota <= 0) return "";
+    return `${entry.label} ${formatNumber(actual, 0)}/${formatNumber(quota, 0)}`;
+  }).filter(Boolean);
 
   return parts.join(", ");
 }
@@ -9215,10 +9392,11 @@ function formatSourceCatalogFunnelByCategory(sourceCatalog = {}) {
       ? sourceCatalog.eligibleRowsByCategory
       : {};
 
-  const parts = UNIVERSE_CATEGORY_DIAGNOSTIC_ORDER
-    .filter((entry) =>
-      ["weapon_skin", "case", "sticker_capsule"].includes(String(entry?.key || "").trim()),
-    )
+  const parts = UNIVERSE_CATEGORY_DIAGNOSTIC_ORDER.filter((entry) =>
+    ["weapon_skin", "case", "sticker_capsule"].includes(
+      String(entry?.key || "").trim(),
+    ),
+  )
     .map((entry) => {
       const candidate = Number(candidateRowsByCategory?.[entry.key] || 0);
       const enriching = Number(enrichingRowsByCategory?.[entry.key] || 0);
@@ -9344,9 +9522,7 @@ function scoreOpportunityRiskLabel(label) {
     return 3;
   }
   if (
-    /\bwatch\b|\bvolatility\b|\bspread\b|\bcoverage\b|\bliquidity\b/.test(
-      text,
-    )
+    /\bwatch\b|\bvolatility\b|\bspread\b|\bcoverage\b|\bliquidity\b/.test(text)
   ) {
     return 2;
   }
@@ -9376,15 +9552,21 @@ function normalizeOpportunityRiskLabels(labels = []) {
     seen.add(key);
     unique.push(label);
   });
-  return unique.sort((a, b) => scoreOpportunityRiskLabel(b) - scoreOpportunityRiskLabel(a));
+  return unique.sort(
+    (a, b) => scoreOpportunityRiskLabel(b) - scoreOpportunityRiskLabel(a),
+  );
 }
 
 function formatOpportunityFreshnessSummary(options = {}) {
   const liveStatus = normalizeOpportunityLiveStatus(options.liveStatus);
   const signalAgeHours = Number(options.signalAgeHours);
   const hasAge = Number.isFinite(signalAgeHours) && signalAgeHours >= 0;
-  const row = options?.row && typeof options.row === "object" ? options.row : {};
-  const coverage = Math.max(Number(row?.marketCoverage || row?.market_coverage || 0), 0);
+  const row =
+    options?.row && typeof options.row === "object" ? options.row : {};
+  const coverage = Math.max(
+    Number(row?.marketCoverage || row?.market_coverage || 0),
+    0,
+  );
   const volume7d = resolveLiquidityVolume7d(row);
   const hasCoverage = coverage > 0;
   const hasVolume = Number.isFinite(Number(volume7d)) && Number(volume7d) > 0;
@@ -10246,7 +10428,8 @@ function renderCompareDrawerOverlay() {
   const bestSellUrl = String(
     backendArbitrage?.sellUrl || insights?.highestSellMarket?.url || "",
   ).trim();
-  const hasBestBuyTarget = Boolean(bestBuyUrl) || Number(drawer.skinId || 0) > 0;
+  const hasBestBuyTarget =
+    Boolean(bestBuyUrl) || Number(drawer.skinId || 0) > 0;
   const hasBestSellTarget =
     Boolean(bestSellUrl) || Number(drawer.skinId || 0) > 0;
   const footerMarkup = `
@@ -10295,7 +10478,8 @@ function renderCompareDrawerOverlay() {
 }
 
 function renderOpportunityInsightOverlay() {
-  const modal = state.opportunityInsightModal || createOpportunityInsightModalState();
+  const modal =
+    state.opportunityInsightModal || createOpportunityInsightModalState();
   if (!modal.open) return "";
 
   const payload =
@@ -10329,7 +10513,9 @@ function renderOpportunityInsightOverlay() {
   const headlineText = String(
     payload?.headline_text || payload?.reason_summary || fallbackHeadlineText,
   ).trim();
-  const riskFlags = Array.isArray(payload?.risk_flags) ? payload.risk_flags : [];
+  const riskFlags = Array.isArray(payload?.risk_flags)
+    ? payload.risk_flags
+    : [];
   const failureConditions = Array.isArray(payload?.failure_conditions)
     ? payload.failure_conditions
     : [];
@@ -10396,7 +10582,10 @@ function renderOpportunityInsightOverlay() {
                 ${
                   riskFlags.length
                     ? `<ul class="opportunity-insight-list">${riskFlags
-                        .map((flag) => `<li>${escapeHtml(formatOpportunityInsightFlag(flag))}</li>`)
+                        .map(
+                          (flag) =>
+                            `<li>${escapeHtml(formatOpportunityInsightFlag(flag))}</li>`,
+                        )
                         .join("")}</ul>`
                     : '<p class="muted">No active risk flags.</p>'
                 }
@@ -11876,7 +12065,7 @@ function renderSkinDetails(context = "inline") {
 
   const marketInsightMarkup =
     showAdvancedInspectInsights && inspectMarketInsight?.sellSuggestion
-    ? `
+      ? `
       <div class="sync-summary">
         <p><strong>Quick Sell Tiers (${escapeHtml(inspectMarketInsight.sellSuggestion.currency || state.currency)}):</strong></p>
         <ul class="sync-list">
@@ -11904,11 +12093,12 @@ function renderSkinDetails(context = "inline") {
         }
       </div>
     `
-    : "";
+      : "";
 
   const exitResult = inspectExitWhatIf.result;
-  const exitResultMarkup = showAdvancedInspectInsights && exitResult
-    ? `
+  const exitResultMarkup =
+    showAdvancedInspectInsights && exitResult
+      ? `
       <div class="calc-result">
         <p><span>Reference Buy Price</span><strong>${formatMoney(
           exitResult.referenceBuyPrice,
@@ -11925,7 +12115,7 @@ function renderSkinDetails(context = "inline") {
         )}</strong></p>
       </div>
     `
-    : "";
+      : "";
 
   const historyMarkup = visibleHistory.length
     ? `<ul class="sync-list daily-points-list">${visibleHistory
@@ -12044,8 +12234,8 @@ function renderSkinDetails(context = "inline") {
         showAdvancedInspectInsights
           ? `
       <form id="${formId}" class="trade-calc-grid inspect-exit-whatif-form" data-inspect-context="${escapeHtml(
-            context,
-          )}">
+        context,
+      )}">
         <label>Exit Quantity
           <input data-exit-field="quantity" type="number" step="1" min="1" value="${escapeHtml(
             inspectExitWhatIf.quantity,
@@ -12311,7 +12501,8 @@ function renderDashboardArbitragePanel() {
               score,
             );
             const executionConfidence = getOpportunityDisplayConfidence(row);
-            const executionTone = getExecutionConfidenceTone(executionConfidence);
+            const executionTone =
+              getExecutionConfidenceTone(executionConfidence);
             const liquidityLabel = formatLiquidityBandLabel(
               row?.liquidityBand,
               row?.volume7d ?? row?.liquiditySample ?? row?.liquidity,
@@ -12486,7 +12677,8 @@ function renderPortfolioArbitrageWidget() {
               score,
             );
             const executionConfidence = getOpportunityDisplayConfidence(row);
-            const executionTone = getExecutionConfidenceTone(executionConfidence);
+            const executionTone =
+              getExecutionConfidenceTone(executionConfidence);
             const liquidityLabel = formatLiquidityBandLabel(
               row?.liquidityBand,
               row?.volume7d ?? row?.liquiditySample ?? row?.liquidity,
@@ -12963,7 +13155,9 @@ function renderTabNav() {
 
 function renderAlertsCenter() {
   const profile = state.authProfile || {};
-  const planTier = normalizePlanTier(profile.planTier || profile.plan || "free");
+  const planTier = normalizePlanTier(
+    profile.planTier || profile.plan || "free",
+  );
   const planLabel = planTierToLabel(planTier);
   const entitlements = getProfileEntitlements({
     ...profile,
@@ -13338,7 +13532,9 @@ function renderSocialTab() {
 
 function renderMarketTab() {
   const profile = state.authProfile || {};
-  const planTier = normalizePlanTier(profile.planTier || profile.plan || "free");
+  const planTier = normalizePlanTier(
+    profile.planTier || profile.plan || "free",
+  );
   const planLabel = planTierToLabel(planTier);
   const entitlements = getProfileEntitlements({
     ...profile,
@@ -13346,7 +13542,10 @@ function renderMarketTab() {
     plan: planTier,
   });
   const advancedFiltersEnabled = canUseAdvancedFilters(entitlements);
-  const visibleFeedLimit = Math.max(Number(entitlements.visibleFeedLimit || 250), 1);
+  const visibleFeedLimit = Math.max(
+    Number(entitlements.visibleFeedLimit || 250),
+    1,
+  );
   const holdings = getHoldingsList();
   const marketOptions = buildHoldingOptions(state.marketTab.skinId);
   const valuation = state.marketTab.inventoryValue;
@@ -13448,9 +13647,8 @@ function renderMarketTab() {
                 score,
               );
               const executionConfidence = getOpportunityDisplayConfidence(row);
-              const confidenceTone = getExecutionConfidenceTone(
-                executionConfidence,
-              );
+              const confidenceTone =
+                getExecutionConfidenceTone(executionConfidence);
               const liquidityLabel = formatLiquidityBandLabel(
                 row?.liquidityBand,
                 row?.volume7d ?? row?.liquiditySample ?? row?.liquidity,
@@ -13458,7 +13656,10 @@ function renderMarketTab() {
               const baseBadges = buildOpportunityBadges(row, { max: 3 });
               const itemId = Number(row?.itemId || row?.skinId || 0);
               const marketHashName = String(
-                row?.marketHashName || row?.market_hash_name || row?.itemName || "",
+                row?.marketHashName ||
+                  row?.market_hash_name ||
+                  row?.itemName ||
+                  "",
               ).trim();
               const itemCategory = normalizeOpportunityCategory(
                 row?.itemCategory,
@@ -13479,10 +13680,9 @@ function renderMarketTab() {
                 ? defaultCaseImage
                 : defaultSkinImage;
               const normalizedName = marketHashName.toLowerCase();
-              const visualItem =
-                (Number.isInteger(itemId) && itemId > 0
-                  ? holdingById.get(itemId)
-                  : null) ||
+              const visualItem = (Number.isInteger(itemId) && itemId > 0
+                ? holdingById.get(itemId)
+                : null) ||
                 (normalizedName ? holdingByName.get(normalizedName) : null) || {
                   marketHashName,
                   itemCategory,
@@ -13506,7 +13706,10 @@ function renderMarketTab() {
                 weapon: visualItem?.weapon || "",
               });
               const mediaAccentColor = rarityTheme.color;
-              const mediaAccentRgb = toRgbTriplet(mediaAccentColor, "138,147,163");
+              const mediaAccentRgb = toRgbTriplet(
+                mediaAccentColor,
+                "138,147,163",
+              );
               const itemImage = String(
                 getOpportunityImageUrl(row, visualItem),
               ).trim();
@@ -13614,9 +13817,7 @@ function renderMarketTab() {
                   <td class="opportunity-metric-cell opportunity-score-cell">
                     <strong class="opportunity-metric-value opportunity-score-value ${escapeHtml(
                       scoreTone,
-                    )}">${escapeHtml(
-                      `${formatNumber(score, 0)}/100`,
-                    )}</strong>
+                    )}">${escapeHtml(`${formatNumber(score, 0)}/100`)}</strong>
                     <small>${escapeHtml(`${scoreLabel} quality`)}</small>
                   </td>
                   <td class="opportunity-metric-cell opportunity-confidence-cell">
@@ -13927,11 +14128,14 @@ function renderGlobalOpportunitiesTableSkeleton(rowCount = 8) {
           </tr>
         </thead>
         <tbody>
-          ${Array.from({ length: Math.max(Number(rowCount) || 0, 1) }, (_row, idx) => `
+          ${Array.from(
+            { length: Math.max(Number(rowCount) || 0, 1) },
+            (_row, idx) => `
             <tr class="opportunities-skeleton-row" data-skeleton-index="${idx}">
               <td colspan="9"><div class="table-row-skeleton"></div></td>
             </tr>
-          `).join("")}
+          `,
+          ).join("")}
         </tbody>
       </table>
     </div>
@@ -13941,7 +14145,9 @@ function renderGlobalOpportunitiesTableSkeleton(rowCount = 8) {
 function renderGlobalOpportunitiesMobileSkeleton(cardCount = 6) {
   return `
     <div class="opportunity-mobile-list opportunity-mobile-skeleton-list" aria-hidden="true">
-      ${Array.from({ length: Math.max(Number(cardCount) || 0, 1) }, (_row, idx) => `
+      ${Array.from(
+        { length: Math.max(Number(cardCount) || 0, 1) },
+        (_row, idx) => `
         <article class="opportunity-mobile-card opportunity-mobile-card-skeleton" data-skeleton-index="${idx}">
           <div class="opportunity-mobile-top">
             <div class="opportunity-mobile-image skeleton-line"></div>
@@ -13955,7 +14161,8 @@ function renderGlobalOpportunitiesMobileSkeleton(cardCount = 6) {
           <div class="skeleton-line w-90"></div>
           <div class="skeleton-line"></div>
         </article>
-      `).join("")}
+      `,
+      ).join("")}
     </div>
   `;
 }
@@ -13963,7 +14170,9 @@ function renderGlobalOpportunitiesMobileSkeleton(cardCount = 6) {
 function renderGlobalOpportunitiesTab() {
   const scanner = state.globalOpportunities || createGlobalOpportunitiesState();
   const profile = state.authProfile || {};
-  const planTier = normalizePlanTier(profile.planTier || profile.plan || "free");
+  const planTier = normalizePlanTier(
+    profile.planTier || profile.plan || "free",
+  );
   const planLabel = planTierToLabel(planTier);
   const entitlements = getProfileEntitlements({
     ...profile,
@@ -13995,7 +14204,9 @@ function renderGlobalOpportunitiesTab() {
     .trim()
     .toLowerCase();
   const status =
-    scanner.status && typeof scanner.status === "object" ? scanner.status : null;
+    scanner.status && typeof scanner.status === "object"
+      ? scanner.status
+      : null;
   const latestCompletedRun =
     status?.latestCompletedRun && typeof status.latestCompletedRun === "object"
       ? status.latestCompletedRun
@@ -14021,7 +14232,9 @@ function renderGlobalOpportunitiesTab() {
     : "";
   const scannerStatusMarkup = `${escapeHtml(statusLabel)}${nextScanLabel ? ` ${nextScanLabel}` : ""}`;
   const summary =
-    scanner.summary && typeof scanner.summary === "object" ? scanner.summary : null;
+    scanner.summary && typeof scanner.summary === "object"
+      ? scanner.summary
+      : null;
   const activeOpportunitiesCount = Number(
     summary?.activeOpportunities ??
       status?.activeOpportunities ??
@@ -14051,12 +14264,17 @@ function renderGlobalOpportunitiesTab() {
     168,
   );
   const pageSize = Math.max(
-    Number(pagination.pageSize || scanner.pageSize || GLOBAL_OPPORTUNITY_PAGE_SIZE),
+    Number(
+      pagination.pageSize || scanner.pageSize || GLOBAL_OPPORTUNITY_PAGE_SIZE,
+    ),
     1,
   );
   const totalCountRaw = Number(pagination.totalCount ?? summary?.totalDetected);
-  const hasKnownTotalCount = Number.isFinite(totalCountRaw) && totalCountRaw >= 0;
-  const totalCount = hasKnownTotalCount ? Math.max(Math.round(totalCountRaw), 0) : null;
+  const hasKnownTotalCount =
+    Number.isFinite(totalCountRaw) && totalCountRaw >= 0;
+  const totalCount = hasKnownTotalCount
+    ? Math.max(Math.round(totalCountRaw), 0)
+    : null;
   const page = clampInt(pagination.page || scanner.page || 1, 1, 999999);
   const returnedCount = Math.max(
     Number(pagination.returnedCount ?? rows.length),
@@ -14130,7 +14348,10 @@ function renderGlobalOpportunitiesTab() {
               const baseBadges = buildOpportunityBadges(row, { max: 12 });
               const itemId = Number(row?.itemId || 0);
               const marketHashName = String(
-                row?.marketHashName || row?.market_hash_name || row?.itemName || "",
+                row?.marketHashName ||
+                  row?.market_hash_name ||
+                  row?.itemName ||
+                  "",
               ).trim();
               const itemCategory = normalizeOpportunityCategory(
                 row?.itemCategory,
@@ -14145,10 +14366,9 @@ function renderGlobalOpportunitiesTab() {
                 marketHashName,
               );
               const normalizedName = marketHashName.toLowerCase();
-              const visualItem =
-                (Number.isInteger(itemId) && itemId > 0
-                  ? holdingById.get(itemId)
-                  : null) ||
+              const visualItem = (Number.isInteger(itemId) && itemId > 0
+                ? holdingById.get(itemId)
+                : null) ||
                 (normalizedName ? holdingByName.get(normalizedName) : null) || {
                   marketHashName,
                   itemCategory,
@@ -14172,7 +14392,10 @@ function renderGlobalOpportunitiesTab() {
                 weapon: visualItem?.weapon || "",
               });
               const mediaAccentColor = rarityTheme.color;
-              const mediaAccentRgb = toRgbTriplet(mediaAccentColor, "138,147,163");
+              const mediaAccentRgb = toRgbTriplet(
+                mediaAccentColor,
+                "138,147,163",
+              );
               const itemImage = String(
                 getOpportunityImageUrl(row, visualItem),
               ).trim();
@@ -14181,7 +14404,8 @@ function renderGlobalOpportunitiesTab() {
               const liveStatus = normalizeOpportunityLiveStatus(
                 row?.liveStatus || row?.live_status,
               );
-              const liveStatusLabel = formatOpportunityLiveStatusLabel(liveStatus);
+              const liveStatusLabel =
+                formatOpportunityLiveStatusLabel(liveStatus);
               const signalAgeHoursRaw = Number(
                 row?.latestSignalAgeHours ?? row?.latest_signal_age_hours,
               );
@@ -14196,10 +14420,13 @@ function renderGlobalOpportunitiesTab() {
               const verdictKey = lockedPreview
                 ? "locked"
                 : normalizeOpportunityFeedVerdict(row?.verdict, { score });
-              const verdictLabel = formatOpportunityFeedVerdictLabel(row?.verdict, {
-                score,
-                lockedPreview,
-              });
+              const verdictLabel = formatOpportunityFeedVerdictLabel(
+                row?.verdict,
+                {
+                  score,
+                  lockedPreview,
+                },
+              );
               const allRiskLabels = normalizeOpportunityRiskLabels(baseBadges);
               const primaryRiskLabel =
                 allRiskLabels[0] ||
@@ -14210,7 +14437,8 @@ function renderGlobalOpportunitiesTab() {
                 allRiskLabels.length - (allRiskLabels.length ? 1 : 0),
                 0,
               );
-              const insightLabel = hiddenRiskCount > 0 ? `Insight +${hiddenRiskCount}` : "Insight";
+              const insightLabel =
+                hiddenRiskCount > 0 ? `Insight +${hiddenRiskCount}` : "Insight";
               const fallbackImage =
                 itemCategory === "case" ? defaultCaseImage : defaultSkinImage;
               const buyUrl =
@@ -14250,15 +14478,10 @@ function renderGlobalOpportunitiesTab() {
                 : formatMoney(row?.sellNet, currencyCode);
               const profitLabel = lockedPreview
                 ? hiddenValueMarkup
-                : formatSignedMoney(
-                    row?.profit,
-                    currencyCode,
-                  );
+                : formatSignedMoney(row?.profit, currencyCode);
               const spreadLabel = lockedPreview
                 ? hiddenValueMarkup
-                : formatPercent(
-                    row?.spread,
-                  );
+                : formatPercent(row?.spread);
               const scoreTone = lockedPreview
                 ? "neutral"
                 : getOpportunityScoreTone(score);
@@ -14269,10 +14492,15 @@ function renderGlobalOpportunitiesTab() {
                 ? scoreValueLabel
                 : escapeHtml(scoreValueLabel);
               const liquiditySubline = lockedPreview
-                ? escapeHtml(String(row?.lockHint || "Premium high-value market category"))
+                ? escapeHtml(
+                    String(
+                      row?.lockHint || "Premium high-value market category",
+                    ),
+                  )
                 : escapeHtml(formatLiquiditySummaryCompact(row));
               const lockedMessage = String(
-                row?.lockMessage || "Unlock knife and glove opportunities with Full Access",
+                row?.lockMessage ||
+                  "Unlock knife and glove opportunities with Full Access",
               ).trim();
               const pathLabel = lockedPreview
                 ? "Locked route"
@@ -14427,13 +14655,13 @@ function renderGlobalOpportunitiesTab() {
     `
     : showTableSkeleton
       ? renderGlobalOpportunitiesTableSkeleton(8)
-    : `<p class="muted">${
-        scanner.loading
-          ? "Loading opportunities..."
-          : showRisky
-            ? "No opportunities are currently available in the saved feed."
-            : "No high-confidence opportunities matched the current feed filters."
-      }</p>`;
+      : `<p class="muted">${
+          scanner.loading
+            ? "Loading opportunities..."
+            : showRisky
+              ? "No opportunities are currently available in the saved feed."
+              : "No high-confidence opportunities matched the current feed filters."
+        }</p>`;
 
   const mobileCardsMarkup = rows.length
     ? `
@@ -14441,7 +14669,9 @@ function renderGlobalOpportunitiesTab() {
         ${rows
           .map((row, index) => {
             const lockedPreview = isLockedPremiumPreview(row);
-            const score = lockedPreview ? null : getOpportunityDisplayScore(row);
+            const score = lockedPreview
+              ? null
+              : getOpportunityDisplayScore(row);
             const liquidityLabel = lockedPreview
               ? "Premium preview"
               : formatLiquidityBandLabel(
@@ -14451,7 +14681,10 @@ function renderGlobalOpportunitiesTab() {
             const baseBadges = buildOpportunityBadges(row, { max: 12 });
             const itemId = Number(row?.itemId || 0);
             const marketHashName = String(
-              row?.marketHashName || row?.market_hash_name || row?.itemName || "",
+              row?.marketHashName ||
+                row?.market_hash_name ||
+                row?.itemName ||
+                "",
             ).trim();
             const itemCategory = normalizeOpportunityCategory(
               row?.itemCategory,
@@ -14466,10 +14699,9 @@ function renderGlobalOpportunitiesTab() {
               marketHashName,
             );
             const normalizedName = marketHashName.toLowerCase();
-            const visualItem =
-              (Number.isInteger(itemId) && itemId > 0
-                ? holdingById.get(itemId)
-                : null) ||
+            const visualItem = (Number.isInteger(itemId) && itemId > 0
+              ? holdingById.get(itemId)
+              : null) ||
               (normalizedName ? holdingByName.get(normalizedName) : null) || {
                 marketHashName,
                 itemCategory,
@@ -14493,8 +14725,13 @@ function renderGlobalOpportunitiesTab() {
               weapon: visualItem?.weapon || "",
             });
             const mediaAccentColor = rarityTheme.color;
-            const mediaAccentRgb = toRgbTriplet(mediaAccentColor, "138,147,163");
-            const itemImage = String(getOpportunityImageUrl(row, visualItem)).trim();
+            const mediaAccentRgb = toRgbTriplet(
+              mediaAccentColor,
+              "138,147,163",
+            );
+            const itemImage = String(
+              getOpportunityImageUrl(row, visualItem),
+            ).trim();
             const fallbackImage =
               itemCategory === "case" ? defaultCaseImage : defaultSkinImage;
             const feedId = normalizeFeedId(row);
@@ -14502,7 +14739,8 @@ function renderGlobalOpportunitiesTab() {
             const liveStatus = normalizeOpportunityLiveStatus(
               row?.liveStatus || row?.live_status,
             );
-            const liveStatusLabel = formatOpportunityLiveStatusLabel(liveStatus);
+            const liveStatusLabel =
+              formatOpportunityLiveStatusLabel(liveStatus);
             const signalAgeHoursRaw = Number(
               row?.latestSignalAgeHours ?? row?.latest_signal_age_hours,
             );
@@ -14517,10 +14755,13 @@ function renderGlobalOpportunitiesTab() {
             const verdictKey = lockedPreview
               ? "locked"
               : normalizeOpportunityFeedVerdict(row?.verdict, { score });
-            const verdictLabel = formatOpportunityFeedVerdictLabel(row?.verdict, {
-              score,
-              lockedPreview,
-            });
+            const verdictLabel = formatOpportunityFeedVerdictLabel(
+              row?.verdict,
+              {
+                score,
+                lockedPreview,
+              },
+            );
             const allRiskLabels = normalizeOpportunityRiskLabels(baseBadges);
             const primaryRiskLabel =
               allRiskLabels[0] ||
@@ -14531,7 +14772,8 @@ function renderGlobalOpportunitiesTab() {
               allRiskLabels.length - (allRiskLabels.length ? 1 : 0),
               0,
             );
-            const insightLabel = hiddenRiskCount > 0 ? `Insight +${hiddenRiskCount}` : "Insight";
+            const insightLabel =
+              hiddenRiskCount > 0 ? `Insight +${hiddenRiskCount}` : "Insight";
             const buyUrl =
               String(row?.buyUrl || "").trim() ||
               buildMarketListingUrlBySource(row?.buyMarket, marketHashName);
@@ -14545,8 +14787,7 @@ function renderGlobalOpportunitiesTab() {
                 marketHashName,
               );
             const hasBuyTarget =
-              !lockedPreview &&
-              Boolean(itemId > 0 || buyUrl || marketHashName);
+              !lockedPreview && Boolean(itemId > 0 || buyUrl || marketHashName);
             const hasSellTarget =
               !lockedPreview &&
               Boolean(itemId > 0 || sellUrl || marketHashName);
@@ -14577,7 +14818,8 @@ function renderGlobalOpportunitiesTab() {
               ? "Locked"
               : `${formatNumber(score, 0)}/100`;
             const lockedMessage = String(
-              row?.lockMessage || "Unlock knife and glove opportunities with Full Access",
+              row?.lockMessage ||
+                "Unlock knife and glove opportunities with Full Access",
             ).trim();
             const pathLabel = lockedPreview
               ? "Locked route"
@@ -14732,7 +14974,9 @@ function renderGlobalOpportunitiesTab() {
     `
     : "";
 
-  const qualityModeLabel = showRisky ? "All quality levels" : "High confidence only";
+  const qualityModeLabel = showRisky
+    ? "All quality levels"
+    : "High confidence only";
   const planSummary = advancedFiltersEnabled
     ? "Advanced filters enabled."
     : "Advanced filters unlock on Full Access.";
@@ -14784,7 +15028,10 @@ function renderGlobalOpportunitiesTab() {
       )}/${formatNumber(summary.snapshotWarmup.attemptedItems || 0, 0)} items.`,
     );
   }
-  if (summary?.sourceCatalog?.sourceCatalog || summary?.sourceCatalog?.universeBuild) {
+  if (
+    summary?.sourceCatalog?.sourceCatalog ||
+    summary?.sourceCatalog?.universeBuild
+  ) {
     diagnosticsRows.push(
       `Source catalog: ${formatNumber(
         summary?.sourceCatalog?.sourceCatalog?.activeCatalogRows || 0,
@@ -14831,7 +15078,8 @@ function renderGlobalOpportunitiesTab() {
   }
   if (
     summary?.snapshotWarmup?.seedFilterMode === "allow_missing_snapshot_data" ||
-    summary?.snapshotWarmup?.seedFilterMode === "strict_plus_missing_snapshot_data"
+    summary?.snapshotWarmup?.seedFilterMode ===
+      "strict_plus_missing_snapshot_data"
   ) {
     diagnosticsRows.push(
       "Seed promotion is active while enrichment catches up.",
@@ -14884,7 +15132,9 @@ function renderGlobalOpportunitiesTab() {
       </div>`
     : "";
   const diagnosticsMarkup =
-    diagnosticsRows.length || discardReasonRows.length || rejectionReasonsByItem.length
+    diagnosticsRows.length ||
+    discardReasonRows.length ||
+    rejectionReasonsByItem.length
       ? `<details class="opportunity-debug">
           <summary>Scanner diagnostics</summary>
           ${
@@ -15005,10 +15255,10 @@ function renderGlobalOpportunitiesTab() {
   return `
     <section class="grid">
       ${renderPanel({
-        className: "wide dashboard-arbitrage-panel dashboard-arbitrage-panel-live",
+        className:
+          "wide dashboard-arbitrage-panel dashboard-arbitrage-panel-live",
         title: "Global Opportunity Feed",
-        subtitle:
-          `Top ${formatNumber(summary?.universeTarget || 100, 0)} tradable items across skins, cases, capsules, knives, and gloves.`,
+        subtitle: `Top ${formatNumber(summary?.universeTarget || 100, 0)} tradable items across skins, cases, capsules, knives, and gloves.`,
         body,
       })}
     </section>
@@ -15042,7 +15292,9 @@ function renderSettingsTab() {
   const emailVerified = profile.emailVerified !== false;
   const steamLinkUrl = buildSteamAuthStartUrl("link");
   const providerLabel = toTitle(profile.provider || "email");
-  const planTier = normalizePlanTier(profile.planTier || profile.plan || "free");
+  const planTier = normalizePlanTier(
+    profile.planTier || profile.plan || "free",
+  );
   const planLabel = planTierToLabel(planTier);
   const limits = getAccountPlanLimits(planTier);
   const entitlements = getProfileEntitlements({
@@ -15058,8 +15310,8 @@ function renderSettingsTab() {
     scannerRefreshMinutes <= 0
       ? "no manual cooldown"
       : scannerRefreshMinutes >= 60
-      ? `${Math.round(scannerRefreshMinutes / 60)} hour(s)`
-      : `${scannerRefreshMinutes} minute(s)`;
+        ? `${Math.round(scannerRefreshMinutes / 60)} hour(s)`
+        : `${scannerRefreshMinutes} minute(s)`;
   const canSwitchPlans = Boolean(profile.subscriptionSwitcherEnabled);
   const selectedSwitcherPlan = normalizePlanTier(
     state.accountPage.planSwitcher.selected || planTier,
@@ -15067,11 +15319,11 @@ function renderSettingsTab() {
   const switcherSaving = Boolean(state.accountPage.planSwitcher.saving);
   const syncCooldownSeconds = getSyncCooldownSecondsRemaining();
   const syncDisabled = state.syncingInventory || syncCooldownSeconds > 0;
-  const memberSince = formatDateTime(profile.createdAt || profile.planStartedAt);
+  const memberSince = formatDateTime(
+    profile.createdAt || profile.planStartedAt,
+  );
   const username = String(
-    profile.steamDisplayName ||
-      profile.email?.split("@")?.[0] ||
-      "user",
+    profile.steamDisplayName || profile.email?.split("@")?.[0] || "user",
   ).trim();
   const steamManagedAccount = /^steam_\d{17}@steam\.local$/i.test(
     String(profile.email || "").trim(),
@@ -15466,7 +15718,8 @@ function renderSettingsTab() {
   };
 
   const sectionTitle =
-    ACCOUNT_NAV_SECTIONS.find((row) => row.id === sectionId)?.label || "Profile";
+    ACCOUNT_NAV_SECTIONS.find((row) => row.id === sectionId)?.label ||
+    "Profile";
 
   return `
     <section class="account-center-shell">
@@ -15672,11 +15925,13 @@ function renderPublicHome(options = {}) {
     ? "Simple pricing for serious CS2 traders."
     : "Find CS2 arbitrage, measure inventory, and act faster.";
   const heroCopyMarkup = pricingView
-    ? "Start free, then move to <span class=\"marketing-key key-opportunity\">Full Access</span> when you need deeper feed visibility, stronger compare coverage, and <span class=\"marketing-key key-workflow\">live execution context</span>."
-    : "Spot <span class=\"marketing-key key-opportunity\">cross-market opportunities</span> and monitor <span class=\"marketing-key key-liquidity\">inventory value</span> with <span class=\"marketing-key key-workflow\">execution context</span> from one command surface.";
+    ? 'Start free, then move to <span class="marketing-key key-opportunity">Full Access</span> when you need deeper feed coverage, stronger compare depth, and <span class="marketing-key key-workflow">live execution context</span>.'
+    : 'Track <span class="marketing-key key-opportunity">cross-market opportunities</span>, <span class="marketing-key key-liquidity">inventory value</span>, and <span class="marketing-key key-workflow">execution context</span> from one command surface across Steam, Skinport, CSFloat, and DMarket.';
   const primaryCtaLabel = "Start Free";
   const primaryCtaHref = "/register.html";
-  const secondaryCtaLabel = pricingView ? "Back to Home" : "Continue with Steam";
+  const secondaryCtaLabel = pricingView
+    ? "Back to Home"
+    : "Continue with Steam";
   const secondaryCtaHref = pricingView ? "/" : steamStartUrl;
   const heroVisualMarkup = pricingView
     ? `
@@ -15693,7 +15948,7 @@ function renderPublicHome(options = {}) {
     : `
       <div class="hero-preview panel landing-preview marketing-hero-art marketing-hero-dashboard">
         <div class="marketing-hero-dashboard-top">
-          <p class="marketing-hero-dashboard-title">Dashboard</p>
+          <p class="marketing-hero-dashboard-title">Live Snapshot</p>
           <span class="marketing-hero-live-pill">Live signal</span>
         </div>
         <article class="marketing-hero-feature-card">
@@ -15702,14 +15957,13 @@ function renderPublicHome(options = {}) {
           </div>
           <div class="marketing-hero-feature-copy">
             <p class="marketing-hero-item-name">
-              AWP | Blackiimov
+              AWP | Neo-Noir
               <span class="marketing-hero-rarity-pill">COVERT</span>
             </p>
-            <p class="marketing-hero-item-condition">(Minimal Wear)</p>
-            <p class="marketing-hero-item-profit">+$12.67 <small>Net profit</small></p>
+            <p class="marketing-hero-item-condition">Minimal Wear</p>
+            <p class="marketing-hero-item-profit">+$12.67 <small>Net</small></p>
             <div class="marketing-hero-feature-meta">
-              <span>BUFF buy</span>
-              <span>Steam sell</span>
+              <span>CSfloat -> Steam</span>
               <span>Spread 8.1%</span>
             </div>
           </div>
@@ -15719,16 +15973,16 @@ function renderPublicHome(options = {}) {
           <article>
             <span>Portfolio value</span>
             <strong>$583.22</strong>
-            <small>Tracked across markets</small>
+            <small>Across markets</small>
           </article>
           <article>
-            <span>Compare drawer</span>
-            <strong>Steam, Buff, DMarket</strong>
-            <small>Execution route map</small>
+            <span>Compare</span>
+            <strong>Steam, Skinport, CSFloat, DMarket</strong>
+            <small>Route quality view</small>
           </article>
         </div>
         <p class="marketing-hero-art-note">
-          Live route quality, net return, and inventory context in one view.
+          Profit, spread, and route quality in one view.
         </p>
       </div>
     `;
@@ -15749,24 +16003,13 @@ function renderPublicHome(options = {}) {
         </article>
       </div>
     `
+    : "";
+  const separateDashboardMarkup = pricingView
+    ? ""
     : `
-      <div class="landing-trust-grid marketing-proof-grid marketing-hero-value-grid">
-        <article class="landing-trust-item is-opportunity">
-          <span>Arbitrage Scanner</span>
-          <strong>Spot cross-market opportunities faster</strong>
-          <p>Find underpriced paths and act before spread compression kills edge.</p>
-        </article>
-        <article class="landing-trust-item is-profit">
-          <span>Profit Clarity</span>
-          <strong>See real net profit and execution risk</strong>
-          <p>Evaluate expected return with spread quality, fees, and live liquidity context.</p>
-        </article>
-        <article class="landing-trust-item is-execution">
-          <span>Portfolio Intelligence</span>
-          <strong>Manage inventory like a trader</strong>
-          <p>Track value, readiness, and route quality without spreadsheet overload.</p>
-        </article>
-      </div>
+      <section class="marketing-section marketing-dashboard-section">
+        ${heroVisualMarkup}
+      </section>
     `;
   const heroSectionMarkup = pricingView
     ? `
@@ -15791,8 +16034,8 @@ function renderPublicHome(options = {}) {
       </section>
     `
     : `
-      <section class="marketing-hero-stage">
-        <div class="hero-block landing-hero marketing-hero marketing-hero-main">
+      <section class="marketing-hero-stage has-banner">
+        <div class="hero-block landing-hero marketing-hero marketing-hero-main marketing-hero-banner-main">
           <div class="landing-hero-copy marketing-hero-copy">
             <p class="eyebrow">${escapeHtml(heroEyebrow)}</p>
             <h1>${escapeHtml(heroTitle)}</h1>
@@ -15808,9 +16051,10 @@ function renderPublicHome(options = {}) {
               )}</a>
             </div>
           </div>
-          ${heroVisualMarkup}
+          <div class="marketing-hero-banner-side" aria-hidden="true">
+            <img src="/hero-main-banner.png" alt="" loading="eager" decoding="async" />
+          </div>
         </div>
-        ${heroValueCardsMarkup}
       </section>
     `;
   const accentBannerMarkup = pricingView
@@ -15820,23 +16064,23 @@ function renderPublicHome(options = {}) {
         <article class="marketing-accent-panel">
           <div class="marketing-accent-copy">
             <p class="eyebrow">Live Arbitrage Engine</p>
-            <h2>Scan cross-market opportunities and move while the <span class="marketing-key key-profit">spread is still open</span>.</h2>
+            <h2>Scan cross-market routes and act while the <span class="marketing-key key-profit">spread is open</span>.</h2>
             <p>
-              SkinAlpha continuously maps buy/sell paths, then surfaces <span class="marketing-key key-profit">net profit</span>, <span class="marketing-key key-liquidity">liquidity context</span>, and <span class="marketing-key key-workflow">route quality</span> in one decision-ready view.
+              SkinAlpha maps buy/sell paths and surfaces <span class="marketing-key key-profit">net profit</span>, <span class="marketing-key key-liquidity">liquidity context</span>, and <span class="marketing-key key-workflow">execution quality</span> in one clear view.
             </p>
           </div>
           <div class="marketing-accent-metrics">
             <article class="is-opportunity">
-              <span>Opportunity feed</span>
-              <strong>Live ranked routes</strong>
+              <span>Routes</span>
+              <strong>Live ranked opportunities</strong>
             </article>
             <article class="is-profit">
-              <span>Profit clarity</span>
-              <strong>Net after fee assumptions</strong>
+              <span>Net profit</span>
+              <strong>After-fee clarity</strong>
             </article>
             <article class="is-execution">
-              <span>Execution context</span>
-              <strong>Spread + liquidity + freshness</strong>
+              <span>Market coverage</span>
+              <strong>Steam + Skinport + CSFloat + DMarket</strong>
             </article>
           </div>
         </article>
@@ -15848,20 +16092,20 @@ function renderPublicHome(options = {}) {
       <section class="marketing-section marketing-outcomes">
         <div class="marketing-section-head">
           <p class="eyebrow">Key outcomes</p>
-          <h2>Decisions get faster when the signal is cleaner</h2>
+          <h2>Faster decisions, lower noise</h2>
         </div>
         <div class="marketing-outcomes-grid">
           <article class="marketing-outcome-card">
             <h3>Find profitable routes early</h3>
-            <p>Catch live arbitrage paths before market repricing compresses your edge.</p>
+            <p>Catch high-quality routes before repricing compresses edge.</p>
           </article>
           <article class="marketing-outcome-card">
             <h3>Protect inventory quality</h3>
-            <p>Track valuation, liquidity, and freshness so weak positions are visible sooner.</p>
+            <p>See weak positions sooner with valuation and liquidity context.</p>
           </article>
           <article class="marketing-outcome-card">
             <h3>Execute with context</h3>
-            <p>Move from feed to compare to insight without losing momentum.</p>
+            <p>Move from feed to compare to insight without context switching.</p>
           </article>
         </div>
       </section>
@@ -15873,22 +16117,21 @@ function renderPublicHome(options = {}) {
         <div class="marketing-showcase-layout">
           <article class="marketing-showcase-copy">
             <p class="eyebrow">Product showcase</p>
-            <h2>One surface for scanning, comparing, and committing capital</h2>
+            <h2>One surface to scan, compare, and execute</h2>
             <p>
-              The feed prioritizes what matters first: item, route, net profit, spread, and verdict.
-              Open insight only when needed and keep flow speed high.
+              The feed puts item, route, and net profit first. Open deeper insight only when the route needs validation.
             </p>
             <ul class="marketing-showcase-points">
-              <li>Live opportunity feed with clear buy/sell path context</li>
-              <li>Compare markets instantly with route-level confidence signals</li>
-              <li>Portfolio and liquidity intelligence tied directly to execution decisions</li>
+              <li>See item, route, and net profit in one row</li>
+              <li>Compare markets only when route quality is unclear</li>
+              <li>Coverage: Steam, Skinport, CSFloat, DMarket</li>
             </ul>
           </article>
           <article class="marketing-showcase-visual">
             <div class="marketing-showcase-screen">
               <header>
-                <span>Live Opportunity Feed</span>
-                <strong>Arbitrage Scanner</strong>
+                <strong>Live Opportunity Feed</strong>
+                <span class="marketing-showcase-focus">Net profit first</span>
               </header>
               <div class="marketing-showcase-rows">
                 <article class="is-positive">
@@ -15907,9 +16150,6 @@ function renderPublicHome(options = {}) {
                   <p class="profit">Watch</p>
                 </article>
               </div>
-              <span class="marketing-showcase-callout callout-profit">Net profit first</span>
-              <span class="marketing-showcase-callout callout-liquidity">Liquidity context</span>
-              <span class="marketing-showcase-callout callout-verdict">Execution verdict</span>
             </div>
           </article>
         </div>
@@ -15921,33 +16161,33 @@ function renderPublicHome(options = {}) {
       <section class="marketing-section marketing-pillars">
         <div class="marketing-section-head">
           <p class="eyebrow">Product pillars</p>
-          <h2>Built around the three workflows that drive profitable trading</h2>
+          <h2>Three workflows that drive profitable trading</h2>
         </div>
         <div class="marketing-pillars-grid">
           <article class="marketing-pillar-card is-opportunity">
             <p class="eyebrow">Arbitrage Scanner</p>
-            <h3>See cross-market opportunity flow in real time</h3>
-            <p>Monitor fresh routes, spread quality, and expected net return without opening multiple tools.</p>
+            <h3>See cross-market routes in real time</h3>
+            <p>Track fresh routes, spread quality, and expected net return in one feed.</p>
           </article>
           <article class="marketing-pillar-card is-liquidity">
             <p class="eyebrow">Portfolio Intelligence</p>
-            <h3>Value inventory with liquidity-aware context</h3>
-            <p>Track portfolio health, concentration, and trade readiness with market depth built into every read.</p>
+            <h3>Value inventory with liquidity context</h3>
+            <p>Track concentration, trade readiness, and portfolio health without extra dashboards.</p>
           </article>
           <article class="marketing-pillar-card is-execution">
             <p class="eyebrow">Execution Workflow</p>
-            <h3>Compare routes, open insight, and act with confidence</h3>
-            <p>Move from opportunity discovery to final decision with context that supports execution, not noise.</p>
+            <h3>Compare routes, open insight, and act</h3>
+            <p>Move from discovery to decision with context built for execution speed.</p>
           </article>
         </div>
       </section>
     `;
   const finalCtaTitle = pricingView
     ? "Choose your plan and start in minutes."
-    : "Start scanning opportunities with execution clarity today.";
+    : "Start trading with clearer signals.";
   const finalCtaBodyMarkup = pricingView
-    ? "Start with Free, then move to <span class=\"marketing-key key-opportunity\">Full Access</span> when you need full feed depth and <span class=\"marketing-key key-workflow\">live execution signals</span>."
-    : "Use the <span class=\"marketing-key key-opportunity\">live feed</span> for arbitrage opportunities, validate with <span class=\"marketing-key key-workflow\">compare and insight</span>, and trade with <span class=\"marketing-key key-liquidity\">portfolio-aware confidence</span>.";
+    ? 'Start with Free, then move to <span class="marketing-key key-opportunity">Full Access</span> when you need full feed depth and <span class="marketing-key key-workflow">live execution signals</span>.'
+    : 'Use the <span class="marketing-key key-opportunity">live feed</span>, validate with <span class="marketing-key key-workflow">compare and insight</span>, and execute with <span class="marketing-key key-liquidity">portfolio context</span>.';
 
   app.innerHTML = `
     <main class="layout landing-shell marketing-shell">
@@ -15974,6 +16214,7 @@ function renderPublicHome(options = {}) {
 
       ${heroSectionMarkup}
 
+      ${separateDashboardMarkup}
       ${accentBannerMarkup}
       ${outcomesMarkup}
       ${previewMarkup}
@@ -16010,8 +16251,12 @@ function renderEmailOnboardingPage() {
   const profile = state.authProfile || {};
   syncEmailOnboardingStateFromProfile();
 
-  const pendingEmail = String(profile.pendingEmail || "").trim().toLowerCase();
-  const verifiedEmail = String(profile.email || "").trim().toLowerCase();
+  const pendingEmail = String(profile.pendingEmail || "")
+    .trim()
+    .toLowerCase();
+  const verifiedEmail = String(profile.email || "")
+    .trim()
+    .toLowerCase();
   const safeVerifiedEmail = /^steam_\d{17}@steam\.local$/i.test(verifiedEmail)
     ? ""
     : verifiedEmail;
@@ -16019,7 +16264,9 @@ function renderEmailOnboardingPage() {
   const primaryEmail =
     pendingEmail || state.emailOnboarding.email || safeVerifiedEmail;
   const providerLabel = toTitle(profile.provider || "steam");
-  const statusText = profile.emailVerified ? "Verified" : "Pending verification";
+  const statusText = profile.emailVerified
+    ? "Verified"
+    : "Pending verification";
   const statusTone = profile.emailVerified ? "real" : "unpriced";
 
   app.innerHTML = `
@@ -16319,19 +16566,19 @@ function renderApp() {
       ? dashboardContent
       : state.activeTab === "opportunities"
         ? renderGlobalOpportunitiesTab()
-      : state.activeTab === "portfolio"
-        ? portfolioContent
-        : state.activeTab === "trades"
-          ? tradesContent
-          : state.activeTab === "alerts"
-            ? renderAlertsCenter()
-            : state.activeTab === "social"
-              ? renderSocialTab()
-              : state.activeTab === "team"
-                ? renderTeamTab()
-                : state.activeTab === "market"
-                  ? renderMarketTab()
-                  : renderSettingsTab();
+        : state.activeTab === "portfolio"
+          ? portfolioContent
+          : state.activeTab === "trades"
+            ? tradesContent
+            : state.activeTab === "alerts"
+              ? renderAlertsCenter()
+              : state.activeTab === "social"
+                ? renderSocialTab()
+                : state.activeTab === "team"
+                  ? renderTeamTab()
+                  : state.activeTab === "market"
+                    ? renderMarketTab()
+                    : renderSettingsTab();
 
   app.innerHTML = `
     <main class="layout app-shell">
@@ -16397,7 +16644,9 @@ function renderApp() {
           state.tabSwitch.loading
             ? `<div class="tab-switch-indicator-slot" aria-live="polite">
                 <div class="tab-switch-indicator" role="status">Loading ${escapeHtml(
-                  getTabLabelById(state.tabSwitch.target || state.activeTab || "tab"),
+                  getTabLabelById(
+                    state.tabSwitch.target || state.activeTab || "tab",
+                  ),
                 )}...</div>
               </div>`
             : ""
@@ -16573,7 +16822,9 @@ function hydrateAppNoticesFromUrl() {
   const merged = params.get("merged") === "1";
   const steamOnboarding = params.get("steamOnboarding") === "1";
   const onboardingVerified = params.get("onboardingVerified") === "1";
-  const onboardingError = String(params.get("onboarding") === "1" ? params.get("error") || "" : "").trim();
+  const onboardingError = String(
+    params.get("onboarding") === "1" ? params.get("error") || "" : "",
+  ).trim();
 
   steamLinkHintRequestedAfterLogin = sessionAutoSyncOnLoginRequested;
   steamSyncHintRequestedAfterSteamLogin = steamLogin;
@@ -16588,7 +16839,13 @@ function hydrateAppNoticesFromUrl() {
     window.history.replaceState({}, "", nextUrl);
   }
 
-  if (!linkedSteam && !steamOnboarding && !onboardingVerified && !onboardingError) return;
+  if (
+    !linkedSteam &&
+    !steamOnboarding &&
+    !onboardingVerified &&
+    !onboardingError
+  )
+    return;
 
   if (linkedSteam) {
     state.accountNotice = merged
@@ -16599,7 +16856,8 @@ function hydrateAppNoticesFromUrl() {
   if (steamOnboarding) {
     state.activeTab = "dashboard";
     state.steamOnboardingPending = true;
-    state.accountNotice = "Steam connected successfully. Verify your email to activate your free plan.";
+    state.accountNotice =
+      "Steam connected successfully. Verify your email to activate your free plan.";
   }
 
   if (onboardingVerified) {
@@ -16610,9 +16868,12 @@ function hydrateAppNoticesFromUrl() {
 
   if (onboardingError) {
     const onboardingMessages = {
-      email_verification_expired: "Verification link expired. Request a new email link.",
-      email_verification_invalid: "Verification link is invalid. Request a new email link.",
-      email_verification_used: "Verification link already used. Refresh your account status.",
+      email_verification_expired:
+        "Verification link expired. Request a new email link.",
+      email_verification_invalid:
+        "Verification link is invalid. Request a new email link.",
+      email_verification_used:
+        "Verification link already used. Refresh your account status.",
       email_in_use: "This email is already in use. Enter another email.",
     };
     state.accountNotice =
@@ -16626,7 +16887,9 @@ function hydrateAppNoticesFromUrl() {
   }
 
   if (isAccountPath()) {
-    setActiveAccountSection(parseAccountSectionFromHash(), { updateHash: false });
+    setActiveAccountSection(parseAccountSectionFromHash(), {
+      updateHash: false,
+    });
     window.history.replaceState(
       {},
       "",
@@ -16796,4 +17059,3 @@ bootstrapSession().catch(() => {
   steamSyncHintRequestedAfterSteamLogin = false;
   render();
 });
-

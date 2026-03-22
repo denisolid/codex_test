@@ -3646,7 +3646,9 @@ button:disabled,
     0 14px 24px rgba(4, 7, 16, 0.48);
 }
 
-.portfolio-skin-card[data-rarity-kind="unknown"] .portfolio-skin-card-media img {
+.portfolio-skin-card[data-rarity-kind="unknown"]
+  .portfolio-skin-card-media
+  img {
   border-color: rgba(138, 150, 171, 0.3);
   filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.5));
 }
@@ -3755,7 +3757,11 @@ button:disabled,
 .rarity-tag[data-rarity-kind="unknown"] {
   color: #d1dae9;
   border-color: rgba(138, 150, 171, 0.34);
-  background: linear-gradient(130deg, rgba(138, 150, 171, 0.16), rgba(10, 14, 23, 0.74));
+  background: linear-gradient(
+    130deg,
+    rgba(138, 150, 171, 0.16),
+    rgba(10, 14, 23, 0.74)
+  );
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
     0 0 10px rgba(138, 150, 171, 0.14);
@@ -6650,9 +6656,16 @@ a:hover {
   height: 90px;
   cursor: zoom-in;
   border-radius: 14px;
+  border: 1px solid rgba(var(--rarity-rgb, 138, 147, 163), 0.54);
   border: 1px solid color-mix(in srgb, var(--rarity-color) 58%, transparent);
+  outline: 1px solid rgba(var(--rarity-rgb, 138, 147, 163), 0.16);
+  outline-offset: -1px;
   overflow: hidden;
-  background: linear-gradient(155deg, rgba(7, 11, 20, 0.96), rgba(10, 15, 27, 0.9));
+  background: linear-gradient(
+    155deg,
+    rgba(7, 11, 20, 0.96),
+    rgba(10, 15, 27, 0.9)
+  );
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.05),
     0 0 0 1px color-mix(in srgb, var(--rarity-color) 22%, transparent),
@@ -6721,14 +6734,16 @@ a:hover {
   outline: 1px solid rgba(var(--rarity-rgb), 0.56);
   outline-offset: -1px;
   background:
-    linear-gradient(156deg, rgba(6, 11, 22, 0.98), rgba(9, 16, 30, 0.96)) padding-box,
+    linear-gradient(156deg, rgba(6, 11, 22, 0.98), rgba(9, 16, 30, 0.96))
+      padding-box,
     linear-gradient(
-      122deg,
-      rgba(var(--rarity-rgb), 0.82),
-      rgba(255, 255, 255, 0.42),
-      rgba(var(--rarity-rgb), 0.9),
-      rgba(var(--rarity-rgb), 0.74)
-    ) border-box;
+        122deg,
+        rgba(var(--rarity-rgb), 0.82),
+        rgba(255, 255, 255, 0.42),
+        rgba(var(--rarity-rgb), 0.9),
+        rgba(var(--rarity-rgb), 0.74)
+      )
+      border-box;
   box-shadow:
     0 20px 36px rgba(2, 5, 14, 0.64),
     0 0 0 1px rgba(var(--rarity-rgb), 0.44),
@@ -6809,6 +6824,7 @@ a:hover {
   object-position: center center;
   border-radius: 10px;
   background: rgba(6, 10, 19, 0.9);
+  border: 1px solid rgba(var(--rarity-rgb, 138, 147, 163), 0.44);
   border: 1px solid rgba(var(--rarity-rgb), 0.38);
   border: 1px solid color-mix(in srgb, var(--rarity-color) 38%, transparent);
   filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.48));
@@ -7008,14 +7024,12 @@ a:hover {
 .opportunities-table .opportunity-item-media:hover .opportunity-item-thumb,
 .opportunities-table .opportunity-item-media.is-hovered .opportunity-item-thumb,
 .opportunities-table .opportunity-item-thumb:hover {
-  transform: scale(1.02) translate3d(0, 0, 0)
-    !important;
+  transform: scale(1.02) translate3d(0, 0, 0) !important;
 }
 
 .opportunities-table .opportunity-item-media:active .opportunity-item-thumb,
 .opportunities-table .opportunity-item-thumb:active {
-  transform: scale(1.02) translate3d(0, 0, 0)
-    !important;
+  transform: scale(1.02) translate3d(0, 0, 0) !important;
 }
 
 .opportunity-table-row:hover .opportunity-rarity-tag {
@@ -7071,24 +7085,36 @@ a:hover {
 
 .opportunities-table .actions-cell .opportunity-upgrade-btn {
   border-color: rgba(255, 209, 132, 0.62);
-  background: linear-gradient(135deg, rgba(121, 81, 16, 0.86), rgba(77, 51, 12, 0.9));
+  background: linear-gradient(
+    135deg,
+    rgba(121, 81, 16, 0.86),
+    rgba(77, 51, 12, 0.9)
+  );
   color: #ffe7bc;
 }
 
 .opportunities-table .actions-cell .opportunity-upgrade-btn:hover {
   border-color: rgba(255, 224, 163, 0.76);
-  box-shadow: 0 0 0 1px rgba(255, 219, 148, 0.32), 0 10px 20px rgba(55, 35, 8, 0.4);
+  box-shadow:
+    0 0 0 1px rgba(255, 219, 148, 0.32),
+    0 10px 20px rgba(55, 35, 8, 0.4);
 }
 
 .opportunities-table .actions-cell .opportunity-insight-btn {
   border-color: rgba(120, 169, 255, 0.56);
-  background: linear-gradient(138deg, rgba(12, 30, 62, 0.88), rgba(10, 20, 43, 0.9));
+  background: linear-gradient(
+    138deg,
+    rgba(12, 30, 62, 0.88),
+    rgba(10, 20, 43, 0.9)
+  );
   color: #cfe3ff;
 }
 
 .opportunities-table .actions-cell .opportunity-insight-btn:hover {
   border-color: rgba(146, 189, 255, 0.74);
-  box-shadow: 0 0 0 1px rgba(115, 164, 249, 0.26), 0 10px 20px rgba(4, 15, 35, 0.42);
+  box-shadow:
+    0 0 0 1px rgba(115, 164, 249, 0.26),
+    0 10px 20px rgba(4, 15, 35, 0.42);
 }
 
 .opportunity-metric-value {
@@ -8393,32 +8419,56 @@ tr.opportunity-row-new td {
   border: 1px solid rgba(122, 157, 220, 0.28);
   border-radius: 14px;
   padding: 12px 14px;
-  background: linear-gradient(160deg, rgba(16, 28, 50, 0.86), rgba(9, 18, 35, 0.9));
+  background: linear-gradient(
+    160deg,
+    rgba(16, 28, 50, 0.86),
+    rgba(9, 18, 35, 0.9)
+  );
 }
 
 .opportunity-insight-summary.tone-positive {
   border-color: rgba(64, 220, 151, 0.5);
-  background: linear-gradient(160deg, rgba(11, 41, 32, 0.88), rgba(8, 24, 20, 0.9));
+  background: linear-gradient(
+    160deg,
+    rgba(11, 41, 32, 0.88),
+    rgba(8, 24, 20, 0.9)
+  );
 }
 
 .opportunity-insight-summary.tone-positive-soft {
   border-color: rgba(107, 226, 173, 0.42);
-  background: linear-gradient(160deg, rgba(13, 39, 34, 0.88), rgba(9, 24, 23, 0.9));
+  background: linear-gradient(
+    160deg,
+    rgba(13, 39, 34, 0.88),
+    rgba(9, 24, 23, 0.9)
+  );
 }
 
 .opportunity-insight-summary.tone-warning {
   border-color: rgba(255, 204, 109, 0.46);
-  background: linear-gradient(160deg, rgba(49, 37, 16, 0.88), rgba(27, 20, 11, 0.9));
+  background: linear-gradient(
+    160deg,
+    rgba(49, 37, 16, 0.88),
+    rgba(27, 20, 11, 0.9)
+  );
 }
 
 .opportunity-insight-summary.tone-danger-soft {
   border-color: rgba(255, 164, 116, 0.45);
-  background: linear-gradient(160deg, rgba(54, 28, 17, 0.88), rgba(31, 17, 12, 0.9));
+  background: linear-gradient(
+    160deg,
+    rgba(54, 28, 17, 0.88),
+    rgba(31, 17, 12, 0.9)
+  );
 }
 
 .opportunity-insight-summary.tone-danger {
   border-color: rgba(255, 133, 146, 0.48);
-  background: linear-gradient(160deg, rgba(56, 20, 27, 0.9), rgba(31, 14, 20, 0.9));
+  background: linear-gradient(
+    160deg,
+    rgba(56, 20, 27, 0.9),
+    rgba(31, 14, 20, 0.9)
+  );
 }
 
 .opportunity-insight-summary-head {
@@ -8494,7 +8544,11 @@ tr.opportunity-row-new td {
   border: 1px solid rgba(123, 153, 210, 0.24);
   border-radius: 14px;
   padding: 12px 14px;
-  background: linear-gradient(168deg, rgba(10, 18, 35, 0.94), rgba(7, 14, 28, 0.9));
+  background: linear-gradient(
+    168deg,
+    rgba(10, 18, 35, 0.94),
+    rgba(7, 14, 28, 0.9)
+  );
 }
 
 .opportunity-insight-card-wide {
@@ -8749,8 +8803,14 @@ body {
       transparent 72%
     ),
     var(--master-bg-image);
-  background-size: 100% 100%, 100% 540px, cover;
-  background-position: center, center top, center top;
+  background-size:
+    100% 100%,
+    100% 540px,
+    cover;
+  background-position:
+    center,
+    center top,
+    center top;
 }
 
 .layout {
@@ -8803,11 +8863,8 @@ body {
 .desktop-tab-btn.active,
 .mobile-drawer-tab.active {
   border-color: rgba(123, 173, 255, 0.66);
-  background: linear-gradient(
-      145deg,
-      rgba(88, 145, 236, 0.28),
-      rgba(66, 110, 200, 0.28)
-    ),
+  background:
+    linear-gradient(145deg, rgba(88, 145, 236, 0.28), rgba(66, 110, 200, 0.28)),
     rgba(13, 20, 32, 0.9);
   box-shadow: inset 0 0 0 1px rgba(123, 173, 255, 0.28);
 }
@@ -9093,8 +9150,16 @@ td {
   width: 132px;
   height: 94px;
   border-radius: 14px;
-  border: 1px solid color-mix(in srgb, var(--rarity-color, #8a93a3) 56%, transparent);
-  background: linear-gradient(160deg, rgba(10, 16, 27, 0.96), rgba(7, 12, 21, 0.94));
+  border: 1px solid rgba(var(--rarity-rgb, 138, 147, 163), 0.52);
+  border: 1px solid
+    color-mix(in srgb, var(--rarity-color, #8a93a3) 56%, transparent);
+  outline: 1px solid rgba(var(--rarity-rgb, 138, 147, 163), 0.15);
+  outline-offset: -1px;
+  background: linear-gradient(
+    160deg,
+    rgba(10, 16, 27, 0.96),
+    rgba(7, 12, 21, 0.94)
+  );
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
     0 0 0 1px color-mix(in srgb, var(--rarity-color, #8a93a3) 20%, transparent),
@@ -9270,7 +9335,11 @@ td {
   width: 108px;
   height: 78px;
   border-radius: 12px;
-  border: 1px solid color-mix(in srgb, var(--rarity-color, #7f8ba5) 52%, transparent);
+  border: 1px solid rgba(var(--rarity-rgb, 138, 147, 163), 0.5);
+  border: 1px solid
+    color-mix(in srgb, var(--rarity-color, #7f8ba5) 52%, transparent);
+  outline: 1px solid rgba(var(--rarity-rgb, 138, 147, 163), 0.14);
+  outline-offset: -1px;
   background: rgba(8, 13, 23, 0.9);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
@@ -9284,18 +9353,28 @@ td {
 
 .opportunity-item-cell[data-rarity-kind="unknown"] .opportunity-item-media,
 .opportunity-mobile-image-wrap[data-rarity-kind="unknown"] {
-  border-color: rgba(138, 150, 171, 0.3);
+  border-color: rgba(148, 161, 182, 0.52);
+  outline-color: rgba(168, 181, 200, 0.22);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 0 0 1px rgba(138, 150, 171, 0.14),
-    0 7px 14px rgba(3, 7, 15, 0.38);
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 0 0 1px rgba(150, 164, 186, 0.24),
+    0 9px 18px rgba(3, 7, 15, 0.4),
+    0 0 14px rgba(146, 160, 182, 0.18);
 }
 
 .opportunity-mobile-image {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  border-radius: 9px;
+  border: 1px solid rgba(var(--rarity-rgb, 138, 147, 163), 0.32);
   padding: 4px;
+}
+
+.opportunity-mobile-image-wrap[data-rarity-kind="unknown"]
+  .opportunity-mobile-image,
+.opportunity-item-cell[data-rarity-kind="unknown"] .opportunity-item-thumb {
+  border-color: rgba(150, 164, 186, 0.42);
 }
 
 .opportunity-mobile-head {
@@ -9577,11 +9656,7 @@ td {
 .dashboard-modal-dialog {
   border-color: var(--line);
   background:
-    linear-gradient(
-      160deg,
-      rgba(12, 18, 29, 0.96),
-      rgba(14, 21, 33, 0.96)
-    ),
+    linear-gradient(160deg, rgba(12, 18, 29, 0.96), rgba(14, 21, 33, 0.96)),
     radial-gradient(
       420px 180px at 50% -20%,
       rgba(103, 154, 235, 0.1),
@@ -9856,15 +9931,32 @@ td {
     inset 0 1px 0 rgba(160, 191, 245, 0.2);
 }
 
+.marketing-hero-stage.has-banner {
+  background:
+    linear-gradient(165deg, rgba(7, 12, 25, 0.2), rgba(7, 12, 25, 0.22)),
+    radial-gradient(
+      960px 320px at 100% -12%,
+      rgba(85, 129, 255, 0.14),
+      transparent 74%
+    );
+}
+
 .marketing-hero-stage::before {
   content: "";
   position: absolute;
   inset: 0;
+  z-index: 1;
   pointer-events: none;
   background:
-    linear-gradient(110deg, rgba(104, 53, 228, 0.16), transparent 44%),
-    linear-gradient(305deg, rgba(65, 203, 191, 0.12), transparent 42%);
-  mix-blend-mode: screen;
+    linear-gradient(
+      90deg,
+      rgba(5, 8, 18, 0.74) 0%,
+      rgba(5, 8, 18, 0.6) 25%,
+      rgba(5, 8, 18, 0.3) 44%,
+      rgba(5, 8, 18, 0.12) 62%,
+      rgba(5, 8, 18, 0.18) 100%
+    ),
+    linear-gradient(180deg, rgba(7, 12, 23, 0.08), rgba(7, 12, 23, 0.16));
 }
 
 .marketing-hero-stage::after {
@@ -9874,21 +9966,70 @@ td {
   right: -10%;
   bottom: -36%;
   height: 46%;
+  z-index: 1;
   pointer-events: none;
   background: radial-gradient(
     780px 220px at 50% 0%,
-    rgba(74, 138, 252, 0.3),
-    rgba(112, 66, 227, 0.16) 46%,
+    rgba(74, 138, 252, 0.2),
+    rgba(112, 66, 227, 0.1) 46%,
     transparent 72%
   );
 }
 
 .marketing-hero-stage .marketing-hero-main {
   position: relative;
+  z-index: 2;
   margin: 0;
   gap: clamp(18px, 2.6vw, 34px);
   grid-template-columns: minmax(0, 1fr) minmax(420px, 1.08fr);
   align-items: center;
+}
+
+.marketing-hero-stage .marketing-hero-main.marketing-hero-banner-main {
+  grid-template-columns: minmax(0, 560px) minmax(0, 1fr);
+  min-height: 0;
+  align-items: stretch;
+}
+
+.marketing-hero-banner-side {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(126, 167, 239, 0.35);
+  border-radius: 20px;
+  min-height: 0;
+  height: 100%;
+  align-self: stretch;
+  background: rgba(6, 12, 24, 0.7);
+  box-shadow:
+    0 18px 38px rgba(3, 8, 20, 0.52),
+    inset 0 1px 0 rgba(151, 189, 246, 0.18);
+}
+
+.marketing-hero-banner-side img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  object-position: 76% center;
+  transform: scale(1.03);
+}
+
+.marketing-hero-banner-side::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(5, 8, 18, 0.34) 0%,
+      rgba(5, 8, 18, 0.18) 24%,
+      rgba(5, 8, 18, 0.08) 44%,
+      rgba(5, 8, 18, 0.12) 100%
+    ),
+    linear-gradient(180deg, rgba(7, 12, 23, 0.06), rgba(7, 12, 23, 0.14));
 }
 
 .marketing-hero-stage .marketing-hero-copy {
@@ -9919,6 +10060,11 @@ td {
   min-height: 52px;
   min-width: 200px;
   font-size: 1.05rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  line-height: 1;
 }
 
 .marketing-hero-stage .marketing-hero-actions .btn-primary {
@@ -10082,7 +10228,24 @@ td {
 .marketing-hero-dashboard {
   padding: 16px;
   gap: 12px;
-  transform: perspective(1500px) rotateY(-5deg);
+  transform: none;
+}
+
+.marketing-dashboard-section {
+  margin-top: 6px;
+}
+
+.marketing-dashboard-section .marketing-hero-dashboard {
+  width: 100%;
+  border-radius: 20px;
+  border-color: rgba(121, 168, 244, 0.34);
+  background:
+    linear-gradient(154deg, rgba(7, 13, 24, 0.95), rgba(9, 15, 28, 0.92)),
+    radial-gradient(
+      560px 210px at 100% -10%,
+      rgba(71, 142, 244, 0.18),
+      transparent 74%
+    );
 }
 
 .marketing-hero-dashboard-top {
@@ -10885,6 +11048,11 @@ td {
     grid-template-columns: 1fr;
   }
 
+  .marketing-hero-banner-side {
+    min-height: 320px;
+    height: auto;
+  }
+
   .marketing-hero-stage .marketing-hero-copy h1 {
     max-width: 100%;
   }
@@ -11022,5 +11190,263 @@ td {
   .marketing-showcase-rows .route,
   .marketing-showcase-rows .profit {
     white-space: normal;
+  }
+}
+
+/* Landing readability pass: cleaner hierarchy and lower visual overload */
+.marketing-shell {
+  gap: clamp(30px, 4vw, 50px);
+}
+
+.marketing-shell::before {
+  inset: 74px -24px 0;
+  background:
+    radial-gradient(
+      560px 220px at 98% 8%,
+      rgba(70, 136, 242, 0.14),
+      transparent 72%
+    ),
+    radial-gradient(
+      480px 220px at 4% -10%,
+      rgba(93, 74, 184, 0.08),
+      transparent 76%
+    );
+}
+
+.marketing-section-head {
+  gap: 7px;
+  margin-bottom: 18px;
+  max-width: 58ch;
+}
+
+.marketing-section-head h2 {
+  font-size: clamp(1.34rem, 2.05vw, 1.9rem);
+  line-height: 1.18;
+  max-width: 24ch;
+}
+
+.marketing-section-head p,
+.marketing-showcase-copy p,
+.marketing-accent-copy p,
+.marketing-outcome-card p,
+.marketing-pillar-card p:last-child {
+  color: rgba(196, 212, 238, 0.82);
+}
+
+.marketing-hero-stage .marketing-hero-copy {
+  max-width: 560px;
+  padding: clamp(14px, 2vw, 22px);
+  border-radius: 18px;
+  border: none;
+  background: linear-gradient(145deg, rgba(7, 12, 23, 0.82), rgba(7, 12, 23, 0.7));
+  backdrop-filter: blur(10px);
+}
+
+.marketing-hero-stage .marketing-hero-copy h1 {
+  max-width: 9.6ch;
+}
+
+.marketing-hero-stage .marketing-hero-subcopy {
+  max-width: 40ch;
+  line-height: 1.46;
+  font-size: clamp(0.98rem, 1.2vw, 1.14rem);
+  color: rgba(221, 232, 250, 0.9);
+}
+
+.marketing-hero-banner-side {
+  border-color: rgba(137, 173, 239, 0.42);
+}
+
+.marketing-dashboard-section .marketing-hero-dashboard,
+.marketing-accent-panel,
+.marketing-outcome-card,
+.marketing-pillar-card,
+.marketing-showcase-screen,
+.marketing-pricing-panel,
+.marketing-final-cta-panel {
+  border-color: rgba(131, 167, 227, 0.36);
+  background: linear-gradient(150deg, rgba(7, 12, 22, 0.92), rgba(8, 14, 26, 0.88));
+  backdrop-filter: blur(12px);
+}
+
+.marketing-dashboard-section .marketing-hero-dashboard,
+.marketing-accent-panel,
+.marketing-showcase-screen {
+  box-shadow:
+    0 16px 36px rgba(2, 6, 16, 0.44),
+    inset 0 1px 0 rgba(157, 194, 247, 0.16);
+}
+
+.marketing-accent-panel {
+  padding: clamp(20px, 3vw, 30px);
+  gap: 16px;
+}
+
+.marketing-accent-copy h2 {
+  max-width: 20ch;
+  font-size: clamp(1.32rem, 2.1vw, 1.78rem);
+}
+
+.marketing-accent-copy p {
+  max-width: 56ch;
+  line-height: 1.52;
+}
+
+.marketing-accent-metrics {
+  gap: 12px;
+}
+
+.marketing-accent-metrics article {
+  min-height: 88px;
+  padding: 12px 13px;
+  border-color: rgba(132, 166, 224, 0.44);
+  background: rgba(6, 11, 21, 0.8);
+  backdrop-filter: blur(10px);
+}
+
+.marketing-accent-metrics span {
+  font-size: 0.62rem;
+  letter-spacing: 0.07em;
+}
+
+.marketing-accent-metrics strong {
+  font-size: 0.95rem;
+  line-height: 1.32;
+}
+
+.marketing-outcomes-grid,
+.marketing-pillars-grid {
+  gap: 14px;
+}
+
+.marketing-outcome-card,
+.marketing-pillar-card {
+  min-height: 142px;
+  padding: 18px;
+  gap: 9px;
+}
+
+.marketing-outcome-card h3,
+.marketing-pillar-card h3 {
+  font-size: 1.04rem;
+  line-height: 1.28;
+}
+
+.marketing-outcome-card p,
+.marketing-pillar-card p:last-child {
+  font-size: 0.9rem;
+  line-height: 1.48;
+  max-width: 40ch;
+}
+
+.marketing-showcase-layout {
+  gap: clamp(16px, 2.4vw, 30px);
+  align-items: stretch;
+}
+
+.marketing-showcase-copy {
+  gap: 10px;
+  max-width: 54ch;
+}
+
+.marketing-showcase-copy h2 {
+  max-width: 22ch;
+  font-size: clamp(1.3rem, 2.1vw, 1.75rem);
+}
+
+.marketing-showcase-points {
+  margin-top: 4px;
+  gap: 5px;
+  font-size: 0.84rem;
+}
+
+.marketing-showcase-screen {
+  padding: 14px 14px 12px;
+}
+
+.marketing-showcase-screen header {
+  margin-bottom: 8px;
+  padding-bottom: 9px;
+}
+
+.marketing-showcase-screen header strong {
+  font-size: 0.9rem;
+}
+
+.marketing-showcase-focus {
+  border: 1px solid rgba(64, 221, 162, 0.42);
+  border-radius: 999px;
+  background: rgba(8, 24, 23, 0.66);
+  color: #40e0a2;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 5px 10px;
+}
+
+.marketing-showcase-rows {
+  gap: 7px;
+}
+
+.marketing-showcase-rows article {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "item profit"
+    "route route";
+  padding: 10px 11px;
+  border-color: rgba(129, 155, 198, 0.35);
+  background: rgba(6, 11, 20, 0.78);
+}
+
+.marketing-showcase-rows .item {
+  grid-area: item;
+  font-size: 0.88rem;
+}
+
+.marketing-showcase-rows .route {
+  grid-area: route;
+  margin-top: 2px;
+  font-size: 0.75rem;
+  color: #a3b7d8;
+}
+
+.marketing-showcase-rows .profit {
+  grid-area: profit;
+  font-size: 0.92rem;
+}
+
+.marketing-showcase-callout {
+  display: none;
+}
+
+.marketing-pricing-panel {
+  padding: clamp(18px, 2.4vw, 26px);
+}
+
+.marketing-final-cta-panel {
+  padding: clamp(18px, 2.4vw, 24px);
+}
+
+.marketing-final-cta-panel .muted {
+  line-height: 1.52;
+  color: rgba(201, 216, 240, 0.82);
+}
+
+@media (max-width: 1220px) {
+  .marketing-hero-stage .marketing-hero-copy {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 980px) {
+  .marketing-accent-metrics article,
+  .marketing-outcome-card,
+  .marketing-pillar-card {
+    min-height: 0;
+  }
+
+  .marketing-hero-stage .marketing-hero-copy {
+    padding: 14px;
   }
 }
