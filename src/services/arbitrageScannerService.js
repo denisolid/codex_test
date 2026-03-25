@@ -3,9 +3,11 @@ const skinRepo = require("../repositories/skinRepository")
 const marketSourceCatalogRepo = require("../repositories/marketSourceCatalogRepository")
 const arbitrageFeedRepo = require("../repositories/arbitrageFeedRepository")
 const scannerRunRepo = require("../repositories/scannerRunRepository")
+const env = require("../config/env")
 const marketComparisonService = require("./marketComparisonService")
 const marketSourceCatalogService = require("./marketSourceCatalogService")
 const marketImageService = require("./marketImageService")
+const globalFeedPublisher = require("./feed/globalFeedPublisher")
 const planService = require("./planService")
 const premiumCategoryAccessService = require("./premiumCategoryAccessService")
 const {
@@ -1706,7 +1708,7 @@ function attachEventMetaToInsertRow(insertRow = {}, event = {}) {
   }
 }
 
-async function persistFeedRows(opportunities = [], scanRunId = null) {
+async function persistFeedRowsLegacy(opportunities = [], scanRunId = null) {
   const counters = {
     insertedCount: 0,
     newCount: 0,
@@ -2051,6 +2053,48 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
   return counters
 }
 
+async function persistFeedRows(opportunities = [], scanRunId = null) {
+  if (!env.globalFeedV2Enabled) {
+    return persistFeedRowsLegacy(opportunities, scanRunId)
+  }
+
+  const result = await globalFeedPublisher.publishBatch({
+    scanRunId,
+    opportunities,
+    nowIso: new Date().toISOString(),
+    trigger: "opportunity_scan"
+  })
+
+  return {
+    insertedCount: Number(result?.activeRowsWritten || 0),
+    newCount: Math.max(
+      Number(result?.publishedCount || 0) -
+        Number(result?.updatedCount || 0) -
+        Number(result?.reactivatedCount || 0),
+      0
+    ),
+    updatedCount: Number(result?.updatedCount || 0),
+    reactivatedCount: Number(result?.reactivatedCount || 0),
+    duplicateCount: 0,
+    skippedUnchanged: Number(result?.unchangedCount || 0),
+    publishValidation: {
+      blocked: Number(result?.blockedCount || 0),
+      deactivated: 0,
+      reasons: result?.validationReasons || {}
+    },
+    cleanup: {
+      olderMarkedInactive: 0,
+      beyondLimitMarkedInactive: 0,
+      duplicateActivesMarkedInactive: 0,
+      hadTimeout: false,
+      errors: []
+    },
+    activeRowsWritten: Number(result?.activeRowsWritten || 0),
+    historyRowsWritten: Number(result?.historyRowsWritten || 0),
+    compatibilityRowsWritten: Number(result?.compatibilityRowsWritten || 0)
+  }
+}
+
 function mergeDiagnostics({
   selection = {},
   compare = {},
@@ -2216,7 +2260,7 @@ async function runEnrichmentJob({ forceRefresh = false } = {}) {
   }
 }
 
-async function runOpportunityJob({ forceRefresh = false } = {}) {
+async function runOpportunityJob({ forceRefresh = false, scanRunId = null } = {}) {
   const runStartedAtMs = Date.now()
   const dbQueryStartedAtMs = Date.now()
   const catalogLoad = await loadScannerSourceRows()
@@ -2270,7 +2314,7 @@ async function runOpportunityJob({ forceRefresh = false } = {}) {
   const computeMs = Date.now() - computeStartedAtMs
 
   const writeStartedAtMs = Date.now()
-  const persisted = await persistFeedRows(opportunities)
+  const persisted = await persistFeedRows(opportunities, scanRunId)
   const writeMs = Date.now() - writeStartedAtMs
   const totalRunMs = Date.now() - runStartedAtMs
 
@@ -2435,7 +2479,11 @@ async function runJobWithLock({
   state.inFlight = (async () => {
     const startedAtMs = Date.now()
     try {
-      const result = await withTimeout(worker({ forceRefresh }), safeTimeoutMs, "SCANNER_JOB_TIMEOUT")
+      const result = await withTimeout(
+        worker({ forceRefresh, scanRunId: runId }),
+        safeTimeoutMs,
+        "SCANNER_JOB_TIMEOUT"
+      )
       await scannerRunRepo.markCompleted(runId, {
         completedAt: new Date().toISOString(),
         itemsScanned: Number(result?.selectedCount || 0),
