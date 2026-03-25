@@ -1,8 +1,9 @@
-const { createHash } = require("crypto")
 const arbitrageFeedRepo = require("../../repositories/arbitrageFeedRepository")
 const globalActiveOpportunityRepo = require("../../repositories/globalActiveOpportunityRepository")
 const globalOpportunityHistoryRepo = require("../../repositories/globalOpportunityHistoryRepository")
 const diagnosticsWriter = require("../diagnosticsWriter")
+const feedCompatibilityProjector = require("./feedCompatibilityProjector")
+const { buildHistoryRow, resolveExitEventType } = require("./feedHistoryPolicy")
 const {
   FEED_RETENTION_HOURS,
   MIN_CONFIDENCE_CHANGE_LEVELS,
@@ -519,6 +520,11 @@ function buildExpiredActivePatch(previousRow = {}, validation = {}, nowIso) {
   const publishValidationMetadata = buildPublishValidationMetadata(validation)
   const { refreshStatus, liveStatus, latestSignalAgeHours } = buildExpiredStatuses(validation)
   const reason = normalizeText(validation.staleReason) || "publish_validation_failed"
+  const eventType =
+    resolveExitEventType({
+      liveStatus,
+      refreshStatus
+    }) || "degraded"
   return {
     last_seen_at: nowIso,
     market_signal_observed_at:
@@ -534,100 +540,11 @@ function buildExpiredActivePatch(previousRow = {}, validation = {}, nowIso) {
         ...toJsonObject(publishValidationMetadata.publish_validation),
         is_publishable: false
       },
-      feed_event: "expired",
+      feed_event: eventType,
       feed_event_reasons: [reason],
       feed_event_materially_changed: true
     }
   }
-}
-
-function buildExpiredLegacyPatch(previousRow = {}, validation = {}, nowIso) {
-  const existingMetadata = toJsonObject(previousRow.metadata)
-  const publishValidationMetadata = buildPublishValidationMetadata(validation)
-  const { refreshStatus, liveStatus, latestSignalAgeHours } = buildExpiredStatuses(validation)
-  const reason = normalizeText(validation.staleReason) || "publish_validation_failed"
-  return {
-    is_active: false,
-    last_seen_at: nowIso,
-    market_signal_observed_at:
-      toIsoOrNull(validation.routeSignalObservedAt) || previousRow.market_signal_observed_at || null,
-    refresh_status: refreshStatus,
-    live_status: liveStatus,
-    latest_signal_age_hours: latestSignalAgeHours,
-    metadata: {
-      ...existingMetadata,
-      ...publishValidationMetadata,
-      publish_validation: {
-        ...toJsonObject(existingMetadata.publish_validation),
-        ...toJsonObject(publishValidationMetadata.publish_validation),
-        is_publishable: false
-      },
-      feed_event: "expired",
-      feed_event_reasons: [reason],
-      feed_event_materially_changed: true
-    }
-  }
-}
-
-function buildHistorySnapshot(row = {}, options = {}) {
-  return {
-    item_name: row.item_name || row.market_hash_name || null,
-    market_hash_name: row.market_hash_name || row.item_name || null,
-    category: row.category || null,
-    buy_market: row.buy_market || null,
-    buy_price: row.buy_price ?? null,
-    sell_market: row.sell_market || null,
-    sell_net: row.sell_net ?? null,
-    profit: row.profit ?? null,
-    spread_pct: row.spread_pct ?? null,
-    opportunity_score: row.opportunity_score ?? null,
-    execution_confidence: row.execution_confidence || null,
-    quality_grade: row.quality_grade || null,
-    liquidity_label: row.liquidity_label || null,
-    market_signal_observed_at: row.market_signal_observed_at || null,
-    first_seen_at: row.first_seen_at || null,
-    last_seen_at: row.last_seen_at || null,
-    last_published_at: row.last_published_at || null,
-    refresh_status: row.refresh_status || null,
-    live_status: row.live_status || null,
-    material_change_hash: row.material_change_hash || null,
-    metadata: toJsonObject(row.metadata),
-    reason: options.reason || null
-  }
-}
-
-function buildHistorySourceEventKey({
-  writerStage,
-  scanRunId,
-  eventType,
-  fingerprint,
-  materialChangeHash,
-  liveStatus,
-  refreshStatus,
-  reason
-} = {}) {
-  const payload = [
-    normalizeText(writerStage).toLowerCase() || "publish",
-    normalizeText(scanRunId).toLowerCase() || "na",
-    normalizeText(eventType).toLowerCase() || "na",
-    normalizeText(fingerprint).toLowerCase() || "na",
-    normalizeText(materialChangeHash).toLowerCase() || "na",
-    normalizeText(liveStatus).toLowerCase() || "na",
-    normalizeText(refreshStatus).toLowerCase() || "na",
-    normalizeText(reason).toLowerCase() || "na"
-  ].join("|")
-  return `goh_${createHash("sha1").update(payload).digest("hex")}`
-}
-
-function shouldWriteHistory(eventType, materialChanged) {
-  const normalized = normalizeText(eventType).toLowerCase()
-  if (normalized === "new" || normalized === "reactivated" || normalized === "expired") {
-    return true
-  }
-  if (normalized === "updated") {
-    return Boolean(materialChanged)
-  }
-  return false
 }
 
 function toEventPreviousRow(previousRow = {}) {
@@ -743,6 +660,17 @@ function maybeTrackSet(setRef, value) {
   if (text) setRef.add(text)
 }
 
+function buildRowsByFingerprint(rows = []) {
+  const byFingerprint = {}
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const fingerprint = normalizeText(row?.opportunity_fingerprint).toLowerCase()
+    if (fingerprint && !byFingerprint[fingerprint]) {
+      byFingerprint[fingerprint] = row
+    }
+  }
+  return byFingerprint
+}
+
 async function publishBatch({
   scanRunId = null,
   opportunities = [],
@@ -784,8 +712,7 @@ async function publishBatch({
     new Set(preparedRows.map((row) => normalizeText(row.fingerprint)).filter(Boolean))
   )
 
-  const [activeRecentRows, activeFingerprintRows, legacyRecentRowsAll, legacyActiveFingerprintRows] =
-    await Promise.all([
+  const [activeRecentRows, activeFingerprintRows] = await Promise.all([
       globalActiveOpportunityRepo.getRecentRowsByItems({
         itemNames,
         includeExpired: true,
@@ -797,36 +724,8 @@ async function publishBatch({
             includeExpired: true,
             limit: Math.max(1200, fingerprints.length * 2)
           })
-        : Promise.resolve([]),
-      arbitrageFeedRepo.getRecentRowsByItems({
-        itemNames,
-        includeInactive: true,
-        limit: 1200
-      }),
-      fingerprints.length
-        ? arbitrageFeedRepo.getActiveRowsByFingerprints({
-            fingerprints,
-            limit: Math.max(1200, fingerprints.length * 2)
-          })
         : Promise.resolve([])
     ])
-
-  const duplicateActiveIds = collectOlderActiveDuplicateIds([
-    ...(legacyRecentRowsAll || []),
-    ...(legacyActiveFingerprintRows || [])
-  ])
-  if (duplicateActiveIds.length) {
-    counters.compatibilityRowsWritten += await arbitrageFeedRepo.markRowsInactiveByIds(
-      duplicateActiveIds
-    )
-  }
-  const deactivatedIds = new Set(duplicateActiveIds.map((value) => normalizeText(value)))
-  const legacyRecentRows = (legacyRecentRowsAll || []).filter(
-    (row) => !deactivatedIds.has(normalizeText(row?.id))
-  )
-  const legacyActiveFingerprintRowsFiltered = (legacyActiveFingerprintRows || []).filter(
-    (row) => !deactivatedIds.has(normalizeText(row?.id))
-  )
 
   const activeLatestByKey = {}
   for (const row of activeRecentRows || []) {
@@ -841,29 +740,13 @@ async function publishBatch({
     }
   }
 
-  const legacyLatestByKey = {}
-  for (const row of legacyRecentRows || []) {
-    const key = buildFeedKey(row)
-    if (key && !legacyLatestByKey[key]) legacyLatestByKey[key] = row
-  }
-  const legacyActiveByFingerprint = {}
-  for (const row of legacyActiveFingerprintRowsFiltered || []) {
-    const fingerprint = normalizeText(
-      row?.opportunity_fingerprint || row?.metadata?.opportunity_fingerprint
-    ).toLowerCase()
-    if (fingerprint && !legacyActiveByFingerprint[fingerprint]) {
-      legacyActiveByFingerprint[fingerprint] = row
-    }
-  }
-
   const activeInserts = []
   const activeUpdates = []
-  const legacyInserts = []
-  const legacyUpdates = []
-  const historyRows = []
+  const historyPlans = []
   const pendingInsertFingerprints = new Set()
   const touchedFingerprints = new Set()
   const touchedItemNames = new Set()
+  const writtenFingerprints = new Set()
 
   for (const prepared of preparedRows) {
     const opportunity = prepared.opportunity
@@ -871,8 +754,6 @@ async function publishBatch({
     const key = prepared.key
     const fingerprint = prepared.fingerprint
     const previousActive = activeByFingerprint[fingerprint] || activeLatestByKey[key] || null
-    const previousLegacy =
-      legacyActiveByFingerprint[fingerprint] || legacyLatestByKey[key] || null
 
     const publishValidation = resolvePublishValidationContextForOpportunity(
       opportunity,
@@ -923,46 +804,23 @@ async function publishBatch({
       if (previousActive && normalizeText(previousActive.live_status).toLowerCase() === "live") {
         const activePatch = buildExpiredActivePatch(previousActive, publishValidation, safeNowIso)
         activeUpdates.push({ id: previousActive.id, patch: activePatch })
-        historyRows.push({
-          source_event_key: buildHistorySourceEventKey({
-            writerStage: "publish",
-            scanRunId,
-            eventType: "expired",
-            fingerprint:
-              previousActive.opportunity_fingerprint || insertRowForPublish.opportunity_fingerprint,
-            materialChangeHash:
-              previousActive.material_change_hash || insertRowForPublish.material_change_hash,
-            liveStatus: activePatch.live_status,
-            refreshStatus: activePatch.refresh_status,
-            reason: normalizeText(publishValidation.staleReason) || "publish_validation_failed"
-          }),
-          active_opportunity_id: previousActive.id,
-          opportunity_fingerprint:
-            previousActive.opportunity_fingerprint || insertRowForPublish.opportunity_fingerprint,
-          scan_run_id: normalizeText(scanRunId) || null,
-          event_type: "expired",
-          event_at: safeNowIso,
-          refresh_status: activePatch.refresh_status,
-          live_status: activePatch.live_status,
-          reason: normalizeText(publishValidation.staleReason) || "publish_validation_failed",
-          snapshot: buildHistorySnapshot(
-            {
-              ...previousActive,
-              ...activePatch,
-              metadata: activePatch.metadata
-            },
-            {
-              reason: normalizeText(publishValidation.staleReason) || "publish_validation_failed"
-            }
-          )
+        const exitEventType = resolveExitEventType({
+          liveStatus: activePatch.live_status,
+          refreshStatus: activePatch.refresh_status
         })
-      }
-
-      if (previousLegacy && Boolean(previousLegacy.is_active) && normalizeText(previousLegacy.id)) {
-        legacyUpdates.push({
-          id: previousLegacy.id,
-          patch: buildExpiredLegacyPatch(previousLegacy, publishValidation, safeNowIso)
+        historyPlans.push({
+          fingerprint:
+            normalizeText(activePatch.opportunity_fingerprint) ||
+            normalizeText(previousActive.opportunity_fingerprint),
+          eventType: exitEventType,
+          materiallyChanged: true,
+          reason: normalizeText(publishValidation.staleReason) || "publish_validation_failed"
         })
+        maybeTrackSet(
+          writtenFingerprints,
+          normalizeText(activePatch.opportunity_fingerprint) ||
+            normalizeText(previousActive.opportunity_fingerprint)
+        )
       }
       continue
     }
@@ -991,34 +849,13 @@ async function publishBatch({
         event: normalizedEvent
       })
       activeInserts.push(activeInsert)
-      legacyInserts.push({
-        ...insertRowWithEvent,
-        refresh_status: "pending",
-        live_status: "live",
-        latest_signal_age_hours: null
+      historyPlans.push({
+        fingerprint: activeInsert.opportunity_fingerprint,
+        eventType: normalizedEvent.eventType,
+        materiallyChanged: normalizedEvent.materiallyChanged,
+        reason: null
       })
-      if (shouldWriteHistory(normalizedEvent.eventType, normalizedEvent.materiallyChanged)) {
-        historyRows.push({
-          source_event_key: buildHistorySourceEventKey({
-            writerStage: "publish",
-            scanRunId,
-            eventType: normalizedEvent.eventType,
-            fingerprint: activeInsert.opportunity_fingerprint,
-            materialChangeHash: activeInsert.material_change_hash,
-            liveStatus: "live",
-            refreshStatus: "pending"
-          }),
-          active_opportunity_id: null,
-          opportunity_fingerprint: activeInsert.opportunity_fingerprint,
-          scan_run_id: normalizeText(scanRunId) || null,
-          event_type: normalizedEvent.eventType,
-          event_at: safeNowIso,
-          refresh_status: "pending",
-          live_status: "live",
-          reason: null,
-          snapshot: buildHistorySnapshot(activeInsert)
-        })
-      }
+      maybeTrackSet(writtenFingerprints, activeInsert.opportunity_fingerprint)
       continue
     }
 
@@ -1039,54 +876,19 @@ async function publishBatch({
       id: previousActive.id,
       patch: activePatch
     })
-
-    if (previousLegacy && normalizeText(previousLegacy.id)) {
-      legacyUpdates.push({
-        id: previousLegacy.id,
-        patch: buildLegacyUpdatePatch(previousLegacy, insertRowWithEvent, {
-          nowIso: safeNowIso,
-          scanRunId,
-          event: normalizedEvent
-        })
-      })
-    } else {
-      legacyInserts.push({
-        ...insertRowWithEvent,
-        refresh_status: "pending",
-        live_status: "live",
-        latest_signal_age_hours: null
-      })
-    }
-
-    if (shouldWriteHistory(normalizedEvent.eventType, normalizedEvent.materiallyChanged)) {
-      historyRows.push({
-        source_event_key: buildHistorySourceEventKey({
-          writerStage: "publish",
-          scanRunId,
-          eventType: normalizedEvent.eventType,
-          fingerprint:
-            activePatch.opportunity_fingerprint || previousActive.opportunity_fingerprint,
-          materialChangeHash:
-            activePatch.material_change_hash || previousActive.material_change_hash,
-          liveStatus: activePatch.live_status,
-          refreshStatus: activePatch.refresh_status
-        }),
-        active_opportunity_id: previousActive.id,
-        opportunity_fingerprint:
-          activePatch.opportunity_fingerprint || previousActive.opportunity_fingerprint,
-        scan_run_id: normalizeText(scanRunId) || null,
-        event_type: normalizedEvent.eventType,
-        event_at: safeNowIso,
-        refresh_status: activePatch.refresh_status,
-        live_status: activePatch.live_status,
-        reason: null,
-        snapshot: buildHistorySnapshot({
-          ...previousActive,
-          ...activePatch,
-          metadata: activePatch.metadata
-        })
-      })
-    }
+    historyPlans.push({
+      fingerprint:
+        normalizeText(activePatch.opportunity_fingerprint) ||
+        normalizeText(previousActive.opportunity_fingerprint),
+      eventType: normalizedEvent.eventType,
+      materiallyChanged: normalizedEvent.materiallyChanged,
+      reason: null
+    })
+    maybeTrackSet(
+      writtenFingerprints,
+      normalizeText(activePatch.opportunity_fingerprint) ||
+        normalizeText(previousActive.opportunity_fingerprint)
+    )
   }
 
   if (activeUpdates.length) {
@@ -1096,16 +898,42 @@ async function publishBatch({
     const insertedRows = await globalActiveOpportunityRepo.upsertRows(activeInserts)
     counters.activeRowsWritten += Array.isArray(insertedRows) ? insertedRows.length : 0
   }
+
+  const persistedActiveRows = Array.from(writtenFingerprints).length
+    ? await globalActiveOpportunityRepo.getRowsByFingerprints({
+        fingerprints: Array.from(writtenFingerprints),
+        includeExpired: true,
+        limit: Math.max(1200, Array.from(writtenFingerprints).length * 2)
+      })
+    : []
+  const persistedActiveByFingerprint = buildRowsByFingerprint(persistedActiveRows)
+
+  if (persistedActiveRows.length) {
+    const syncResult = await feedCompatibilityProjector.syncRows({
+      activeRows: Object.values(persistedActiveByFingerprint),
+      stage: "publish",
+      nowIso: safeNowIso
+    })
+    counters.compatibilityRowsWritten += Number(syncResult?.rowsWritten || 0)
+  }
+
+  const historyRows = historyPlans
+    .map((plan) =>
+      buildHistoryRow({
+        writerStage: "publish",
+        scanRunId,
+        eventType: plan.eventType,
+        activeRow: persistedActiveByFingerprint[normalizeText(plan.fingerprint).toLowerCase()],
+        eventAt: safeNowIso,
+        reason: plan.reason,
+        materiallyChanged: plan.materiallyChanged
+      })
+    )
+    .filter(Boolean)
+
   if (historyRows.length) {
     const insertedHistory = await globalOpportunityHistoryRepo.insertRows(historyRows)
     counters.historyRowsWritten = Array.isArray(insertedHistory) ? insertedHistory.length : 0
-  }
-  if (legacyUpdates.length) {
-    counters.compatibilityRowsWritten += await arbitrageFeedRepo.updateRowsById(legacyUpdates)
-  }
-  if (legacyInserts.length) {
-    const insertedLegacy = await arbitrageFeedRepo.insertRows(legacyInserts)
-    counters.compatibilityRowsWritten += Array.isArray(insertedLegacy) ? insertedLegacy.length : 0
   }
 
   const legacyCutoffIso = new Date(

@@ -95,6 +95,10 @@ function normalizeRows(rows = []) {
         last_seen_at: toIsoOrNull(row?.last_seen_at || row?.lastSeenAt) || null,
         last_published_at:
           toIsoOrNull(row?.last_published_at || row?.lastPublishedAt) || null,
+        last_revalidation_attempt_at:
+          toIsoOrNull(
+            row?.last_revalidation_attempt_at || row?.lastRevalidationAttemptAt
+          ) || null,
         refresh_status: normalizeStatus(
           row?.refresh_status || row?.refreshStatus,
           "pending"
@@ -238,6 +242,7 @@ exports.listRowsForRevalidation = async (options = {}) => {
     .from(TABLE)
     .select("*")
     .eq("live_status", "live")
+    .order("last_revalidation_attempt_at", { ascending: true, nullsFirst: true })
     .order("last_published_at", { ascending: true })
     .order("id", { ascending: true })
     .limit(limit)
