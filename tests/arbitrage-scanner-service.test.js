@@ -8,6 +8,9 @@ process.env.SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "anon"
 process.env.SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY || "service-role"
 
+const env = require("../src/config/env")
+const globalFeedPublisher = require("../src/services/feed/globalFeedPublisher")
+
 const {
   __testables: {
     normalizeCategoryFilter,
@@ -1258,6 +1261,64 @@ test("feed card dedupe keeps separate rows when fallback signature material hash
   ])
 
   assert.equal(deduped.length, 2)
+})
+
+test("persistFeedRows delegates to global feed publisher when v2 flag is enabled", async () => {
+  const originalFlag = env.globalFeedV2Enabled
+  const originalPublishBatch = globalFeedPublisher.publishBatch
+  const opportunity = {
+    marketHashName: "AK-47 | Redline (Field-Tested)",
+    itemName: "AK-47 | Redline (Field-Tested)",
+    itemCategory: "weapon_skin",
+    buyMarket: "steam",
+    buyPrice: 10,
+    sellMarket: "skinport",
+    sellNet: 12.5,
+    profit: 2.5,
+    spread: 25,
+    score: 80,
+    executionConfidence: "Medium",
+    qualityGrade: "RISKY",
+    liquidityBand: "Medium",
+    metadata: {
+      buy_route_available: true,
+      sell_route_available: true,
+      buy_route_updated_at: new Date().toISOString(),
+      sell_route_updated_at: new Date().toISOString(),
+      sell_listing_available: true
+    }
+  }
+
+  let callPayload = null
+  env.globalFeedV2Enabled = true
+  globalFeedPublisher.publishBatch = async (payload = {}) => {
+    callPayload = payload
+    return {
+      publishedCount: 1,
+      blockedCount: 0,
+      updatedCount: 0,
+      reactivatedCount: 0,
+      unchangedCount: 0,
+      activeRowsWritten: 1,
+      historyRowsWritten: 1,
+      compatibilityRowsWritten: 1,
+      validationReasons: {}
+    }
+  }
+
+  try {
+    const result = await persistFeedRows([opportunity], "scan-run-v2")
+    assert.equal(Boolean(callPayload), true)
+    assert.equal(callPayload.scanRunId, "scan-run-v2")
+    assert.equal(callPayload.opportunities.length, 1)
+    assert.equal(result.insertedCount, 1)
+    assert.equal(result.newCount, 1)
+    assert.equal(result.historyRowsWritten, 1)
+    assert.equal(result.compatibilityRowsWritten, 1)
+  } finally {
+    env.globalFeedV2Enabled = originalFlag
+    globalFeedPublisher.publishBatch = originalPublishBatch
+  }
 })
 
 test("persistFeedRows updates active fingerprint match instead of inserting duplicate row", async () => {

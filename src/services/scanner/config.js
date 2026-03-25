@@ -24,7 +24,8 @@ const {
   arbitrageMinScoreChange,
   arbitrageMinSpreadChangePct,
   arbitrageMinLiquidityChangePct,
-  arbitrageMinConfidenceChangeLevels
+  arbitrageMinConfidenceChangeLevels,
+  globalFeedRevalidationIntervalMinutes
 } = require("../../config/env")
 
 function toNumber(value, fallback, options = {}) {
@@ -37,7 +38,8 @@ function toNumber(value, fallback, options = {}) {
 
 const SCANNER_TYPES = Object.freeze({
   ENRICHMENT: "enrichment",
-  OPPORTUNITY_SCAN: "opportunity_scan"
+  OPPORTUNITY_SCAN: "opportunity_scan",
+  FEED_REVALIDATION: "feed_revalidation"
 })
 
 const ITEM_CATEGORIES = Object.freeze({
@@ -227,6 +229,11 @@ const OPPORTUNITY_SCAN_INTERVAL_MINUTES = Math.max(
 )
 const ENRICHMENT_INTERVAL_MS = ENRICHMENT_INTERVAL_MINUTES * 60 * 1000
 const OPPORTUNITY_SCAN_INTERVAL_MS = OPPORTUNITY_SCAN_INTERVAL_MINUTES * 60 * 1000
+const FEED_REVALIDATION_INTERVAL_MINUTES = Math.max(
+  Math.round(toNumber(globalFeedRevalidationIntervalMinutes, 0, { min: 0 })),
+  0
+)
+const FEED_REVALIDATION_INTERVAL_MS = FEED_REVALIDATION_INTERVAL_MINUTES * 60 * 1000
 
 const ENRICHMENT_JOB_TIMEOUT_MS = Math.max(
   Math.round(toNumber(arbitrageEnrichmentJobTimeoutMs, 420000, { min: 60000 })),
@@ -302,6 +309,8 @@ module.exports = Object.freeze({
   OPPORTUNITY_SCAN_INTERVAL_MINUTES,
   ENRICHMENT_INTERVAL_MS,
   OPPORTUNITY_SCAN_INTERVAL_MS,
+  FEED_REVALIDATION_INTERVAL_MINUTES,
+  FEED_REVALIDATION_INTERVAL_MS,
   ENRICHMENT_JOB_TIMEOUT_MS,
   OPPORTUNITY_JOB_TIMEOUT_MS,
   OPPORTUNITY_HARD_TIMEOUT_MS,

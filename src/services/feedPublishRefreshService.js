@@ -1047,8 +1047,12 @@ async function refreshForFeedPublish(feedRows = [], options = {}) {
 
 exports.LIVE_MAX_SIGNAL_AGE_HOURS = LIVE_MAX_SIGNAL_AGE_HOURS
 exports.ANALYZABLE_MAX_SIGNAL_AGE_HOURS = ANALYZABLE_MAX_SIGNAL_AGE_HOURS
+exports.QUOTE_LOOKBACK_HOURS = QUOTE_LOOKBACK_HOURS
 exports.refreshForFeedPublish = refreshForFeedPublish
 exports.runFeedPublishRefreshJob = refreshForFeedPublish
+exports.buildRefreshedOpportunityRow = buildRefreshedOpportunityRow
+exports.evaluateFeedAdmission = evaluateFeedAdmission
+exports.shouldAdmitToFeed = shouldAdmitToFeed
 
 exports.__testables = {
   computeAgeHours,
