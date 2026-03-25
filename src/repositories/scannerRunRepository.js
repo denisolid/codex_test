@@ -72,6 +72,7 @@ exports.createRun = async (payload = {}) => {
   const row = {
     scanner_type: normalizeScannerType(payload.scannerType),
     started_at: payload.startedAt || new Date().toISOString(),
+    heartbeat_at: payload.heartbeatAt || payload.startedAt || new Date().toISOString(),
     completed_at: payload.completedAt || null,
     status,
     items_scanned: toInteger(payload.itemsScanned, 0),
@@ -120,6 +121,7 @@ exports.tryCreateRunningRun = async (payload = {}) => {
   const row = {
     scanner_type: normalizeScannerType(payload.scannerType),
     started_at: payload.startedAt || new Date().toISOString(),
+    heartbeat_at: payload.heartbeatAt || payload.startedAt || new Date().toISOString(),
     status: "running",
     items_scanned: toInteger(payload.itemsScanned, 0),
     opportunities_found: toInteger(payload.opportunitiesFound, 0),
@@ -163,6 +165,7 @@ exports.markCompleted = async (runId, payload = {}) => {
 
   const patch = {
     completed_at: payload.completedAt || new Date().toISOString(),
+    heartbeat_at: payload.completedAt || new Date().toISOString(),
     status: "completed",
     items_scanned: toInteger(payload.itemsScanned, 0),
     opportunities_found: toInteger(payload.opportunitiesFound, 0),
@@ -192,6 +195,7 @@ exports.markFailed = async (runId, payload = {}) => {
 
   const patch = {
     completed_at: payload.completedAt || new Date().toISOString(),
+    heartbeat_at: payload.completedAt || new Date().toISOString(),
     status: normalizeStatus(payload.status, "failed"),
     items_scanned: toInteger(payload.itemsScanned, 0),
     opportunities_found: toInteger(payload.opportunitiesFound, 0),
@@ -308,12 +312,13 @@ exports.timeoutStaleRunningRuns = async (scannerType = "global_arbitrage", optio
     .update({
       status: "timed_out",
       completed_at: nowIso,
+      heartbeat_at: nowIso,
       failure_reason: failureReason,
       diagnostics_summary: diagnosticsSummary
     })
     .eq("scanner_type", type)
     .eq("status", "running")
-    .lt("started_at", cutoffIso)
+    .lt("heartbeat_at", cutoffIso)
     .select("id")
 
   if (error) {
@@ -321,6 +326,34 @@ exports.timeoutStaleRunningRuns = async (scannerType = "global_arbitrage", optio
   }
 
   return Array.isArray(data) ? data.length : 0
+}
+
+exports.touchHeartbeat = async (runId, options = {}) => {
+  const id = String(runId || "").trim()
+  if (!id) return null
+
+  const heartbeatAt = options.heartbeatAt || new Date().toISOString()
+  const diagnosticsSummary = toJsonObject(options.diagnosticsSummary)
+  const patch = {
+    heartbeat_at: heartbeatAt
+  }
+  if (Object.keys(diagnosticsSummary).length) {
+    patch.diagnostics_summary = diagnosticsSummary
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from(TABLE)
+    .update(patch)
+    .eq("id", id)
+    .eq("status", "running")
+    .select("*")
+    .maybeSingle()
+
+  if (error) {
+    throw new AppError(error.message, 500)
+  }
+
+  return data || null
 }
 
 exports.deleteOlderThan = async (cutoffIso, options = {}) => {

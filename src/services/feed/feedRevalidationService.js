@@ -1,10 +1,11 @@
 const env = require("../../config/env")
-const arbitrageFeedRepo = require("../../repositories/arbitrageFeedRepository")
 const globalActiveOpportunityRepo = require("../../repositories/globalActiveOpportunityRepository")
 const globalOpportunityHistoryRepo = require("../../repositories/globalOpportunityHistoryRepository")
 const diagnosticsWriter = require("../diagnosticsWriter")
 const marketStateReadService = require("../marketStateReadService")
 const scannerRunLeaseService = require("../scannerRunLeaseService")
+const feedCompatibilityProjector = require("./feedCompatibilityProjector")
+const { buildHistoryRow, resolveExitEventType } = require("./feedHistoryPolicy")
 const {
   FEED_REVALIDATION_INTERVAL_MS,
   FEED_REVALIDATION_INTERVAL_MINUTES,
@@ -45,30 +46,7 @@ function toJsonObject(value) {
   return value
 }
 
-function buildHistorySourceEventKey({
-  runId,
-  eventType,
-  fingerprint,
-  materialChangeHash,
-  liveStatus,
-  refreshStatus,
-  reason
-} = {}) {
-  const { createHash } = require("crypto")
-  const payload = [
-    "revalidate",
-    normalizeText(runId).toLowerCase() || "na",
-    normalizeText(eventType).toLowerCase() || "na",
-    normalizeText(fingerprint).toLowerCase() || "na",
-    normalizeText(materialChangeHash).toLowerCase() || "na",
-    normalizeText(liveStatus).toLowerCase() || "na",
-    normalizeText(refreshStatus).toLowerCase() || "na",
-    normalizeText(reason).toLowerCase() || "na"
-  ].join("|")
-  return `goh_${createHash("sha1").update(payload).digest("hex")}`
-}
-
-function buildActiveRevalidationPatch(refreshed = {}) {
+function buildActiveRevalidationPatch(refreshed = {}, nowIso) {
   const patch = refreshed?.patch || {}
   return {
     buy_price: patch.buy_price,
@@ -80,56 +58,8 @@ function buildActiveRevalidationPatch(refreshed = {}) {
     refresh_status: patch.refresh_status,
     live_status: patch.live_status,
     latest_signal_age_hours: patch.latest_signal_age_hours,
+    last_revalidation_attempt_at: toIsoOrNull(nowIso) || new Date().toISOString(),
     metadata: toJsonObject(patch.metadata)
-  }
-}
-
-function buildLegacyRevalidationPatch(previousLegacy = {}, refreshed = {}, nowIso) {
-  const patch = refreshed?.patch || {}
-  const raw = refreshed?.raw || {}
-  return {
-    buy_price: patch.buy_price,
-    sell_net: patch.sell_net,
-    profit: patch.profit,
-    spread_pct: patch.spread_pct,
-    market_signal_observed_at: patch.market_signal_observed_at,
-    insight_refreshed_at: nowIso,
-    last_refresh_attempt_at: nowIso,
-    latest_signal_age_hours: patch.latest_signal_age_hours,
-    net_profit_after_fees:
-      toFiniteOrNull(raw.net_profit_after_fees) ?? toFiniteOrNull(patch.profit) ?? null,
-    confidence_score: toFiniteOrNull(raw.confidence_score) ?? null,
-    freshness_score: toFiniteOrNull(raw.freshness_score) ?? null,
-    verdict: normalizeText(raw.verdict).toLowerCase() || null,
-    liquidity_label: patch.liquidity_label,
-    refresh_status: patch.refresh_status,
-    live_status: patch.live_status,
-    is_active: normalizeText(patch.live_status).toLowerCase() === "live",
-    metadata: toJsonObject(patch.metadata)
-  }
-}
-
-function buildHistorySnapshot(row = {}, options = {}) {
-  return {
-    item_name: row.item_name || row.market_hash_name || null,
-    market_hash_name: row.market_hash_name || row.item_name || null,
-    category: row.category || null,
-    buy_market: row.buy_market || null,
-    buy_price: row.buy_price ?? null,
-    sell_market: row.sell_market || null,
-    sell_net: row.sell_net ?? null,
-    profit: row.profit ?? null,
-    spread_pct: row.spread_pct ?? null,
-    opportunity_score: row.opportunity_score ?? null,
-    execution_confidence: row.execution_confidence || null,
-    quality_grade: row.quality_grade || null,
-    liquidity_label: row.liquidity_label || null,
-    market_signal_observed_at: row.market_signal_observed_at || null,
-    refresh_status: row.refresh_status || null,
-    live_status: row.live_status || null,
-    material_change_hash: row.material_change_hash || null,
-    metadata: toJsonObject(row.metadata),
-    reason: options.reason || null
   }
 }
 
@@ -157,7 +87,18 @@ function isKeepaliveUnchanged(row = {}, patch = {}) {
   )
 }
 
-async function runSweepForRows(rows = [], { nowIso, trigger, runId } = {}) {
+function buildRowsByFingerprint(rows = []) {
+  const byFingerprint = {}
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const fingerprint = normalizeText(row?.opportunity_fingerprint).toLowerCase()
+    if (fingerprint && !byFingerprint[fingerprint]) {
+      byFingerprint[fingerprint] = row
+    }
+  }
+  return byFingerprint
+}
+
+async function runSweepForRows(rows = [], { nowIso, trigger, runId, heartbeat } = {}) {
   const safeNowIso = toIsoOrNull(nowIso) || new Date().toISOString()
   const safeRows = Array.isArray(rows) ? rows : []
   if (!safeRows.length) {
@@ -187,55 +128,39 @@ async function runSweepForRows(rows = [], { nowIso, trigger, runId } = {}) {
     lookbackHours: QUOTE_LOOKBACK_HOURS,
     includeQualityFlags: true
   })
-  const legacyRows = fingerprints.length
-    ? await arbitrageFeedRepo.getActiveRowsByFingerprints({
-        fingerprints,
-        limit: Math.max(250, fingerprints.length * 2)
-      })
-    : []
-  const legacyByFingerprint = {}
-  for (const row of legacyRows || []) {
-    const fingerprint = normalizeText(
-      row?.opportunity_fingerprint || row?.metadata?.opportunity_fingerprint
-    ).toLowerCase()
-    if (fingerprint && !legacyByFingerprint[fingerprint]) {
-      legacyByFingerprint[fingerprint] = row
-    }
-  }
 
   const activeUpdates = []
-  const legacyUpdates = []
-  const historyRows = []
+  const historyPlans = []
+  const projectionContextByFingerprint = {}
   let refreshedLiveCount = 0
   let staleExpiredCount = 0
   let degradedCount = 0
   let unchangedCount = 0
 
-  for (const row of safeRows) {
+  for (let index = 0; index < safeRows.length; index += 1) {
+    const row = safeRows[index]
+    if (heartbeat && (index === 0 || index % 25 === 0)) {
+      await heartbeat({ processedCount: index })
+    }
     const refreshed = buildRefreshedOpportunityRow(row, quoteRowsByItem, {
       nowIso: safeNowIso,
       nowMs: Date.parse(safeNowIso)
     })
-    const activePatch = buildActiveRevalidationPatch(refreshed)
-    const legacyPatch = buildLegacyRevalidationPatch(
-      legacyByFingerprint[normalizeText(row.opportunity_fingerprint).toLowerCase()] || null,
-      refreshed,
-      safeNowIso
-    )
+    const activePatch = buildActiveRevalidationPatch(refreshed, safeNowIso)
+    const fingerprint = normalizeText(row.opportunity_fingerprint).toLowerCase()
+    projectionContextByFingerprint[fingerprint] = {
+      net_profit_after_fees:
+        toFiniteOrNull(refreshed?.raw?.net_profit_after_fees) ??
+        toFiniteOrNull(activePatch.profit),
+      confidence_score: toFiniteOrNull(refreshed?.raw?.confidence_score),
+      freshness_score: toFiniteOrNull(refreshed?.raw?.freshness_score),
+      verdict: normalizeText(refreshed?.raw?.verdict).toLowerCase() || null
+    }
 
     activeUpdates.push({
       id: row.id,
       patch: activePatch
     })
-
-    const fingerprint = normalizeText(row.opportunity_fingerprint).toLowerCase()
-    const legacyRow = legacyByFingerprint[fingerprint]
-    if (legacyRow && normalizeText(legacyRow.id)) {
-      legacyUpdates.push({
-        id: legacyRow.id,
-        patch: legacyPatch
-      })
-    }
 
     if (normalizeText(activePatch.live_status).toLowerCase() === "live") {
       if (isKeepaliveUnchanged(row, activePatch)) {
@@ -247,47 +172,61 @@ async function runSweepForRows(rows = [], { nowIso, trigger, runId } = {}) {
     }
 
     const reason = resolveExpireReason(refreshed)
-    if (normalizeText(activePatch.live_status).toLowerCase() === "stale") {
+    const exitEventType = resolveExitEventType({
+      liveStatus: activePatch.live_status,
+      refreshStatus: activePatch.refresh_status
+    })
+    if (exitEventType === "expired") {
       staleExpiredCount += 1
     } else {
       degradedCount += 1
     }
-    historyRows.push({
-      source_event_key: buildHistorySourceEventKey({
-        runId,
-        eventType: "expired",
-        fingerprint,
-        materialChangeHash: normalizeText(row.material_change_hash),
-        liveStatus: activePatch.live_status,
-        refreshStatus: activePatch.refresh_status,
-        reason
-      }),
-      active_opportunity_id: row.id,
-      opportunity_fingerprint: fingerprint,
-      scan_run_id: normalizeText(runId) || null,
-      event_type: "expired",
-      event_at: safeNowIso,
-      refresh_status: activePatch.refresh_status,
-      live_status: activePatch.live_status,
-      reason,
-      snapshot: buildHistorySnapshot(
-        {
-          ...row,
-          ...activePatch,
-          metadata: activePatch.metadata
-        },
-        { reason }
-      )
+    historyPlans.push({
+      fingerprint,
+      eventType: exitEventType,
+      reason
     })
   }
 
   await globalActiveOpportunityRepo.updateRowsById(activeUpdates)
+  if (heartbeat) {
+    await heartbeat({ processedCount: safeRows.length, stage: "active_updates_applied" })
+  }
+
+  const persistedActiveRows = fingerprints.length
+    ? await globalActiveOpportunityRepo.getRowsByFingerprints({
+        fingerprints,
+        includeExpired: true,
+        limit: Math.max(250, fingerprints.length * 2)
+      })
+    : []
+  const persistedActiveByFingerprint = buildRowsByFingerprint(persistedActiveRows)
+
+  const compatibilityResult = persistedActiveRows.length
+    ? await feedCompatibilityProjector.syncRows({
+        activeRows: Object.values(persistedActiveByFingerprint),
+        stage: "revalidate",
+        nowIso: safeNowIso,
+        projectionContextByFingerprint
+      })
+    : { rowsWritten: 0 }
+
+  const historyRows = historyPlans
+    .map((plan) =>
+      buildHistoryRow({
+        writerStage: "revalidate",
+        scanRunId: runId,
+        eventType: plan.eventType,
+        activeRow: persistedActiveByFingerprint[normalizeText(plan.fingerprint).toLowerCase()],
+        eventAt: safeNowIso,
+        reason: plan.reason,
+        materiallyChanged: true
+      })
+    )
+    .filter(Boolean)
   const insertedHistory = historyRows.length
     ? await globalOpportunityHistoryRepo.insertRows(historyRows)
     : []
-  const compatibilityRowsWritten = legacyUpdates.length
-    ? await arbitrageFeedRepo.updateRowsById(legacyUpdates)
-    : 0
 
   const result = {
     scannedCount: safeRows.length,
@@ -296,7 +235,7 @@ async function runSweepForRows(rows = [], { nowIso, trigger, runId } = {}) {
     degradedCount,
     unchangedCount,
     historyRowsWritten: Array.isArray(insertedHistory) ? insertedHistory.length : 0,
-    compatibilityRowsWritten
+    compatibilityRowsWritten: Number(compatibilityResult?.rowsWritten || 0)
   }
 
   await diagnosticsWriter.writeRevalidationBatch({
@@ -339,10 +278,29 @@ async function withLease(rowLoader, { nowIso, limit, trigger } = {}) {
 
   try {
     const rows = await rowLoader(limit)
+    await scannerRunLeaseService.heartbeat({
+      leaseId: lease.leaseId,
+      heartbeatAt: new Date().toISOString(),
+      diagnostics: {
+        trigger,
+        stage: "rows_loaded",
+        selectedCount: Array.isArray(rows) ? rows.length : 0
+      }
+    })
     const result = await runSweepForRows(rows, {
       nowIso: safeNowIso,
       trigger,
-      runId: lease.leaseId
+      runId: lease.leaseId,
+      heartbeat: ({ processedCount, stage }) =>
+        scannerRunLeaseService.heartbeat({
+          leaseId: lease.leaseId,
+          heartbeatAt: new Date().toISOString(),
+          diagnostics: {
+            trigger,
+            stage: normalizeText(stage) || "revalidation_progress",
+            processedCount: Number(processedCount || 0)
+          }
+        })
     })
     await scannerRunLeaseService.complete({
       leaseId: lease.leaseId,

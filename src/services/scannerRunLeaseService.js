@@ -80,9 +80,18 @@ async function fail({ leaseId, completedAt, error, diagnostics, status = "failed
   })
 }
 
+async function heartbeat({ leaseId, heartbeatAt, diagnostics } = {}) {
+  if (!normalizeText(leaseId)) return null
+  return scannerRunRepo.touchHeartbeat(leaseId, {
+    heartbeatAt: heartbeatAt || new Date().toISOString(),
+    diagnosticsSummary: toJsonObject(diagnostics)
+  })
+}
+
 module.exports = {
   acquire,
   recoverExpired,
   complete,
-  fail
+  fail,
+  heartbeat
 }

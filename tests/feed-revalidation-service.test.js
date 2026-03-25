@@ -48,7 +48,7 @@ function buildActiveRow(overrides = {}) {
   }
 }
 
-test("feed revalidation expires stale active rows and updates legacy projection", async () => {
+test("feed revalidation expires stale active rows, links history, and updates legacy projection", async () => {
   const nowMs = Date.now()
   const staleIso = new Date(nowMs - 3 * 60 * 60 * 1000).toISOString()
   const row = buildActiveRow()
@@ -62,31 +62,48 @@ test("feed revalidation expires stale active rows and updates legacy projection"
   const originals = {
     recoverExpired: scannerRunLeaseService.recoverExpired,
     acquire: scannerRunLeaseService.acquire,
+    heartbeat: scannerRunLeaseService.heartbeat,
     complete: scannerRunLeaseService.complete,
     fail: scannerRunLeaseService.fail,
     listRowsForRevalidation: globalActiveOpportunityRepo.listRowsForRevalidation,
+    getRowsByFingerprints: globalActiveOpportunityRepo.getRowsByFingerprints,
     updateActiveRowsById: globalActiveOpportunityRepo.updateRowsById,
     insertHistoryRows: globalOpportunityHistoryRepo.insertRows,
     getLatestQuotesByItemNames: marketStateReadService.getLatestQuotesByItemNames,
+    legacyGetRecentRowsByItems: arbitrageFeedRepo.getRecentRowsByItems,
     getActiveRowsByFingerprints: arbitrageFeedRepo.getActiveRowsByFingerprints,
+    legacyInsertRows: arbitrageFeedRepo.insertRows,
     updateLegacyRowsById: arbitrageFeedRepo.updateRowsById,
+    markRowsInactiveByIds: arbitrageFeedRepo.markRowsInactiveByIds,
     writeRevalidationBatch: diagnosticsWriter.writeRevalidationBatch
   }
 
   let activeUpdatePayload = null
   let legacyUpdatePayload = null
   let historyPayload = null
+  let persistedActiveRows = [row]
 
   scannerRunLeaseService.recoverExpired = async () => 0
   scannerRunLeaseService.acquire = async () => ({
     acquired: true,
     leaseId: "revalidation-run-1"
   })
+  scannerRunLeaseService.heartbeat = async () => null
   scannerRunLeaseService.complete = async () => null
   scannerRunLeaseService.fail = async () => null
   globalActiveOpportunityRepo.listRowsForRevalidation = async () => [row]
+  globalActiveOpportunityRepo.getRowsByFingerprints = async ({ fingerprints = [] } = {}) =>
+    persistedActiveRows.filter((entry) => fingerprints.includes(entry.opportunity_fingerprint))
   globalActiveOpportunityRepo.updateRowsById = async (rows = []) => {
     activeUpdatePayload = rows
+    persistedActiveRows = persistedActiveRows.map((entry) => {
+      const update = rows.find((candidate) => candidate.id === entry.id)
+      if (!update) return entry
+      return {
+        ...entry,
+        ...update.patch
+      }
+    })
     return rows.length
   }
   globalOpportunityHistoryRepo.insertRows = async (rows = []) => {
@@ -118,11 +135,14 @@ test("feed revalidation expires stale active rows and updates legacy projection"
       }
     }
   })
+  arbitrageFeedRepo.getRecentRowsByItems = async () => [legacyRow]
   arbitrageFeedRepo.getActiveRowsByFingerprints = async () => [legacyRow]
+  arbitrageFeedRepo.insertRows = async () => []
   arbitrageFeedRepo.updateRowsById = async (rows = []) => {
     legacyUpdatePayload = rows
     return rows.length
   }
+  arbitrageFeedRepo.markRowsInactiveByIds = async () => 0
   diagnosticsWriter.writeRevalidationBatch = async () => null
 
   try {
@@ -138,25 +158,31 @@ test("feed revalidation expires stale active rows and updates legacy projection"
     assert.equal(activeUpdatePayload[0].patch.refresh_status, "stale")
     assert.equal(Array.isArray(historyPayload), true)
     assert.equal(historyPayload[0].event_type, "expired")
+    assert.equal(historyPayload[0].active_opportunity_id, row.id)
     assert.equal(Array.isArray(legacyUpdatePayload), true)
     assert.equal(legacyUpdatePayload[0].patch.is_active, false)
     assert.equal(legacyUpdatePayload[0].patch.live_status, "stale")
   } finally {
     scannerRunLeaseService.recoverExpired = originals.recoverExpired
     scannerRunLeaseService.acquire = originals.acquire
+    scannerRunLeaseService.heartbeat = originals.heartbeat
     scannerRunLeaseService.complete = originals.complete
     scannerRunLeaseService.fail = originals.fail
     globalActiveOpportunityRepo.listRowsForRevalidation = originals.listRowsForRevalidation
+    globalActiveOpportunityRepo.getRowsByFingerprints = originals.getRowsByFingerprints
     globalActiveOpportunityRepo.updateRowsById = originals.updateActiveRowsById
     globalOpportunityHistoryRepo.insertRows = originals.insertHistoryRows
     marketStateReadService.getLatestQuotesByItemNames = originals.getLatestQuotesByItemNames
+    arbitrageFeedRepo.getRecentRowsByItems = originals.legacyGetRecentRowsByItems
     arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
+    arbitrageFeedRepo.insertRows = originals.legacyInsertRows
     arbitrageFeedRepo.updateRowsById = originals.updateLegacyRowsById
+    arbitrageFeedRepo.markRowsInactiveByIds = originals.markRowsInactiveByIds
     diagnosticsWriter.writeRevalidationBatch = originals.writeRevalidationBatch
   }
 })
 
-test("feed revalidation keeps live rows active without writing expiry history", async () => {
+test("feed revalidation keeps live rows active without writing history", async () => {
   const nowMs = Date.now()
   const freshIso = new Date(nowMs - 15 * 60 * 1000).toISOString()
   const row = buildActiveRow({
@@ -172,28 +198,47 @@ test("feed revalidation keeps live rows active without writing expiry history", 
   const originals = {
     recoverExpired: scannerRunLeaseService.recoverExpired,
     acquire: scannerRunLeaseService.acquire,
+    heartbeat: scannerRunLeaseService.heartbeat,
     complete: scannerRunLeaseService.complete,
     fail: scannerRunLeaseService.fail,
     listRowsForRevalidation: globalActiveOpportunityRepo.listRowsForRevalidation,
+    getRowsByFingerprints: globalActiveOpportunityRepo.getRowsByFingerprints,
     updateActiveRowsById: globalActiveOpportunityRepo.updateRowsById,
     insertHistoryRows: globalOpportunityHistoryRepo.insertRows,
     getLatestQuotesByItemNames: marketStateReadService.getLatestQuotesByItemNames,
+    legacyGetRecentRowsByItems: arbitrageFeedRepo.getRecentRowsByItems,
     getActiveRowsByFingerprints: arbitrageFeedRepo.getActiveRowsByFingerprints,
+    legacyInsertRows: arbitrageFeedRepo.insertRows,
     updateLegacyRowsById: arbitrageFeedRepo.updateRowsById,
+    markRowsInactiveByIds: arbitrageFeedRepo.markRowsInactiveByIds,
     writeRevalidationBatch: diagnosticsWriter.writeRevalidationBatch
   }
 
   let historyPayload = null
+  let persistedActiveRows = [row]
 
   scannerRunLeaseService.recoverExpired = async () => 0
   scannerRunLeaseService.acquire = async () => ({
     acquired: true,
     leaseId: "revalidation-run-2"
   })
+  scannerRunLeaseService.heartbeat = async () => null
   scannerRunLeaseService.complete = async () => null
   scannerRunLeaseService.fail = async () => null
   globalActiveOpportunityRepo.listRowsForRevalidation = async () => [row]
-  globalActiveOpportunityRepo.updateRowsById = async () => 1
+  globalActiveOpportunityRepo.getRowsByFingerprints = async ({ fingerprints = [] } = {}) =>
+    persistedActiveRows.filter((entry) => fingerprints.includes(entry.opportunity_fingerprint))
+  globalActiveOpportunityRepo.updateRowsById = async (rows = []) => {
+    persistedActiveRows = persistedActiveRows.map((entry) => {
+      const update = rows.find((candidate) => candidate.id === entry.id)
+      if (!update) return entry
+      return {
+        ...entry,
+        ...update.patch
+      }
+    })
+    return rows.length
+  }
   globalOpportunityHistoryRepo.insertRows = async (rows = []) => {
     historyPayload = rows
     return rows
@@ -225,8 +270,11 @@ test("feed revalidation keeps live rows active without writing expiry history", 
       }
     }
   })
+  arbitrageFeedRepo.getRecentRowsByItems = async () => [legacyRow]
   arbitrageFeedRepo.getActiveRowsByFingerprints = async () => [legacyRow]
+  arbitrageFeedRepo.insertRows = async () => []
   arbitrageFeedRepo.updateRowsById = async () => 1
+  arbitrageFeedRepo.markRowsInactiveByIds = async () => 0
   diagnosticsWriter.writeRevalidationBatch = async () => null
 
   try {
@@ -241,14 +289,245 @@ test("feed revalidation keeps live rows active without writing expiry history", 
   } finally {
     scannerRunLeaseService.recoverExpired = originals.recoverExpired
     scannerRunLeaseService.acquire = originals.acquire
+    scannerRunLeaseService.heartbeat = originals.heartbeat
     scannerRunLeaseService.complete = originals.complete
     scannerRunLeaseService.fail = originals.fail
     globalActiveOpportunityRepo.listRowsForRevalidation = originals.listRowsForRevalidation
+    globalActiveOpportunityRepo.getRowsByFingerprints = originals.getRowsByFingerprints
     globalActiveOpportunityRepo.updateRowsById = originals.updateActiveRowsById
     globalOpportunityHistoryRepo.insertRows = originals.insertHistoryRows
     marketStateReadService.getLatestQuotesByItemNames = originals.getLatestQuotesByItemNames
+    arbitrageFeedRepo.getRecentRowsByItems = originals.legacyGetRecentRowsByItems
     arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
+    arbitrageFeedRepo.insertRows = originals.legacyInsertRows
     arbitrageFeedRepo.updateRowsById = originals.updateLegacyRowsById
+    arbitrageFeedRepo.markRowsInactiveByIds = originals.markRowsInactiveByIds
+    diagnosticsWriter.writeRevalidationBatch = originals.writeRevalidationBatch
+  }
+})
+
+test("feed revalidation repairs missing legacy compatibility rows", async () => {
+  const nowMs = Date.now()
+  const freshIso = new Date(nowMs - 10 * 60 * 1000).toISOString()
+  const row = buildActiveRow({
+    id: "active-row-repair",
+    opportunity_fingerprint: "ofp-repair-1",
+    material_change_hash: "mch-repair-1",
+    market_signal_observed_at: freshIso
+  })
+
+  const originals = {
+    recoverExpired: scannerRunLeaseService.recoverExpired,
+    acquire: scannerRunLeaseService.acquire,
+    heartbeat: scannerRunLeaseService.heartbeat,
+    complete: scannerRunLeaseService.complete,
+    fail: scannerRunLeaseService.fail,
+    listRowsForRevalidation: globalActiveOpportunityRepo.listRowsForRevalidation,
+    getRowsByFingerprints: globalActiveOpportunityRepo.getRowsByFingerprints,
+    updateActiveRowsById: globalActiveOpportunityRepo.updateRowsById,
+    insertHistoryRows: globalOpportunityHistoryRepo.insertRows,
+    getLatestQuotesByItemNames: marketStateReadService.getLatestQuotesByItemNames,
+    legacyGetRecentRowsByItems: arbitrageFeedRepo.getRecentRowsByItems,
+    getActiveRowsByFingerprints: arbitrageFeedRepo.getActiveRowsByFingerprints,
+    legacyInsertRows: arbitrageFeedRepo.insertRows,
+    updateLegacyRowsById: arbitrageFeedRepo.updateRowsById,
+    markRowsInactiveByIds: arbitrageFeedRepo.markRowsInactiveByIds,
+    writeRevalidationBatch: diagnosticsWriter.writeRevalidationBatch
+  }
+
+  let legacyInsertPayload = null
+  let persistedActiveRows = [row]
+
+  scannerRunLeaseService.recoverExpired = async () => 0
+  scannerRunLeaseService.acquire = async () => ({
+    acquired: true,
+    leaseId: "revalidation-run-repair"
+  })
+  scannerRunLeaseService.heartbeat = async () => null
+  scannerRunLeaseService.complete = async () => null
+  scannerRunLeaseService.fail = async () => null
+  globalActiveOpportunityRepo.listRowsForRevalidation = async () => [row]
+  globalActiveOpportunityRepo.getRowsByFingerprints = async ({ fingerprints = [] } = {}) =>
+    persistedActiveRows.filter((entry) => fingerprints.includes(entry.opportunity_fingerprint))
+  globalActiveOpportunityRepo.updateRowsById = async (rows = []) => {
+    persistedActiveRows = persistedActiveRows.map((entry) => {
+      const update = rows.find((candidate) => candidate.id === entry.id)
+      if (!update) return entry
+      return {
+        ...entry,
+        ...update.patch
+      }
+    })
+    return rows.length
+  }
+  globalOpportunityHistoryRepo.insertRows = async () => []
+  marketStateReadService.getLatestQuotesByItemNames = async () => ({
+    [row.item_name]: {
+      steam: {
+        market: "steam",
+        best_buy: 19.9,
+        best_sell: 20.9,
+        best_sell_net: 18.2,
+        volume_7d: 181,
+        fetched_at: freshIso
+      },
+      skinport: {
+        market: "skinport",
+        best_buy: 23.4,
+        best_sell: 25.9,
+        best_sell_net: 22.8,
+        volume_7d: 177,
+        fetched_at: freshIso,
+        quality_flags: {
+          skinport_quote_type: "live_executable",
+          skinport_price_integrity_status: "confirmed",
+          skinport_listing_id: "sp-live-repair"
+        }
+      }
+    }
+  })
+  arbitrageFeedRepo.getRecentRowsByItems = async () => []
+  arbitrageFeedRepo.getActiveRowsByFingerprints = async () => []
+  arbitrageFeedRepo.insertRows = async (rows = []) => {
+    legacyInsertPayload = rows
+    return rows.map((entry, index) => ({ id: `legacy-insert-${index}` }))
+  }
+  arbitrageFeedRepo.updateRowsById = async () => 0
+  arbitrageFeedRepo.markRowsInactiveByIds = async () => 0
+  diagnosticsWriter.writeRevalidationBatch = async () => null
+
+  try {
+    const result = await feedRevalidationService.runScheduledSweep({
+      nowIso: new Date(nowMs).toISOString(),
+      limit: 50
+    })
+
+    assert.equal(result.scannedCount, 1)
+    assert.equal(result.compatibilityRowsWritten, 1)
+    assert.equal(Array.isArray(legacyInsertPayload), true)
+    assert.equal(legacyInsertPayload.length, 1)
+    assert.equal(legacyInsertPayload[0].opportunity_fingerprint, row.opportunity_fingerprint)
+  } finally {
+    scannerRunLeaseService.recoverExpired = originals.recoverExpired
+    scannerRunLeaseService.acquire = originals.acquire
+    scannerRunLeaseService.heartbeat = originals.heartbeat
+    scannerRunLeaseService.complete = originals.complete
+    scannerRunLeaseService.fail = originals.fail
+    globalActiveOpportunityRepo.listRowsForRevalidation = originals.listRowsForRevalidation
+    globalActiveOpportunityRepo.getRowsByFingerprints = originals.getRowsByFingerprints
+    globalActiveOpportunityRepo.updateRowsById = originals.updateActiveRowsById
+    globalOpportunityHistoryRepo.insertRows = originals.insertHistoryRows
+    marketStateReadService.getLatestQuotesByItemNames = originals.getLatestQuotesByItemNames
+    arbitrageFeedRepo.getRecentRowsByItems = originals.legacyGetRecentRowsByItems
+    arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
+    arbitrageFeedRepo.insertRows = originals.legacyInsertRows
+    arbitrageFeedRepo.updateRowsById = originals.updateLegacyRowsById
+    arbitrageFeedRepo.markRowsInactiveByIds = originals.markRowsInactiveByIds
+    diagnosticsWriter.writeRevalidationBatch = originals.writeRevalidationBatch
+  }
+})
+
+test("feed revalidation writes degraded history events and heartbeats progress", async () => {
+  const row = buildActiveRow({
+    id: "active-row-degraded",
+    opportunity_fingerprint: "ofp-degraded-1",
+    material_change_hash: "mch-degraded-1"
+  })
+
+  const originals = {
+    recoverExpired: scannerRunLeaseService.recoverExpired,
+    acquire: scannerRunLeaseService.acquire,
+    heartbeat: scannerRunLeaseService.heartbeat,
+    complete: scannerRunLeaseService.complete,
+    fail: scannerRunLeaseService.fail,
+    listRowsForRevalidation: globalActiveOpportunityRepo.listRowsForRevalidation,
+    getRowsByFingerprints: globalActiveOpportunityRepo.getRowsByFingerprints,
+    updateActiveRowsById: globalActiveOpportunityRepo.updateRowsById,
+    insertHistoryRows: globalOpportunityHistoryRepo.insertRows,
+    getLatestQuotesByItemNames: marketStateReadService.getLatestQuotesByItemNames,
+    legacyGetRecentRowsByItems: arbitrageFeedRepo.getRecentRowsByItems,
+    getActiveRowsByFingerprints: arbitrageFeedRepo.getActiveRowsByFingerprints,
+    legacyInsertRows: arbitrageFeedRepo.insertRows,
+    updateLegacyRowsById: arbitrageFeedRepo.updateRowsById,
+    markRowsInactiveByIds: arbitrageFeedRepo.markRowsInactiveByIds,
+    writeRevalidationBatch: diagnosticsWriter.writeRevalidationBatch
+  }
+
+  let historyPayload = null
+  let legacyInsertPayload = null
+  let heartbeatCount = 0
+  let persistedActiveRows = [row]
+
+  scannerRunLeaseService.recoverExpired = async () => 0
+  scannerRunLeaseService.acquire = async () => ({
+    acquired: true,
+    leaseId: "revalidation-run-degraded"
+  })
+  scannerRunLeaseService.heartbeat = async () => {
+    heartbeatCount += 1
+    return null
+  }
+  scannerRunLeaseService.complete = async () => null
+  scannerRunLeaseService.fail = async () => null
+  globalActiveOpportunityRepo.listRowsForRevalidation = async () => [row]
+  globalActiveOpportunityRepo.getRowsByFingerprints = async ({ fingerprints = [] } = {}) =>
+    persistedActiveRows.filter((entry) => fingerprints.includes(entry.opportunity_fingerprint))
+  globalActiveOpportunityRepo.updateRowsById = async (rows = []) => {
+    persistedActiveRows = persistedActiveRows.map((entry) => {
+      const update = rows.find((candidate) => candidate.id === entry.id)
+      if (!update) return entry
+      return {
+        ...entry,
+        ...update.patch
+      }
+    })
+    return rows.length
+  }
+  globalOpportunityHistoryRepo.insertRows = async (rows = []) => {
+    historyPayload = rows
+    return rows
+  }
+  marketStateReadService.getLatestQuotesByItemNames = async () => ({})
+  arbitrageFeedRepo.getRecentRowsByItems = async () => []
+  arbitrageFeedRepo.getActiveRowsByFingerprints = async () => []
+  arbitrageFeedRepo.insertRows = async (rows = []) => {
+    legacyInsertPayload = rows
+    return rows.map((entry, index) => ({ id: `legacy-degraded-${index}` }))
+  }
+  arbitrageFeedRepo.updateRowsById = async () => 0
+  arbitrageFeedRepo.markRowsInactiveByIds = async () => 0
+  diagnosticsWriter.writeRevalidationBatch = async () => null
+
+  try {
+    const result = await feedRevalidationService.runScheduledSweep({
+      nowIso: new Date().toISOString(),
+      limit: 50
+    })
+
+    assert.equal(result.scannedCount, 1)
+    assert.equal(result.degradedCount, 1)
+    assert.equal(Array.isArray(historyPayload), true)
+    assert.equal(historyPayload[0].event_type, "degraded")
+    assert.equal(historyPayload[0].active_opportunity_id, row.id)
+    assert.equal(Array.isArray(legacyInsertPayload), true)
+    assert.equal(legacyInsertPayload[0].is_active, false)
+    assert.equal(heartbeatCount >= 2, true)
+  } finally {
+    scannerRunLeaseService.recoverExpired = originals.recoverExpired
+    scannerRunLeaseService.acquire = originals.acquire
+    scannerRunLeaseService.heartbeat = originals.heartbeat
+    scannerRunLeaseService.complete = originals.complete
+    scannerRunLeaseService.fail = originals.fail
+    globalActiveOpportunityRepo.listRowsForRevalidation = originals.listRowsForRevalidation
+    globalActiveOpportunityRepo.getRowsByFingerprints = originals.getRowsByFingerprints
+    globalActiveOpportunityRepo.updateRowsById = originals.updateActiveRowsById
+    globalOpportunityHistoryRepo.insertRows = originals.insertHistoryRows
+    marketStateReadService.getLatestQuotesByItemNames = originals.getLatestQuotesByItemNames
+    arbitrageFeedRepo.getRecentRowsByItems = originals.legacyGetRecentRowsByItems
+    arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
+    arbitrageFeedRepo.insertRows = originals.legacyInsertRows
+    arbitrageFeedRepo.updateRowsById = originals.updateLegacyRowsById
+    arbitrageFeedRepo.markRowsInactiveByIds = originals.markRowsInactiveByIds
     diagnosticsWriter.writeRevalidationBatch = originals.writeRevalidationBatch
   }
 })
