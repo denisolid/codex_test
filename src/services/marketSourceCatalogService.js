@@ -2624,10 +2624,21 @@ function resolveCompatibleCatalogStatusFields(row = {}) {
     invalidReason: row?.invalid_reason || row?.invalidReason
   })
 
+  const classifiedCatalogStatus = normalizeCatalogStatus(classified.catalogStatus)
+  const compatibilityCatalogStatus = explicitCatalogStatus
+    ? explicitCatalogStatus
+    : classifiedCatalogStatus === CATALOG_STATUS.BLOCKED
+      ? CATALOG_STATUS.BLOCKED
+      : CATALOG_STATUS.SCANNABLE
+  const compatibilityCatalogBlockReason = explicitCatalogBlockReason
+    ? explicitCatalogBlockReason
+    : compatibilityCatalogStatus === CATALOG_STATUS.BLOCKED
+      ? normalizeText(classified.catalogBlockReason) || null
+      : null
+
   return {
-    catalogStatus: explicitCatalogStatus || normalizeCatalogStatus(classified.catalogStatus),
-    catalogBlockReason:
-      explicitCatalogBlockReason || normalizeText(classified.catalogBlockReason) || null,
+    catalogStatus: compatibilityCatalogStatus,
+    catalogBlockReason: compatibilityCatalogBlockReason,
     catalogQualityScore:
       explicitCatalogQualityScore != null
         ? explicitCatalogQualityScore

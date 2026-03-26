@@ -20,6 +20,7 @@ const {
     normalizeCandidateStatus,
     normalizeMaturityState,
     normalizeCategory,
+    resolveCompatibleCatalogStatusFields,
     shouldBypassSkipForRecovery
   }
 } = require("../src/services/marketSourceCatalogService")
@@ -357,6 +358,39 @@ test("catalog status respects canonical latest market signal with unix timestamp
     status.staleReasonSource === "latest_quote" || status.staleReasonSource === "latest_reference_price",
     true
   )
+})
+
+test("catalog-status compatibility keeps structurally valid legacy rows scannable without explicit status", () => {
+  const oldIso = new Date(Date.now() - 10 * 60 * 60 * 1000).toISOString()
+  const compatible = resolveCompatibleCatalogStatusFields({
+    category: "weapon_skin",
+    reference_price: 14,
+    market_coverage_count: 3,
+    snapshot_captured_at: oldIso,
+    quote_fetched_at: oldIso,
+    snapshot_stale: true,
+    invalid_reason: "",
+    liquidity_rank: 72
+  })
+
+  assert.equal(compatible.catalogStatus, "scannable")
+  assert.equal(compatible.catalogBlockReason, null)
+})
+
+test("catalog-status compatibility still blocks structurally invalid legacy rows", () => {
+  const compatible = resolveCompatibleCatalogStatusFields({
+    category: "weapon_skin",
+    reference_price: null,
+    market_coverage_count: 0,
+    snapshot_captured_at: null,
+    quote_fetched_at: null,
+    snapshot_stale: true,
+    invalid_reason: "",
+    liquidity_rank: 0
+  })
+
+  assert.equal(compatible.catalogStatus, "blocked")
+  assert.equal(compatible.catalogBlockReason, "unusable_market_coverage")
 })
 
 test("universe backfill blocks zero-coverage weapon-skin enriching rows", () => {
