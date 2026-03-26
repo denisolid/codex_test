@@ -2660,10 +2660,12 @@ async function enrichSourceCatalog(options = {}) {
       ? options.priorityCoverage
       : {}
   const priorityByKey = priorityCoverage?.byKey instanceof Map ? priorityCoverage.byKey : new Map()
-  const rows = await marketSourceCatalogRepo.listActiveTradable({
-    limit: 12000,
-    categories: CATEGORY_PRIORITY
-  })
+  const rows = Array.isArray(options?.rows)
+    ? options.rows
+    : await marketSourceCatalogRepo.listActiveTradable({
+        limit: 12000,
+        categories: CATEGORY_PRIORITY
+      })
   if (!rows.length) {
     return {
       totalRows: 0,
@@ -3163,14 +3165,13 @@ async function enrichSourceCatalog(options = {}) {
       is_active: row?.is_active == null ? true : Boolean(row.is_active)
     }
 
-    if (hasCatalogRowChanges(row, nextRow)) {
-      updates.push({
-        ...nextRow,
-        last_enriched_at: nowIso
-      })
-    } else {
+    if (!hasCatalogRowChanges(row, nextRow)) {
       skippedUnchangedRows += 1
     }
+    updates.push({
+      ...nextRow,
+      last_enriched_at: nowIso
+    })
   }
 
   if (updates.length) {
@@ -3216,6 +3217,7 @@ async function enrichSourceCatalog(options = {}) {
     nearEligibleRowsByCategory,
     candidateRowsByCategory,
     enrichingRowsByCategory,
+    processedMarketHashNames: marketNames,
     priorityCoverage: {
       totalPriorityItemsConfigured: Number(priorityCoverage?.totalPriorityItemsConfigured || 0),
       matchedExistingCatalogItems: Number(priorityCoverage?.matchedExistingCatalogItems || 0),
@@ -3590,7 +3592,7 @@ async function runPipeline(options = {}) {
 
   const ingest = await ingestSourceCatalogSeeds()
   const priorityCoverage = await catalogPriorityCoverageService
-    .syncPriorityCoverageSet()
+    .syncPriorityCoverageSet({ allowCatalogInsert: true })
     .catch((err) => ({
       setName: null,
       version: 1,
@@ -3598,6 +3600,7 @@ async function runPipeline(options = {}) {
       totalPriorityItemsConfigured: 0,
       matchedExistingCatalogItems: 0,
       insertedMissingCatalogItems: 0,
+      catalogInsertApplied: true,
       unmatchedPriorityItems: [],
       entries: [],
       byKey: new Map(),
@@ -3897,10 +3900,23 @@ async function getCatalogRowsByMarketHashNames(marketHashNames = [], options = {
   })
 }
 
+async function recomputeCandidateReadinessRows(rows = [], options = {}) {
+  return enrichSourceCatalog({
+    ...options,
+    rows: Array.isArray(rows) ? rows : []
+  })
+}
+
 module.exports = {
   prepareSourceCatalog,
   getLastDiagnostics,
   getCatalogRowsByMarketHashNames,
+  recomputeCandidateReadinessRows,
+  normalizeCandidateStatus,
+  evaluateEligibility,
+  evaluateCandidateState,
+  classifyCatalogStatus,
+  isUniverseBackfillReadyRow,
   __testables: {
     normalizeCategory,
     normalizeCandidateStatus,

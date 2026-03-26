@@ -2,7 +2,19 @@ const {
   ITEM_CATEGORIES,
   ROUND_ROBIN_CATEGORY_ORDER,
   SCAN_STATE,
-  SUPPORTED_SCAN_CATEGORIES
+  SUPPORTED_SCAN_CATEGORIES,
+  SCAN_COHORT_CATEGORIES,
+  SCAN_COHORT_HOT_SHARE,
+  SCAN_COHORT_WARM_SHARE,
+  SCAN_COHORT_COLD_SHARE,
+  SCAN_COHORT_COLD_MIN,
+  SCAN_COHORT_COLD_MAX,
+  SCAN_COHORT_FALLBACK_CANDIDATE_POOL_SHARE,
+  SCAN_COHORT_FALLBACK_CANDIDATE_POOL_MAX,
+  SCAN_COHORT_FALLBACK_ACTIVE_TRADABLE_SHARE,
+  SCAN_COHORT_FALLBACK_ACTIVE_TRADABLE_MAX,
+  SCAN_COHORT_FALLBACK_COMBINED_SHARE,
+  SCAN_COHORT_FALLBACK_COMBINED_MAX
 } = require("./config")
 const { classifyCatalogState, normalizeCategory } = require("./stateModel")
 
@@ -55,6 +67,41 @@ function resolvePriorityTierBucket(row = {}) {
   return "non_priority"
 }
 
+function normalizeCandidateStatus(value) {
+  const status = normalizeText(value).toLowerCase()
+  if (
+    status === "candidate" ||
+    status === "enriching" ||
+    status === "near_eligible" ||
+    status === "eligible" ||
+    status === "rejected"
+  ) {
+    return status
+  }
+  return "candidate"
+}
+
+function normalizeCatalogStatus(value) {
+  const status = normalizeText(value).toLowerCase()
+  if (status === "scannable" || status === "shadow" || status === "blocked") return status
+  return "shadow"
+}
+
+function normalizeScanCohort(value) {
+  const cohort = normalizeText(value).toLowerCase()
+  if (cohort === "hot" || cohort === "warm" || cohort === "cold" || cohort === "fallback") {
+    return cohort
+  }
+  return ""
+}
+
+function resolvePersistedScanCohort(row = {}) {
+  const explicit = normalizeScanCohort(row.scanCohort || row.scan_cohort)
+  if (explicit) return explicit
+  if (normalizeText(row.fallbackSource || row.fallback_source)) return "fallback"
+  return ""
+}
+
 function normalizeCatalogRow(row = {}) {
   const marketHashName = normalizeText(row.market_hash_name || row.marketHashName)
   if (!marketHashName) return null
@@ -105,6 +152,13 @@ function normalizeCatalogRow(row = {}) {
       row.is_priority_item == null
         ? normalizePriorityTier(row.priority_tier || row.priorityTier) != null
         : Boolean(row.is_priority_item),
+    candidateStatus: normalizeCandidateStatus(row.candidate_status ?? row.candidateStatus),
+    scanEligible:
+      row.scan_eligible == null ? Boolean(row.scanEligible) : Boolean(row.scan_eligible),
+    catalogStatus: normalizeCatalogStatus(row.catalog_status ?? row.catalogStatus),
+    scanCohort: resolvePersistedScanCohort(row),
+    fallbackSource: normalizeText(row.fallbackSource || row.fallback_source) || null,
+    sourceOrigin: normalizeText(row.sourceOrigin || row.source_origin) || null,
     invalidReason: normalizeText(row.invalid_reason || row.invalidReason) || null,
     sourceTag: normalizeText(row.source_tag || row.sourceTag) || null,
     raw: row
@@ -169,6 +223,15 @@ function buildCategoryStateCounter() {
   )
 }
 
+function buildCohortCounter(initialValue = 0) {
+  return {
+    hot: Number(initialValue || 0),
+    warm: Number(initialValue || 0),
+    cold: Number(initialValue || 0),
+    fallback: Number(initialValue || 0)
+  }
+}
+
 function normalizeRows(rows = []) {
   const deduped = []
   const seen = new Set()
@@ -181,6 +244,42 @@ function normalizeRows(rows = []) {
     deduped.push(normalized)
   }
   return deduped
+}
+
+function calculateCohortBudgetCaps(batchSize = 0) {
+  const safeBatchSize = Math.max(Math.round(Number(batchSize || 0)), 1)
+  const hotCap = Math.min(
+    Math.ceil(safeBatchSize * SCAN_COHORT_HOT_SHARE),
+    safeBatchSize
+  )
+  const warmCap = Math.min(
+    Math.ceil(safeBatchSize * SCAN_COHORT_WARM_SHARE),
+    safeBatchSize
+  )
+  const coldCap = Math.min(
+    Math.max(Math.floor(safeBatchSize * SCAN_COHORT_COLD_SHARE), SCAN_COHORT_COLD_MIN),
+    SCAN_COHORT_COLD_MAX
+  )
+  const candidatePoolFallbackCap = Math.min(
+    Math.ceil(safeBatchSize * SCAN_COHORT_FALLBACK_CANDIDATE_POOL_SHARE),
+    SCAN_COHORT_FALLBACK_CANDIDATE_POOL_MAX
+  )
+  const activeTradableFallbackCap = Math.min(
+    Math.ceil(safeBatchSize * SCAN_COHORT_FALLBACK_ACTIVE_TRADABLE_SHARE),
+    SCAN_COHORT_FALLBACK_ACTIVE_TRADABLE_MAX
+  )
+  const combinedFallbackCap = Math.min(
+    Math.ceil(safeBatchSize * SCAN_COHORT_FALLBACK_COMBINED_SHARE),
+    SCAN_COHORT_FALLBACK_COMBINED_MAX
+  )
+  return {
+    hotCap,
+    warmCap,
+    coldCap,
+    candidatePoolFallbackCap,
+    activeTradableFallbackCap,
+    combinedFallbackCap
+  }
 }
 
 function incrementCounter(target, key, amount = 1) {
@@ -236,42 +335,28 @@ function pickPremiumReserveRows(pool = [], maxCount = 0) {
 }
 
 function buildRoundRobinPool(scannableRows = [], options = {}) {
-  const lastScannedAtByName = options.lastScannedAtByName || new Map()
   const byCategory = Object.fromEntries(
-    ROUND_ROBIN_CATEGORY_ORDER.map((category) => [
-      category,
-      { preferred: [], fallback: [] }
-    ])
+    ROUND_ROBIN_CATEGORY_ORDER.map((category) => [category, []])
   )
 
   for (const row of Array.isArray(scannableRows) ? scannableRows : []) {
     const category = normalizeCategory(row.category || row.itemCategory, row.itemName)
     const bucket = byCategory[category]
     if (!bucket) continue
-    if (hasStrongScanEvidence(row)) {
-      bucket.preferred.push(row)
-    } else {
-      bucket.fallback.push(row)
-    }
+    bucket.push(row)
   }
 
   const sortRows = (rows = []) => {
     rows.sort((a, b) => {
-      const aSeenAt = Number(lastScannedAtByName.get(a.marketHashName) || 0)
-      const bSeenAt = Number(lastScannedAtByName.get(b.marketHashName) || 0)
       const aTier = resolvePriorityTierRank(a.priorityTier)
       const bTier = resolvePriorityTierRank(b.priorityTier)
       if (aTier !== bTier) return bTier - aTier
       const aPriorityBoost = Number(a.priorityBoost || 0)
       const bPriorityBoost = Number(b.priorityBoost || 0)
       if (aPriorityBoost !== bPriorityBoost) return bPriorityBoost - aPriorityBoost
-      if (aSeenAt !== bSeenAt) return aSeenAt - bSeenAt
-      const aCoverage = Number(a.marketCoverageCount || 0)
-      const bCoverage = Number(b.marketCoverageCount || 0)
-      if (aCoverage !== bCoverage) return bCoverage - aCoverage
-      const aVolume = Number(a.volume7d || 0)
-      const bVolume = Number(b.volume7d || 0)
-      if (aVolume !== bVolume) return bVolume - aVolume
+      const aLastSignalAt = Number(new Date(toIsoOrNull(a.lastMarketSignalAt) || 0).getTime() || 0)
+      const bLastSignalAt = Number(new Date(toIsoOrNull(b.lastMarketSignalAt) || 0).getTime() || 0)
+      if (aLastSignalAt !== bLastSignalAt) return bLastSignalAt - aLastSignalAt
       const aRank = Number(a.liquidityRank || 0)
       const bRank = Number(b.liquidityRank || 0)
       if (aRank !== bRank) return bRank - aRank
@@ -280,23 +365,17 @@ function buildRoundRobinPool(scannableRows = [], options = {}) {
   }
 
   for (const category of Object.keys(byCategory)) {
-    sortRows(byCategory[category].preferred)
-    sortRows(byCategory[category].fallback)
+    sortRows(byCategory[category])
   }
 
   const roundRobinPool = []
-  const pullRow = (bucket = {}) => {
-    if (bucket.preferred && bucket.preferred.length) return bucket.preferred.shift()
-    if (bucket.fallback && bucket.fallback.length) return bucket.fallback.shift()
-    return null
-  }
 
   while (true) {
     let addedInPass = false
     for (const category of ROUND_ROBIN_CATEGORY_ORDER) {
       const bucket = byCategory[category]
-      if (!bucket) continue
-      const picked = pullRow(bucket)
+      if (!bucket || !bucket.length) continue
+      const picked = bucket.shift()
       if (!picked) continue
       roundRobinPool.push(picked)
       addedInPass = true
@@ -324,16 +403,22 @@ function selectScanCandidates(options = {}) {
       tier_b: 0,
       non_priority: 0
     },
-    selectedByPriorityTier: {
-      tier_a: 0,
-      tier_b: 0,
-      non_priority: 0
-    },
-    stateByCategory: buildCategoryStateCounter(),
-    hardRejectReasons: {},
-    selectedByCategory: Object.fromEntries(
-      ROUND_ROBIN_CATEGORY_ORDER.map((category) => [category, 0])
-    )
+      selectedByPriorityTier: {
+        tier_a: 0,
+        tier_b: 0,
+        non_priority: 0
+      },
+      poolByCohort: buildCohortCounter(),
+      selectedByCohort: buildCohortCounter(),
+      fallbackSelectedBySource: {
+        candidatePool: 0,
+        activeTradable: 0
+      },
+      stateByCategory: buildCategoryStateCounter(),
+      hardRejectReasons: {},
+      selectedByCategory: Object.fromEntries(
+        ROUND_ROBIN_CATEGORY_ORDER.map((category) => [category, 0])
+      )
   }
 
   const classifiedRows = []
@@ -357,24 +442,61 @@ function selectScanCandidates(options = {}) {
       }
     }
 
-    classifiedRows.push({
-      ...row,
-      scanState: classification.state,
-      scanPenaltyFlags: classification.penaltyFlags,
-      scanHardRejectReasons: classification.hardRejectReasons,
-      scanFreshness: classification.freshness
-    })
-  }
+      classifiedRows.push({
+        ...row,
+        scanState: classification.state,
+        scanPenaltyFlags: classification.penaltyFlags,
+        scanHardRejectReasons: classification.hardRejectReasons,
+        scanFreshness: classification.freshness,
+        scanCohort: row.scanCohort || resolvePersistedScanCohort(row)
+      })
+    }
 
-  const scannableRows = classifiedRows.filter(
-    (row) => row.scanState !== SCAN_STATE.HARD_REJECT
-  )
-  for (const row of scannableRows) {
+  const cohortRows = classifiedRows.filter((row) => Boolean(normalizeScanCohort(row.scanCohort)))
+  for (const row of cohortRows) {
     const bucket = resolvePriorityTierBucket(row)
     diagnostics.poolByPriorityTier[bucket] = Number(diagnostics.poolByPriorityTier[bucket] || 0) + 1
+    const cohort = normalizeScanCohort(row.scanCohort)
+    if (cohort && diagnostics.poolByCohort[cohort] != null) {
+      diagnostics.poolByCohort[cohort] = Number(diagnostics.poolByCohort[cohort] || 0) + 1
+    }
   }
-  const pool = buildRoundRobinPool(scannableRows, { lastScannedAtByName })
-  if (!pool.length) {
+  const hotPool = buildRoundRobinPool(
+    cohortRows.filter((row) => normalizeScanCohort(row.scanCohort) === "hot"),
+    { lastScannedAtByName }
+  )
+  const warmPool = buildRoundRobinPool(
+    cohortRows.filter((row) => normalizeScanCohort(row.scanCohort) === "warm"),
+    { lastScannedAtByName }
+  )
+  const coldPool = buildRoundRobinPool(
+    cohortRows.filter((row) => normalizeScanCohort(row.scanCohort) === "cold"),
+    { lastScannedAtByName }
+  )
+  const candidatePoolFallback = buildRoundRobinPool(
+    cohortRows.filter(
+      (row) =>
+        normalizeScanCohort(row.scanCohort) === "fallback" &&
+        normalizeText(row.fallbackSource).toLowerCase() === "candidatepool"
+    ),
+    { lastScannedAtByName }
+  )
+  const activeTradableFallback = buildRoundRobinPool(
+    cohortRows.filter(
+      (row) =>
+        normalizeScanCohort(row.scanCohort) === "fallback" &&
+        normalizeText(row.fallbackSource).toLowerCase() === "activetradable"
+    ),
+    { lastScannedAtByName }
+  )
+  const poolSize =
+    hotPool.length +
+    warmPool.length +
+    coldPool.length +
+    candidatePoolFallback.length +
+    activeTradableFallback.length
+
+  if (!poolSize) {
     return {
       selected: [],
       poolSize: 0,
@@ -385,15 +507,20 @@ function selectScanCandidates(options = {}) {
   }
 
   const selected = []
-  const hasScanHistory = lastScannedAtByName instanceof Map && lastScannedAtByName.size > 0
-  const startCursor = hasScanHistory ? 0 : previousCursor % pool.length
-  const maxSelection = Math.min(batchSize, pool.length)
+  const maxSelection = Math.min(batchSize, poolSize)
+  const cohortCaps = calculateCohortBudgetCaps(maxSelection)
 
   diagnostics.reservedPremiumByCategory = Object.fromEntries(
     PREMIUM_RESERVE_CATEGORY_ORDER.map((category) => [category, 0])
   )
 
   const selectedNames = new Set()
+  let hotSelected = 0
+  let warmSelected = 0
+  let coldSelected = 0
+  let fallbackSelected = 0
+  let candidatePoolFallbackSelected = 0
+  let activeTradableFallbackSelected = 0
   const recordSelectedRow = (selectedRow, { reserved = false } = {}) => {
     if (!selectedRow) return
     const marketHashName = normalizeText(selectedRow.marketHashName)
@@ -409,11 +536,32 @@ function selectScanCandidates(options = {}) {
       diagnostics.reservedPremiumByCategory[selectedRow.category] =
         Number(diagnostics.reservedPremiumByCategory[selectedRow.category] || 0) + 1
     }
+    const cohort = normalizeScanCohort(selectedRow.scanCohort)
+    if (cohort && diagnostics.selectedByCohort[cohort] != null) {
+      diagnostics.selectedByCohort[cohort] = Number(diagnostics.selectedByCohort[cohort] || 0) + 1
+    }
+    if (cohort === "fallback") {
+      fallbackSelected += 1
+      const fallbackSource = normalizeText(selectedRow.fallbackSource).toLowerCase()
+      if (fallbackSource === "candidatepool") {
+        candidatePoolFallbackSelected += 1
+        diagnostics.fallbackSelectedBySource.candidatePool = candidatePoolFallbackSelected
+      } else if (fallbackSource === "activetradable") {
+        activeTradableFallbackSelected += 1
+        diagnostics.fallbackSelectedBySource.activeTradable = activeTradableFallbackSelected
+      }
+    } else if (cohort === "hot") {
+      hotSelected += 1
+    } else if (cohort === "warm") {
+      warmSelected += 1
+    } else if (cohort === "cold") {
+      coldSelected += 1
+    }
     lastScannedAtByName.set(selectedRow.marketHashName, nowMs)
   }
 
   const reservedPremiumRows = pickPremiumReserveRows(
-    pool,
+    hotPool,
     Math.min(maxSelection, PREMIUM_RESERVE_CATEGORY_ORDER.length)
   )
   for (const row of reservedPremiumRows) {
@@ -421,21 +569,57 @@ function selectScanCandidates(options = {}) {
     recordSelectedRow(row, { reserved: true })
   }
 
-  let traversed = 0
-  for (let offset = 0; offset < pool.length && selected.length < maxSelection; offset += 1) {
-    traversed += 1
-    const index = (startCursor + offset) % pool.length
-    const selectedRow = pool[index]
-    if (!selectedRow) continue
-    if (selectedNames.has(selectedRow.marketHashName)) continue
-    recordSelectedRow(selectedRow)
+  const drainPool = (rows = [], options = {}) => {
+    const safeRows = Array.isArray(rows) ? rows : []
+    const cohort = normalizeScanCohort(options.cohort)
+    const isFallback = cohort === "fallback"
+    const fallbackSource = normalizeText(options.fallbackSource).toLowerCase()
+    for (const selectedRow of safeRows) {
+      if (selected.length >= maxSelection) break
+      if (!selectedRow) continue
+      if (selectedNames.has(selectedRow.marketHashName)) continue
+      if (selectedRow.scanState === SCAN_STATE.HARD_REJECT) continue
+      if (cohort === "hot" && hotSelected >= cohortCaps.hotCap) break
+      if (cohort === "warm" && warmSelected >= cohortCaps.warmCap) break
+      if (cohort === "cold" && coldSelected >= cohortCaps.coldCap) break
+      if (isFallback) {
+        if (fallbackSelected >= cohortCaps.combinedFallbackCap) break
+        if (
+          fallbackSource === "candidatepool" &&
+          candidatePoolFallbackSelected >= cohortCaps.candidatePoolFallbackCap
+        ) {
+          break
+        }
+        if (
+          fallbackSource === "activetradable" &&
+          activeTradableFallbackSelected >= cohortCaps.activeTradableFallbackCap
+        ) {
+          break
+        }
+      }
+      recordSelectedRow(selectedRow)
+    }
+  }
+
+  drainPool(hotPool, { cohort: "hot" })
+  if (selected.length < maxSelection) {
+    drainPool(warmPool, { cohort: "warm" })
+  }
+  if (selected.length < maxSelection) {
+    drainPool(coldPool, { cohort: "cold" })
+  }
+  if (selected.length < maxSelection) {
+    drainPool(candidatePoolFallback, { cohort: "fallback", fallbackSource: "candidatePool" })
+  }
+  if (selected.length < maxSelection) {
+    drainPool(activeTradableFallback, { cohort: "fallback", fallbackSource: "activeTradable" })
   }
 
   return {
     selected,
-    poolSize: pool.length,
+    poolSize,
     attemptedBatchSize: batchSize,
-    nextCursor: hasScanHistory ? 0 : (startCursor + traversed) % Math.max(pool.length, 1),
+    nextCursor: previousCursor,
     diagnostics
   }
 }
@@ -443,6 +627,8 @@ function selectScanCandidates(options = {}) {
 module.exports = {
   normalizeCatalogRow,
   normalizeRows,
+  resolvePersistedScanCohort,
+  calculateCohortBudgetCaps,
   buildRoundRobinPool,
   selectScanCandidates
 }

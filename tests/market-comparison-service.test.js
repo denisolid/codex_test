@@ -11,6 +11,7 @@ const {
     normalizePricingMode,
     normalizeItems,
     applyQuoteCoverageFallback,
+    buildRouteFreshnessContractFromCompareResult,
     pickBestBuy,
     pickBestSellNet,
     selectByPricingMode,
@@ -155,4 +156,47 @@ test("7d coverage overrides ambiguous liquiditySales when explicit 7d is missing
   assert.equal(enriched.volume7d, 273);
   assert.equal(enriched.marketVolume7d, 273);
   assert.equal(enriched.liquiditySales, 30);
+});
+
+test("compare route freshness contract preserves fresh route timestamps and listing provenance", () => {
+  const nowIso = new Date().toISOString();
+  const contract = buildRouteFreshnessContractFromCompareResult(
+    {
+      perMarket: [
+        {
+          source: "steam",
+          available: true,
+          grossPrice: 10.5,
+          netPriceAfterFees: 9.14,
+          updatedAt: nowIso
+        },
+        {
+          source: "skinport",
+          available: true,
+          grossPrice: 11.2,
+          netPriceAfterFees: 12.74,
+          updatedAt: nowIso,
+          raw: {
+            listing_id: "sp-123"
+          }
+        }
+      ],
+      bestBuy: { source: "steam" },
+      bestSellNet: { source: "skinport" },
+      arbitrage: { buyMarket: "steam", sellMarket: "skinport" }
+    },
+    {
+      buyMarket: "steam",
+      sellMarket: "skinport"
+    }
+  );
+
+  assert.equal(contract.buyRouteAvailable, true);
+  assert.equal(contract.sellRouteAvailable, true);
+  assert.equal(contract.buyRouteUpdatedAt, nowIso);
+  assert.equal(contract.sellRouteUpdatedAt, nowIso);
+  assert.equal(contract.sellListingAvailable, true);
+  assert.equal(contract.requiredRouteState, "ready");
+  assert.equal(contract.listingAvailabilityState, "available");
+  assert.equal(contract.contractSource, "compare_result");
 });

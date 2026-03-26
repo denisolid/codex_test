@@ -7,6 +7,8 @@ const env = require("../config/env")
 const marketComparisonService = require("./marketComparisonService")
 const marketSourceCatalogService = require("./marketSourceCatalogService")
 const marketImageService = require("./marketImageService")
+const candidateProgressionService = require("./scanner/candidateProgressionService")
+const scanSourceCohortService = require("./scanner/scanSourceCohortService")
 const globalFeedPublisher = require("./feed/globalFeedPublisher")
 const planService = require("./planService")
 const premiumCategoryAccessService = require("./premiumCategoryAccessService")
@@ -20,6 +22,7 @@ const {
   SCANNER_TYPES,
   ITEM_CATEGORIES,
   ROUND_ROBIN_CATEGORY_ORDER,
+  SCAN_COHORT_CATEGORIES,
   SCAN_STATE,
   OPPORTUNITY_TIERS,
   DEFAULT_UNIVERSE_LIMIT,
@@ -34,6 +37,8 @@ const {
   OPPORTUNITY_SCAN_INTERVAL_MINUTES,
   ENRICHMENT_INTERVAL_MS,
   OPPORTUNITY_SCAN_INTERVAL_MS,
+  SCAN_COHORT_DEGRADED_FALLBACK_SHARE,
+  SCAN_COHORT_DEGRADED_PRIMARY_SHARE,
   ENRICHMENT_JOB_TIMEOUT_MS,
   OPPORTUNITY_HARD_TIMEOUT_MS,
   OPPORTUNITY_SCAN_ALLOW_LIVE_FETCH,
@@ -54,7 +59,9 @@ const {
   buildFeedInsertRow,
   mapFeedRowToApiRow
 } = require("./scanner/feedPipeline")
-const { evaluatePublishValidation } = require("./scanner/publishValidation")
+const {
+  resolvePublishValidationContextForOpportunity: resolveSharedPublishValidationContextForOpportunity
+} = require("./scanner/publishValidation")
 
 const MAX_API_LIMIT = 200
 const FEED_PAGE_SIZE = 200
@@ -68,11 +75,7 @@ const MANUAL_REFRESH_TRACKER_MAX = 4000
 const LEGACY_SCANNER_TYPE = "global_arbitrage"
 const SCANNER_RUN_RETENTION_HOURS = 24
 const CATALOG_SCAN_CATEGORIES = Object.freeze([
-  ITEM_CATEGORIES.WEAPON_SKIN,
-  ITEM_CATEGORIES.CASE,
-  ITEM_CATEGORIES.STICKER_CAPSULE,
-  ITEM_CATEGORIES.KNIFE,
-  ITEM_CATEGORIES.GLOVE
+  ...SCAN_COHORT_CATEGORIES
 ])
 const FEED_FIRST_PAGE_CACHE_TTL_MS = 20 * 1000
 const FEED_FIRST_PAGE_CACHE_MAX = 24
@@ -968,7 +971,144 @@ function applyFeedPlanRestrictions(rows = [], entitlements = {}) {
   }
 }
 
-async function loadScannerSourceRows() {
+function summarizeSelectedSourceRows(rows = [], batchSize = OPPORTUNITY_BATCH_RUNTIME_TARGET) {
+  const safeRows = Array.isArray(rows) ? rows : []
+  const selectedByCohort = {
+    hot: 0,
+    warm: 0,
+    cold: 0,
+    fallback: 0
+  }
+  const fallbackRowsSelectedBySource = {
+    candidatePool: 0,
+    activeTradable: 0
+  }
+
+  for (const row of safeRows) {
+    const cohort = normalizeText(row?.scanCohort || row?.scan_cohort).toLowerCase()
+    if (selectedByCohort[cohort] != null) {
+      selectedByCohort[cohort] = Number(selectedByCohort[cohort] || 0) + 1
+    }
+    if (cohort !== "fallback") continue
+    const source = normalizeText(row?.fallbackSource || row?.fallback_source).toLowerCase()
+    if (source === "candidatepool") {
+      fallbackRowsSelectedBySource.candidatePool =
+        Number(fallbackRowsSelectedBySource.candidatePool || 0) + 1
+    } else if (source === "activetradable") {
+      fallbackRowsSelectedBySource.activeTradable =
+        Number(fallbackRowsSelectedBySource.activeTradable || 0) + 1
+    }
+  }
+
+  const selectedCount = Math.max(safeRows.length, 0)
+  const fallbackSelectedCount = Number(selectedByCohort.fallback || 0)
+  const hotWarmSelectedCount =
+    Number(selectedByCohort.hot || 0) + Number(selectedByCohort.warm || 0)
+  const fallbackSelectedShare =
+    selectedCount > 0 ? Number((fallbackSelectedCount / selectedCount).toFixed(4)) : 0
+  const selectedFromHotShare =
+    selectedCount > 0 ? Number((Number(selectedByCohort.hot || 0) / selectedCount).toFixed(4)) : 0
+  const selectedFromWarmShare =
+    selectedCount > 0 ? Number((Number(selectedByCohort.warm || 0) / selectedCount).toFixed(4)) : 0
+  const selectedFromColdShare =
+    selectedCount > 0 ? Number((Number(selectedByCohort.cold || 0) / selectedCount).toFixed(4)) : 0
+  const primarySelectedShare =
+    selectedCount > 0 ? Number((hotWarmSelectedCount / selectedCount).toFixed(4)) : 0
+
+  return {
+    scanner_selected_count: selectedCount,
+    selectedByCohort,
+    fallbackRowsSelectedBySource,
+    fallbackSelectedShare,
+    fallback_selected_share: fallbackSelectedShare,
+    selectedFromHotShare,
+    selected_from_hot_share: selectedFromHotShare,
+    selectedFromWarmShare,
+    selected_from_warm_share: selectedFromWarmShare,
+    selectedFromColdShare,
+    selected_from_cold_share: selectedFromColdShare,
+    degradedScannerHealth:
+      Number(fallbackRowsSelectedBySource.activeTradable || 0) > 0 ||
+      fallbackSelectedShare > SCAN_COHORT_DEGRADED_FALLBACK_SHARE ||
+      primarySelectedShare < SCAN_COHORT_DEGRADED_PRIMARY_SHARE,
+    batchSize: Math.max(Math.round(Number(batchSize || 0)), 0)
+  }
+}
+
+function normalizeRecoveryCandidateStatus(value = "") {
+  const status = normalizeText(value).toLowerCase()
+  if (
+    status === "candidate" ||
+    status === "enriching" ||
+    status === "near_eligible" ||
+    status === "eligible" ||
+    status === "rejected"
+  ) {
+    return status
+  }
+  return ""
+}
+
+function normalizeRecoveryCatalogStatus(value = "", fallback = "shadow") {
+  const status = normalizeText(value).toLowerCase()
+  if (status === "scannable" || status === "shadow" || status === "blocked") return status
+  return normalizeText(fallback).toLowerCase() || "shadow"
+}
+
+function isRecoveryBaseRow(row = {}) {
+  const category = normalizeText(row?.category || row?.itemCategory).toLowerCase()
+  if (!CATALOG_SCAN_CATEGORIES.includes(category)) return false
+  if (row?.is_active === false || row?.isActive === false) return false
+  if (row?.tradable === false) return false
+  return normalizeRecoveryCatalogStatus(row?.catalog_status || row?.catalogStatus) === "scannable"
+}
+
+function decorateRecoveryPrimaryRows(rows = []) {
+  return (Array.isArray(rows) ? rows : [])
+    .filter((row) => isRecoveryBaseRow(row))
+    .map((row) => {
+      const scanEligible =
+        row?.scan_eligible == null ? Boolean(row?.scanEligible) : Boolean(row.scan_eligible)
+      const candidateStatus = normalizeRecoveryCandidateStatus(
+        row?.candidate_status ?? row?.candidateStatus
+      )
+
+      let scanCohort = ""
+      if (scanEligible) {
+        scanCohort = "hot"
+      } else if (candidateStatus === "near_eligible") {
+        scanCohort = "warm"
+      } else if (
+        (candidateStatus === "candidate" || candidateStatus === "enriching") &&
+        marketSourceCatalogService.isUniverseBackfillReadyRow(row)
+      ) {
+        scanCohort = "cold"
+      }
+
+      if (!scanCohort) return null
+      return {
+        ...row,
+        scanCohort,
+        sourceOrigin: "recovery_primary",
+        fallbackSource: null
+      }
+    })
+    .filter(Boolean)
+}
+
+function decorateRecoveryFallbackRows(rows = [], fallbackSource = "") {
+  const safeFallbackSource = normalizeText(fallbackSource)
+  return (Array.isArray(rows) ? rows : [])
+    .filter((row) => isRecoveryBaseRow(row))
+    .map((row) => ({
+      ...row,
+      scanCohort: "fallback",
+      sourceOrigin: "recovery_fallback",
+      fallbackSource: safeFallbackSource
+    }))
+}
+
+async function loadScannerSourceRowsRecovery() {
   const minSourcePoolTarget = Math.max(OPPORTUNITY_BATCH_RUNTIME_TARGET * 3, 300)
   const attempts = Array.from(
     new Set([
@@ -1004,13 +1144,14 @@ async function loadScannerSourceRows() {
     const limit = attempts[index]
     diagnostics.attemptedLimits.push(limit)
     try {
-      let rows = await marketSourceCatalogRepo.listScannerSource({
-        limit,
-        categories: CATALOG_SCAN_CATEGORIES
-      })
-      rows = Array.isArray(rows) ? rows : []
+      let rows = decorateRecoveryPrimaryRows(
+        await marketSourceCatalogRepo.listScannerSource({
+          limit,
+          categories: CATALOG_SCAN_CATEGORIES
+        })
+      )
 
-      let categoryCounts = countScannableRowsByScannerCategory(rows)
+      let categoryCounts = countRowsByScannerCategory(rows)
       let scannablePoolSize = sumCategoryCounts(categoryCounts)
       let missingCategories = listMissingScannerCategories(categoryCounts)
       diagnostics.categoryCountsBeforeTopup = categoryCounts
@@ -1023,11 +1164,15 @@ async function loadScannerSourceRows() {
           ? missingCategories
           : CATALOG_SCAN_CATEGORIES
         try {
-          const candidateRows = await marketSourceCatalogRepo.listCandidatePool({
-            limit: Math.max(limit, minSourcePoolTarget * 2),
-            categories: candidateTopupCategories,
-            candidateStatuses: ["near_eligible", "enriching", "candidate"]
-          })
+          const candidateRows = decorateRecoveryFallbackRows(
+            await marketSourceCatalogRepo.listCandidatePool({
+              limit: Math.max(limit, minSourcePoolTarget * 2),
+              categories: candidateTopupCategories,
+              candidateStatuses: ["near_eligible", "enriching", "candidate"],
+              catalogStatuses: ["scannable"]
+            }),
+            "candidatePool"
+          )
           const mergedRows = mergeUniqueScannerSourceRows(rows, candidateRows)
           diagnostics.topup.candidatePoolRowsAdded = Math.max(mergedRows.length - rows.length, 0)
           rows = mergedRows
@@ -1036,7 +1181,7 @@ async function loadScannerSourceRows() {
         }
       }
 
-      categoryCounts = countScannableRowsByScannerCategory(rows)
+      categoryCounts = countRowsByScannerCategory(rows)
       scannablePoolSize = sumCategoryCounts(categoryCounts)
       missingCategories = listMissingScannerCategories(categoryCounts)
       if (missingCategories.length > 0 || scannablePoolSize < minSourcePoolTarget) {
@@ -1045,10 +1190,14 @@ async function loadScannerSourceRows() {
           ? missingCategories
           : CATALOG_SCAN_CATEGORIES
         try {
-          const activeRows = await marketSourceCatalogRepo.listActiveTradable({
-            limit: Math.max(limit, minSourcePoolTarget * 2),
-            categories: activeTopupCategories
-          })
+          const activeRows = decorateRecoveryFallbackRows(
+            await marketSourceCatalogRepo.listActiveTradable({
+              limit: Math.max(limit, minSourcePoolTarget * 2),
+              categories: activeTopupCategories,
+              catalogStatuses: ["scannable"]
+            }),
+            "activeTradable"
+          )
           const mergedRows = mergeUniqueScannerSourceRows(rows, activeRows)
           diagnostics.topup.activeTradableRowsAdded = Math.max(mergedRows.length - rows.length, 0)
           rows = mergedRows
@@ -1057,7 +1206,7 @@ async function loadScannerSourceRows() {
         }
       }
 
-      categoryCounts = countScannableRowsByScannerCategory(rows)
+      categoryCounts = countRowsByScannerCategory(rows)
       scannablePoolSize = sumCategoryCounts(categoryCounts)
       diagnostics.selectedLimit = limit
       diagnostics.categoryCountsAfterTopup = categoryCounts
@@ -1074,6 +1223,55 @@ async function loadScannerSourceRows() {
     }
   }
   throw lastError
+}
+
+async function loadScannerSourceRows() {
+  try {
+    return await scanSourceCohortService.loadScanSource({
+      batchSize: OPPORTUNITY_BATCH_RUNTIME_TARGET,
+      categories: CATALOG_SCAN_CATEGORIES
+    })
+  } catch (_err) {
+    const recovery = await loadScannerSourceRowsRecovery()
+    const diagnostics =
+      recovery?.diagnostics && typeof recovery.diagnostics === "object"
+        ? recovery.diagnostics
+        : {}
+    diagnostics.sourceMode = "recovery_legacy_source"
+    diagnostics.fallbackUsed = true
+    diagnostics.degradedScannerHealth = true
+    diagnostics.fallbackReasons = Array.from(
+      new Set([
+        ...(Array.isArray(diagnostics.fallbackReasons) ? diagnostics.fallbackReasons : []),
+        "cohort_loader_failed"
+      ])
+    )
+    diagnostics.cohortQueryFailures = diagnostics.cohortQueryFailures || {
+      hot: true,
+      warm: true,
+      cold: true,
+      candidatePool: Boolean(diagnostics?.topup?.candidatePoolFailed),
+      activeTradable: Boolean(diagnostics?.topup?.activeTradableFailed)
+    }
+    diagnostics.primaryCohortCounts = diagnostics.primaryCohortCounts || {
+      hot: 0,
+      warm: 0,
+      cold: 0
+    }
+    diagnostics.fallbackRowsLoadedBySource = diagnostics.fallbackRowsLoadedBySource || {
+      candidatePool: Number(diagnostics?.topup?.candidatePoolRowsAdded || 0),
+      activeTradable: Number(diagnostics?.topup?.activeTradableRowsAdded || 0)
+    }
+    diagnostics.fallbackRowsSelectedBySource = diagnostics.fallbackRowsSelectedBySource || {
+      candidatePool: 0,
+      activeTradable: 0
+    }
+    diagnostics.fallbackSelectedShare = Number(diagnostics.fallbackSelectedShare || 0)
+    return {
+      ...recovery,
+      diagnostics
+    }
+  }
 }
 
 function buildCompareInput(candidate = {}) {
@@ -1159,7 +1357,40 @@ function summarizeEvaluations(rows = []) {
     rejectedFound: 0,
     opportunitiesByCategory: emptyCategoryMap(),
     rejectedByCategory: emptyCategoryMap(),
-    rejectedByReason: {}
+    rejectedByReason: {},
+    weaponSkinEvaluator: {
+      outcome: {
+        hard_reject: 0,
+        soft_skip: 0,
+        risky_eligible: 0,
+        strong_eligible: 0
+      },
+      missing_liquidity_penalty: 0,
+      partial_market_coverage_penalty: 0,
+      stale_supporting_input_penalty: 0,
+      thin_executable_depth_penalty: 0,
+      low_value_contextual_penalty: 0,
+      soft_skip_reason: {},
+      hard_reject_reason: {},
+      publish_preview_result: {},
+      freshness_contract: {
+        missing_buy_route_timestamp: 0,
+        missing_sell_route_timestamp: 0,
+        buy_route_stale: 0,
+        sell_route_stale: 0,
+        buy_and_sell_route_stale: 0,
+        buy_route_unavailable: 0,
+        sell_route_unavailable: 0,
+        missing_listing_availability: 0,
+        freshness_contract_incomplete: 0
+      },
+      final_tier: {
+        strong: 0,
+        risky: 0,
+        speculative: 0,
+        rejected: 0
+      }
+    }
   }
   for (const row of rows) {
     const category = mapScannerCategory(row.itemCategory)
@@ -1177,6 +1408,78 @@ function summarizeEvaluations(rows = []) {
       summary.rejectedByCategory[category] += 1
       for (const reason of row.hardRejectReasons || []) {
         incrementCounter(summary.rejectedByReason, reason)
+      }
+    }
+
+    if (category !== ITEM_CATEGORIES.WEAPON_SKIN) {
+      continue
+    }
+
+    const metadata =
+      row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+        ? row.metadata
+        : {}
+    const weaponSkinDiagnostics =
+      metadata?.weapon_skin_evaluator_diagnostics &&
+      typeof metadata.weapon_skin_evaluator_diagnostics === "object" &&
+      !Array.isArray(metadata.weapon_skin_evaluator_diagnostics)
+        ? metadata.weapon_skin_evaluator_diagnostics
+        : {}
+    const freshnessContractDiagnostics =
+      metadata?.freshness_contract_diagnostics &&
+      typeof metadata.freshness_contract_diagnostics === "object" &&
+      !Array.isArray(metadata.freshness_contract_diagnostics)
+        ? metadata.freshness_contract_diagnostics
+        : {}
+    const evaluationDisposition = normalizeText(
+      row?.evaluationDisposition ||
+        metadata?.evaluation_disposition ||
+        weaponSkinDiagnostics?.outcome
+    ).toLowerCase()
+    if (summary.weaponSkinEvaluator.outcome[evaluationDisposition] != null) {
+      summary.weaponSkinEvaluator.outcome[evaluationDisposition] =
+        Number(summary.weaponSkinEvaluator.outcome[evaluationDisposition] || 0) + 1
+    }
+
+    const finalTier = normalizeText(
+      weaponSkinDiagnostics?.final_tier || row?.finalTier || row?.tier || metadata?.final_tier
+    ).toLowerCase()
+    if (summary.weaponSkinEvaluator.final_tier[finalTier] != null) {
+      summary.weaponSkinEvaluator.final_tier[finalTier] =
+        Number(summary.weaponSkinEvaluator.final_tier[finalTier] || 0) + 1
+    }
+
+    if (Boolean(weaponSkinDiagnostics?.missing_liquidity_penalty)) {
+      summary.weaponSkinEvaluator.missing_liquidity_penalty += 1
+    }
+    if (Boolean(weaponSkinDiagnostics?.partial_market_coverage_penalty)) {
+      summary.weaponSkinEvaluator.partial_market_coverage_penalty += 1
+    }
+    if (Boolean(weaponSkinDiagnostics?.stale_supporting_input_penalty)) {
+      summary.weaponSkinEvaluator.stale_supporting_input_penalty += 1
+    }
+    if (Boolean(weaponSkinDiagnostics?.thin_executable_depth_penalty)) {
+      summary.weaponSkinEvaluator.thin_executable_depth_penalty += 1
+    }
+    if (Boolean(weaponSkinDiagnostics?.low_value_contextual_penalty)) {
+      summary.weaponSkinEvaluator.low_value_contextual_penalty += 1
+    }
+
+    incrementCounter(
+      summary.weaponSkinEvaluator.soft_skip_reason,
+      weaponSkinDiagnostics?.soft_skip_reason
+    )
+    incrementCounter(
+      summary.weaponSkinEvaluator.hard_reject_reason,
+      weaponSkinDiagnostics?.hard_reject_reason
+    )
+    incrementCounter(
+      summary.weaponSkinEvaluator.publish_preview_result,
+      weaponSkinDiagnostics?.publish_preview_result || metadata?.publish_preview_result
+    )
+    for (const key of Object.keys(summary.weaponSkinEvaluator.freshness_contract)) {
+      if (Boolean(freshnessContractDiagnostics?.[key])) {
+        summary.weaponSkinEvaluator.freshness_contract[key] += 1
       }
     }
   }
@@ -1362,22 +1665,6 @@ function toJsonObject(value) {
   return value
 }
 
-function toBooleanOrNull(value) {
-  if (value === true) return true
-  if (value === false) return false
-  if (value == null || value === "") return null
-  const parsed = Number(value)
-  if (Number.isFinite(parsed)) {
-    if (parsed === 1) return true
-    if (parsed === 0) return false
-  }
-  const raw = normalizeText(value).toLowerCase()
-  if (!raw) return null
-  if (raw === "true" || raw === "yes" || raw === "on") return true
-  if (raw === "false" || raw === "no" || raw === "off") return false
-  return null
-}
-
 function buildPublishValidationMetadata(validation = {}) {
   const signalAgeMs = toFiniteOrNull(validation?.signalAgeMs)
   const publishValidatedAt = toIsoOrNull(validation?.publishValidatedAt)
@@ -1386,6 +1673,18 @@ function buildPublishValidationMetadata(validation = {}) {
   const listingAvailabilityState = normalizeText(validation?.listingAvailabilityState) || "unknown"
   const staleReason = normalizeText(validation?.staleReason) || null
   const routeSignalObservedAt = toIsoOrNull(validation?.routeSignalObservedAt)
+  const routeFreshnessContract =
+    validation?.routeFreshnessContract &&
+    typeof validation.routeFreshnessContract === "object" &&
+    !Array.isArray(validation.routeFreshnessContract)
+      ? validation.routeFreshnessContract
+      : null
+  const freshnessContractDiagnostics =
+    validation?.freshnessContractDiagnostics &&
+    typeof validation.freshnessContractDiagnostics === "object" &&
+    !Array.isArray(validation.freshnessContractDiagnostics)
+      ? validation.freshnessContractDiagnostics
+      : null
   return {
     signal_age_ms: signalAgeMs,
     signalAgeMs: signalAgeMs,
@@ -1401,6 +1700,9 @@ function buildPublishValidationMetadata(validation = {}) {
     staleReason: staleReason,
     route_signal_observed_at: routeSignalObservedAt,
     routeSignalObservedAt: routeSignalObservedAt,
+    route_freshness_contract: routeFreshnessContract,
+    routeFreshnessContract: routeFreshnessContract,
+    freshness_contract_diagnostics: freshnessContractDiagnostics,
     publish_validation: {
       is_publishable: Boolean(validation?.isPublishable),
       signal_age_ms: signalAgeMs,
@@ -1409,110 +1711,15 @@ function buildPublishValidationMetadata(validation = {}) {
       required_route_state: requiredRouteState,
       listing_availability_state: listingAvailabilityState,
       stale_reason: staleReason,
-      route_signal_observed_at: routeSignalObservedAt
+      route_signal_observed_at: routeSignalObservedAt,
+      route_freshness_contract: routeFreshnessContract,
+      freshness_contract_diagnostics: freshnessContractDiagnostics
     }
   }
 }
 
 function resolvePublishValidationContextForOpportunity(opportunity = {}, nowMs = Date.now(), nowIso = null) {
-  const metadata = toJsonObject(opportunity?.metadata)
-  const buyMarket = normalizeText(opportunity?.buyMarket || opportunity?.buy_market).toLowerCase()
-  const sellMarket = normalizeText(opportunity?.sellMarket || opportunity?.sell_market).toLowerCase()
-
-  let buyRouteAvailable = toBooleanOrNull(
-    opportunity?.buyRouteAvailable ??
-      opportunity?.buy_route_available ??
-      metadata?.buy_route_available ??
-      metadata?.buyRouteAvailable
-  )
-  let sellRouteAvailable = toBooleanOrNull(
-    opportunity?.sellRouteAvailable ??
-      opportunity?.sell_route_available ??
-      metadata?.sell_route_available ??
-      metadata?.sellRouteAvailable
-  )
-
-  if (buyRouteAvailable == null) {
-    buyRouteAvailable = Boolean(
-      buyMarket &&
-        toPositiveOrNull(
-          opportunity?.buyPrice ??
-            opportunity?.buy_price ??
-            metadata?.buy_route_price ??
-            metadata?.buyRoutePrice
-        ) != null
-    )
-  }
-  if (sellRouteAvailable == null) {
-    sellRouteAvailable = Boolean(
-      sellMarket &&
-        toPositiveOrNull(
-          opportunity?.sellNet ??
-            opportunity?.sell_net ??
-            metadata?.sell_route_price ??
-            metadata?.sellRoutePrice
-        ) != null
-    )
-  }
-
-  let buyListingAvailable = toBooleanOrNull(
-    opportunity?.buyListingAvailable ??
-      opportunity?.buy_listing_available ??
-      metadata?.buy_listing_available ??
-      metadata?.buyListingAvailable
-  )
-  let sellListingAvailable = toBooleanOrNull(
-    opportunity?.sellListingAvailable ??
-      opportunity?.sell_listing_available ??
-      metadata?.sell_listing_available ??
-      metadata?.sellListingAvailable
-  )
-
-  if (buyListingAvailable == null && buyMarket === "skinport") {
-    buyListingAvailable = Boolean(
-      normalizeText(
-        metadata?.buy_listing_id ||
-          metadata?.buyListingId ||
-          opportunity?.buyUrl ||
-          opportunity?.buy_url ||
-          metadata?.buy_url ||
-          metadata?.buyUrl
-      )
-    )
-  }
-  if (sellListingAvailable == null && sellMarket === "skinport") {
-    sellListingAvailable = Boolean(
-      normalizeText(
-        metadata?.sell_listing_id ||
-          metadata?.sellListingId ||
-          opportunity?.sellUrl ||
-          opportunity?.sell_url ||
-          metadata?.sell_url ||
-          metadata?.sellUrl
-      )
-    )
-  }
-
-  return evaluatePublishValidation({
-    nowMs,
-    nowIso,
-    buyMarket,
-    sellMarket,
-    buyRouteAvailable,
-    sellRouteAvailable,
-    buyRouteUpdatedAt:
-      opportunity?.buyRouteUpdatedAt ??
-      opportunity?.buy_route_updated_at ??
-      metadata?.buy_route_updated_at ??
-      metadata?.buyRouteUpdatedAt,
-    sellRouteUpdatedAt:
-      opportunity?.sellRouteUpdatedAt ??
-      opportunity?.sell_route_updated_at ??
-      metadata?.sell_route_updated_at ??
-      metadata?.sellRouteUpdatedAt,
-    buyListingAvailable,
-    sellListingAvailable
-  })
+  return resolveSharedPublishValidationContextForOpportunity(opportunity, nowMs, nowIso)
 }
 
 function toSafeInteger(value, fallback = 1, min = 1) {
@@ -1719,7 +1926,18 @@ async function persistFeedRowsLegacy(opportunities = [], scanRunId = null) {
     publishValidation: {
       blocked: 0,
       deactivated: 0,
-      reasons: {}
+      reasons: {},
+      freshnessContract: {
+        missing_buy_route_timestamp: 0,
+        missing_sell_route_timestamp: 0,
+        buy_route_stale: 0,
+        sell_route_stale: 0,
+        buy_and_sell_route_stale: 0,
+        buy_route_unavailable: 0,
+        sell_route_unavailable: 0,
+        missing_listing_availability: 0,
+        freshness_contract_incomplete: 0
+      }
     },
     cleanup: {
       olderMarkedInactive: 0,
@@ -1869,6 +2087,19 @@ async function persistFeedRowsLegacy(opportunities = [], scanRunId = null) {
       toIsoOrNull(publishValidation?.routeSignalObservedAt) ||
       toIsoOrNull(prepared.insertRow?.market_signal_observed_at) ||
       null
+    if (
+      normalizeText(opportunity?.itemCategory || opportunity?.category).toLowerCase() ===
+      ITEM_CATEGORIES.WEAPON_SKIN
+    ) {
+      const freshnessContractDiagnostics = toJsonObject(
+        publishValidation?.freshnessContractDiagnostics
+      )
+      for (const key of Object.keys(counters.publishValidation.freshnessContract)) {
+        if (Boolean(freshnessContractDiagnostics?.[key])) {
+          counters.publishValidation.freshnessContract[key] += 1
+        }
+      }
+    }
     const opportunityWithValidation = {
       ...opportunity,
       metadata: {
@@ -2123,6 +2354,7 @@ function mergeDiagnostics({
     opportunitiesByCategory: evaluations.opportunitiesByCategory || {},
     rejectedByCategory: evaluations.rejectedByCategory || {},
     rejectedByReason: evaluations.rejectedByReason || {},
+    weaponSkinEvaluator: evaluations.weaponSkinEvaluator || {},
     persisted: {
       insertedCount: Number(persisted.insertedCount || 0),
       newCount: Number(persisted.newCount || 0),
@@ -2133,7 +2365,8 @@ function mergeDiagnostics({
       publishValidation: {
         blocked: Number(persisted?.publishValidation?.blocked || 0),
         deactivated: Number(persisted?.publishValidation?.deactivated || 0),
-        reasons: persisted?.publishValidation?.reasons || {}
+        reasons: persisted?.publishValidation?.reasons || {},
+        freshnessContract: persisted?.publishValidation?.freshnessContract || {}
       },
       cleanup: persisted.cleanup || {}
     },
@@ -2195,19 +2428,39 @@ function noOpportunitiesReason(summary = {}, status = {}, rows = []) {
 }
 
 async function runEnrichmentJob({ forceRefresh = false } = {}) {
-  const sourceCatalogDiagnostics = await marketSourceCatalogService.prepareSourceCatalog({
-    forceRefresh: Boolean(forceRefresh),
-    targetUniverseSize: DEFAULT_UNIVERSE_LIMIT
-  }).catch((err) => ({
-    error: normalizeText(err?.message) || "source_catalog_prepare_failed"
-  }))
+  const sourceCatalogDiagnostics = forceRefresh
+    ? await marketSourceCatalogService
+        .prepareSourceCatalog({
+          forceRefresh: true,
+          targetUniverseSize: DEFAULT_UNIVERSE_LIMIT
+        })
+        .catch((err) => ({
+          error: normalizeText(err?.message) || "source_catalog_prepare_failed"
+        }))
+    : await candidateProgressionService
+        .runProgressionBatch({
+          batchSize: ENRICHMENT_BATCH_TARGET
+        })
+        .then((result) => ({
+          mode: "candidate_progression",
+          ...result.diagnostics,
+          processedMarketHashNames: result.processedMarketHashNames || []
+        }))
+        .catch((err) => ({
+          mode: "candidate_progression",
+          error: normalizeText(err?.message) || "candidate_progression_failed",
+          processedMarketHashNames: []
+        }))
 
-  const catalogRows = await marketSourceCatalogRepo.listActiveTradable({
-    limit: ENRICHMENT_BATCH_TARGET,
-    categories: CATALOG_SCAN_CATEGORIES
-  }).catch(() => [])
   const names = Array.from(
-    new Set((catalogRows || []).map((row) => normalizeText(row?.market_hash_name)).filter(Boolean))
+    new Set(
+      (Array.isArray(sourceCatalogDiagnostics?.processedMarketHashNames)
+        ? sourceCatalogDiagnostics.processedMarketHashNames
+        : []
+      )
+        .map((value) => normalizeText(value))
+        .filter(Boolean)
+    )
   ).slice(0, ENRICHMENT_BATCH_TARGET)
 
   let imageUpdated = 0
@@ -2294,6 +2547,19 @@ async function runOpportunityJob({ forceRefresh = false, scanRunId = null } = {}
     selection.diagnostics.diversityStreakCap = FEED_FAMILY_STREAK_CAP
     selection.diagnostics.diversityReordered = beforeKeys.join("|") !== afterKeys.join("|")
   }
+  const sourceSelectionDiagnostics = summarizeSelectedSourceRows(
+    selection.selected || [],
+    OPPORTUNITY_BATCH_RUNTIME_TARGET
+  )
+  if (catalogLoad?.diagnostics && typeof catalogLoad.diagnostics === "object") {
+    catalogLoad.diagnostics.fallbackRowsSelectedBySource =
+      sourceSelectionDiagnostics.fallbackRowsSelectedBySource
+    catalogLoad.diagnostics.fallbackSelectedShare =
+      sourceSelectionDiagnostics.fallbackSelectedShare
+    catalogLoad.diagnostics.degradedScannerHealth = Boolean(
+      catalogLoad.diagnostics.degradedScannerHealth || sourceSelectionDiagnostics.degradedScannerHealth
+    )
+  }
   selection.cursorBefore = rotationState.cursor
   rotationState.cursor = selection.nextCursor
   trimRotationMap()
@@ -2328,9 +2594,12 @@ async function runOpportunityJob({ forceRefresh = false, scanRunId = null } = {}
       evaluations: evaluationSummary,
       persisted,
       sourceCatalog: {
-        mode: "catalog_status_scannable",
+        mode: catalogLoad?.diagnostics?.sourceMode || "persisted_cohorts",
         scannerSourceSize: catalogRows.length,
-        catalogLoad: catalogLoad?.diagnostics || {}
+        catalogLoad: {
+          ...(catalogLoad?.diagnostics || {}),
+          ...sourceSelectionDiagnostics
+        }
       },
       timing: {
         selectionMs,
@@ -2913,6 +3182,7 @@ exports.__testables = {
   buildRoundRobinPool,
   selectScanCandidates,
   evaluateCandidateOpportunity,
+  summarizeEvaluations,
   buildOpportunityFingerprint,
   buildMaterialChangeHash,
   classifyOpportunityFeedEvent,

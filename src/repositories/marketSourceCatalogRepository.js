@@ -45,6 +45,10 @@ const CANDIDATE_STATE_COLUMNS = Object.freeze([
   "priority_boost",
   "is_priority_item"
 ])
+const PRIMARY_SELECT_COLUMNS =
+  "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item,invalid_reason,source_tag,is_active,last_enriched_at"
+const FALLBACK_SELECT_COLUMNS =
+  "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,invalid_reason,source_tag,is_active,last_enriched_at"
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -146,6 +150,16 @@ function normalizeCategories(values = []) {
       (Array.isArray(values) ? values : [])
         .map((value) => normalizeText(value).toLowerCase())
         .filter((value) => CATEGORY_SET.has(value))
+    )
+  )
+}
+
+function normalizeCatalogStatuses(values = []) {
+  return Array.from(
+    new Set(
+      (Array.isArray(values) ? values : [])
+        .map((value) => normalizeCatalogStatus(value, ""))
+        .filter((value) => CATALOG_STATUS_SET.has(value))
     )
   )
 }
@@ -405,18 +419,80 @@ async function selectWithCompatibilityFallback({
   }
 }
 
+function applyCatalogStatusFilter(query, catalogStatuses = []) {
+  const statuses = normalizeCatalogStatuses(catalogStatuses)
+  if (!statuses.length) return query
+  return query.in("catalog_status", statuses)
+}
+
+function toIsoStringOrNull(value) {
+  const text = normalizeText(value)
+  if (!text) return null
+  const ts = new Date(text).getTime()
+  if (!Number.isFinite(ts)) return null
+  return new Date(ts).toISOString()
+}
+
+function dedupeByMarketHashName(rows = []) {
+  const deduped = []
+  const seen = new Set()
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
+    if (!marketHashName || seen.has(marketHashName)) continue
+    seen.add(marketHashName)
+    deduped.push(row)
+  }
+  return deduped
+}
+
+function buildPrimaryProgressionQuery({
+  categories = [],
+  candidateStatuses = []
+} = {}) {
+  let query = supabaseAdmin
+    .from(TABLE)
+    .select(PRIMARY_SELECT_COLUMNS)
+    .eq("is_active", true)
+    .eq("tradable", true)
+    .in("candidate_status", candidateStatuses)
+    .order("last_enriched_at", { ascending: true, nullsFirst: true })
+    .order("priority_boost", { ascending: false, nullsFirst: false })
+    .order("liquidity_rank", { ascending: false, nullsFirst: false })
+
+  if (categories.length) {
+    query = query.in("category", categories)
+  }
+  return query
+}
+
+function buildFallbackProgressionQuery({
+  categories = []
+} = {}) {
+  let query = supabaseAdmin
+    .from(TABLE)
+    .select(FALLBACK_SELECT_COLUMNS)
+    .eq("is_active", true)
+    .eq("tradable", true)
+    .order("last_enriched_at", { ascending: true, nullsFirst: true })
+    .order("liquidity_rank", { ascending: false, nullsFirst: false })
+
+  if (categories.length) {
+    query = query.in("category", categories)
+  }
+  return query
+}
+
 exports.upsertRows = async (rows = []) => upsertInChunks(rows)
 
 exports.listActiveTradable = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 1500)
   const categories = normalizeCategories(options.categories)
+  const catalogStatuses = normalizeCatalogStatuses(options.catalogStatuses)
   return selectWithCompatibilityFallback({
     buildPrimaryQuery: () => {
       let query = supabaseAdmin
         .from(TABLE)
-        .select(
-          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item,invalid_reason,source_tag,is_active,last_enriched_at"
-        )
+        .select(PRIMARY_SELECT_COLUMNS)
         .eq("is_active", true)
         .eq("tradable", true)
         .order("priority_boost", { ascending: false, nullsFirst: false })
@@ -425,14 +501,13 @@ exports.listActiveTradable = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
+      query = applyCatalogStatusFilter(query, catalogStatuses)
       return query
     },
     buildFallbackQuery: () => {
       let query = supabaseAdmin
         .from(TABLE)
-        .select(
-          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,invalid_reason,source_tag,is_active,last_enriched_at"
-        )
+        .select(FALLBACK_SELECT_COLUMNS)
         .eq("is_active", true)
         .eq("tradable", true)
         .order("liquidity_rank", { ascending: false, nullsFirst: false })
@@ -454,9 +529,7 @@ exports.listScannerSource = async (options = {}) => {
     buildPrimaryQuery: () => {
       let query = supabaseAdmin
         .from(TABLE)
-        .select(
-          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item,invalid_reason,source_tag,is_active,last_enriched_at"
-        )
+        .select(PRIMARY_SELECT_COLUMNS)
         .eq("is_active", true)
         .eq("tradable", true)
         .eq("catalog_status", "scannable")
@@ -474,9 +547,7 @@ exports.listScannerSource = async (options = {}) => {
     buildFallbackQuery: () => {
       let query = supabaseAdmin
         .from(TABLE)
-        .select(
-          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,invalid_reason,source_tag,is_active,last_enriched_at"
-        )
+        .select(FALLBACK_SELECT_COLUMNS)
         .eq("is_active", true)
         .eq("tradable", true)
         .order("liquidity_rank", { ascending: false, nullsFirst: false })
@@ -498,9 +569,7 @@ exports.listScanEligible = async (options = {}) => {
     buildPrimaryQuery: () => {
       let query = supabaseAdmin
         .from(TABLE)
-        .select(
-          "market_hash_name,item_name,category,subcategory,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item"
-        )
+        .select(PRIMARY_SELECT_COLUMNS)
         .eq("is_active", true)
         .eq("tradable", true)
         .eq("scan_eligible", true)
@@ -540,7 +609,7 @@ exports.listCoverageSummary = async (options = {}) => {
       let query = supabaseAdmin
         .from(TABLE)
         .select(
-          "category,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,is_active,reference_price,volume_7d,market_coverage_count,snapshot_stale,quote_fetched_at,snapshot_captured_at,invalid_reason,eligibility_reason,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item"
+          "category,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,maturity_state,is_active,reference_price,volume_7d,market_coverage_count,liquidity_rank,snapshot_stale,quote_fetched_at,snapshot_captured_at,invalid_reason,eligibility_reason,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item"
         )
         .eq("is_active", true)
 
@@ -571,14 +640,13 @@ exports.listCandidatePool = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 4000)
   const categories = normalizeCategories(options.categories)
   const candidateStatuses = normalizeCandidateStatuses(options.candidateStatuses)
+  const catalogStatuses = normalizeCatalogStatuses(options.catalogStatuses)
 
   return selectWithCompatibilityFallback({
     buildPrimaryQuery: () => {
       let query = supabaseAdmin
         .from(TABLE)
-        .select(
-          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item,invalid_reason,source_tag,is_active,last_enriched_at"
-        )
+        .select(PRIMARY_SELECT_COLUMNS)
         .eq("is_active", true)
         .eq("tradable", true)
         .in("candidate_status", candidateStatuses)
@@ -588,14 +656,13 @@ exports.listCandidatePool = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
+      query = applyCatalogStatusFilter(query, catalogStatuses)
       return query
     },
     buildFallbackQuery: () => {
       let query = supabaseAdmin
         .from(TABLE)
-        .select(
-          "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,invalid_reason,source_tag,is_active,last_enriched_at"
-        )
+        .select(FALLBACK_SELECT_COLUMNS)
         .eq("is_active", true)
         .eq("tradable", true)
         .eq("scan_eligible", false)
@@ -608,6 +675,203 @@ exports.listCandidatePool = async (options = {}) => {
     },
     limit,
     fallbackMessage: "market_source_catalog_list_candidate_pool_failed"
+  })
+}
+
+exports.listProgressionRows = async (options = {}) => {
+  const limit = normalizeLimit(options.limit, 1200)
+  const categories = normalizeCategories(options.categories)
+  const candidateStatuses = normalizeCandidateStatuses(options.candidateStatuses, [
+    "near_eligible",
+    "eligible",
+    "enriching",
+    "candidate"
+  ])
+  return selectWithCompatibilityFallback({
+    buildPrimaryQuery: () => {
+      return buildPrimaryProgressionQuery({
+        categories,
+        candidateStatuses
+      })
+    },
+    buildFallbackQuery: () => {
+      return buildFallbackProgressionQuery({
+        categories
+      })
+    },
+    limit,
+    fallbackMessage: "market_source_catalog_list_progression_failed"
+  })
+}
+
+exports.listDueProgressionRows = async (options = {}) => {
+  const limit = normalizeLimit(options.limit, 1200)
+  const categories = normalizeCategories(options.categories)
+  const candidateStatuses = normalizeCandidateStatuses(options.candidateStatuses, [
+    "near_eligible",
+    "eligible",
+    "enriching",
+    "candidate"
+  ])
+  const dueBeforeIso = toIsoStringOrNull(options.dueBeforeIso)
+
+  if (!dueBeforeIso) {
+    throw new AppError("market_source_catalog_due_progression_requires_due_before_iso", 500)
+  }
+
+  const nullDueRows = await selectWithPagination(
+    () =>
+      buildPrimaryProgressionQuery({
+        categories,
+        candidateStatuses
+      }).is("last_enriched_at", null),
+    {
+      limit,
+      fallbackMessage: "market_source_catalog_list_due_progression_failed"
+    }
+  )
+
+  const remaining = Math.max(limit - nullDueRows.length, 0)
+  if (remaining <= 0) {
+    return dedupeByMarketHashName(nullDueRows).slice(0, limit)
+  }
+
+  const staleDueRows = await selectWithPagination(
+    () =>
+      buildPrimaryProgressionQuery({
+        categories,
+        candidateStatuses
+      }).lte("last_enriched_at", dueBeforeIso),
+    {
+      limit: remaining,
+      fallbackMessage: "market_source_catalog_list_due_progression_failed"
+    }
+  )
+
+  return dedupeByMarketHashName([...nullDueRows, ...staleDueRows]).slice(0, limit)
+}
+
+exports.listHotScanCohort = async (options = {}) => {
+  const limit = normalizeLimit(options.limit, 600)
+  const categories = normalizeCategories(options.categories)
+  return selectWithCompatibilityFallback({
+    buildPrimaryQuery: () => {
+      let query = supabaseAdmin
+        .from(TABLE)
+        .select(PRIMARY_SELECT_COLUMNS)
+        .eq("is_active", true)
+        .eq("tradable", true)
+        .eq("catalog_status", "scannable")
+        .eq("candidate_status", "eligible")
+        .eq("scan_eligible", true)
+        .order("priority_tier", { ascending: true, nullsFirst: false })
+        .order("priority_boost", { ascending: false, nullsFirst: false })
+        .order("last_market_signal_at", { ascending: false, nullsFirst: false })
+        .order("liquidity_rank", { ascending: false, nullsFirst: false })
+
+      if (categories.length) {
+        query = query.in("category", categories)
+      }
+      return query
+    },
+    buildFallbackQuery: () => {
+      let query = supabaseAdmin
+        .from(TABLE)
+        .select(FALLBACK_SELECT_COLUMNS)
+        .eq("is_active", true)
+        .eq("tradable", true)
+        .eq("scan_eligible", true)
+        .order("liquidity_rank", { ascending: false, nullsFirst: false })
+
+      if (categories.length) {
+        query = query.in("category", categories)
+      }
+      return query
+    },
+    limit,
+    fallbackMessage: "market_source_catalog_list_hot_cohort_failed"
+  })
+}
+
+exports.listWarmScanCohort = async (options = {}) => {
+  const limit = normalizeLimit(options.limit, 400)
+  const categories = normalizeCategories(options.categories)
+  return selectWithCompatibilityFallback({
+    buildPrimaryQuery: () => {
+      let query = supabaseAdmin
+        .from(TABLE)
+        .select(PRIMARY_SELECT_COLUMNS)
+        .eq("is_active", true)
+        .eq("tradable", true)
+        .eq("catalog_status", "scannable")
+        .eq("candidate_status", "near_eligible")
+        .order("priority_tier", { ascending: true, nullsFirst: false })
+        .order("priority_boost", { ascending: false, nullsFirst: false })
+        .order("last_market_signal_at", { ascending: false, nullsFirst: false })
+        .order("liquidity_rank", { ascending: false, nullsFirst: false })
+
+      if (categories.length) {
+        query = query.in("category", categories)
+      }
+      return query
+    },
+    buildFallbackQuery: () => {
+      let query = supabaseAdmin
+        .from(TABLE)
+        .select(FALLBACK_SELECT_COLUMNS)
+        .eq("is_active", true)
+        .eq("tradable", true)
+        .eq("scan_eligible", false)
+        .order("liquidity_rank", { ascending: false, nullsFirst: false })
+
+      if (categories.length) {
+        query = query.in("category", categories)
+      }
+      return query
+    },
+    limit,
+    fallbackMessage: "market_source_catalog_list_warm_cohort_failed"
+  })
+}
+
+exports.listColdScanCohort = async (options = {}) => {
+  const limit = normalizeLimit(options.limit, 300)
+  const categories = normalizeCategories(options.categories)
+  return selectWithCompatibilityFallback({
+    buildPrimaryQuery: () => {
+      let query = supabaseAdmin
+        .from(TABLE)
+        .select(PRIMARY_SELECT_COLUMNS)
+        .eq("is_active", true)
+        .eq("tradable", true)
+        .eq("catalog_status", "scannable")
+        .in("candidate_status", ["enriching", "candidate"])
+        .order("priority_tier", { ascending: true, nullsFirst: false })
+        .order("priority_boost", { ascending: false, nullsFirst: false })
+        .order("last_market_signal_at", { ascending: false, nullsFirst: false })
+        .order("liquidity_rank", { ascending: false, nullsFirst: false })
+
+      if (categories.length) {
+        query = query.in("category", categories)
+      }
+      return query
+    },
+    buildFallbackQuery: () => {
+      let query = supabaseAdmin
+        .from(TABLE)
+        .select(FALLBACK_SELECT_COLUMNS)
+        .eq("is_active", true)
+        .eq("tradable", true)
+        .eq("scan_eligible", false)
+        .order("liquidity_rank", { ascending: false, nullsFirst: false })
+
+      if (categories.length) {
+        query = query.in("category", categories)
+      }
+      return query
+    },
+    limit,
+    fallbackMessage: "market_source_catalog_list_cold_cohort_failed"
   })
 }
 
@@ -626,9 +890,7 @@ exports.listByMarketHashNames = async (marketHashNames = [], options = {}) => {
       buildPrimaryQuery: () => {
         let query = supabaseAdmin
           .from(TABLE)
-          .select(
-            "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item,invalid_reason,source_tag,is_active,last_enriched_at"
-          )
+          .select(PRIMARY_SELECT_COLUMNS)
           .in("market_hash_name", chunk)
 
         if (activeOnly) {
@@ -645,9 +907,7 @@ exports.listByMarketHashNames = async (marketHashNames = [], options = {}) => {
       buildFallbackQuery: () => {
         let query = supabaseAdmin
           .from(TABLE)
-          .select(
-            "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,invalid_reason,source_tag,is_active,last_enriched_at"
-          )
+          .select(FALLBACK_SELECT_COLUMNS)
           .in("market_hash_name", chunk)
 
         if (activeOnly) {
@@ -674,6 +934,7 @@ exports.__testables = {
   normalizeRows,
   normalizeCandidateStatus,
   normalizeCandidateStatuses,
+  normalizeCatalogStatuses,
   toIntegerOrNull,
   toIntegerOrDefault,
   formatSupabaseError

@@ -19,7 +19,9 @@ const {
   classifyOpportunityFeedEvent,
   buildFeedInsertRow
 } = require("../scanner/feedPipeline")
-const { evaluatePublishValidation } = require("../scanner/publishValidation")
+const {
+  resolvePublishValidationContextForOpportunity: resolveSharedPublishValidationContextForOpportunity
+} = require("../scanner/publishValidation")
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -116,104 +118,7 @@ function resolvePublishValidationContextForOpportunity(
   nowMs = Date.now(),
   nowIso = null
 ) {
-  const metadata = toJsonObject(opportunity?.metadata)
-  const buyMarket = normalizeText(opportunity?.buyMarket || opportunity?.buy_market).toLowerCase()
-  const sellMarket = normalizeText(opportunity?.sellMarket || opportunity?.sell_market).toLowerCase()
-
-  let buyRouteAvailable = toBooleanOrNull(
-    opportunity?.buyRouteAvailable ??
-      opportunity?.buy_route_available ??
-      metadata?.buy_route_available ??
-      metadata?.buyRouteAvailable
-  )
-  let sellRouteAvailable = toBooleanOrNull(
-    opportunity?.sellRouteAvailable ??
-      opportunity?.sell_route_available ??
-      metadata?.sell_route_available ??
-      metadata?.sellRouteAvailable
-  )
-
-  if (buyRouteAvailable == null) {
-    buyRouteAvailable = Boolean(
-      buyMarket &&
-        toPositiveOrNull(
-          opportunity?.buyPrice ??
-            opportunity?.buy_price ??
-            metadata?.buy_route_price ??
-            metadata?.buyRoutePrice
-        ) != null
-    )
-  }
-  if (sellRouteAvailable == null) {
-    sellRouteAvailable = Boolean(
-      sellMarket &&
-        toPositiveOrNull(
-          opportunity?.sellNet ??
-            opportunity?.sell_net ??
-            metadata?.sell_route_price ??
-            metadata?.sellRoutePrice
-        ) != null
-    )
-  }
-
-  let buyListingAvailable = toBooleanOrNull(
-    opportunity?.buyListingAvailable ??
-      opportunity?.buy_listing_available ??
-      metadata?.buy_listing_available ??
-      metadata?.buyListingAvailable
-  )
-  let sellListingAvailable = toBooleanOrNull(
-    opportunity?.sellListingAvailable ??
-      opportunity?.sell_listing_available ??
-      metadata?.sell_listing_available ??
-      metadata?.sellListingAvailable
-  )
-
-  if (buyListingAvailable == null && buyMarket === "skinport") {
-    buyListingAvailable = Boolean(
-      normalizeText(
-        metadata?.buy_listing_id ||
-          metadata?.buyListingId ||
-          opportunity?.buyUrl ||
-          opportunity?.buy_url ||
-          metadata?.buy_url ||
-          metadata?.buyUrl
-      )
-    )
-  }
-  if (sellListingAvailable == null && sellMarket === "skinport") {
-    sellListingAvailable = Boolean(
-      normalizeText(
-        metadata?.sell_listing_id ||
-          metadata?.sellListingId ||
-          opportunity?.sellUrl ||
-          opportunity?.sell_url ||
-          metadata?.sell_url ||
-          metadata?.sellUrl
-      )
-    )
-  }
-
-  return evaluatePublishValidation({
-    nowMs,
-    nowIso,
-    buyMarket,
-    sellMarket,
-    buyRouteAvailable,
-    sellRouteAvailable,
-    buyRouteUpdatedAt:
-      opportunity?.buyRouteUpdatedAt ??
-      opportunity?.buy_route_updated_at ??
-      metadata?.buy_route_updated_at ??
-      metadata?.buyRouteUpdatedAt,
-    sellRouteUpdatedAt:
-      opportunity?.sellRouteUpdatedAt ??
-      opportunity?.sell_route_updated_at ??
-      metadata?.sell_route_updated_at ??
-      metadata?.sellRouteUpdatedAt,
-    buyListingAvailable,
-    sellListingAvailable
-  })
+  return resolveSharedPublishValidationContextForOpportunity(opportunity, nowMs, nowIso)
 }
 
 function buildPublishValidationMetadata(validation = {}) {
@@ -226,6 +131,18 @@ function buildPublishValidationMetadata(validation = {}) {
     normalizeText(validation?.listingAvailabilityState) || "unknown"
   const staleReason = normalizeText(validation?.staleReason) || null
   const routeSignalObservedAt = toIsoOrNull(validation?.routeSignalObservedAt)
+  const routeFreshnessContract =
+    validation?.routeFreshnessContract &&
+    typeof validation.routeFreshnessContract === "object" &&
+    !Array.isArray(validation.routeFreshnessContract)
+      ? validation.routeFreshnessContract
+      : null
+  const freshnessContractDiagnostics =
+    validation?.freshnessContractDiagnostics &&
+    typeof validation.freshnessContractDiagnostics === "object" &&
+    !Array.isArray(validation.freshnessContractDiagnostics)
+      ? validation.freshnessContractDiagnostics
+      : null
   return {
     signal_age_ms: signalAgeMs,
     signalAgeMs: signalAgeMs,
@@ -241,6 +158,9 @@ function buildPublishValidationMetadata(validation = {}) {
     staleReason: staleReason,
     route_signal_observed_at: routeSignalObservedAt,
     routeSignalObservedAt: routeSignalObservedAt,
+    route_freshness_contract: routeFreshnessContract,
+    routeFreshnessContract: routeFreshnessContract,
+    freshness_contract_diagnostics: freshnessContractDiagnostics,
     publish_validation: {
       is_publishable: Boolean(validation?.isPublishable),
       signal_age_ms: signalAgeMs,
@@ -249,7 +169,9 @@ function buildPublishValidationMetadata(validation = {}) {
       required_route_state: requiredRouteState,
       listing_availability_state: listingAvailabilityState,
       stale_reason: staleReason,
-      route_signal_observed_at: routeSignalObservedAt
+      route_signal_observed_at: routeSignalObservedAt,
+      route_freshness_contract: routeFreshnessContract,
+      freshness_contract_diagnostics: freshnessContractDiagnostics
     }
   }
 }
