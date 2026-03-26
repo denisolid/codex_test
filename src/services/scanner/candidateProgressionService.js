@@ -9,7 +9,11 @@ const {
   UNIVERSE_DB_LIMIT
 } = require("./config")
 
-const { isUniverseBackfillReadyRow, normalizeCandidateStatus } = marketSourceCatalogService
+const {
+  isUniverseBackfillReadyRow,
+  normalizeCandidateStatus,
+  resolveCompatibleCatalogStatusFields
+} = marketSourceCatalogService
 
 const PROGRESSION_STATE_ORDER = Object.freeze([
   "near_eligible",
@@ -116,7 +120,10 @@ function buildCoverageMetrics(rows = []) {
     if (!SCAN_COHORT_CATEGORIES.includes(category)) continue
     if (row?.is_active === false || row?.isActive === false) continue
     if (row?.tradable === false) continue
-    if (normalizeText(row?.catalog_status || row?.catalogStatus).toLowerCase() !== "scannable") {
+    if (
+      normalizeText(resolveCompatibleCatalogStatusFields(row)?.catalogStatus).toLowerCase() !==
+      "scannable"
+    ) {
       continue
     }
 

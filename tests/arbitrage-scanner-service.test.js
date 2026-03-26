@@ -769,6 +769,84 @@ test("scanner source loader uses persisted hot/warm/cold cohorts on the healthy 
   }
 })
 
+test("scanner source loader still produces rows when catalog_status is missing or null", async () => {
+  const originals = {
+    listHotScanCohort: marketSourceCatalogRepo.listHotScanCohort,
+    listWarmScanCohort: marketSourceCatalogRepo.listWarmScanCohort,
+    listColdScanCohort: marketSourceCatalogRepo.listColdScanCohort,
+    listCandidatePool: marketSourceCatalogRepo.listCandidatePool,
+    listActiveTradable: marketSourceCatalogRepo.listActiveTradable
+  }
+
+  const requiredPrimaryPoolSize =
+    OPPORTUNITY_BATCH_RUNTIME_TARGET * SCAN_COHORT_PRIMARY_POOL_MULTIPLIER
+  const hotCount = OPPORTUNITY_BATCH_RUNTIME_TARGET
+  const warmCount = Math.max(requiredPrimaryPoolSize - hotCount, 2)
+  const caseWarmCount = Math.max(Math.ceil(warmCount / 2), 1)
+  const capsuleWarmCount = Math.max(warmCount - caseWarmCount, 1)
+  const nowIso = new Date().toISOString()
+
+  marketSourceCatalogRepo.listHotScanCohort = async () =>
+    Array.from({ length: hotCount }, (_, index) => ({
+      ...buildCatalogRow(index + 1, "weapon_skin"),
+      market_hash_name: `AK-47 | Slate (Field-Tested) #${index + 1}`,
+      item_name: `AK-47 | Slate (Field-Tested) #${index + 1}`,
+      candidate_status: "eligible",
+      scan_eligible: true,
+      catalog_status: index % 2 === 0 ? null : undefined,
+      reference_price: 8 + index,
+      market_coverage_count: 3,
+      snapshot_captured_at: nowIso,
+      quote_fetched_at: nowIso
+    }))
+  marketSourceCatalogRepo.listWarmScanCohort = async () => [
+    ...Array.from({ length: caseWarmCount }, (_, index) => ({
+      ...buildCatalogRow(index + 1, "case"),
+      market_hash_name: `Revolution Case #${index + 1}`,
+      item_name: `Revolution Case #${index + 1}`,
+      category: "case",
+      candidate_status: "near_eligible",
+      scan_eligible: false,
+      catalog_status: null,
+      reference_price: 2.4,
+      market_coverage_count: 3,
+      snapshot_captured_at: nowIso,
+      quote_fetched_at: nowIso
+    })),
+    ...Array.from({ length: capsuleWarmCount }, (_, index) => ({
+      ...buildCatalogRow(index + 1, "sticker_capsule"),
+      market_hash_name: `Sticker Capsule #${index + 1}`,
+      item_name: `Sticker Capsule #${index + 1}`,
+      category: "sticker_capsule",
+      candidate_status: "near_eligible",
+      scan_eligible: false,
+      reference_price: 2.9,
+      market_coverage_count: 3,
+      snapshot_captured_at: nowIso,
+      quote_fetched_at: nowIso
+    }))
+  ]
+  marketSourceCatalogRepo.listColdScanCohort = async () => []
+  marketSourceCatalogRepo.listCandidatePool = async () => []
+  marketSourceCatalogRepo.listActiveTradable = async () => []
+
+  try {
+    const loaded = await loadScannerSourceRows()
+    assert.equal((loaded.rows || []).length >= OPPORTUNITY_BATCH_RUNTIME_TARGET, true)
+    assert.equal(loaded?.diagnostics?.fallbackUsed, false)
+    assert.equal(
+      (loaded.rows || []).every((row) => String(row?.catalog_status || "").toLowerCase() === "scannable"),
+      true
+    )
+  } finally {
+    marketSourceCatalogRepo.listHotScanCohort = originals.listHotScanCohort
+    marketSourceCatalogRepo.listWarmScanCohort = originals.listWarmScanCohort
+    marketSourceCatalogRepo.listColdScanCohort = originals.listColdScanCohort
+    marketSourceCatalogRepo.listCandidatePool = originals.listCandidatePool
+    marketSourceCatalogRepo.listActiveTradable = originals.listActiveTradable
+  }
+})
+
 test("scanner source loader uses active tradable fallback only after cohort fallback fails", async () => {
   const originals = {
     listHotScanCohort: marketSourceCatalogRepo.listHotScanCohort,
@@ -911,7 +989,7 @@ test("recovery loader preserves fallback provenance through selection", async ()
   }
 })
 
-test("recovery loader requires explicit scannable catalog status for fallback rows", async () => {
+test("recovery loader derives scannable fallback rows when catalog_status is missing", async () => {
   const originals = {
     loadScanSource: scanSourceCohortService.loadScanSource,
     listScannerSource: marketSourceCatalogRepo.listScannerSource,
@@ -932,6 +1010,9 @@ test("recovery loader requires explicit scannable catalog status for fallback ro
       is_active: true,
       candidate_status: "near_eligible",
       scan_eligible: false,
+      reference_price: 2.5,
+      market_coverage_count: 3,
+      snapshot_captured_at: new Date().toISOString(),
       last_market_signal_at: new Date().toISOString()
     }
   ]
@@ -939,10 +1020,18 @@ test("recovery loader requires explicit scannable catalog status for fallback ro
 
   try {
     const loaded = await loadScannerSourceRows()
-    assert.equal((loaded.rows || []).length, 0)
+    assert.equal((loaded.rows || []).length >= 1, true)
     assert.equal(
-      Number(loaded?.diagnostics?.fallbackRowsLoadedBySource?.candidatePool || 0),
-      0
+      (loaded.rows || []).some(
+        (row) =>
+          row?.market_hash_name === "Revolution Case" &&
+          String(row?.catalog_status || "").toLowerCase() === "scannable"
+      ),
+      true
+    )
+    assert.equal(
+      Number(loaded?.diagnostics?.fallbackRowsLoadedBySource?.candidatePool || 0) >= 1,
+      true
     )
   } finally {
     scanSourceCohortService.loadScanSource = originals.loadScanSource

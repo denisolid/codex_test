@@ -7,7 +7,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY || "service-role";
 
 const {
-  __testables: { normalizeRows }
+  __testables: { normalizeRows, applyCatalogStatusCompatibility }
 } = require("../src/repositories/marketSourceCatalogRepository");
 
 test("normalizeRows defaults market_coverage_count to zero when missing", () => {
@@ -78,4 +78,69 @@ test("normalizeRows assigns candidate status defaults and enrichment flags", () 
   assert.equal(candidateRow.missing_reference, true);
   assert.equal(candidateRow.missing_market_coverage, true);
   assert.equal(candidateRow.enrichment_priority, 27.5);
+});
+
+test("catalog-status compatibility preserves explicit catalog_status when present", () => {
+  const [row] = applyCatalogStatusCompatibility([
+    {
+      market_hash_name: "AK-47 | Redline (Field-Tested)",
+      category: "weapon_skin",
+      tradable: true,
+      is_active: true,
+      candidate_status: "eligible",
+      scan_eligible: true,
+      catalog_status: "blocked",
+      catalog_block_reason: "invalid_catalog_reason",
+      catalog_quality_score: 0
+    }
+  ]);
+
+  assert.equal(row.catalog_status, "blocked");
+  assert.equal(row.catalog_block_reason, "invalid_catalog_reason");
+  assert.equal(row.catalog_quality_score, 0);
+});
+
+test("catalog-status compatibility derives scannable state when catalog_status column is absent", () => {
+  const nowIso = new Date().toISOString();
+  const [row] = applyCatalogStatusCompatibility([
+    {
+      market_hash_name: "M4A1-S | Decimator (Field-Tested)",
+      category: "weapon_skin",
+      tradable: true,
+      is_active: true,
+      candidate_status: "eligible",
+      scan_eligible: true,
+      reference_price: 12.5,
+      market_coverage_count: 3,
+      liquidity_rank: 42,
+      snapshot_captured_at: nowIso,
+      quote_fetched_at: nowIso
+    }
+  ]);
+
+  assert.equal(row.catalog_status, "scannable");
+  assert.equal(Boolean(row.last_market_signal_at), true);
+  assert.equal(Number(row.catalog_quality_score || 0) > 0, true);
+});
+
+test("catalog-status compatibility backfills null catalog_status rows conservatively", () => {
+  const oldIso = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
+  const [row] = applyCatalogStatusCompatibility([
+    {
+      market_hash_name: "Fracture Case",
+      category: "case",
+      tradable: true,
+      is_active: true,
+      candidate_status: "near_eligible",
+      scan_eligible: false,
+      catalog_status: null,
+      reference_price: 2.2,
+      market_coverage_count: 2,
+      snapshot_captured_at: oldIso,
+      quote_fetched_at: oldIso
+    }
+  ]);
+
+  assert.equal(row.catalog_status, "shadow");
+  assert.equal(row.catalog_block_reason, "stale_only_signals");
 });
