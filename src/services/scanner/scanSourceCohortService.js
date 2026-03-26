@@ -6,7 +6,11 @@ const {
   SCAN_COHORT_PRIMARY_POOL_MULTIPLIER
 } = require("./config")
 
-const { isUniverseBackfillReadyRow, normalizeCandidateStatus } = marketSourceCatalogService
+const {
+  isUniverseBackfillReadyRow,
+  normalizeCandidateStatus,
+  resolveCompatibleCatalogStatusFields
+} = marketSourceCatalogService
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -25,6 +29,20 @@ function normalizeCatalogStatus(value) {
   return "shadow"
 }
 
+function applyCatalogStatusCompatibility(row = {}) {
+  const compatible = resolveCompatibleCatalogStatusFields(row)
+  return {
+    ...row,
+    catalog_status: compatible?.catalogStatus || row?.catalog_status || row?.catalogStatus || "shadow",
+    catalog_block_reason:
+      compatible?.catalogBlockReason || row?.catalog_block_reason || row?.catalogBlockReason || null,
+    catalog_quality_score:
+      compatible?.catalogQualityScore ?? row?.catalog_quality_score ?? row?.catalogQualityScore ?? 0,
+    last_market_signal_at:
+      compatible?.lastMarketSignalAt || row?.last_market_signal_at || row?.lastMarketSignalAt || null
+  }
+}
+
 function resolveScanEligible(row = {}) {
   return row?.scan_eligible == null ? Boolean(row?.scanEligible) : Boolean(row.scan_eligible)
 }
@@ -34,7 +52,8 @@ function isBaseScanCohortRow(row = {}) {
   if (!category) return false
   if (row?.is_active === false || row?.isActive === false) return false
   if (row?.tradable === false) return false
-  return normalizeCatalogStatus(row?.catalog_status || row?.catalogStatus) === "scannable"
+  const compatibleRow = applyCatalogStatusCompatibility(row)
+  return normalizeCatalogStatus(compatibleRow?.catalog_status || compatibleRow?.catalogStatus) === "scannable"
 }
 
 function isHotCohortRow(row = {}) {
@@ -81,7 +100,7 @@ function listMissingCategories(counts = {}) {
 
 function decorateRows(rows = [], patch = {}) {
   return (Array.isArray(rows) ? rows : []).map((row) => ({
-    ...row,
+    ...applyCatalogStatusCompatibility(row),
     ...patch
   }))
 }

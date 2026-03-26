@@ -2591,6 +2591,51 @@ function classifyCatalogStatus({
   }
 }
 
+function resolveCompatibleCatalogStatusFields(row = {}) {
+  const explicitCatalogStatusRaw = normalizeText(row?.catalog_status ?? row?.catalogStatus).toLowerCase()
+  const explicitCatalogStatus = CATALOG_STATUS_SET.has(explicitCatalogStatusRaw)
+    ? explicitCatalogStatusRaw
+    : ""
+  const explicitCatalogBlockReason =
+    normalizeText(row?.catalog_block_reason || row?.catalogBlockReason) || null
+  const explicitCatalogQualityScore =
+    normalizeNumberForCompare(row?.catalog_quality_score ?? row?.catalogQualityScore, 2)
+  const explicitLastMarketSignalAt = toIsoStringOrNull(
+    row?.last_market_signal_at || row?.lastMarketSignalAt
+  )
+
+  const classified = classifyCatalogStatus({
+    category: row?.category || row?.itemCategory,
+    referencePrice: row?.reference_price ?? row?.referencePrice,
+    marketCoverageCount: row?.market_coverage_count ?? row?.marketCoverageCount,
+    snapshotCapturedAt: row?.snapshot_captured_at || row?.snapshotCapturedAt,
+    quoteFetchedAt: row?.quote_fetched_at || row?.quoteFetchedAt,
+    referenceState: row?.reference_state || row?.referenceState,
+    latestReferencePriceAt:
+      row?.latest_reference_price_at ||
+      row?.latestReferencePriceAt ||
+      row?.reference_price_at ||
+      row?.referencePriceAt,
+    latestMarketSignalAt: explicitLastMarketSignalAt,
+    snapshotStale:
+      row?.snapshot_stale == null ? Boolean(row?.snapshotStale) : Boolean(row.snapshot_stale),
+    liquidityRank: row?.liquidity_rank ?? row?.liquidityRank,
+    priorityBoost: row?.priority_boost ?? row?.priorityBoost,
+    invalidReason: row?.invalid_reason || row?.invalidReason
+  })
+
+  return {
+    catalogStatus: explicitCatalogStatus || normalizeCatalogStatus(classified.catalogStatus),
+    catalogBlockReason:
+      explicitCatalogBlockReason || normalizeText(classified.catalogBlockReason) || null,
+    catalogQualityScore:
+      explicitCatalogQualityScore != null
+        ? explicitCatalogQualityScore
+        : normalizeNumberForCompare(classified.catalogQualityScore, 2) ?? 0,
+    lastMarketSignalAt: explicitLastMarketSignalAt || classified.lastMarketSignalAt || null
+  }
+}
+
 function evaluateEligibility({
   category,
   referencePrice,
@@ -3916,6 +3961,7 @@ module.exports = {
   evaluateEligibility,
   evaluateCandidateState,
   classifyCatalogStatus,
+  resolveCompatibleCatalogStatusFields,
   isUniverseBackfillReadyRow,
   __testables: {
     normalizeCategory,
@@ -3926,6 +3972,7 @@ module.exports = {
     computeCatalogMaturity,
     computeCatalogQualityScore,
     classifyCatalogStatus,
+    resolveCompatibleCatalogStatusFields,
     evaluateCandidateState,
     evaluateEligibility,
     isUniverseBackfillReadyRow,

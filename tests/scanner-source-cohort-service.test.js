@@ -130,3 +130,81 @@ test("scan source cohort loader escalates to active tradable fallback only after
     marketSourceCatalogRepo.listActiveTradable = originals.listActiveTradable
   }
 })
+
+test("scan source cohort loader still returns rows when catalog_status is missing or null", async () => {
+  const originals = {
+    listHotScanCohort: marketSourceCatalogRepo.listHotScanCohort,
+    listWarmScanCohort: marketSourceCatalogRepo.listWarmScanCohort,
+    listColdScanCohort: marketSourceCatalogRepo.listColdScanCohort,
+    listCandidatePool: marketSourceCatalogRepo.listCandidatePool,
+    listActiveTradable: marketSourceCatalogRepo.listActiveTradable
+  }
+
+  const batchSize = 6
+  const requiredPrimaryPoolSize = batchSize * SCAN_COHORT_PRIMARY_POOL_MULTIPLIER
+  const warmCount = Math.max(requiredPrimaryPoolSize - batchSize, 2)
+  const caseWarmCount = Math.max(Math.ceil(warmCount / 2), 1)
+  const capsuleWarmCount = Math.max(warmCount - caseWarmCount, 1)
+  const nowIso = new Date().toISOString()
+  marketSourceCatalogRepo.listHotScanCohort = async () =>
+    Array.from({ length: 6 }, (_, index) => ({
+      market_hash_name: `AK-47 | Slate (Field-Tested) #${index + 1}`,
+      category: "weapon_skin",
+      tradable: true,
+      is_active: true,
+      candidate_status: "eligible",
+      scan_eligible: true,
+      catalog_status: index % 2 === 0 ? null : undefined,
+      reference_price: 8 + index,
+      market_coverage_count: 3,
+      snapshot_captured_at: nowIso,
+      quote_fetched_at: nowIso
+    }))
+  marketSourceCatalogRepo.listWarmScanCohort = async () => [
+    ...Array.from({ length: caseWarmCount }, (_, index) => ({
+      market_hash_name: `Revolution Case #${index + 1}`,
+      item_name: `Revolution Case #${index + 1}`,
+      category: "case",
+      tradable: true,
+      is_active: true,
+      candidate_status: "near_eligible",
+      scan_eligible: false,
+      catalog_status: null,
+      reference_price: 2.6,
+      market_coverage_count: 3,
+      snapshot_captured_at: nowIso,
+      quote_fetched_at: nowIso
+    })),
+    ...Array.from({ length: capsuleWarmCount }, (_, index) => ({
+      market_hash_name: `Stockholm 2021 Contenders Sticker Capsule #${index + 1}`,
+      category: "sticker_capsule",
+      tradable: true,
+      is_active: true,
+      candidate_status: "near_eligible",
+      scan_eligible: false,
+      reference_price: 3.1,
+      market_coverage_count: 3,
+      snapshot_captured_at: nowIso,
+      quote_fetched_at: nowIso
+    }))
+  ]
+  marketSourceCatalogRepo.listColdScanCohort = async () => []
+  marketSourceCatalogRepo.listCandidatePool = async () => []
+  marketSourceCatalogRepo.listActiveTradable = async () => []
+
+  try {
+    const result = await scanSourceCohortService.loadScanSource({ batchSize })
+    assert.equal(result.rows.length >= batchSize, true)
+    assert.equal(result.diagnostics.fallbackUsed, false)
+    assert.equal(
+      result.rows.every((row) => String(row?.catalog_status || "").toLowerCase() === "scannable"),
+      true
+    )
+  } finally {
+    marketSourceCatalogRepo.listHotScanCohort = originals.listHotScanCohort
+    marketSourceCatalogRepo.listWarmScanCohort = originals.listWarmScanCohort
+    marketSourceCatalogRepo.listColdScanCohort = originals.listColdScanCohort
+    marketSourceCatalogRepo.listCandidatePool = originals.listCandidatePool
+    marketSourceCatalogRepo.listActiveTradable = originals.listActiveTradable
+  }
+})

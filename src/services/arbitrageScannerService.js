@@ -1055,12 +1055,31 @@ function normalizeRecoveryCatalogStatus(value = "", fallback = "shadow") {
   return normalizeText(fallback).toLowerCase() || "shadow"
 }
 
+function applyRecoveryCatalogCompatibility(row = {}) {
+  const compatible = marketSourceCatalogService.resolveCompatibleCatalogStatusFields(row)
+  return {
+    ...row,
+    catalog_status:
+      compatible?.catalogStatus || row?.catalog_status || row?.catalogStatus || "shadow",
+    catalog_block_reason:
+      compatible?.catalogBlockReason || row?.catalog_block_reason || row?.catalogBlockReason || null,
+    catalog_quality_score:
+      compatible?.catalogQualityScore ?? row?.catalog_quality_score ?? row?.catalogQualityScore ?? 0,
+    last_market_signal_at:
+      compatible?.lastMarketSignalAt || row?.last_market_signal_at || row?.lastMarketSignalAt || null
+  }
+}
+
 function isRecoveryBaseRow(row = {}) {
   const category = normalizeText(row?.category || row?.itemCategory).toLowerCase()
   if (!CATALOG_SCAN_CATEGORIES.includes(category)) return false
   if (row?.is_active === false || row?.isActive === false) return false
   if (row?.tradable === false) return false
-  return normalizeRecoveryCatalogStatus(row?.catalog_status || row?.catalogStatus) === "scannable"
+  const compatibleRow = applyRecoveryCatalogCompatibility(row)
+  return (
+    normalizeRecoveryCatalogStatus(compatibleRow?.catalog_status || compatibleRow?.catalogStatus) ===
+    "scannable"
+  )
 }
 
 function decorateRecoveryPrimaryRows(rows = []) {
@@ -1087,7 +1106,7 @@ function decorateRecoveryPrimaryRows(rows = []) {
 
       if (!scanCohort) return null
       return {
-        ...row,
+        ...applyRecoveryCatalogCompatibility(row),
         scanCohort,
         sourceOrigin: "recovery_primary",
         fallbackSource: null
@@ -1101,7 +1120,7 @@ function decorateRecoveryFallbackRows(rows = [], fallbackSource = "") {
   return (Array.isArray(rows) ? rows : [])
     .filter((row) => isRecoveryBaseRow(row))
     .map((row) => ({
-      ...row,
+      ...applyRecoveryCatalogCompatibility(row),
       scanCohort: "fallback",
       sourceOrigin: "recovery_fallback",
       fallbackSource: safeFallbackSource
