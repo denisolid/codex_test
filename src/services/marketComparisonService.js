@@ -23,6 +23,9 @@ const planService = require("./planService");
 const arbitrageEngine = require("./arbitrageEngineService");
 const premiumCategoryAccessService = require("./premiumCategoryAccessService");
 const {
+  buildRouteFreshnessContractFromCompareResult
+} = require("./scanner/publishValidation");
+const {
   marketCompareCacheTtlMinutes,
   marketCompareConcurrency,
   marketCompareTimeoutMs,
@@ -829,6 +832,18 @@ exports.compareItems = async (items = [], options = {}) => {
           lockMessage: "Unlock Full Access for complete compare drawer depth and arbitrage diagnostics."
         }
       : arbitrage;
+    const routeFreshnessContract = buildRouteFreshnessContractFromCompareResult(
+      {
+        perMarket: limitedPerMarket,
+        bestBuy: responseBestBuy,
+        bestSellNet: responseBestSellNet,
+        arbitrage: responseArbitrage
+      },
+      {
+        buyMarket: responseArbitrage?.buyMarket || responseBestBuy?.source,
+        sellMarket: responseArbitrage?.sellMarket || responseBestSellNet?.source
+      }
+    );
 
     summary.totalValueSelected += selectedLineValue;
     summary.totalValueSteam += steamUnit * quantity;
@@ -867,6 +882,15 @@ exports.compareItems = async (items = [], options = {}) => {
       selectedPricingSource: selected?.source || null,
       selectedUnitPrice,
       selectedLineValue,
+      routeFreshnessContract,
+      buyRouteAvailable: routeFreshnessContract.buyRouteAvailable,
+      sellRouteAvailable: routeFreshnessContract.sellRouteAvailable,
+      buyRouteUpdatedAt: routeFreshnessContract.buyRouteUpdatedAt,
+      sellRouteUpdatedAt: routeFreshnessContract.sellRouteUpdatedAt,
+      buyListingAvailable: routeFreshnessContract.buyListingAvailable,
+      sellListingAvailable: routeFreshnessContract.sellListingAvailable,
+      requiredRouteState: routeFreshnessContract.requiredRouteState,
+      listingAvailabilityState: routeFreshnessContract.listingAvailabilityState,
       arbitrage: responseArbitrage,
       totalsByMode: {
         steam: roundPrice(steamUnit * quantity),
@@ -937,6 +961,7 @@ exports.__testables = {
   applyQuoteCoverageFallback,
   pickBestBuy,
   pickBestSellNet,
+  buildRouteFreshnessContractFromCompareResult,
   selectByPricingMode,
   getModeUnitPrice,
   isFreshTimestamp,

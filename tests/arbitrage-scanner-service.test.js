@@ -10,6 +10,16 @@ process.env.SUPABASE_SERVICE_ROLE_KEY =
 
 const env = require("../src/config/env")
 const globalFeedPublisher = require("../src/services/feed/globalFeedPublisher")
+const scanSourceCohortService = require("../src/services/scanner/scanSourceCohortService")
+const {
+  evaluatePublishValidation,
+  buildPublishValidationPreview,
+  resolvePublishValidationContextForOpportunity
+} = require("../src/services/scanner/publishValidation")
+const {
+  OPPORTUNITY_BATCH_RUNTIME_TARGET,
+  SCAN_COHORT_PRIMARY_POOL_MULTIPLIER
+} = require("../src/services/scanner/config")
 
 const {
   __testables: {
@@ -18,6 +28,7 @@ const {
     buildRoundRobinPool,
     selectScanCandidates,
     evaluateCandidateOpportunity,
+    summarizeEvaluations,
     buildOpportunityFingerprint,
     buildMaterialChangeHash,
     classifyOpportunityFeedEvent,
@@ -51,6 +62,10 @@ function buildCatalogRow(index, category = "weapon_skin") {
     category,
     tradable: true,
     is_active: true,
+    candidate_status: "eligible",
+    scan_eligible: true,
+    catalog_status: "scannable",
+    scanCohort: "hot",
     reference_price: 12 + index,
     market_coverage_count: 2,
     volume_7d: 120 + index,
@@ -188,7 +203,7 @@ test("round-robin pool keeps category-aware distribution", () => {
   assert.equal(pool[2].category, "sticker_capsule")
 })
 
-test("candidate selection tries to fill configured batch size and rotates cursor", () => {
+test("candidate selection fills configured batch size without using last-scanned rotation", () => {
   const catalogRows = []
   for (let index = 0; index < 30; index += 1) {
     catalogRows.push(buildCatalogRow(index + 1, index % 3 === 0 ? "case" : "weapon_skin"))
@@ -210,33 +225,84 @@ test("candidate selection tries to fill configured batch size and rotates cursor
   assert.equal(first.selected.length, 12)
   assert.equal(first.attemptedBatchSize, 12)
   assert.equal(second.selected.length, 12)
-  assert.notEqual(first.selected[0].marketHashName, second.selected[0].marketHashName)
+  assert.equal(first.selected[0].marketHashName, second.selected[0].marketHashName)
   assert.equal(Number(first.diagnostics.scanable + first.diagnostics.scanableWithPenalties) > 0, true)
 })
 
-test("candidate selection cycles through full scannable pool before repeating under last-scanned ordering", () => {
-  const catalogRows = []
-  const categories = ["weapon_skin", "case", "sticker_capsule", "knife", "glove"]
-  for (let index = 0; index < 25; index += 1) {
-    catalogRows.push(buildCatalogRow(index + 1, categories[index % categories.length]))
+test("candidate selection requires explicit cohort metadata and does not infer normal provenance", () => {
+  const withoutExplicitCohort = buildCatalogRow(1, "weapon_skin")
+  delete withoutExplicitCohort.scanCohort
+
+  const withExplicitCohort = {
+    ...buildCatalogRow(2, "case"),
+    scanCohort: "hot"
   }
 
-  const tracker = new Map()
-  let cursor = 0
-  const seen = new Set()
-  for (let run = 0; run < 3; run += 1) {
-    const selection = selectScanCandidates({
-      catalogRows,
-      batchSize: 10,
-      cursor,
-      lastScannedAtByName: tracker,
-      nowMs: Date.now() + run + 1
-    })
-    selection.selected.forEach((row) => seen.add(row.marketHashName))
-    cursor = selection.nextCursor
-  }
+  const selection = selectScanCandidates({
+    catalogRows: [withoutExplicitCohort, withExplicitCohort],
+    batchSize: 2,
+    cursor: 0,
+    lastScannedAtByName: new Map()
+  })
 
-  assert.equal(seen.size, 25)
+  assert.equal(selection.selected.length, 1)
+  assert.equal(selection.selected[0].marketHashName, withExplicitCohort.market_hash_name)
+  assert.equal(selection.diagnostics.poolByCohort.hot, 1)
+})
+
+test("candidate selection consumes warm before cold and caps cold probe rows", () => {
+  const nowIso = new Date().toISOString()
+  const catalogRows = [
+    {
+      ...buildCatalogRow(1, "weapon_skin"),
+      market_hash_name: "AK-47 | Redline (Field-Tested)",
+      scanCohort: "hot"
+    },
+    {
+      ...buildCatalogRow(2, "case"),
+      market_hash_name: "Revolution Case",
+      candidate_status: "near_eligible",
+      scan_eligible: false,
+      scanCohort: "warm"
+    },
+    {
+      ...buildCatalogRow(3, "sticker_capsule"),
+      market_hash_name: "Stockholm 2021 Contenders Sticker Capsule",
+      candidate_status: "near_eligible",
+      scan_eligible: false,
+      scanCohort: "warm"
+    },
+    {
+      ...buildCatalogRow(4, "weapon_skin"),
+      market_hash_name: "M4A4 | Neo-Noir (Field-Tested)",
+      candidate_status: "candidate",
+      scan_eligible: false,
+      scanCohort: "cold",
+      quote_fetched_at: nowIso,
+      market_coverage_count: 1
+    },
+    {
+      ...buildCatalogRow(5, "case"),
+      market_hash_name: "Kilowatt Case",
+      candidate_status: "candidate",
+      scan_eligible: false,
+      scanCohort: "cold",
+      quote_fetched_at: nowIso,
+      market_coverage_count: 1
+    }
+  ]
+
+  const selection = selectScanCandidates({
+    catalogRows,
+    batchSize: 4,
+    cursor: 0,
+    lastScannedAtByName: new Map()
+  })
+
+  assert.equal(selection.selected.length, 4)
+  assert.equal(selection.diagnostics.selectedByCohort.hot, 1)
+  assert.equal(selection.diagnostics.selectedByCohort.warm, 2)
+  assert.equal(selection.diagnostics.selectedByCohort.cold, 1)
 })
 
 test("candidate selection prioritizes tier_a then tier_b then non-priority", () => {
@@ -280,6 +346,49 @@ test("candidate selection prioritizes tier_a then tier_b then non-priority", () 
   assert.equal(Number(selection.diagnostics.selectedByPriorityTier.tier_a || 0), 1)
   assert.equal(Number(selection.diagnostics.selectedByPriorityTier.tier_b || 0), 1)
   assert.equal(Number(selection.diagnostics.selectedByPriorityTier.non_priority || 0), 1)
+})
+
+test("candidate selection ordering uses approved persisted fields and keeps penalty rows eligible", () => {
+  const oldIso = "2026-03-20T10:00:00.000Z"
+  const freshIso = "2026-03-21T10:00:00.000Z"
+  const selection = selectScanCandidates({
+    catalogRows: [
+      {
+        ...buildCatalogRow(1, "weapon_skin"),
+        market_hash_name: "AK-47 | Redline (Field-Tested)",
+        item_name: "AK-47 | Redline (Field-Tested)",
+        scanCohort: "hot",
+        priority_tier: "tier_a",
+        priority_boost: 300,
+        last_market_signal_at: oldIso,
+        market_coverage_count: 1,
+        volume_7d: 0,
+        snapshot_captured_at: freshIso,
+        quote_fetched_at: freshIso
+      },
+      {
+        ...buildCatalogRow(2, "weapon_skin"),
+        market_hash_name: "M4A4 | The Emperor (Field-Tested)",
+        item_name: "M4A4 | The Emperor (Field-Tested)",
+        scanCohort: "hot",
+        priority_tier: null,
+        priority_boost: 0,
+        last_market_signal_at: freshIso,
+        market_coverage_count: 5,
+        volume_7d: 400,
+        snapshot_captured_at: freshIso,
+        quote_fetched_at: freshIso
+      }
+    ],
+    batchSize: 2,
+    cursor: 0,
+    lastScannedAtByName: new Map()
+  })
+
+  assert.equal(selection.selected.length, 2)
+  assert.equal(selection.selected[0].marketHashName, "AK-47 | Redline (Field-Tested)")
+  assert.equal(selection.selected[0].scanState, SCAN_STATE.SCANABLE_WITH_PENALTIES)
+  assert.equal(selection.selected[1].marketHashName, "M4A4 | The Emperor (Field-Tested)")
 })
 
 test("candidate selection preserves sell-side volume when generic volume is zero", () => {
@@ -440,20 +549,25 @@ test("feed diversity rebalance caps family streaks when alternatives exist", () 
   assert.equal(maxStreak <= 2, true)
 })
 
-test("scanner source loader backfills missing categories from candidate pool", async () => {
+test.skip("legacy scanner source loader backfills missing categories from candidate pool", async () => {
   const originals = {
-    listScannerSource: marketSourceCatalogRepo.listScannerSource,
+    listHotScanCohort: marketSourceCatalogRepo.listHotScanCohort,
+    listWarmScanCohort: marketSourceCatalogRepo.listWarmScanCohort,
+    listColdScanCohort: marketSourceCatalogRepo.listColdScanCohort,
     listCandidatePool: marketSourceCatalogRepo.listCandidatePool,
     listActiveTradable: marketSourceCatalogRepo.listActiveTradable
   }
 
-  marketSourceCatalogRepo.listScannerSource = async () => [
+  marketSourceCatalogRepo.listHotScanCohort = async () => [
     {
       market_hash_name: "AK-47 | Redline (Field-Tested)",
       item_name: "AK-47 | Redline (Field-Tested)",
       category: "weapon_skin",
       tradable: true,
       is_active: true,
+      candidate_status: "eligible",
+      scan_eligible: true,
+      catalog_status: "scannable",
       reference_price: 18,
       market_coverage_count: 3,
       volume_7d: 140,
@@ -461,13 +575,16 @@ test("scanner source loader backfills missing categories from candidate pool", a
       quote_fetched_at: new Date().toISOString()
     }
   ]
-  marketSourceCatalogRepo.listCandidatePool = async () => [
+  marketSourceCatalogRepo.listWarmScanCohort = async () => [
     {
       market_hash_name: "Revolution Case",
       item_name: "Revolution Case",
       category: "case",
       tradable: true,
       is_active: true,
+      candidate_status: "near_eligible",
+      scan_eligible: false,
+      catalog_status: "scannable",
       reference_price: 2.6,
       market_coverage_count: 3,
       volume_7d: 550,
@@ -480,6 +597,9 @@ test("scanner source loader backfills missing categories from candidate pool", a
       category: "sticker_capsule",
       tradable: true,
       is_active: true,
+      candidate_status: "near_eligible",
+      scan_eligible: false,
+      catalog_status: "scannable",
       reference_price: 3.1,
       market_coverage_count: 3,
       volume_7d: 210,
@@ -534,7 +654,7 @@ test("scanner source loader backfills missing categories from candidate pool", a
   }
 })
 
-test("scanner source loader uses active tradable fallback when candidate pool fails", async () => {
+test.skip("legacy scanner source loader uses active tradable fallback when candidate pool fails", async () => {
   const originals = {
     listScannerSource: marketSourceCatalogRepo.listScannerSource,
     listCandidatePool: marketSourceCatalogRepo.listCandidatePool,
@@ -578,7 +698,262 @@ test("scanner source loader uses active tradable fallback when candidate pool fa
   }
 })
 
-test("opportunity evaluation keeps missing-liquidity items scannable with downgraded tier", () => {
+test("scanner source loader uses persisted hot/warm/cold cohorts on the healthy path", async () => {
+  const originals = {
+    listHotScanCohort: marketSourceCatalogRepo.listHotScanCohort,
+    listWarmScanCohort: marketSourceCatalogRepo.listWarmScanCohort,
+    listColdScanCohort: marketSourceCatalogRepo.listColdScanCohort,
+    listCandidatePool: marketSourceCatalogRepo.listCandidatePool,
+    listActiveTradable: marketSourceCatalogRepo.listActiveTradable
+  }
+  const requiredPrimaryPoolSize =
+    OPPORTUNITY_BATCH_RUNTIME_TARGET * SCAN_COHORT_PRIMARY_POOL_MULTIPLIER
+  const hotCount = OPPORTUNITY_BATCH_RUNTIME_TARGET
+  const warmCount = Math.max(requiredPrimaryPoolSize - hotCount, 2)
+  const caseWarmCount = Math.max(Math.ceil(warmCount / 2), 1)
+  const capsuleWarmCount = Math.max(warmCount - caseWarmCount, 1)
+
+  marketSourceCatalogRepo.listHotScanCohort = async () =>
+    Array.from({ length: hotCount }, (_, index) => ({
+      ...buildCatalogRow(index + 1, "weapon_skin"),
+      market_hash_name: `AK-47 | Redline (Field-Tested) #${index + 1}`,
+      item_name: `AK-47 | Redline (Field-Tested) #${index + 1}`,
+      candidate_status: "eligible",
+      scan_eligible: true,
+      catalog_status: "scannable"
+    }))
+  marketSourceCatalogRepo.listWarmScanCohort = async () => [
+    ...Array.from({ length: caseWarmCount }, (_, index) => ({
+      ...buildCatalogRow(index + 1, "case"),
+      market_hash_name: `Revolution Case #${index + 1}`,
+      item_name: `Revolution Case #${index + 1}`,
+      category: "case",
+      candidate_status: "near_eligible",
+      scan_eligible: false,
+      catalog_status: "scannable"
+    })),
+    ...Array.from({ length: capsuleWarmCount }, (_, index) => ({
+      ...buildCatalogRow(index + 1, "sticker_capsule"),
+      market_hash_name: `Sticker Capsule #${index + 1}`,
+      item_name: `Sticker Capsule #${index + 1}`,
+      category: "sticker_capsule",
+      candidate_status: "near_eligible",
+      scan_eligible: false,
+      catalog_status: "scannable"
+    }))
+  ]
+  marketSourceCatalogRepo.listColdScanCohort = async () => []
+  marketSourceCatalogRepo.listCandidatePool = async () => []
+  marketSourceCatalogRepo.listActiveTradable = async () => []
+
+  try {
+    const loaded = await loadScannerSourceRows()
+    const byCategory = {}
+    for (const row of loaded.rows || []) {
+      byCategory[row.category] = Number(byCategory[row.category] || 0) + 1
+    }
+    assert.equal(Number(byCategory.weapon_skin || 0) >= 1, true)
+    assert.equal(Number(byCategory.case || 0) >= 1, true)
+    assert.equal(Number(byCategory.sticker_capsule || 0) >= 1, true)
+    assert.equal(loaded?.diagnostics?.sourceMode, "persisted_cohorts")
+    assert.equal(loaded?.diagnostics?.fallbackUsed, false)
+    assert.deepEqual(loaded?.diagnostics?.missingCategoriesAfterPrimary || [], [])
+    assert.equal(Number(loaded?.diagnostics?.primaryCohortCounts?.hot || 0) >= 1, true)
+    assert.equal(Number(loaded?.diagnostics?.primaryCohortCounts?.warm || 0) >= 2, true)
+  } finally {
+    marketSourceCatalogRepo.listHotScanCohort = originals.listHotScanCohort
+    marketSourceCatalogRepo.listWarmScanCohort = originals.listWarmScanCohort
+    marketSourceCatalogRepo.listColdScanCohort = originals.listColdScanCohort
+    marketSourceCatalogRepo.listCandidatePool = originals.listCandidatePool
+    marketSourceCatalogRepo.listActiveTradable = originals.listActiveTradable
+  }
+})
+
+test("scanner source loader uses active tradable fallback only after cohort fallback fails", async () => {
+  const originals = {
+    listHotScanCohort: marketSourceCatalogRepo.listHotScanCohort,
+    listWarmScanCohort: marketSourceCatalogRepo.listWarmScanCohort,
+    listColdScanCohort: marketSourceCatalogRepo.listColdScanCohort,
+    listCandidatePool: marketSourceCatalogRepo.listCandidatePool,
+    listActiveTradable: marketSourceCatalogRepo.listActiveTradable
+  }
+
+  marketSourceCatalogRepo.listHotScanCohort = async () => [
+    {
+      market_hash_name: "AK-47 | Redline (Field-Tested)",
+      item_name: "AK-47 | Redline (Field-Tested)",
+      category: "weapon_skin",
+      tradable: true,
+      is_active: true,
+      candidate_status: "eligible",
+      scan_eligible: true,
+      catalog_status: "scannable",
+      reference_price: 18,
+      market_coverage_count: 3,
+      volume_7d: 140,
+      snapshot_captured_at: new Date().toISOString(),
+      quote_fetched_at: new Date().toISOString()
+    }
+  ]
+  marketSourceCatalogRepo.listWarmScanCohort = async () => []
+  marketSourceCatalogRepo.listColdScanCohort = async () => []
+  marketSourceCatalogRepo.listCandidatePool = async () => {
+    throw new Error("candidate_pool_failed")
+  }
+  marketSourceCatalogRepo.listActiveTradable = async () => [
+    {
+      market_hash_name: "Recoil Case",
+      item_name: "Recoil Case",
+      category: "case",
+      tradable: true,
+      is_active: true,
+      candidate_status: "candidate",
+      scan_eligible: false,
+      catalog_status: "scannable",
+      reference_price: 2.4,
+      market_coverage_count: 3,
+      volume_7d: 400,
+      snapshot_captured_at: new Date().toISOString(),
+      quote_fetched_at: new Date().toISOString()
+    }
+  ]
+
+  try {
+    const loaded = await loadScannerSourceRows()
+    const hasFallbackCase = (loaded.rows || []).some(
+      (row) =>
+        row?.category === "case" &&
+        String(row?.fallbackSource || "").toLowerCase() === "activetradable"
+    )
+    assert.equal(hasFallbackCase, true)
+    assert.equal(loaded?.diagnostics?.fallbackUsed, true)
+    assert.equal(loaded?.diagnostics?.cohortQueryFailures?.candidatePool, true)
+    assert.equal(
+      Number(loaded?.diagnostics?.fallbackRowsLoadedBySource?.activeTradable || 0) >= 1,
+      true
+    )
+  } finally {
+    marketSourceCatalogRepo.listHotScanCohort = originals.listHotScanCohort
+    marketSourceCatalogRepo.listWarmScanCohort = originals.listWarmScanCohort
+    marketSourceCatalogRepo.listColdScanCohort = originals.listColdScanCohort
+    marketSourceCatalogRepo.listCandidatePool = originals.listCandidatePool
+    marketSourceCatalogRepo.listActiveTradable = originals.listActiveTradable
+  }
+})
+
+test("recovery loader preserves fallback provenance through selection", async () => {
+  const originals = {
+    loadScanSource: scanSourceCohortService.loadScanSource,
+    listScannerSource: marketSourceCatalogRepo.listScannerSource,
+    listCandidatePool: marketSourceCatalogRepo.listCandidatePool,
+    listActiveTradable: marketSourceCatalogRepo.listActiveTradable
+  }
+
+  scanSourceCohortService.loadScanSource = async () => {
+    throw new Error("cohort_loader_failed")
+  }
+  marketSourceCatalogRepo.listScannerSource = async () => [
+    {
+      market_hash_name: "AK-47 | Redline (Field-Tested)",
+      item_name: "AK-47 | Redline (Field-Tested)",
+      category: "weapon_skin",
+      tradable: true,
+      is_active: true,
+      candidate_status: "eligible",
+      scan_eligible: true,
+      catalog_status: "scannable",
+      last_market_signal_at: new Date().toISOString()
+    }
+  ]
+  marketSourceCatalogRepo.listCandidatePool = async () => [
+    {
+      market_hash_name: "Revolution Case",
+      item_name: "Revolution Case",
+      category: "case",
+      tradable: true,
+      is_active: true,
+      candidate_status: "near_eligible",
+      scan_eligible: false,
+      catalog_status: "scannable",
+      last_market_signal_at: new Date().toISOString()
+    }
+  ]
+  marketSourceCatalogRepo.listActiveTradable = async () => []
+
+  try {
+    const loaded = await loadScannerSourceRows()
+    const fallbackRow = (loaded.rows || []).find(
+      (row) => String(row?.fallbackSource || "").toLowerCase() === "candidatepool"
+    )
+    assert.equal(Boolean(fallbackRow), true)
+    assert.equal(fallbackRow.scanCohort, "fallback")
+
+    const selection = selectScanCandidates({
+      catalogRows: loaded.rows || [],
+      batchSize: 4,
+      cursor: 0,
+      lastScannedAtByName: new Map()
+    })
+    const selectedFallback = selection.selected.find(
+      (row) => String(row?.fallbackSource || "").toLowerCase() === "candidatepool"
+    )
+    assert.equal(Boolean(selectedFallback), true)
+    assert.equal(selection.diagnostics.selectedByCohort.fallback >= 1, true)
+    assert.equal(
+      Number(selection.diagnostics.fallbackSelectedBySource.candidatePool || 0) >= 1,
+      true
+    )
+  } finally {
+    scanSourceCohortService.loadScanSource = originals.loadScanSource
+    marketSourceCatalogRepo.listScannerSource = originals.listScannerSource
+    marketSourceCatalogRepo.listCandidatePool = originals.listCandidatePool
+    marketSourceCatalogRepo.listActiveTradable = originals.listActiveTradable
+  }
+})
+
+test("recovery loader requires explicit scannable catalog status for fallback rows", async () => {
+  const originals = {
+    loadScanSource: scanSourceCohortService.loadScanSource,
+    listScannerSource: marketSourceCatalogRepo.listScannerSource,
+    listCandidatePool: marketSourceCatalogRepo.listCandidatePool,
+    listActiveTradable: marketSourceCatalogRepo.listActiveTradable
+  }
+
+  scanSourceCohortService.loadScanSource = async () => {
+    throw new Error("cohort_loader_failed")
+  }
+  marketSourceCatalogRepo.listScannerSource = async () => []
+  marketSourceCatalogRepo.listCandidatePool = async () => [
+    {
+      market_hash_name: "Revolution Case",
+      item_name: "Revolution Case",
+      category: "case",
+      tradable: true,
+      is_active: true,
+      candidate_status: "near_eligible",
+      scan_eligible: false,
+      last_market_signal_at: new Date().toISOString()
+    }
+  ]
+  marketSourceCatalogRepo.listActiveTradable = async () => []
+
+  try {
+    const loaded = await loadScannerSourceRows()
+    assert.equal((loaded.rows || []).length, 0)
+    assert.equal(
+      Number(loaded?.diagnostics?.fallbackRowsLoadedBySource?.candidatePool || 0),
+      0
+    )
+  } finally {
+    scanSourceCohortService.loadScanSource = originals.loadScanSource
+    marketSourceCatalogRepo.listScannerSource = originals.listScannerSource
+    marketSourceCatalogRepo.listCandidatePool = originals.listCandidatePool
+    marketSourceCatalogRepo.listActiveTradable = originals.listActiveTradable
+  }
+})
+
+test("weapon skin missing liquidity but otherwise supported downgrades instead of hard rejecting", () => {
+  const nowIso = new Date().toISOString()
   const evaluation = evaluateCandidateOpportunity(
     {
       marketHashName: "AK-47 | Bloodsport (Field-Tested)",
@@ -587,12 +962,31 @@ test("opportunity evaluation keeps missing-liquidity items scannable with downgr
       itemSubcategory: null,
       referencePrice: 18,
       marketCoverageCount: 2,
-      volume7d: null,
-      scanPenaltyFlags: ["missing_liquidity"],
+      volume7d: 140,
+      quoteFetchedAt: nowIso,
+      snapshotCapturedAt: nowIso,
+      scanPenaltyFlags: [],
       scanFreshness: { state: "fresh" }
     },
     {
       marketHashName: "AK-47 | Bloodsport (Field-Tested)",
+      perMarket: [
+        {
+          source: "steam",
+          available: true,
+          grossPrice: 11.2,
+          netPriceAfterFees: 9.74,
+          updatedAt: nowIso
+        },
+        {
+          source: "skinport",
+          available: true,
+          grossPrice: 12.1,
+          netPriceAfterFees: 13.9,
+          updatedAt: nowIso,
+          raw: { listing_id: "skinport-bloodsport-1" }
+        }
+      ],
       bestBuy: { source: "steam", grossPrice: 11.2, url: "https://steamcommunity.com/item" },
       bestSellNet: { source: "skinport", netPriceAfterFees: 13.9, url: "https://skinport.com/item" },
       arbitrage: {
@@ -613,11 +1007,72 @@ test("opportunity evaluation keeps missing-liquidity items scannable with downgr
   )
 
   assert.equal(evaluation.rejected, false)
+  assert.equal(evaluation.tier, "risky")
+  assert.equal(evaluation.penaltyFlags.includes("low_sales_liquidity"), true)
+  assert.equal(evaluation.riskLabels.includes("derived_liquidity_support"), true)
+  assert.equal(evaluation.evaluationDisposition, "risky_eligible")
+  assert.equal(evaluation.publishPreviewResult, "publishable")
   assert.equal(
-    evaluation.tier === "strong" || evaluation.tier === "risky" || evaluation.tier === "speculative",
+    Boolean(evaluation?.metadata?.weapon_skin_evaluator_diagnostics?.missing_liquidity_penalty),
     true
   )
-  assert.equal(evaluation.penaltyFlags.includes("low_sales_liquidity"), true)
+  assert.equal(evaluation?.metadata?.publish_validation_preview?.is_publishable, true)
+})
+
+test("weapon skin partial coverage but valid route/economics downgrades instead of hard rejecting", () => {
+  const nowIso = new Date().toISOString()
+  const evaluation = evaluateCandidateOpportunity(
+    {
+      marketHashName: "AK-47 | Redline (Field-Tested)",
+      itemName: "AK-47 | Redline (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 10.2,
+      marketCoverageCount: 1,
+      volume7d: 82,
+      quoteFetchedAt: nowIso,
+      snapshotCapturedAt: nowIso
+    },
+    {
+      marketHashName: "AK-47 | Redline (Field-Tested)",
+      perMarket: [
+        {
+          source: "steam",
+          available: true,
+          grossPrice: 8.2,
+          netPriceAfterFees: 9.4,
+          updatedAt: nowIso,
+          volume7d: 82
+        }
+      ],
+      bestBuy: { source: "steam", grossPrice: 8.2, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "steam", netPriceAfterFees: 9.4, url: "https://steamcommunity.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 8.2,
+        sellMarket: "steam",
+        sellNet: 9.4,
+        profit: 1.2,
+        spreadPercent: 14.63,
+        opportunityScore: 69,
+        executionConfidence: "Medium",
+        marketCoverage: 1,
+        referencePrice: 10.2,
+        depthFlags: [],
+        antiFake: { reasons: ["ignored_missing_markets"] }
+      }
+    }
+  )
+
+  assert.equal(evaluation.rejected, false)
+  assert.equal(evaluation.penaltyFlags.includes("limited_market_coverage"), true)
+  assert.equal(evaluation.riskLabels.includes("partial_market_coverage"), true)
+  assert.equal(
+    Boolean(
+      evaluation?.metadata?.weapon_skin_evaluator_diagnostics?.partial_market_coverage_penalty
+    ),
+    true
+  )
+  assert.equal(evaluation.hardRejectReasons.includes("unusable_market_coverage"), false)
 })
 
 test("opportunity diagnostics avoid contradictory tags for high-coverage fresh cases", () => {
@@ -725,9 +1180,9 @@ test("opportunity diagnostics expose dimension debug output", () => {
   assert.equal(Array.isArray(debug?.raw_reasons?.emitted_tags), true)
 })
 
-test("fresh quote inside SLA prevents stale market signal even with older fallback timestamps", () => {
-  const oldIso = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString()
-  const freshQuoteSeconds = Math.floor(Date.now() / 1000)
+test("weapon skin stale supporting inputs downgrade while publish freshness still passes", () => {
+  const oldIso = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString()
+  const nowIso = new Date().toISOString()
   const evaluation = evaluateCandidateOpportunity(
     {
       marketHashName: "AK-47 | Slate (Field-Tested)",
@@ -737,14 +1192,30 @@ test("fresh quote inside SLA prevents stale market signal even with older fallba
       marketCoverageCount: 2,
       volume7d: 96,
       snapshotCapturedAt: oldIso,
-      quoteFetchedAt: freshQuoteSeconds,
+      quoteFetchedAt: oldIso,
+      latest_reference_price_at: oldIso,
       last_market_signal_at: oldIso
     },
     {
       marketHashName: "AK-47 | Slate (Field-Tested)",
       perMarket: [
-        { source: "steam", available: true, grossPrice: 6.8, netPriceAfterFees: 5.9, updatedAt: oldIso, volume7d: 96 },
-        { source: "skinport", available: true, grossPrice: 7.1, netPriceAfterFees: 6.3, updatedAt: oldIso, volume7d: 45 }
+        {
+          source: "steam",
+          available: true,
+          grossPrice: 6.8,
+          netPriceAfterFees: 5.9,
+          updatedAt: nowIso,
+          volume7d: 96
+        },
+        {
+          source: "skinport",
+          available: true,
+          grossPrice: 7.1,
+          netPriceAfterFees: 7.9,
+          updatedAt: nowIso,
+          volume7d: 45,
+          raw: { listing_id: "skinport-slate-1" }
+        }
       ],
       bestBuy: { source: "steam", grossPrice: 6.8, url: "https://steamcommunity.com/item" },
       bestSellNet: { source: "skinport", netPriceAfterFees: 7.9, url: "https://skinport.com/item" },
@@ -765,11 +1236,1093 @@ test("fresh quote inside SLA prevents stale market signal even with older fallba
     }
   )
 
-  assert.equal(evaluation.penaltyFlags.includes("stale_market_signal"), false)
-  assert.equal(evaluation.badges.includes("Stale market signal"), false)
-  assert.equal(Boolean(evaluation?.metadata?.latest_market_signal_at), true)
-  assert.equal(evaluation?.metadata?.stale_result, false)
-  assert.equal(String(evaluation?.metadata?.stale_reason_source || "").includes("latest_quote"), true)
+  assert.equal(evaluation.rejected, false)
+  assert.equal(evaluation.penaltyFlags.includes("stale_market_signal"), true)
+  assert.equal(evaluation.riskLabels.includes("stale_supporting_signal"), true)
+  assert.equal(
+    Boolean(evaluation?.metadata?.weapon_skin_evaluator_diagnostics?.stale_supporting_input_penalty),
+    true
+  )
+  assert.equal(evaluation?.metadata?.publish_validation_preview?.is_publishable, true)
+})
+
+test("weapon skin true stale route hard rejects even if economics look positive", () => {
+  const staleIso = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
+  const evaluation = evaluateCandidateOpportunity(
+    {
+      marketHashName: "AK-47 | Asiimov (Field-Tested)",
+      itemName: "AK-47 | Asiimov (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 24,
+      marketCoverageCount: 2,
+      volume7d: 110,
+      quoteFetchedAt: new Date().toISOString(),
+      snapshotCapturedAt: new Date().toISOString()
+    },
+    {
+      marketHashName: "AK-47 | Asiimov (Field-Tested)",
+      perMarket: [
+        {
+          source: "steam",
+          available: true,
+          grossPrice: 18.4,
+          netPriceAfterFees: 16.01,
+          updatedAt: staleIso,
+          volume7d: 110
+        },
+        {
+          source: "skinport",
+          available: true,
+          grossPrice: 19.1,
+          netPriceAfterFees: 21.8,
+          updatedAt: staleIso,
+          volume7d: 56,
+          raw: { listing_id: "skinport-asiimov-1" }
+        }
+      ],
+      bestBuy: { source: "steam", grossPrice: 18.4, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "skinport", netPriceAfterFees: 21.8, url: "https://skinport.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 18.4,
+        sellMarket: "skinport",
+        sellNet: 21.8,
+        profit: 3.4,
+        spreadPercent: 18.48,
+        opportunityScore: 77,
+        executionConfidence: "Medium",
+        marketCoverage: 2,
+        referencePrice: 24,
+        depthFlags: [],
+        antiFake: { reasons: [] }
+      }
+    }
+  )
+
+  assert.equal(evaluation.rejected, true)
+  assert.equal(evaluation.hardRejectReasons.includes("buy_and_sell_route_stale"), true)
+  assert.equal(evaluation.evaluationDisposition, "hard_reject")
+  assert.equal(
+    evaluation?.metadata?.weapon_skin_evaluator_diagnostics?.hard_reject_reason,
+    "buy_and_sell_route_stale"
+  )
+})
+
+test("weapon skin anti-fake failure remains a hard reject", () => {
+  const nowIso = new Date().toISOString()
+  const evaluation = evaluateCandidateOpportunity(
+    {
+      marketHashName: "M4A4 | Buzz Kill (Field-Tested)",
+      itemName: "M4A4 | Buzz Kill (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 12,
+      marketCoverageCount: 2,
+      volume7d: 70,
+      quoteFetchedAt: nowIso,
+      snapshotCapturedAt: nowIso
+    },
+    {
+      marketHashName: "M4A4 | Buzz Kill (Field-Tested)",
+      perMarket: [
+        {
+          source: "steam",
+          available: true,
+          grossPrice: 8.8,
+          netPriceAfterFees: 7.66,
+          updatedAt: nowIso,
+          volume7d: 70
+        },
+        {
+          source: "skinport",
+          available: true,
+          grossPrice: 9.5,
+          netPriceAfterFees: 11.4,
+          updatedAt: nowIso,
+          volume7d: 36,
+          raw: { listing_id: "skinport-buzzkill-1" }
+        }
+      ],
+      bestBuy: { source: "steam", grossPrice: 8.8, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "skinport", netPriceAfterFees: 11.4, url: "https://skinport.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 8.8,
+        sellMarket: "skinport",
+        sellNet: 11.4,
+        profit: 2.6,
+        spreadPercent: 29.55,
+        opportunityScore: 74,
+        executionConfidence: "Medium",
+        marketCoverage: 2,
+        referencePrice: 12,
+        depthFlags: [],
+        antiFake: { reasons: ["ignored_reference_deviation"] }
+      }
+    }
+  )
+
+  assert.equal(evaluation.rejected, true)
+  assert.equal(evaluation.hardRejectReasons.includes("extreme_reference_deviation"), true)
+  assert.equal(evaluation.evaluationDisposition, "hard_reject")
+})
+
+test("weapon skin risky-but-eligible output stays publishable with explicit diagnostics", () => {
+  const nowIso = new Date().toISOString()
+  const evaluation = evaluateCandidateOpportunity(
+    {
+      marketHashName: "M4A1-S | Decimator (Field-Tested)",
+      itemName: "M4A1-S | Decimator (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 9.6,
+      marketCoverageCount: 2,
+      volume7d: 88,
+      quoteFetchedAt: nowIso,
+      snapshotCapturedAt: nowIso
+    },
+    {
+      marketHashName: "M4A1-S | Decimator (Field-Tested)",
+      perMarket: [
+        {
+          source: "steam",
+          available: true,
+          grossPrice: 7.3,
+          netPriceAfterFees: 6.35,
+          updatedAt: nowIso,
+          volume7d: 88
+        },
+        {
+          source: "skinport",
+          available: true,
+          grossPrice: 8.1,
+          netPriceAfterFees: 9.05,
+          updatedAt: nowIso,
+          volume7d: 41,
+          raw: { listing_id: "skinport-decimator-1" }
+        }
+      ],
+      bestBuy: { source: "steam", grossPrice: 7.3, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "skinport", netPriceAfterFees: 9.05, url: "https://skinport.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 7.3,
+        sellMarket: "skinport",
+        sellNet: 9.05,
+        profit: 1.75,
+        spreadPercent: 23.97,
+        opportunityScore: 72,
+        executionConfidence: "Medium",
+        marketCoverage: 2,
+        referencePrice: 9.6,
+        depthFlags: ["BUY_DEPTH_GAP_SUSPICIOUS"],
+        antiFake: { reasons: ["ignored_missing_depth"] }
+      }
+    }
+  )
+
+  assert.equal(evaluation.rejected, false)
+  assert.equal(evaluation.qualityGrade, "RISKY")
+  assert.equal(evaluation.evaluationDisposition, "risky_eligible")
+  assert.equal(evaluation.finalTier, "risky")
+  assert.equal(evaluation.publishPreviewResult, "publishable")
+  assert.equal(evaluation.riskLabels.includes("missing_executable_depth"), true)
+  assert.equal(evaluation.penaltyFlags.includes("thin_executable_depth"), true)
+  assert.equal(
+    Boolean(evaluation?.metadata?.weapon_skin_evaluator_diagnostics?.thin_executable_depth_penalty),
+    true
+  )
+  assert.equal(evaluation?.metadata?.publish_validation_preview?.is_publishable, true)
+})
+
+test("weapon skin evaluator preview stays aligned with publisher gate for representative cases", () => {
+  const nowIso = new Date().toISOString()
+  const publishable = evaluateCandidateOpportunity(
+    {
+      marketHashName: "AK-47 | Fuel Injector (Field-Tested)",
+      itemName: "AK-47 | Fuel Injector (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 17.4,
+      marketCoverageCount: 2,
+      volume7d: 73,
+      quoteFetchedAt: nowIso,
+      snapshotCapturedAt: nowIso
+    },
+    {
+      marketHashName: "AK-47 | Fuel Injector (Field-Tested)",
+      perMarket: [
+        {
+          source: "steam",
+          available: true,
+          grossPrice: 13.8,
+          netPriceAfterFees: 12,
+          updatedAt: nowIso,
+          volume7d: 73
+        },
+        {
+          source: "skinport",
+          available: true,
+          grossPrice: 14.4,
+          netPriceAfterFees: 16.7,
+          updatedAt: nowIso,
+          volume7d: 38,
+          raw: { listing_id: "skinport-fuel-injector-1" }
+        }
+      ],
+      bestBuy: { source: "steam", grossPrice: 13.8, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "skinport", netPriceAfterFees: 16.7, url: "https://skinport.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 13.8,
+        sellMarket: "skinport",
+        sellNet: 16.7,
+        profit: 2.9,
+        spreadPercent: 21.01,
+        opportunityScore: 82,
+        executionConfidence: "High",
+        marketCoverage: 2,
+        referencePrice: 17.4,
+        depthFlags: [],
+        antiFake: { reasons: [] }
+      }
+    }
+  )
+  const publishableExpected = buildPublishValidationPreview(
+    evaluatePublishValidation({
+      buyMarket: publishable.buyMarket,
+      sellMarket: publishable.sellMarket,
+      buyRouteAvailable: publishable.buyRouteAvailable,
+      sellRouteAvailable: publishable.sellRouteAvailable,
+      buyRouteUpdatedAt: publishable.buyRouteUpdatedAt,
+      sellRouteUpdatedAt: publishable.sellRouteUpdatedAt,
+      buyListingAvailable: publishable.buyListingAvailable,
+      sellListingAvailable: publishable.sellListingAvailable
+    })
+  )
+  assert.equal(
+    publishable.metadata.publish_validation_preview.result_label,
+    publishableExpected.result_label
+  )
+  assert.equal(
+    publishable.metadata.publish_validation_preview.is_publishable,
+    publishableExpected.is_publishable
+  )
+  assert.equal(
+    publishable.metadata.publish_validation_preview.required_route_state,
+    publishableExpected.required_route_state
+  )
+  assert.equal(
+    publishable.metadata.publish_validation_preview.listing_availability_state,
+    publishableExpected.listing_availability_state
+  )
+  assert.equal(
+    publishable.metadata.publish_validation_preview.publish_freshness_state,
+    publishableExpected.publish_freshness_state
+  )
+  assert.equal(
+    publishable.metadata.publish_validation_preview.route_signal_observed_at,
+    publishableExpected.route_signal_observed_at
+  )
+  assert.equal(
+    Math.abs(
+      Number(publishable.metadata.publish_validation_preview.signal_age_ms || 0) -
+        Number(publishableExpected.signal_age_ms || 0)
+    ) <= 5,
+    true
+  )
+
+  const staleIso = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
+  const blocked = evaluateCandidateOpportunity(
+    {
+      marketHashName: "M4A4 | Emperor (Field-Tested)",
+      itemName: "M4A4 | Emperor (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 15.2,
+      marketCoverageCount: 2,
+      volume7d: 64,
+      quoteFetchedAt: nowIso,
+      snapshotCapturedAt: nowIso
+    },
+    {
+      marketHashName: "M4A4 | Emperor (Field-Tested)",
+      perMarket: [
+        {
+          source: "steam",
+          available: true,
+          grossPrice: 11.7,
+          netPriceAfterFees: 10.18,
+          updatedAt: staleIso,
+          volume7d: 64
+        },
+        {
+          source: "skinport",
+          available: true,
+          grossPrice: 12.4,
+          netPriceAfterFees: 14.1,
+          updatedAt: staleIso,
+          volume7d: 31,
+          raw: { listing_id: "skinport-emperor-1" }
+        }
+      ],
+      bestBuy: { source: "steam", grossPrice: 11.7, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "skinport", netPriceAfterFees: 14.1, url: "https://skinport.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 11.7,
+        sellMarket: "skinport",
+        sellNet: 14.1,
+        profit: 2.4,
+        spreadPercent: 20.51,
+        opportunityScore: 75,
+        executionConfidence: "Medium",
+        marketCoverage: 2,
+        referencePrice: 15.2,
+        depthFlags: [],
+        antiFake: { reasons: [] }
+      }
+    }
+  )
+  const blockedExpected = buildPublishValidationPreview(
+    evaluatePublishValidation({
+      buyMarket: blocked.buyMarket,
+      sellMarket: blocked.sellMarket,
+      buyRouteAvailable: blocked.buyRouteAvailable,
+      sellRouteAvailable: blocked.sellRouteAvailable,
+      buyRouteUpdatedAt: blocked.buyRouteUpdatedAt,
+      sellRouteUpdatedAt: blocked.sellRouteUpdatedAt,
+      buyListingAvailable: blocked.buyListingAvailable,
+      sellListingAvailable: blocked.sellListingAvailable
+    })
+  )
+  assert.equal(blocked.metadata.publish_validation_preview.result_label, blockedExpected.result_label)
+  assert.equal(
+    blocked.metadata.publish_validation_preview.is_publishable,
+    blockedExpected.is_publishable
+  )
+  assert.equal(
+    blocked.metadata.publish_validation_preview.required_route_state,
+    blockedExpected.required_route_state
+  )
+  assert.equal(
+    blocked.metadata.publish_validation_preview.listing_availability_state,
+    blockedExpected.listing_availability_state
+  )
+  assert.equal(
+    blocked.metadata.publish_validation_preview.publish_freshness_state,
+    blockedExpected.publish_freshness_state
+  )
+  assert.equal(
+    blocked.metadata.publish_validation_preview.stale_reason,
+    blockedExpected.stale_reason
+  )
+})
+
+test("weapon skin compare freshness contract preserves missing route timestamps explicitly", () => {
+  const nowIso = new Date().toISOString()
+  const missingBuyTimestamp = evaluateCandidateOpportunity(
+    {
+      marketHashName: "USP-S | Cortex (Field-Tested)",
+      itemName: "USP-S | Cortex (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 8.4,
+      marketCoverageCount: 2,
+      volume7d: 58,
+      quoteFetchedAt: nowIso,
+      snapshotCapturedAt: nowIso
+    },
+    {
+      marketHashName: "USP-S | Cortex (Field-Tested)",
+      routeFreshnessContract: {
+        buyMarket: "steam",
+        sellMarket: "skinport",
+        buyRouteAvailable: true,
+        sellRouteAvailable: true,
+        buyRouteUpdatedAt: null,
+        sellRouteUpdatedAt: nowIso,
+        sellListingAvailable: true
+      },
+      bestBuy: { source: "steam", grossPrice: 6.5, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "skinport", netPriceAfterFees: 7.7, url: "https://skinport.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 6.5,
+        sellMarket: "skinport",
+        sellNet: 7.7,
+        profit: 1.2,
+        spreadPercent: 18.46,
+        opportunityScore: 68,
+        executionConfidence: "Medium",
+        marketCoverage: 2,
+        referencePrice: 8.4,
+        depthFlags: [],
+        antiFake: { reasons: [] }
+      }
+    }
+  )
+  const missingSellTimestamp = evaluateCandidateOpportunity(
+    {
+      marketHashName: "USP-S | Cortex (Field-Tested)",
+      itemName: "USP-S | Cortex (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 8.4,
+      marketCoverageCount: 2,
+      volume7d: 58,
+      quoteFetchedAt: nowIso,
+      snapshotCapturedAt: nowIso
+    },
+    {
+      marketHashName: "USP-S | Cortex (Field-Tested)",
+      routeFreshnessContract: {
+        buyMarket: "steam",
+        sellMarket: "skinport",
+        buyRouteAvailable: true,
+        sellRouteAvailable: true,
+        buyRouteUpdatedAt: nowIso,
+        sellRouteUpdatedAt: null,
+        sellListingAvailable: true
+      },
+      bestBuy: { source: "steam", grossPrice: 6.5, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "skinport", netPriceAfterFees: 7.7, url: "https://skinport.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 6.5,
+        sellMarket: "skinport",
+        sellNet: 7.7,
+        profit: 1.2,
+        spreadPercent: 18.46,
+        opportunityScore: 68,
+        executionConfidence: "Medium",
+        marketCoverage: 2,
+        referencePrice: 8.4,
+        depthFlags: [],
+        antiFake: { reasons: [] }
+      }
+    }
+  )
+
+  assert.equal(missingBuyTimestamp.publishPreviewResult, "missing_buy_route_timestamp")
+  assert.equal(
+    missingBuyTimestamp?.metadata?.freshness_contract_diagnostics?.missing_buy_route_timestamp,
+    true
+  )
+  assert.equal(
+    missingBuyTimestamp?.metadata?.freshness_contract_diagnostics?.missing_sell_route_timestamp,
+    false
+  )
+  assert.equal(missingSellTimestamp.publishPreviewResult, "missing_sell_route_timestamp")
+  assert.equal(
+    missingSellTimestamp?.metadata?.freshness_contract_diagnostics?.missing_sell_route_timestamp,
+    true
+  )
+  assert.equal(
+    missingSellTimestamp?.metadata?.freshness_contract_diagnostics?.missing_buy_route_timestamp,
+    false
+  )
+})
+
+test("weapon skin freshness diagnostics distinguish one stale route from both stale routes", () => {
+  const nowIso = new Date().toISOString()
+  const staleIso = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
+  const buyStale = evaluateCandidateOpportunity(
+    {
+      marketHashName: "AK-47 | Slate (Field-Tested)",
+      itemName: "AK-47 | Slate (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 4.9,
+      marketCoverageCount: 2,
+      volume7d: 91,
+      quoteFetchedAt: nowIso,
+      snapshotCapturedAt: nowIso
+    },
+    {
+      marketHashName: "AK-47 | Slate (Field-Tested)",
+      routeFreshnessContract: {
+        buyMarket: "steam",
+        sellMarket: "skinport",
+        buyRouteAvailable: true,
+        sellRouteAvailable: true,
+        buyRouteUpdatedAt: staleIso,
+        sellRouteUpdatedAt: nowIso,
+        sellListingAvailable: true
+      },
+      bestBuy: { source: "steam", grossPrice: 3.6, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "skinport", netPriceAfterFees: 4.2, url: "https://skinport.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 3.6,
+        sellMarket: "skinport",
+        sellNet: 4.2,
+        profit: 0.6,
+        spreadPercent: 16.67,
+        opportunityScore: 62,
+        executionConfidence: "Medium",
+        marketCoverage: 2,
+        referencePrice: 4.9,
+        depthFlags: [],
+        antiFake: { reasons: [] }
+      }
+    }
+  )
+  const bothStale = evaluateCandidateOpportunity(
+    {
+      marketHashName: "AK-47 | Slate (Field-Tested)",
+      itemName: "AK-47 | Slate (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 4.9,
+      marketCoverageCount: 2,
+      volume7d: 91,
+      quoteFetchedAt: nowIso,
+      snapshotCapturedAt: nowIso
+    },
+    {
+      marketHashName: "AK-47 | Slate (Field-Tested)",
+      routeFreshnessContract: {
+        buyMarket: "steam",
+        sellMarket: "skinport",
+        buyRouteAvailable: true,
+        sellRouteAvailable: true,
+        buyRouteUpdatedAt: staleIso,
+        sellRouteUpdatedAt: staleIso,
+        sellListingAvailable: true
+      },
+      bestBuy: { source: "steam", grossPrice: 3.6, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "skinport", netPriceAfterFees: 4.2, url: "https://skinport.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 3.6,
+        sellMarket: "skinport",
+        sellNet: 4.2,
+        profit: 0.6,
+        spreadPercent: 16.67,
+        opportunityScore: 62,
+        executionConfidence: "Medium",
+        marketCoverage: 2,
+        referencePrice: 4.9,
+        depthFlags: [],
+        antiFake: { reasons: [] }
+      }
+    }
+  )
+
+  assert.equal(buyStale.publishPreviewResult, "buy_route_stale")
+  assert.equal(buyStale?.metadata?.freshness_contract_diagnostics?.buy_route_stale, true)
+  assert.equal(
+    buyStale?.metadata?.freshness_contract_diagnostics?.buy_and_sell_route_stale,
+    false
+  )
+  assert.equal(bothStale.publishPreviewResult, "buy_and_sell_route_stale")
+  assert.equal(
+    bothStale?.metadata?.freshness_contract_diagnostics?.buy_and_sell_route_stale,
+    true
+  )
+})
+
+test("weapon skin missing listing availability is surfaced without corrupting publish contract", () => {
+  const nowIso = new Date().toISOString()
+  const evaluation = evaluateCandidateOpportunity(
+    {
+      marketHashName: "M4A1-S | Nightmare (Field-Tested)",
+      itemName: "M4A1-S | Nightmare (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 7.6,
+      marketCoverageCount: 2,
+      volume7d: 63,
+      quoteFetchedAt: nowIso,
+      snapshotCapturedAt: nowIso
+    },
+    {
+      marketHashName: "M4A1-S | Nightmare (Field-Tested)",
+      routeFreshnessContract: {
+        buyMarket: "steam",
+        sellMarket: "skinport",
+        buyRouteAvailable: true,
+        sellRouteAvailable: true,
+        buyRouteUpdatedAt: nowIso,
+        sellRouteUpdatedAt: nowIso,
+        sellListingAvailable: null
+      },
+      bestBuy: { source: "steam", grossPrice: 5.9, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "skinport", netPriceAfterFees: 7.1, url: "https://skinport.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 5.9,
+        sellMarket: "skinport",
+        sellNet: 7.1,
+        profit: 1.2,
+        spreadPercent: 20.34,
+        opportunityScore: 66,
+        executionConfidence: "Medium",
+        marketCoverage: 2,
+        referencePrice: 7.6,
+        depthFlags: [],
+        antiFake: { reasons: [] }
+      }
+    }
+  )
+
+  assert.equal(evaluation.publishPreviewResult, "publishable")
+  assert.equal(
+    evaluation?.metadata?.freshness_contract_diagnostics?.missing_listing_availability,
+    true
+  )
+  assert.equal(
+    evaluation?.metadata?.freshness_contract_diagnostics?.freshness_contract_incomplete,
+    true
+  )
+  assert.equal(
+    evaluation?.metadata?.publish_validation_preview?.listing_availability_state,
+    "unknown_sell_listing"
+  )
+})
+
+test("weapon skin evaluator and publisher consume the same freshness contract fields", () => {
+  const nowIso = new Date().toISOString()
+  const evaluation = evaluateCandidateOpportunity(
+    {
+      marketHashName: "Desert Eagle | Mecha Industries (Field-Tested)",
+      itemName: "Desert Eagle | Mecha Industries (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 9.8,
+      marketCoverageCount: 2,
+      volume7d: 77,
+      quoteFetchedAt: nowIso,
+      snapshotCapturedAt: nowIso
+    },
+    {
+      marketHashName: "Desert Eagle | Mecha Industries (Field-Tested)",
+      routeFreshnessContract: {
+        buyMarket: "steam",
+        sellMarket: "skinport",
+        buyRouteAvailable: true,
+        sellRouteAvailable: true,
+        buyRouteUpdatedAt: nowIso,
+        sellRouteUpdatedAt: nowIso,
+        sellListingAvailable: true,
+        contractSource: "compare_result"
+      },
+      bestBuy: { source: "steam", grossPrice: 7.1, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "skinport", netPriceAfterFees: 8.8, url: "https://skinport.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 7.1,
+        sellMarket: "skinport",
+        sellNet: 8.8,
+        profit: 1.7,
+        spreadPercent: 23.94,
+        opportunityScore: 73,
+        executionConfidence: "Medium",
+        marketCoverage: 2,
+        referencePrice: 9.8,
+        depthFlags: [],
+        antiFake: { reasons: [] }
+      }
+    }
+  )
+
+  const publishValidation = resolvePublishValidationContextForOpportunity(evaluation, Date.now(), nowIso)
+  assert.equal(
+    publishValidation.routeFreshnessContract.buyRouteUpdatedAt,
+    evaluation.routeFreshnessContract.buyRouteUpdatedAt
+  )
+  assert.equal(
+    publishValidation.routeFreshnessContract.sellRouteUpdatedAt,
+    evaluation.routeFreshnessContract.sellRouteUpdatedAt
+  )
+  assert.equal(
+    publishValidation.routeFreshnessContract.buyRouteAvailable,
+    evaluation.routeFreshnessContract.buyRouteAvailable
+  )
+  assert.equal(
+    publishValidation.routeFreshnessContract.sellRouteAvailable,
+    evaluation.routeFreshnessContract.sellRouteAvailable
+  )
+  assert.equal(
+    publishValidation.routeFreshnessContract.sellListingAvailable,
+    evaluation.routeFreshnessContract.sellListingAvailable
+  )
+  assert.equal(
+    publishValidation.routeFreshnessContract.requiredRouteState,
+    evaluation.routeFreshnessContract.requiredRouteState
+  )
+  assert.equal(
+    publishValidation.routeFreshnessContract.listingAvailabilityState,
+    evaluation.routeFreshnessContract.listingAvailabilityState
+  )
+})
+
+test("weapon skin hard reject and soft skip are distinguishable in output and diagnostics", () => {
+  const nowIso = new Date().toISOString()
+  const softSkip = evaluateCandidateOpportunity(
+    {
+      marketHashName: "Galil AR | Stone Cold (Field-Tested)",
+      itemName: "Galil AR | Stone Cold (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 3.2,
+      marketCoverageCount: 1,
+      volume7d: 24,
+      quoteFetchedAt: nowIso,
+      snapshotCapturedAt: nowIso
+    },
+    {
+      marketHashName: "Galil AR | Stone Cold (Field-Tested)",
+      perMarket: [
+        {
+          source: "steam",
+          available: true,
+          grossPrice: 2.4,
+          netPriceAfterFees: 2.85,
+          updatedAt: nowIso,
+          volume7d: 24
+        }
+      ],
+      bestBuy: { source: "steam", grossPrice: 2.4, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "steam", netPriceAfterFees: 2.85, url: "https://steamcommunity.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 2.4,
+        sellMarket: "steam",
+        sellNet: 2.85,
+        profit: 0.45,
+        spreadPercent: 18.75,
+        opportunityScore: 49,
+        executionConfidence: "Medium",
+        marketCoverage: 1,
+        referencePrice: 3.2,
+        depthFlags: [],
+        antiFake: { reasons: ["ignored_missing_markets"] }
+      }
+    }
+  )
+
+  assert.equal(softSkip.rejected, true)
+  assert.equal(softSkip.evaluationDisposition, "soft_skip")
+  assert.equal(softSkip.hardRejectReasons.length, 0)
+  assert.equal(softSkip.softSkipReasons.includes("low_value_low_support_weapon_skin"), true)
+  assert.equal(
+    softSkip?.metadata?.weapon_skin_evaluator_diagnostics?.soft_skip_reason,
+    "low_value_low_support_weapon_skin"
+  )
+
+  const staleIso = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
+  const hardReject = evaluateCandidateOpportunity(
+    {
+      marketHashName: "USP-S | Cortex (Field-Tested)",
+      itemName: "USP-S | Cortex (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 11,
+      marketCoverageCount: 2,
+      volume7d: 58,
+      quoteFetchedAt: nowIso,
+      snapshotCapturedAt: nowIso
+    },
+    {
+      marketHashName: "USP-S | Cortex (Field-Tested)",
+      perMarket: [
+        {
+          source: "steam",
+          available: true,
+          grossPrice: 8.2,
+          netPriceAfterFees: 7.13,
+          updatedAt: staleIso,
+          volume7d: 58
+        },
+        {
+          source: "skinport",
+          available: true,
+          grossPrice: 8.8,
+          netPriceAfterFees: 10.2,
+          updatedAt: staleIso,
+          volume7d: 24,
+          raw: { listing_id: "skinport-cortex-1" }
+        }
+      ],
+      bestBuy: { source: "steam", grossPrice: 8.2, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "skinport", netPriceAfterFees: 10.2, url: "https://skinport.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 8.2,
+        sellMarket: "skinport",
+        sellNet: 10.2,
+        profit: 2,
+        spreadPercent: 24.39,
+        opportunityScore: 74,
+        executionConfidence: "Medium",
+        marketCoverage: 2,
+        referencePrice: 11,
+        depthFlags: [],
+        antiFake: { reasons: [] }
+      }
+    }
+  )
+
+  assert.equal(hardReject.rejected, true)
+  assert.equal(hardReject.evaluationDisposition, "hard_reject")
+  assert.equal(hardReject.hardRejectReasons.includes("buy_and_sell_route_stale"), true)
+  assert.equal(hardReject.softSkipReasons.length, 0)
+})
+
+test("weapon skin risky and strong eligible outputs stay distinguishable in diagnostics", () => {
+  const nowIso = new Date().toISOString()
+  const risky = evaluateCandidateOpportunity(
+    {
+      marketHashName: "FAMAS | Commemoration (Field-Tested)",
+      itemName: "FAMAS | Commemoration (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 8.7,
+      marketCoverageCount: 2,
+      volume7d: 64,
+      quoteFetchedAt: nowIso,
+      snapshotCapturedAt: nowIso
+    },
+    {
+      marketHashName: "FAMAS | Commemoration (Field-Tested)",
+      perMarket: [
+        {
+          source: "steam",
+          available: true,
+          grossPrice: 6.5,
+          netPriceAfterFees: 5.66,
+          updatedAt: nowIso,
+          volume7d: 64
+        },
+        {
+          source: "skinport",
+          available: true,
+          grossPrice: 7.3,
+          netPriceAfterFees: 8.15,
+          updatedAt: nowIso,
+          volume7d: 29,
+          raw: { listing_id: "skinport-commemoration-1" }
+        }
+      ],
+      bestBuy: { source: "steam", grossPrice: 6.5, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "skinport", netPriceAfterFees: 8.15, url: "https://skinport.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 6.5,
+        sellMarket: "skinport",
+        sellNet: 8.15,
+        profit: 1.65,
+        spreadPercent: 25.38,
+        opportunityScore: 72,
+        executionConfidence: "Medium",
+        marketCoverage: 2,
+        referencePrice: 8.7,
+        depthFlags: ["SELL_DEPTH_GAP_SUSPICIOUS"],
+        antiFake: { reasons: ["ignored_missing_depth"] }
+      }
+    }
+  )
+  const strong = evaluateCandidateOpportunity(
+    {
+      marketHashName: "AK-47 | Neon Rider (Field-Tested)",
+      itemName: "AK-47 | Neon Rider (Field-Tested)",
+      category: "weapon_skin",
+      referencePrice: 24.5,
+      marketCoverageCount: 2,
+      volume7d: 144,
+      quoteFetchedAt: nowIso,
+      snapshotCapturedAt: nowIso
+    },
+    {
+      marketHashName: "AK-47 | Neon Rider (Field-Tested)",
+      perMarket: [
+        {
+          source: "steam",
+          available: true,
+          grossPrice: 17.9,
+          netPriceAfterFees: 15.57,
+          updatedAt: nowIso,
+          volume7d: 144
+        },
+        {
+          source: "skinport",
+          available: true,
+          grossPrice: 18.6,
+          netPriceAfterFees: 21.4,
+          updatedAt: nowIso,
+          volume7d: 88,
+          raw: { listing_id: "skinport-neon-rider-1" }
+        }
+      ],
+      bestBuy: { source: "steam", grossPrice: 17.9, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "skinport", netPriceAfterFees: 21.4, url: "https://skinport.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 17.9,
+        sellMarket: "skinport",
+        sellNet: 21.4,
+        profit: 3.5,
+        spreadPercent: 19.55,
+        opportunityScore: 84,
+        executionConfidence: "High",
+        marketCoverage: 2,
+        referencePrice: 24.5,
+        depthFlags: [],
+        antiFake: { reasons: [] }
+      }
+    }
+  )
+
+  assert.equal(risky.evaluationDisposition, "risky_eligible")
+  assert.equal(risky.finalTier, "risky")
+  assert.equal(risky.qualityGrade, "RISKY")
+  assert.equal(strong.evaluationDisposition, "strong_eligible")
+  assert.equal(strong.finalTier, "strong")
+  assert.equal(strong.qualityGrade, "STRONG")
+  assert.equal(strong.riskLabels.length, 0)
+})
+
+test("weapon skin evaluation summary exposes outcome and penalty telemetry", () => {
+  const summary = summarizeEvaluations([
+    {
+      itemCategory: "weapon_skin",
+      tier: "strong",
+      finalTier: "strong",
+      evaluationDisposition: "strong_eligible",
+      hardRejectReasons: [],
+      softSkipReasons: [],
+      metadata: {
+        weapon_skin_evaluator_diagnostics: {
+          missing_liquidity_penalty: false,
+          partial_market_coverage_penalty: false,
+          stale_supporting_input_penalty: false,
+          thin_executable_depth_penalty: false,
+          low_value_contextual_penalty: false,
+          soft_skip_reason: null,
+          hard_reject_reason: null,
+          publish_preview_result: "publishable",
+          final_tier: "strong"
+        },
+        freshness_contract_diagnostics: {
+          missing_buy_route_timestamp: false,
+          missing_sell_route_timestamp: false,
+          buy_route_stale: false,
+          sell_route_stale: false,
+          buy_and_sell_route_stale: false,
+          buy_route_unavailable: false,
+          sell_route_unavailable: false,
+          missing_listing_availability: false,
+          freshness_contract_incomplete: false
+        }
+      }
+    },
+    {
+      itemCategory: "weapon_skin",
+      tier: "risky",
+      finalTier: "risky",
+      evaluationDisposition: "risky_eligible",
+      hardRejectReasons: [],
+      softSkipReasons: [],
+      metadata: {
+        weapon_skin_evaluator_diagnostics: {
+          missing_liquidity_penalty: true,
+          partial_market_coverage_penalty: false,
+          stale_supporting_input_penalty: false,
+          thin_executable_depth_penalty: true,
+          low_value_contextual_penalty: false,
+          soft_skip_reason: null,
+          hard_reject_reason: null,
+          publish_preview_result: "publishable",
+          final_tier: "risky"
+        },
+        freshness_contract_diagnostics: {
+          missing_buy_route_timestamp: true,
+          missing_sell_route_timestamp: false,
+          buy_route_stale: false,
+          sell_route_stale: false,
+          buy_and_sell_route_stale: false,
+          buy_route_unavailable: false,
+          sell_route_unavailable: false,
+          missing_listing_availability: true,
+          freshness_contract_incomplete: true
+        }
+      }
+    },
+    {
+      itemCategory: "weapon_skin",
+      tier: "rejected",
+      finalTier: "rejected",
+      evaluationDisposition: "soft_skip",
+      hardRejectReasons: [],
+      softSkipReasons: ["low_value_low_support_weapon_skin"],
+      metadata: {
+        weapon_skin_evaluator_diagnostics: {
+          missing_liquidity_penalty: false,
+          partial_market_coverage_penalty: true,
+          stale_supporting_input_penalty: false,
+          thin_executable_depth_penalty: false,
+          low_value_contextual_penalty: true,
+          soft_skip_reason: "low_value_low_support_weapon_skin",
+          hard_reject_reason: null,
+          publish_preview_result: "publishable",
+          final_tier: "rejected"
+        },
+        freshness_contract_diagnostics: {
+          missing_buy_route_timestamp: false,
+          missing_sell_route_timestamp: false,
+          buy_route_stale: false,
+          sell_route_stale: false,
+          buy_and_sell_route_stale: false,
+          buy_route_unavailable: false,
+          sell_route_unavailable: true,
+          missing_listing_availability: false,
+          freshness_contract_incomplete: false
+        }
+      }
+    },
+    {
+      itemCategory: "weapon_skin",
+      tier: "rejected",
+      finalTier: "rejected",
+      evaluationDisposition: "hard_reject",
+      hardRejectReasons: ["buy_and_sell_route_stale"],
+      softSkipReasons: [],
+      metadata: {
+        weapon_skin_evaluator_diagnostics: {
+          missing_liquidity_penalty: false,
+          partial_market_coverage_penalty: false,
+          stale_supporting_input_penalty: false,
+          thin_executable_depth_penalty: false,
+          low_value_contextual_penalty: false,
+          soft_skip_reason: null,
+          hard_reject_reason: "buy_and_sell_route_stale",
+          publish_preview_result: "buy_and_sell_route_stale",
+          final_tier: "rejected"
+        },
+        freshness_contract_diagnostics: {
+          missing_buy_route_timestamp: false,
+          missing_sell_route_timestamp: false,
+          buy_route_stale: false,
+          sell_route_stale: false,
+          buy_and_sell_route_stale: true,
+          buy_route_unavailable: false,
+          sell_route_unavailable: false,
+          missing_listing_availability: false,
+          freshness_contract_incomplete: false
+        }
+      }
+    }
+  ])
+
+  assert.equal(summary.weaponSkinEvaluator.outcome.strong_eligible, 1)
+  assert.equal(summary.weaponSkinEvaluator.outcome.risky_eligible, 1)
+  assert.equal(summary.weaponSkinEvaluator.outcome.soft_skip, 1)
+  assert.equal(summary.weaponSkinEvaluator.outcome.hard_reject, 1)
+  assert.equal(summary.weaponSkinEvaluator.missing_liquidity_penalty, 1)
+  assert.equal(summary.weaponSkinEvaluator.partial_market_coverage_penalty, 1)
+  assert.equal(summary.weaponSkinEvaluator.thin_executable_depth_penalty, 1)
+  assert.equal(summary.weaponSkinEvaluator.low_value_contextual_penalty, 1)
+  assert.equal(summary.weaponSkinEvaluator.soft_skip_reason.low_value_low_support_weapon_skin, 1)
+  assert.equal(summary.weaponSkinEvaluator.hard_reject_reason.buy_and_sell_route_stale, 1)
+  assert.equal(summary.weaponSkinEvaluator.publish_preview_result.publishable, 3)
+  assert.equal(summary.weaponSkinEvaluator.publish_preview_result.buy_and_sell_route_stale, 1)
+  assert.equal(summary.weaponSkinEvaluator.final_tier.strong, 1)
+  assert.equal(summary.weaponSkinEvaluator.final_tier.risky, 1)
+  assert.equal(summary.weaponSkinEvaluator.final_tier.rejected, 2)
+  assert.equal(summary.weaponSkinEvaluator.freshness_contract.missing_buy_route_timestamp, 1)
+  assert.equal(summary.weaponSkinEvaluator.freshness_contract.buy_and_sell_route_stale, 1)
+  assert.equal(summary.weaponSkinEvaluator.freshness_contract.sell_route_unavailable, 1)
+  assert.equal(summary.weaponSkinEvaluator.freshness_contract.missing_listing_availability, 1)
+  assert.equal(summary.weaponSkinEvaluator.freshness_contract.freshness_contract_incomplete, 1)
 })
 
 test("opportunity evaluation enforces true hard reject reasons", () => {
@@ -844,6 +2397,55 @@ test("opportunity evaluation rejects opportunities below $2 cost floor", () => {
 
   assert.equal(evaluation.rejected, true)
   assert.equal(evaluation.hardRejectReasons.includes("below_min_cost_floor"), true)
+})
+
+test("non-weapon categories keep the current generic coverage hard reject", () => {
+  const nowIso = new Date().toISOString()
+  const evaluation = evaluateCandidateOpportunity(
+    {
+      marketHashName: "Revolution Case",
+      itemName: "Revolution Case",
+      category: "case",
+      referencePrice: 2.4,
+      marketCoverageCount: 1,
+      volume7d: 480,
+      quoteFetchedAt: nowIso,
+      snapshotCapturedAt: nowIso
+    },
+    {
+      marketHashName: "Revolution Case",
+      perMarket: [
+        {
+          source: "steam",
+          available: true,
+          grossPrice: 1.9,
+          netPriceAfterFees: 2.35,
+          updatedAt: nowIso,
+          volume7d: 480
+        }
+      ],
+      bestBuy: { source: "steam", grossPrice: 1.9, url: "https://steamcommunity.com/item" },
+      bestSellNet: { source: "steam", netPriceAfterFees: 2.35, url: "https://steamcommunity.com/item" },
+      arbitrage: {
+        buyMarket: "steam",
+        buyPrice: 1.9,
+        sellMarket: "steam",
+        sellNet: 2.35,
+        profit: 0.45,
+        spreadPercent: 23.68,
+        opportunityScore: 69,
+        executionConfidence: "Medium",
+        marketCoverage: 1,
+        referencePrice: 2.4,
+        depthFlags: [],
+        antiFake: { reasons: ["ignored_missing_markets"] }
+      }
+    }
+  )
+
+  assert.equal(evaluation.rejected, true)
+  assert.equal(evaluation.hardRejectReasons.includes("unusable_market_coverage"), true)
+  assert.equal(evaluation?.metadata?.weapon_skin_evaluator_diagnostics || null, null)
 })
 
 test("feed event classifier detects new, updated, duplicate, and reactivated rows", () => {
@@ -1500,6 +3102,7 @@ test("persistFeedRows blocks stale candidates at publish time", async () => {
     assert.equal(result.insertedCount, 0)
     assert.equal(result.publishValidation.blocked, 1)
     assert.equal(result.publishValidation.reasons.buy_and_sell_route_stale, 1)
+    assert.equal(result.publishValidation.freshnessContract.buy_and_sell_route_stale, 1)
     assert.equal(result.publishValidation.deactivated, 0)
     assert.equal(updateRowsPayload, null)
     assert.equal(insertRowsPayload, null)
@@ -1600,6 +3203,7 @@ test("persistFeedRows blocks missing route and missing listing at publish time",
     assert.equal(result.publishValidation.blocked, 2)
     assert.equal(result.publishValidation.reasons.missing_sell_route, 1)
     assert.equal(result.publishValidation.reasons.missing_sell_listing, 1)
+    assert.equal(result.publishValidation.freshnessContract.sell_route_unavailable, 1)
     assert.equal(insertRowsPayload, null)
   } finally {
     arbitrageFeedRepo.getRecentRowsByItems = originals.getRecentRowsByItems

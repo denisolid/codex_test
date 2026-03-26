@@ -6,6 +6,11 @@ const {
   PENALTY_WEIGHTS
 } = require("./config")
 const { normalizeCategory } = require("./stateModel")
+const { evaluateWeaponSkinOpportunity } = require("./weaponSkinOpportunityEvaluator")
+const {
+  buildRouteFreshnessContract,
+  buildRouteFreshnessContractFromCompareResult
+} = require("./publishValidation")
 const MIN_SCAN_COST_USD = 2
 const DIAGNOSTIC_FLAGS = Object.freeze({
   SALES_LIQUIDITY: "low_sales_liquidity",
@@ -813,132 +818,68 @@ function resolveBaseMetrics(comparedItem = {}, candidate = {}) {
   }
 }
 
-function resolveRouteMarketRow(perMarket = [], source = "") {
-  const normalizedSource = normalizeSource(source)
-  if (!normalizedSource) return null
-  return (
-    toArray(perMarket).find(
-      (row) =>
-        normalizeSource(row?.source || row?.market) === normalizedSource &&
-        Boolean(row?.available)
-    ) || null
-  )
-}
-
-function resolveRouteUpdatedAt(row = {}) {
-  return toIsoOrNull(row?.updatedAt || row?.updated_at || row?.fetched_at || row?.fetchedAt)
-}
-
-function resolveRouteListingId(row = {}) {
-  const raw = row?.raw || {}
-  return (
-    normalizeText(
-      row?.listing_id ??
-        row?.listingId ??
-        raw?.listing_id ??
-        raw?.listingId ??
-        raw?.skinport_listing_id ??
-        raw?.skinportListingId
-    ) || null
-  )
-}
-
 function resolveRouteAvailabilityContext(comparedItem = {}, base = {}) {
-  const perMarket = toArray(comparedItem?.perMarket)
-  const buyMarket = normalizeSource(base?.buyMarket)
-  const sellMarket = normalizeSource(base?.sellMarket)
-  const buyRow = resolveRouteMarketRow(perMarket, buyMarket)
-  const sellRow = resolveRouteMarketRow(perMarket, sellMarket)
-  const buyRoutePrice = toPositiveOrNull(buyRow?.grossPrice)
-  const sellRoutePrice = toPositiveOrNull(sellRow?.netPriceAfterFees)
-  const buyRouteAvailable = Boolean(buyRow && buyRoutePrice != null)
-  const sellRouteAvailable = Boolean(sellRow && sellRoutePrice != null)
-  const buyRouteUpdatedAt = resolveRouteUpdatedAt(buyRow)
-  const sellRouteUpdatedAt = resolveRouteUpdatedAt(sellRow)
-  const buyListingId = resolveRouteListingId(buyRow)
-  const sellListingId = resolveRouteListingId(sellRow)
-  const buyListingAvailable =
-    buyMarket === "skinport"
-      ? Boolean(buyListingId || normalizeText(base?.buyUrl))
-      : null
-  const sellListingAvailable =
-    sellMarket === "skinport"
-      ? Boolean(sellListingId || normalizeText(base?.sellUrl))
-      : null
+  const explicitContract =
+    comparedItem?.routeFreshnessContract ||
+    comparedItem?.route_freshness_contract ||
+    (comparedItem?.buyRouteAvailable != null ||
+    comparedItem?.sellRouteAvailable != null ||
+    comparedItem?.buyRouteUpdatedAt != null ||
+    comparedItem?.sellRouteUpdatedAt != null ||
+    comparedItem?.buyListingAvailable != null ||
+    comparedItem?.sellListingAvailable != null ||
+    comparedItem?.requiredRouteState != null ||
+    comparedItem?.listingAvailabilityState != null
+      ? {
+          buyMarket: base?.buyMarket,
+          sellMarket: base?.sellMarket,
+          buyRouteAvailable: comparedItem?.buyRouteAvailable ?? comparedItem?.buy_route_available,
+          sellRouteAvailable: comparedItem?.sellRouteAvailable ?? comparedItem?.sell_route_available,
+          buyRouteUpdatedAt:
+            comparedItem?.buyRouteUpdatedAt ?? comparedItem?.buy_route_updated_at,
+          sellRouteUpdatedAt:
+            comparedItem?.sellRouteUpdatedAt ?? comparedItem?.sell_route_updated_at,
+          buyListingAvailable:
+            comparedItem?.buyListingAvailable ?? comparedItem?.buy_listing_available,
+          sellListingAvailable:
+            comparedItem?.sellListingAvailable ?? comparedItem?.sell_listing_available,
+          requiredRouteState:
+            comparedItem?.requiredRouteState ?? comparedItem?.required_route_state,
+          listingAvailabilityState:
+            comparedItem?.listingAvailabilityState ?? comparedItem?.listing_availability_state
+        }
+      : null)
 
-  const missingBuyRoute = Boolean(buyMarket) && !buyRouteAvailable
-  const missingSellRoute = Boolean(sellMarket) && !sellRouteAvailable
-  const requiredRouteState =
-    missingBuyRoute && missingSellRoute
-      ? "missing_buy_and_sell_route"
-      : missingBuyRoute
-        ? "missing_buy_route"
-        : missingSellRoute
-          ? "missing_sell_route"
-          : "ready"
-
-  const requiresBuyListing = buyMarket === "skinport"
-  const requiresSellListing = sellMarket === "skinport"
-  const missingBuyListing = requiresBuyListing && buyRouteAvailable && buyListingAvailable === false
-  const missingSellListing = requiresSellListing && sellRouteAvailable && sellListingAvailable === false
-  const listingAvailabilityState =
-    !requiresBuyListing && !requiresSellListing
-      ? "not_required"
-      : missingBuyListing && missingSellListing
-        ? "missing_buy_and_sell_listing"
-        : missingBuyListing
-          ? "missing_buy_listing"
-          : missingSellListing
-            ? "missing_sell_listing"
-            : "available"
-
-  return {
-    buyRouteAvailable,
-    sellRouteAvailable,
-    buyRouteUpdatedAt,
-    sellRouteUpdatedAt,
-    buyListingAvailable,
-    sellListingAvailable,
-    buyListingId,
-    sellListingId,
-    requiredRouteState,
-    listingAvailabilityState
+  if (explicitContract && typeof explicitContract === "object") {
+    return buildRouteFreshnessContract({
+      ...explicitContract,
+      buyMarket: explicitContract.buyMarket ?? base?.buyMarket,
+      sellMarket: explicitContract.sellMarket ?? base?.sellMarket
+    })
   }
+
+  return buildRouteFreshnessContractFromCompareResult(comparedItem, base)
 }
 
-function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
-  const category = normalizeCategory(candidate.category, candidate.itemName)
-  const profile = resolveCategoryProfile(category)
-  const base = resolveBaseMetrics(comparedItem, candidate)
-  const routeContext = resolveRouteAvailabilityContext(comparedItem, base)
-  const liquiditySignal = resolveLiquiditySignal(comparedItem, candidate, {
-    buyMarket: base.buyMarket,
-    sellMarket: base.sellMarket
-  })
-  const volume7d = liquiditySignal.volume7d
-  const usedSignalFreshness = resolveUsedSignalFreshness({
-    category,
-    comparedItem,
-    candidate,
-    buyMarket: base.buyMarket,
-    sellMarket: base.sellMarket,
-    referencePrice: base.referencePrice
-  })
-  const diagnostics = buildDiagnosticDimensions({
-    category,
-    categoryProfile: profile,
-    comparedItem,
-    volume7d,
-    marketCoverage: base.marketCoverage,
-    usedSignalFreshness
-  })
-  const referenceDeviation = hasExtremeReferenceDeviation({
-    buyPrice: base.buyPrice,
-    sellNet: base.sellNet,
-    referencePrice: base.referencePrice,
-    ratioLimit: profile.referenceRejectRatio
-  })
+function buildEvaluationDisposition({ tier, hardRejectReasons = [], softRejectReasons = [] } = {}) {
+  if (Array.isArray(hardRejectReasons) && hardRejectReasons.length) return "hard_reject"
+  if (Array.isArray(softRejectReasons) && softRejectReasons.length) return "soft_skip"
+  if (tier === OPPORTUNITY_TIERS.STRONG) return "strong_eligible"
+  if (tier === OPPORTUNITY_TIERS.RISKY || tier === OPPORTUNITY_TIERS.SPECULATIVE) {
+    return "risky_eligible"
+  }
+  return "hard_reject"
+}
 
+function evaluateDefaultOpportunityDecision({
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
+  profile = {},
+  base = {},
+  comparedItem = {},
+  diagnostics = {},
+  referenceDeviation = {},
+  initialPenaltyFlags = []
+} = {}) {
   const hardRejectReasons = []
   if (!base.buyMarket || !base.sellMarket || base.buyPrice == null || base.sellNet == null) {
     hardRejectReasons.push("broken_invalid_data")
@@ -977,16 +918,7 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
     hardRejectReasons.push("broken_invalid_data")
   }
 
-  const penaltyFlags = buildPenaltySet({
-    categoryProfile: profile,
-    category,
-    comparedItem,
-    buyPrice: base.buyPrice,
-    profit: base.profit,
-    spreadPercent: base.spreadPercent,
-    referenceDeviation,
-    diagnostics
-  })
+  const penaltyFlags = Array.from(new Set(toArray(initialPenaltyFlags)))
   const penaltyScore = computePenaltyScore(penaltyFlags)
   const finalScore = clampScore(Number(base.baseScore || 0) - penaltyScore)
 
@@ -1007,7 +939,107 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
     hardReject: hardRejectReasons.length > 0
   })
 
-  const liquidityBand = resolveLiquidityBand(volume7d, profile)
+  return {
+    hardRejectReasons,
+    softRejectReasons: [],
+    riskLabels: [],
+    penaltyFlags,
+    penaltyScore,
+    finalScore,
+    confidence: confidenceLabel(confidence),
+    tier,
+    rejected: tier === OPPORTUNITY_TIERS.REJECTED,
+    additionalBadges: [],
+    evaluationDisposition: buildEvaluationDisposition({
+      tier,
+      hardRejectReasons,
+      softRejectReasons: []
+    })
+  }
+}
+
+function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
+  const category = normalizeCategory(candidate.category, candidate.itemName)
+  const profile = resolveCategoryProfile(category)
+  const base = resolveBaseMetrics(comparedItem, candidate)
+  const routeContext = resolveRouteAvailabilityContext(comparedItem, base)
+  const liquiditySignal = resolveLiquiditySignal(comparedItem, candidate, {
+    buyMarket: base.buyMarket,
+    sellMarket: base.sellMarket
+  })
+  const volume7d = liquiditySignal.volume7d
+  const usedSignalFreshness = resolveUsedSignalFreshness({
+    category,
+    comparedItem,
+    candidate,
+    buyMarket: base.buyMarket,
+    sellMarket: base.sellMarket,
+    referencePrice: base.referencePrice
+  })
+  const diagnostics = buildDiagnosticDimensions({
+    category,
+    categoryProfile: profile,
+    comparedItem,
+    volume7d,
+    marketCoverage: base.marketCoverage,
+    usedSignalFreshness
+  })
+  const referenceDeviation = hasExtremeReferenceDeviation({
+    buyPrice: base.buyPrice,
+    sellNet: base.sellNet,
+    referencePrice: base.referencePrice,
+    ratioLimit: profile.referenceRejectRatio
+  })
+
+  const initialPenaltyFlags = buildPenaltySet({
+    categoryProfile: profile,
+    category,
+    comparedItem,
+    buyPrice: base.buyPrice,
+    profit: base.profit,
+    spreadPercent: base.spreadPercent,
+    referenceDeviation,
+    diagnostics
+  })
+  const defaultLiquidityBand = resolveLiquidityBand(volume7d, profile)
+  const decision =
+    category === ITEM_CATEGORIES.WEAPON_SKIN
+      ? evaluateWeaponSkinOpportunity({
+          candidate,
+          profile,
+          base,
+          routeContext,
+          diagnostics,
+          referenceDeviation,
+          liquiditySignal,
+          usedSignalFreshness,
+          initialPenaltyFlags,
+          computePenaltyScore,
+          clampScore,
+          confidenceLevel,
+          confidenceLabel,
+          defaultLiquidityBand
+        })
+      : evaluateDefaultOpportunityDecision({
+          category,
+          profile,
+          base,
+          comparedItem,
+          diagnostics,
+          referenceDeviation,
+          initialPenaltyFlags
+        })
+
+  const hardRejectReasons = Array.from(new Set(toArray(decision?.hardRejectReasons)))
+  const softRejectReasons = Array.from(new Set(toArray(decision?.softRejectReasons)))
+  const softSkipReasons = softRejectReasons
+  const riskLabels = Array.from(new Set(toArray(decision?.riskLabels)))
+  const penaltyFlags = Array.from(new Set(toArray(decision?.penaltyFlags)))
+  const penaltyScore = Number(decision?.penaltyScore || 0)
+  const finalScore = clampScore(Number(decision?.finalScore || 0))
+  const confidence = normalizeText(decision?.confidence || "Low") || "Low"
+  const tier = normalizeText(decision?.tier || OPPORTUNITY_TIERS.REJECTED) || OPPORTUNITY_TIERS.REJECTED
+  const liquidityBand = normalizeText(decision?.liquidityBand || defaultLiquidityBand) || defaultLiquidityBand
   const marketCoverageBand = resolveCoverageBand(diagnostics?.market_coverage?.score)
   const badges = []
   if (tier === OPPORTUNITY_TIERS.STRONG) badges.push("Strong setup")
@@ -1025,6 +1057,28 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
   if (penaltyFlags.includes(DIAGNOSTIC_FLAGS.MARKET_COVERAGE)) {
     badges.push("Limited market coverage")
   }
+  for (const badge of toArray(decision?.additionalBadges)) {
+    if (!normalizeText(badge)) continue
+    badges.push(badge)
+  }
+
+  const evaluationDisposition =
+    normalizeText(decision?.evaluationDisposition) ||
+    buildEvaluationDisposition({ tier, hardRejectReasons, softRejectReasons })
+  const rejected = Boolean(decision?.rejected || tier === OPPORTUNITY_TIERS.REJECTED)
+  const publishValidationPreview =
+    decision?.publishValidationPreview && typeof decision.publishValidationPreview === "object"
+      ? decision.publishValidationPreview
+      : null
+  const publishPreviewResult = normalizeText(publishValidationPreview?.result_label) || null
+  const weaponSkinOutcomeDiagnostics =
+    decision?.weaponSkinOutcomeDiagnostics && typeof decision.weaponSkinOutcomeDiagnostics === "object"
+      ? decision.weaponSkinOutcomeDiagnostics
+      : null
+  const freshnessContractDiagnostics =
+    decision?.freshnessContractDiagnostics && typeof decision.freshnessContractDiagnostics === "object"
+      ? decision.freshnessContractDiagnostics
+      : null
 
   return {
     marketHashName: candidate.marketHashName,
@@ -1033,8 +1087,14 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
     itemSubcategory: candidate.itemSubcategory || null,
     itemId: Number(comparedItem?.skinId || 0) || null,
     tier,
-    rejected: tier === OPPORTUNITY_TIERS.REJECTED,
+    finalTier: tier,
+    rejected,
     hardRejectReasons,
+    softRejectReasons,
+    softSkipReasons,
+    riskLabels,
+    evaluationDisposition,
+    publishPreviewResult,
     penaltyFlags,
     buyMarket: base.buyMarket || null,
     buyPrice: base.buyPrice == null ? null : roundPrice(base.buyPrice),
@@ -1043,7 +1103,7 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
     profit: base.profit == null ? null : roundPrice(base.profit),
     spread: base.spreadPercent == null ? null : round2(base.spreadPercent),
     score: finalScore,
-    executionConfidence: confidenceLabel(confidence),
+    executionConfidence: confidence,
     liquidity: volume7d == null ? null : round2(volume7d),
     sellVolume7d:
       liquiditySignal.sellVolume7d == null ? null : round2(liquiditySignal.sellVolume7d),
@@ -1071,6 +1131,7 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
     sellListingAvailable: routeContext.sellListingAvailable,
     requiredRouteState: routeContext.requiredRouteState,
     listingAvailabilityState: routeContext.listingAvailabilityState,
+    routeFreshnessContract: routeContext,
     itemImageUrl: null,
     itemRarity: null,
     itemRarityColor: null,
@@ -1085,12 +1146,20 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
     qualityGrade: String(tier || OPPORTUNITY_TIERS.REJECTED).toUpperCase(),
     isHighConfidenceEligible: tier === OPPORTUNITY_TIERS.STRONG,
     isRiskyEligible: tier === OPPORTUNITY_TIERS.STRONG || tier === OPPORTUNITY_TIERS.RISKY,
-    flags: Array.from(new Set([...penaltyFlags, ...hardRejectReasons])),
+    flags: Array.from(new Set([...penaltyFlags, ...riskLabels, ...softRejectReasons, ...hardRejectReasons])),
     badges: Array.from(new Set(badges)),
     metadata: {
       opportunity_tier: tier,
+      final_tier: tier,
+      evaluation_disposition: evaluationDisposition,
+      decision_policy:
+        category === ITEM_CATEGORIES.WEAPON_SKIN ? "weapon_skin_v2" : "generic_v1",
+      risk_labels: riskLabels,
+      soft_skip_reasons: softSkipReasons,
+      soft_reject_reasons: softRejectReasons,
       penalty_flags: penaltyFlags,
       hard_reject_reasons: hardRejectReasons,
+      publish_preview_result: publishPreviewResult,
       penalty_score: penaltyScore,
       base_score: clampScore(base.baseScore),
       quote_age_minutes: toFiniteOrNull(usedSignalFreshness?.ageMinutes),
@@ -1116,6 +1185,9 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
       sell_listing_id: routeContext.sellListingId || null,
       required_route_state: routeContext.requiredRouteState,
       listing_availability_state: routeContext.listingAvailabilityState,
+      route_freshness_contract: routeContext,
+      routeFreshnessContract: routeContext,
+      freshness_contract_diagnostics: freshnessContractDiagnostics,
       liquidity_source: liquiditySignal.source,
       sell_volume_7d:
         liquiditySignal.sellVolume7d == null ? null : round2(liquiditySignal.sellVolume7d),
@@ -1131,6 +1203,8 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
       reference_deviation_ratio: referenceDeviation.ratio,
       anti_fake_reasons: base.antiFakeReasons,
       depth_flags: base.depthFlags,
+      publish_validation_preview: publishValidationPreview,
+      weapon_skin_evaluator_diagnostics: weaponSkinOutcomeDiagnostics,
       diagnostics_debug: {
         category,
         latest_quote_at: usedSignalFreshness?.latestQuoteAt || null,
@@ -1170,12 +1244,18 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
         sell_route_available: Boolean(routeContext.sellRouteAvailable),
         required_route_state: routeContext.requiredRouteState,
         listing_availability_state: routeContext.listingAvailabilityState,
+        route_freshness_contract: routeContext,
+        freshness_contract_diagnostics: freshnessContractDiagnostics,
         raw_reasons: {
           sales_liquidity: toArray(diagnostics?.sales_liquidity?.reasons),
           executable_depth: toArray(diagnostics?.executable_depth?.reasons),
           market_coverage: toArray(diagnostics?.market_coverage?.reasons),
           data_freshness: toArray(diagnostics?.data_freshness?.reasons),
-          emitted_tags: penaltyFlags
+          emitted_tags: penaltyFlags,
+          risk_labels: riskLabels,
+          soft_skip_reasons: softSkipReasons,
+          soft_reject_reasons: softRejectReasons,
+          publish_preview_result: publishPreviewResult
         }
       }
     }

@@ -206,6 +206,7 @@ function buildPriorityCatalogRow(entry = {}) {
 
 async function syncPriorityCoverageSet(options = {}) {
   const sourceConfig = options.config && typeof options.config === "object" ? options.config : prioritySetConfig
+  const allowCatalogInsert = Boolean(options.allowCatalogInsert)
   const built = buildPriorityEntries(sourceConfig)
   const setName = built.setName
   if (!setName || !built.entries.length) {
@@ -275,13 +276,13 @@ async function syncPriorityCoverageSet(options = {}) {
   }
 
   let insertedMissingCatalogItems = 0
-  if (missingEntries.length) {
+  if (allowCatalogInsert && missingEntries.length) {
     insertedMissingCatalogItems = await marketSourceCatalogRepo.upsertRows(
       missingEntries.map((entry) => buildPriorityCatalogRow(entry))
     )
   }
 
-  const insertedRows = missingEntries.length
+  const insertedRows = allowCatalogInsert && missingEntries.length
     ? await marketSourceCatalogRepo.listByMarketHashNames(
         missingEntries.map((entry) => entry.itemName),
         {
@@ -311,6 +312,7 @@ async function syncPriorityCoverageSet(options = {}) {
     totalPriorityItemsConfigured: built.entries.length,
     matchedExistingCatalogItems,
     insertedMissingCatalogItems: Number(insertedMissingCatalogItems || 0),
+    catalogInsertApplied: allowCatalogInsert,
     unmatchedPriorityItems,
     entries: built.entries,
     byKey,

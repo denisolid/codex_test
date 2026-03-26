@@ -103,9 +103,10 @@ test("global feed publisher writes active state, history, and legacy projection 
   diagnosticsWriter.writePublishDecisions = async () => null
 
   try {
+    const opportunity = buildOpportunity()
     const result = await globalFeedPublisher.publishBatch({
       scanRunId: "scan-run-1",
-      opportunities: [buildOpportunity()],
+      opportunities: [opportunity],
       nowIso: "2026-03-25T12:00:00.000Z"
     })
 
@@ -115,6 +116,14 @@ test("global feed publisher writes active state, history, and legacy projection 
     assert.equal(activeInsertPayload.length, 1)
     assert.equal(activeInsertPayload[0].live_status, "live")
     assert.equal(activeInsertPayload[0].refresh_status, "pending")
+    assert.equal(
+      activeInsertPayload[0]?.metadata?.route_freshness_contract?.sellRouteUpdatedAt,
+      opportunity.sellRouteUpdatedAt
+    )
+    assert.equal(
+      activeInsertPayload[0]?.metadata?.freshness_contract_diagnostics?.buy_and_sell_route_stale,
+      false
+    )
     assert.equal(Array.isArray(historyPayload), true)
     assert.equal(historyPayload[0].event_type, "new")
     assert.equal(historyPayload[0].active_opportunity_id, "active-0")
@@ -251,6 +260,10 @@ test("global feed publisher expires previously live rows when publish validation
     assert.equal(activeUpdatePayload.length, 1)
     assert.equal(activeUpdatePayload[0].patch.live_status, "stale")
     assert.equal(activeUpdatePayload[0].patch.refresh_status, "stale")
+    assert.equal(
+      activeUpdatePayload[0]?.patch?.metadata?.freshness_contract_diagnostics?.buy_and_sell_route_stale,
+      true
+    )
     assert.equal(Array.isArray(historyPayload), true)
     assert.equal(historyPayload[0].event_type, "expired")
     assert.equal(historyPayload[0].active_opportunity_id, "active-1")
