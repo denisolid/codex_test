@@ -48,13 +48,13 @@ const CANDIDATE_STATE_COLUMNS = Object.freeze([
 const PRIMARY_SELECT_COLUMNS =
   "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item,invalid_reason,source_tag,is_active,last_enriched_at"
 const COMPATIBILITY_SELECT_COLUMNS =
-  "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item,invalid_reason,source_tag,is_active,last_enriched_at"
+  "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,invalid_reason,source_tag,is_active,last_enriched_at"
 const LEGACY_FALLBACK_SELECT_COLUMNS =
   "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,invalid_reason,source_tag,is_active,last_enriched_at"
 const COVERAGE_SUMMARY_PRIMARY_SELECT_COLUMNS =
   "category,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,maturity_state,is_active,reference_price,volume_7d,market_coverage_count,liquidity_rank,snapshot_stale,quote_fetched_at,snapshot_captured_at,invalid_reason,eligibility_reason,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item"
 const COVERAGE_SUMMARY_COMPATIBILITY_SELECT_COLUMNS =
-  "category,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,maturity_state,is_active,reference_price,volume_7d,market_coverage_count,liquidity_rank,snapshot_stale,quote_fetched_at,snapshot_captured_at,invalid_reason,eligibility_reason,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item"
+  "category,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,maturity_state,is_active,reference_price,volume_7d,market_coverage_count,liquidity_rank,snapshot_stale,quote_fetched_at,snapshot_captured_at,invalid_reason,eligibility_reason,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers"
 const COVERAGE_SUMMARY_LEGACY_FALLBACK_SELECT_COLUMNS =
   "category,tradable,scan_eligible,is_active,reference_price,volume_7d,market_coverage_count,snapshot_stale,invalid_reason"
 
@@ -596,7 +596,6 @@ function buildCompatibilityProgressionQuery({
     .eq("tradable", true)
     .in("candidate_status", candidateStatuses)
     .order("last_enriched_at", { ascending: true, nullsFirst: true })
-    .order("priority_boost", { ascending: false, nullsFirst: false })
     .order("liquidity_rank", { ascending: false, nullsFirst: false })
 
   if (categories.length) {
@@ -650,7 +649,6 @@ exports.listActiveTradable = async (options = {}) => {
         .select(COMPATIBILITY_SELECT_COLUMNS)
         .eq("is_active", true)
         .eq("tradable", true)
-        .order("priority_boost", { ascending: false, nullsFirst: false })
         .order("liquidity_rank", { ascending: false, nullsFirst: false })
 
       if (categories.length) {
@@ -705,8 +703,6 @@ exports.listScannerSource = async (options = {}) => {
         .select(COMPATIBILITY_SELECT_COLUMNS)
         .eq("is_active", true)
         .eq("tradable", true)
-        .order("priority_tier", { ascending: true, nullsFirst: false })
-        .order("priority_boost", { ascending: false, nullsFirst: false })
         .order("liquidity_rank", { ascending: false, nullsFirst: false })
 
       if (categories.length) {
@@ -989,8 +985,6 @@ exports.listHotScanCohort = async (options = {}) => {
         .eq("tradable", true)
         .eq("candidate_status", "eligible")
         .eq("scan_eligible", true)
-        .order("priority_tier", { ascending: true, nullsFirst: false })
-        .order("priority_boost", { ascending: false, nullsFirst: false })
         .order("liquidity_rank", { ascending: false, nullsFirst: false })
 
       if (categories.length) {
@@ -1047,8 +1041,6 @@ exports.listWarmScanCohort = async (options = {}) => {
         .eq("is_active", true)
         .eq("tradable", true)
         .eq("candidate_status", "near_eligible")
-        .order("priority_tier", { ascending: true, nullsFirst: false })
-        .order("priority_boost", { ascending: false, nullsFirst: false })
         .order("liquidity_rank", { ascending: false, nullsFirst: false })
 
       if (categories.length) {
@@ -1105,8 +1097,6 @@ exports.listColdScanCohort = async (options = {}) => {
         .eq("is_active", true)
         .eq("tradable", true)
         .in("candidate_status", ["enriching", "candidate"])
-        .order("priority_tier", { ascending: true, nullsFirst: false })
-        .order("priority_boost", { ascending: false, nullsFirst: false })
         .order("liquidity_rank", { ascending: false, nullsFirst: false })
 
       if (categories.length) {

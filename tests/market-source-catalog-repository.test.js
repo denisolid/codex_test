@@ -123,7 +123,7 @@ test("catalog-status compatibility derives scannable state when catalog_status c
   assert.equal(Number(row.catalog_quality_score || 0) > 0, true);
 });
 
-test("catalog-status compatibility backfills null catalog_status rows conservatively", () => {
+test("catalog-status compatibility treats null catalog_status rows as compat-scannable when structurally valid", () => {
   const oldIso = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
   const [row] = applyCatalogStatusCompatibility([
     {
@@ -141,6 +141,27 @@ test("catalog-status compatibility backfills null catalog_status rows conservati
     }
   ]);
 
-  assert.equal(row.catalog_status, "shadow");
-  assert.equal(row.catalog_block_reason, "stale_only_signals");
+  assert.equal(row.catalog_status, "scannable");
+  assert.equal(row.catalog_block_reason, null);
+});
+
+test("catalog-status compatibility still blocks structurally invalid rows without catalog_status", () => {
+  const [row] = applyCatalogStatusCompatibility([
+    {
+      market_hash_name: "Broken Item",
+      category: "weapon_skin",
+      tradable: true,
+      is_active: true,
+      candidate_status: "candidate",
+      scan_eligible: false,
+      catalog_status: null,
+      reference_price: null,
+      market_coverage_count: 0,
+      snapshot_captured_at: null,
+      quote_fetched_at: null
+    }
+  ]);
+
+  assert.equal(row.catalog_status, "blocked");
+  assert.equal(row.catalog_block_reason, "unusable_market_coverage");
 });
