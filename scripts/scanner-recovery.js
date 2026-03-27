@@ -2,8 +2,8 @@
 
 require("dotenv").config()
 
-const marketSourceCatalogService = require("../src/services/marketSourceCatalogService")
 const scannerService = require("../src/services/arbitrageScannerService")
+const upstreamMarketFreshnessRecoveryService = require("../src/services/upstreamMarketFreshnessRecoveryService")
 const scannerRunRepo = require("../src/repositories/scannerRunRepository")
 const { SCANNER_TYPES } = require("../src/services/scanner/config")
 
@@ -35,21 +35,21 @@ function parseArgs(argv = []) {
   return map
 }
 
-function summarizeCatalogDiagnostics(diag = {}) {
-  const source = diag?.sourceCatalog || {}
-  const universe = source?.universeBuild || {}
+function summarizeRecoveryDiagnostics(diag = {}) {
   return {
     generatedAt: diag?.generatedAt || null,
-    activeCatalogRows: Number(source?.activeCatalogRows || source?.totalRows || 0),
-    candidateRows: Number(source?.candidateRows || 0),
-    enrichingRows: Number(source?.enrichingRows || 0),
-    nearEligibleRows: Number(source?.nearEligibleRows || 0),
-    eligibleRows: Number(source?.eligibleTradableRows || source?.eligibleRows || 0),
-    rejectedRows: Number(source?.rejectedRows || 0),
-    activeUniverseBuilt: Number(universe?.activeUniverseBuilt || 0),
-    targetUniverseSize: Number(universe?.targetUniverseSize || diag?.targetUniverseSize || 0),
-    missingToTarget: Number(universe?.missingToTarget || 0),
-    error: source?.error || diag?.error || null
+    targetLimit: Number(diag?.targetLimit || 0),
+    targets: diag?.targets || {},
+    healthGate: diag?.healthGate || {},
+    quoteRefresh: diag?.quoteRefresh || {},
+    snapshotRefresh: diag?.snapshotRefresh || {},
+    postRefresh: {
+      totalRows: Number(diag?.postRefresh?.totalRows || 0),
+      rowsStillStale: Number(diag?.postRefresh?.rowsStillStale || 0),
+      upstreamNewerThanCatalog: Number(diag?.postRefresh?.upstreamNewerThanCatalog || 0),
+      byCategory: diag?.postRefresh?.byCategory || {}
+    },
+    catalogRecompute: diag?.catalogRecompute || {}
   }
 }
 
@@ -106,7 +106,11 @@ async function main() {
     ),
     1
   )
+  const refreshLimit = Math.max(toInt(cli.limit, 900), 1)
+  const quoteBatchSize = Math.max(toInt(cli["quote-batch"], 80), 1)
+  const snapshotBatchSize = Math.max(toInt(cli["snapshot-batch"], 60), 1)
   const skipScan = Boolean(cli["skip-scan"] || false)
+  const skipRecompute = Boolean(cli["skip-recompute"] || false)
   const wait = Boolean(cli.wait || false)
   const waitMs = Math.max(toInt(cli["wait-ms"], 600000), 10000)
   const pollMs = Math.max(toInt(cli["poll-ms"], 5000), 1000)
@@ -114,30 +118,36 @@ async function main() {
   console.log(
     JSON.stringify(
       {
-        step: "prepare_source_catalog",
-        forceRefresh: true,
-        targetUniverseSize
+        step: "refresh_upstream_market_freshness",
+        targetUniverseSize,
+        refreshLimit,
+        quoteBatchSize,
+        snapshotBatchSize,
+        recompute: !skipRecompute
       },
       null,
       2
     )
   )
-  const diagnostics = await marketSourceCatalogService.prepareSourceCatalog({
-    forceRefresh: true,
-    targetUniverseSize
+  const diagnostics = await upstreamMarketFreshnessRecoveryService.runFreshnessRecovery({
+    limit: refreshLimit,
+    quoteBatchSize,
+    snapshotBatchSize,
+    targetUniverseSize,
+    recompute: !skipRecompute
   })
   console.log(
     JSON.stringify(
       {
-        step: "prepare_source_catalog_done",
-        diagnostics: summarizeCatalogDiagnostics(diagnostics)
+        step: "refresh_upstream_market_freshness_done",
+        diagnostics: summarizeRecoveryDiagnostics(diagnostics)
       },
       null,
       2
     )
   )
 
-  if (skipScan) {
+  if (skipScan || !diagnostics?.healthGate?.healthyEnough || !diagnostics?.catalogRecompute?.executed) {
     return
   }
 

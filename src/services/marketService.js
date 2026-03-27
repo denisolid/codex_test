@@ -13,6 +13,7 @@ const {
   marketCommissionPercent,
   marketSnapshotTtlMinutes
 } = require("../config/env");
+const { mapWithConcurrency } = require("../markets/marketHttp");
 
 function round2(n) {
   return Number((Number(n || 0)).toFixed(2));
@@ -148,29 +149,42 @@ function buildQuickSellTiers(snapshot, liquidityScore, commissionPercent) {
   ];
 }
 
-async function buildAndStoreSnapshot(skin) {
+async function buildAndStoreSnapshot(skin, options = {}) {
   const latestPrice = await priceRepo.getLatestPriceBySkinId(skin.id);
   const currentPrice = toNumber(latestPrice?.price, 0);
   const history = await priceRepo.getHistoryBySkinId(skin.id, 200);
   const derived = deriveStatsFromHistory(history, currentPrice);
+  const requireLiveOverview = Boolean(options.requireLiveOverview);
 
   let lowestListingPrice = currentPrice;
   let volume24h = derived.volume24h;
   let source = "derived-price-history";
+  let hasLivePriceSignal = false;
 
   try {
     const overview = await steamMarketPriceService.getPriceOverview(skin.market_hash_name);
     if (overview.lowestPrice != null) {
       lowestListingPrice = overview.lowestPrice;
+      hasLivePriceSignal = true;
     } else if (overview.medianPrice != null && lowestListingPrice <= 0) {
       lowestListingPrice = overview.medianPrice;
+      hasLivePriceSignal = true;
+    } else if (overview.medianPrice != null) {
+      hasLivePriceSignal = true;
     }
     if (overview.volume != null) {
       volume24h = overview.volume;
     }
     source = "steam-market-overview+price-history";
   } catch (_err) {
+    if (requireLiveOverview) {
+      throw _err;
+    }
     // Keep derived fallback if live market overview fails.
+  }
+
+  if (requireLiveOverview && !hasLivePriceSignal) {
+    throw new AppError("Live market overview did not provide a usable price signal", 502);
   }
 
   const average7dPrice =
@@ -190,6 +204,70 @@ async function buildAndStoreSnapshot(skin) {
     currency: "USD",
     source
   });
+}
+
+async function refreshSnapshotsForSkins(skins = [], options = {}) {
+  const rows = Array.from(
+    new Map(
+      (Array.isArray(skins) ? skins : [])
+        .map((skin) => {
+          const skinId = Number(skin?.id || 0);
+          return Number.isInteger(skinId) && skinId > 0 ? [skinId, skin] : null;
+        })
+        .filter(Boolean)
+    ).values()
+  );
+  if (!rows.length) return [];
+
+  const concurrency = Math.max(Number(options.concurrency || 2), 1);
+  const refreshStaleOnly = options.refreshStaleOnly !== false;
+  const force = Boolean(options.force);
+  const requireLiveOverview = Boolean(options.requireLiveOverview);
+  const existingBySkinId =
+    refreshStaleOnly && !force
+      ? await snapshotRepo.getLatestBySkinIds(rows.map((skin) => Number(skin.id)))
+      : {};
+
+  return mapWithConcurrency(
+    rows,
+    async (skin) => {
+      const existing = existingBySkinId?.[skin.id] || null;
+      if (!force && refreshStaleOnly && isSnapshotFresh(existing, marketSnapshotTtlMinutes)) {
+        return {
+          skinId: Number(skin.id),
+          marketHashName: skin.market_hash_name,
+          refreshed: false,
+          skippedFresh: true,
+          snapshot: existing,
+          error: null
+        };
+      }
+
+      try {
+        const snapshot = await buildAndStoreSnapshot(skin, {
+          requireLiveOverview
+        });
+        return {
+          skinId: Number(skin.id),
+          marketHashName: skin.market_hash_name,
+          refreshed: true,
+          skippedFresh: false,
+          snapshot,
+          error: null
+        };
+      } catch (err) {
+        return {
+          skinId: Number(skin.id),
+          marketHashName: skin.market_hash_name,
+          refreshed: false,
+          skippedFresh: false,
+          snapshot: existing,
+          error: String(err?.message || err || "snapshot_refresh_failed")
+        };
+      }
+    },
+    concurrency
+  );
 }
 
 async function getOrRefreshSnapshot(skinId) {
@@ -332,10 +410,14 @@ exports.getLiquidityScore = async (skinId) => {
   };
 };
 
+exports.refreshSnapshotsForSkins = refreshSnapshotsForSkins;
+
 exports.__testables = {
   computeLiquidityScore,
   buildQuickSellTiers,
   deriveStatsFromHistory,
+  isSnapshotFresh,
+  buildAndStoreSnapshot,
   clamp,
   round2
 };
