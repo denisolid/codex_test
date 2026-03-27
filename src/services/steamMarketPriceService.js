@@ -171,12 +171,16 @@ async function fetchOverviewWithRetries(url, timeoutMs, maxRetries) {
   throw lastErr || new AppError("Steam market pricing failed", 502);
 }
 
-function parseOverview(payload) {
-  return {
+function parseOverview(payload, options = {}) {
+  const overview = {
     lowestPrice: parsePriceString(payload.lowest_price),
     medianPrice: parsePriceString(payload.median_price),
     volume: parseIntegerString(payload.volume)
   };
+  if (options.includeRawPayload) {
+    overview.rawPayload = payload;
+  }
+  return overview;
 }
 
 function pickLatestPriceFromOverview(overview, strategyInput) {
@@ -230,7 +234,9 @@ exports.getPriceOverview = async (marketHashName, options = {}) => {
 
   const url = buildMarketOverviewUrl(marketHashName, currency);
   const payload = await fetchOverviewWithRetries(url, timeoutMs, maxRetries);
-  return parseOverview(payload);
+  return parseOverview(payload, {
+    includeRawPayload: Boolean(options.includeRawPayload)
+  });
 };
 
 exports.getLatestPrice = async (marketHashName, options = {}) => {

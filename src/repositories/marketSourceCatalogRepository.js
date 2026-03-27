@@ -188,6 +188,12 @@ function normalizeLimit(value, fallback = 1000) {
   return Math.min(Math.max(Math.round(parsed), 1), MAX_LIMIT)
 }
 
+function normalizeOffset(value, fallback = 0) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(Math.round(parsed), 0)
+}
+
 function formatSupabaseError(error, fallbackMessage = "database_error") {
   const message = normalizeText(error?.message) || fallbackMessage
   const details = normalizeText(error?.details)
@@ -429,9 +435,10 @@ async function upsertInChunks(rows = []) {
 
 async function selectWithPagination(buildQuery, options = {}) {
   const limit = normalizeLimit(options.limit, 1000)
+  const offsetStart = normalizeOffset(options.offset, 0)
   const fallbackMessage = normalizeText(options.fallbackMessage) || "market_source_catalog_select_failed"
   const rows = []
-  let offset = 0
+  let offset = offsetStart
 
   while (rows.length < limit) {
     const remaining = limit - rows.length
@@ -460,6 +467,7 @@ async function selectWithCompatibilityFallback({
   buildCompatibilityQuery,
   buildFallbackQuery,
   limit = 1000,
+  offset = 0,
   fallbackMessage = "market_source_catalog_select_failed"
 } = {}) {
   const queryBuilders = [
@@ -471,7 +479,7 @@ async function selectWithCompatibilityFallback({
 
   for (let index = 0; index < queryBuilders.length; index += 1) {
     try {
-      return await selectWithPagination(queryBuilders[index], { limit, fallbackMessage })
+      return await selectWithPagination(queryBuilders[index], { limit, offset, fallbackMessage })
     } catch (error) {
       lastError = error
       const hasNextAttempt = index < queryBuilders.length - 1
@@ -625,6 +633,7 @@ exports.upsertRows = async (rows = []) => upsertInChunks(rows)
 
 exports.listActiveTradable = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 1500)
+  const offset = normalizeOffset(options.offset, 0)
   const categories = normalizeCategories(options.categories)
   const catalogStatuses = normalizeCatalogStatuses(options.catalogStatuses)
   const rows = await selectCatalogRowsWithCompatibility({
@@ -670,6 +679,7 @@ exports.listActiveTradable = async (options = {}) => {
       return query
     },
     limit,
+    offset,
     fallbackMessage: "market_source_catalog_list_active_failed"
   })
   return catalogStatuses.length ? filterRowsByCatalogStatuses(rows, catalogStatuses) : rows
