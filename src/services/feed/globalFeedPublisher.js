@@ -1,9 +1,15 @@
 const arbitrageFeedRepo = require("../../repositories/arbitrageFeedRepository")
 const globalActiveOpportunityRepo = require("../../repositories/globalActiveOpportunityRepository")
 const globalOpportunityHistoryRepo = require("../../repositories/globalOpportunityHistoryRepository")
+const globalOpportunityLifecycleLogRepo = require("../../repositories/globalOpportunityLifecycleLogRepository")
 const diagnosticsWriter = require("../diagnosticsWriter")
 const feedCompatibilityProjector = require("./feedCompatibilityProjector")
 const { buildHistoryRow, resolveExitEventType } = require("./feedHistoryPolicy")
+const {
+  LIFECYCLE_STATUS,
+  resolveLifecycleStatusFromState,
+  buildLifecycleRow
+} = require("./opportunityLifecyclePolicy")
 const {
   FEED_RETENTION_HOURS,
   MIN_CONFIDENCE_CHANGE_LEVELS,
@@ -22,6 +28,10 @@ const {
 const {
   resolvePublishValidationContextForOpportunity: resolveSharedPublishValidationContextForOpportunity
 } = require("../scanner/publishValidation")
+const {
+  revalidateOpportunitiesForEmit,
+  buildEmitRevalidationMetadata
+} = require("../scanner/emitRevalidationService")
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -437,11 +447,15 @@ function buildExpiredStatuses(validation = {}) {
   return { refreshStatus, liveStatus, latestSignalAgeHours }
 }
 
-function buildExpiredActivePatch(previousRow = {}, validation = {}, nowIso) {
+function buildExpiredActivePatch(previousRow = {}, validation = {}, nowIso, options = {}) {
   const existingMetadata = toJsonObject(previousRow.metadata)
   const publishValidationMetadata = buildPublishValidationMetadata(validation)
   const { refreshStatus, liveStatus, latestSignalAgeHours } = buildExpiredStatuses(validation)
-  const reason = normalizeText(validation.staleReason) || "publish_validation_failed"
+  const additionalMetadata = toJsonObject(options?.additionalMetadata)
+  const reason =
+    normalizeText(options?.reasonOverride) ||
+    normalizeText(validation.staleReason) ||
+    "publish_validation_failed"
   const eventType =
     resolveExitEventType({
       liveStatus,
@@ -457,6 +471,7 @@ function buildExpiredActivePatch(previousRow = {}, validation = {}, nowIso) {
     metadata: {
       ...existingMetadata,
       ...publishValidationMetadata,
+      ...additionalMetadata,
       publish_validation: {
         ...toJsonObject(existingMetadata.publish_validation),
         ...toJsonObject(publishValidationMetadata.publish_validation),
@@ -611,6 +626,23 @@ async function publishBatch({
     historyRowsWritten: 0,
     compatibilityRowsWritten: 0,
     validationReasons: {},
+    emitRevalidation: {
+      emit_revalidation_checked: 0,
+      emitted_after_revalidation: 0,
+      blocked_on_emit_total: 0,
+      blocked_on_emit_by_reason: {},
+      stale_on_emit_count: 0,
+      unavailable_on_emit_count: 0,
+      non_executable_on_emit_count: 0,
+      invalid_market_integrity_on_emit_count: 0
+    },
+    lifecycle: {
+      detected_total: 0,
+      published_total: 0,
+      expired_total: 0,
+      invalidated_total: 0,
+      blocked_on_emit_total: 0
+    },
     touchedFingerprints: [],
     touchedItemNames: []
   }
@@ -623,6 +655,13 @@ async function publishBatch({
   }
 
   const preparedRows = rows.map((row) => createPreparedOpportunity(row, safeNowIso, scanRunId))
+  const emitRevalidation = await revalidateOpportunitiesForEmit(rows, {
+    nowIso: safeNowIso
+  })
+  counters.emitRevalidation = {
+    ...counters.emitRevalidation,
+    ...(emitRevalidation?.diagnostics || {})
+  }
   const itemNames = Array.from(
     new Set(
       preparedRows
@@ -665,24 +704,29 @@ async function publishBatch({
   const activeInserts = []
   const activeUpdates = []
   const historyPlans = []
+  const lifecycleRows = []
+  const publishLifecyclePlans = []
   const pendingInsertFingerprints = new Set()
   const touchedFingerprints = new Set()
   const touchedItemNames = new Set()
   const writtenFingerprints = new Set()
 
-  for (const prepared of preparedRows) {
+  for (const [index, prepared] of preparedRows.entries()) {
     const opportunity = prepared.opportunity
     const insertRow = prepared.insertRow
     const key = prepared.key
     const fingerprint = prepared.fingerprint
     const previousActive = activeByFingerprint[fingerprint] || activeLatestByKey[key] || null
 
-    const publishValidation = resolvePublishValidationContextForOpportunity(
-      opportunity,
-      Date.now(),
-      safeNowIso
-    )
+    const emitRevalidationResult =
+      Array.isArray(emitRevalidation?.results) && emitRevalidation.results[index]
+        ? emitRevalidation.results[index]
+        : null
+    const publishValidation =
+      emitRevalidationResult?.publishValidation ||
+      resolvePublishValidationContextForOpportunity(opportunity, Date.now(), safeNowIso)
     const publishValidationMetadata = buildPublishValidationMetadata(publishValidation)
+    const emitRevalidationMetadata = buildEmitRevalidationMetadata(emitRevalidationResult)
     const routeSignalObservedAt =
       toIsoOrNull(publishValidation.routeSignalObservedAt) ||
       toIsoOrNull(insertRow.market_signal_observed_at) ||
@@ -696,7 +740,8 @@ async function publishBatch({
           toIsoOrNull(opportunity?.metadata?.latest_market_signal_at) ||
           toIsoOrNull(opportunity?.latestMarketSignalAt) ||
           null,
-        ...publishValidationMetadata
+        ...publishValidationMetadata,
+        ...emitRevalidationMetadata
       }
     }
     const insertRowForPublish = {
@@ -708,23 +753,69 @@ async function publishBatch({
           routeSignalObservedAt ||
           toIsoOrNull(insertRow?.metadata?.latest_market_signal_at) ||
           null,
-        ...publishValidationMetadata
+        ...publishValidationMetadata,
+        ...emitRevalidationMetadata
+      }
+    }
+    const lifecycleSourceRow = {
+      ...insertRowForPublish,
+      ...opportunityWithValidation,
+      metadata: {
+        ...toJsonObject(insertRowForPublish.metadata),
+        ...toJsonObject(opportunityWithValidation.metadata)
       }
     }
 
     maybeTrackSet(touchedFingerprints, fingerprint)
     maybeTrackSet(touchedItemNames, insertRowForPublish.item_name)
+    const detectedLifecycleRow = buildLifecycleRow({
+      writerStage: "publish",
+      scanRunId,
+      lifecycleStatus: LIFECYCLE_STATUS.DETECTED,
+      sourceRow: lifecycleSourceRow,
+      eventAt: safeNowIso,
+      publishTimestamp: safeNowIso
+    })
+    if (detectedLifecycleRow) {
+      lifecycleRows.push(detectedLifecycleRow)
+      counters.lifecycle.detected_total += 1
+    }
 
-    if (!publishValidation.isPublishable) {
+    if (!emitRevalidationResult?.passed) {
       counters.blockedCount += 1
+      counters.lifecycle.blocked_on_emit_total += 1
       incrementCounterBy(
         counters.validationReasons,
-        normalizeText(publishValidation.staleReason) || "publish_validation_failed",
+        normalizeText(emitRevalidationResult?.detailReason) ||
+          normalizeText(publishValidation.staleReason) ||
+          normalizeText(emitRevalidationResult?.blockReason) ||
+          "emit_revalidation_failed",
         1
       )
+      const blockedLifecycleRow = buildLifecycleRow({
+        writerStage: "publish",
+        scanRunId,
+        lifecycleStatus: LIFECYCLE_STATUS.BLOCKED_ON_EMIT,
+        sourceRow: lifecycleSourceRow,
+        eventAt: safeNowIso,
+        reason:
+          normalizeText(emitRevalidationResult?.blockReason) ||
+          normalizeText(publishValidation.staleReason) ||
+          "emit_revalidation_failed",
+        publishTimestamp: safeNowIso
+      })
+      if (blockedLifecycleRow) {
+        lifecycleRows.push(blockedLifecycleRow)
+      }
 
       if (previousActive && normalizeText(previousActive.live_status).toLowerCase() === "live") {
-        const activePatch = buildExpiredActivePatch(previousActive, publishValidation, safeNowIso)
+        const activePatch = buildExpiredActivePatch(previousActive, publishValidation, safeNowIso, {
+          reasonOverride:
+            normalizeText(emitRevalidationResult?.blockReason) ||
+            normalizeText(publishValidation.staleReason) ||
+            "emit_revalidation_failed",
+          additionalMetadata: emitRevalidationMetadata
+        })
         activeUpdates.push({ id: previousActive.id, patch: activePatch })
         const exitEventType = resolveExitEventType({
           liveStatus: activePatch.live_status,
@@ -736,8 +827,41 @@ async function publishBatch({
             normalizeText(previousActive.opportunity_fingerprint),
           eventType: exitEventType,
           materiallyChanged: true,
-          reason: normalizeText(publishValidation.staleReason) || "publish_validation_failed"
+          reason:
+            normalizeText(emitRevalidationResult?.blockReason) ||
+            normalizeText(publishValidation.staleReason) ||
+            "emit_revalidation_failed"
         })
+        const lifecycleStatus = resolveLifecycleStatusFromState({
+          liveStatus: activePatch.live_status,
+          refreshStatus: activePatch.refresh_status
+        })
+        const blockedActiveLifecycleRow = buildLifecycleRow({
+          writerStage: "publish",
+          scanRunId,
+          lifecycleStatus,
+          activeOpportunityId: previousActive.id,
+          sourceRow: {
+            ...previousActive,
+            ...activePatch
+          },
+          eventAt: safeNowIso,
+          reason:
+            normalizeText(emitRevalidationResult?.blockReason) ||
+            normalizeText(publishValidation.staleReason) ||
+            "emit_revalidation_failed",
+          publishTimestamp:
+            toIsoOrNull(previousActive?.last_published_at || previousActive?.lastPublishedAt) ||
+            safeNowIso
+        })
+        if (blockedActiveLifecycleRow) {
+          lifecycleRows.push(blockedActiveLifecycleRow)
+          if (lifecycleStatus === LIFECYCLE_STATUS.EXPIRED) {
+            counters.lifecycle.expired_total += 1
+          } else if (lifecycleStatus === LIFECYCLE_STATUS.INVALIDATED) {
+            counters.lifecycle.invalidated_total += 1
+          }
+        }
         maybeTrackSet(
           writtenFingerprints,
           normalizeText(activePatch.opportunity_fingerprint) ||
@@ -777,6 +901,10 @@ async function publishBatch({
         materiallyChanged: normalizedEvent.materiallyChanged,
         reason: null
       })
+      publishLifecyclePlans.push({
+        fingerprint: activeInsert.opportunity_fingerprint,
+        publishTimestamp: safeNowIso
+      })
       maybeTrackSet(writtenFingerprints, activeInsert.opportunity_fingerprint)
       continue
     }
@@ -806,6 +934,14 @@ async function publishBatch({
       materiallyChanged: normalizedEvent.materiallyChanged,
       reason: null
     })
+    if (normalizedEvent.eventType !== "duplicate") {
+      publishLifecyclePlans.push({
+        fingerprint:
+          normalizeText(activePatch.opportunity_fingerprint) ||
+          normalizeText(previousActive.opportunity_fingerprint),
+        publishTimestamp: safeNowIso
+      })
+    }
     maybeTrackSet(
       writtenFingerprints,
       normalizeText(activePatch.opportunity_fingerprint) ||
@@ -829,6 +965,22 @@ async function publishBatch({
       })
     : []
   const persistedActiveByFingerprint = buildRowsByFingerprint(persistedActiveRows)
+  for (const plan of publishLifecyclePlans) {
+    const persistedRow = persistedActiveByFingerprint[normalizeText(plan.fingerprint).toLowerCase()]
+    const publishedLifecycleRow = buildLifecycleRow({
+      writerStage: "publish",
+      scanRunId,
+      lifecycleStatus: LIFECYCLE_STATUS.PUBLISHED,
+      activeOpportunityId: persistedRow?.id || null,
+      sourceRow: persistedRow || null,
+      eventAt: safeNowIso,
+      publishTimestamp: plan.publishTimestamp || safeNowIso
+    })
+    if (publishedLifecycleRow) {
+      lifecycleRows.push(publishedLifecycleRow)
+      counters.lifecycle.published_total += 1
+    }
+  }
 
   if (persistedActiveRows.length) {
     const syncResult = await feedCompatibilityProjector.syncRows({
@@ -857,6 +1009,9 @@ async function publishBatch({
     const insertedHistory = await globalOpportunityHistoryRepo.insertRows(historyRows)
     counters.historyRowsWritten = Array.isArray(insertedHistory) ? insertedHistory.length : 0
   }
+  if (lifecycleRows.length) {
+    await globalOpportunityLifecycleLogRepo.insertRows(lifecycleRows)
+  }
 
   const legacyCutoffIso = new Date(
     Date.now() - FEED_RETENTION_HOURS * 60 * 60 * 1000
@@ -868,12 +1023,15 @@ async function publishBatch({
 
   counters.publishedCount =
     activeInserts.length + counters.updatedCount + counters.reactivatedCount
+  counters.emitRevalidation.emitted_after_revalidation = counters.publishedCount
   counters.touchedFingerprints = Array.from(touchedFingerprints)
   counters.touchedItemNames = Array.from(touchedItemNames)
 
   await diagnosticsWriter.writePublishBatch({
     scanRunId,
     counters,
+    lifecycle: counters.lifecycle,
+    emitRevalidation: counters.emitRevalidation,
     validationReasons: counters.validationReasons,
     touchedItemNames: counters.touchedItemNames,
     timings: {
@@ -899,6 +1057,8 @@ async function publishBatch({
     historyRowsWritten: counters.historyRowsWritten,
     compatibilityRowsWritten: counters.compatibilityRowsWritten,
     validationReasons: counters.validationReasons,
+    lifecycle: counters.lifecycle,
+    emitRevalidation: counters.emitRevalidation,
     touchedFingerprints: counters.touchedFingerprints,
     touchedItemNames: counters.touchedItemNames
   }

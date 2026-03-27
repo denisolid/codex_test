@@ -1,5 +1,6 @@
 const marketSourceCatalogRepo = require("../../repositories/marketSourceCatalogRepository")
 const marketSourceCatalogService = require("../marketSourceCatalogService")
+const alphaHotUniverseService = require("./alphaHotUniverseService")
 const {
   OPPORTUNITY_BATCH_RUNTIME_TARGET,
   SCAN_COHORT_CATEGORIES,
@@ -293,9 +294,22 @@ async function loadScanSource(options = {}) {
     diagnostics.cohortQueryFailures.warm ||
     diagnostics.cohortQueryFailures.cold
 
-  return {
+  const alphaHotUniverse = alphaHotUniverseService.buildAlphaHotUniverse({
     rows,
-    diagnostics
+    batchSize,
+    allowNearEligible: true
+  })
+  const alphaDiagnostics =
+    alphaHotUniverse?.diagnostics && typeof alphaHotUniverse.diagnostics === "object"
+      ? alphaHotUniverse.diagnostics
+      : {}
+
+  return {
+    rows: Array.isArray(alphaHotUniverse?.rows) ? alphaHotUniverse.rows : [],
+    diagnostics: {
+      ...diagnostics,
+      ...alphaDiagnostics
+    }
   }
 }
 

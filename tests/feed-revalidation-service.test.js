@@ -9,6 +9,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY =
 const arbitrageFeedRepo = require("../src/repositories/arbitrageFeedRepository")
 const globalActiveOpportunityRepo = require("../src/repositories/globalActiveOpportunityRepository")
 const globalOpportunityHistoryRepo = require("../src/repositories/globalOpportunityHistoryRepository")
+const globalOpportunityLifecycleLogRepo = require("../src/repositories/globalOpportunityLifecycleLogRepository")
 const diagnosticsWriter = require("../src/services/diagnosticsWriter")
 const marketStateReadService = require("../src/services/marketStateReadService")
 const scannerRunLeaseService = require("../src/services/scannerRunLeaseService")
@@ -69,6 +70,7 @@ test("feed revalidation expires stale active rows, links history, and updates le
     getRowsByFingerprints: globalActiveOpportunityRepo.getRowsByFingerprints,
     updateActiveRowsById: globalActiveOpportunityRepo.updateRowsById,
     insertHistoryRows: globalOpportunityHistoryRepo.insertRows,
+    insertLifecycleRows: globalOpportunityLifecycleLogRepo.insertRows,
     getLatestQuotesByItemNames: marketStateReadService.getLatestQuotesByItemNames,
     legacyGetRecentRowsByItems: arbitrageFeedRepo.getRecentRowsByItems,
     getActiveRowsByFingerprints: arbitrageFeedRepo.getActiveRowsByFingerprints,
@@ -81,6 +83,7 @@ test("feed revalidation expires stale active rows, links history, and updates le
   let activeUpdatePayload = null
   let legacyUpdatePayload = null
   let historyPayload = null
+  let lifecyclePayload = null
   let persistedActiveRows = [row]
 
   scannerRunLeaseService.recoverExpired = async () => 0
@@ -108,6 +111,10 @@ test("feed revalidation expires stale active rows, links history, and updates le
   }
   globalOpportunityHistoryRepo.insertRows = async (rows = []) => {
     historyPayload = rows
+    return rows
+  }
+  globalOpportunityLifecycleLogRepo.insertRows = async (rows = []) => {
+    lifecyclePayload = rows
     return rows
   }
   marketStateReadService.getLatestQuotesByItemNames = async () => ({
@@ -159,6 +166,9 @@ test("feed revalidation expires stale active rows, links history, and updates le
     assert.equal(Array.isArray(historyPayload), true)
     assert.equal(historyPayload[0].event_type, "expired")
     assert.equal(historyPayload[0].active_opportunity_id, row.id)
+    assert.equal(Array.isArray(lifecyclePayload), true)
+    assert.equal(lifecyclePayload[0].lifecycle_status, "expired")
+    assert.equal(result.lifecycle.expired_total, 1)
     assert.equal(Array.isArray(legacyUpdatePayload), true)
     assert.equal(legacyUpdatePayload[0].patch.is_active, false)
     assert.equal(legacyUpdatePayload[0].patch.live_status, "stale")
@@ -172,6 +182,7 @@ test("feed revalidation expires stale active rows, links history, and updates le
     globalActiveOpportunityRepo.getRowsByFingerprints = originals.getRowsByFingerprints
     globalActiveOpportunityRepo.updateRowsById = originals.updateActiveRowsById
     globalOpportunityHistoryRepo.insertRows = originals.insertHistoryRows
+    globalOpportunityLifecycleLogRepo.insertRows = originals.insertLifecycleRows
     marketStateReadService.getLatestQuotesByItemNames = originals.getLatestQuotesByItemNames
     arbitrageFeedRepo.getRecentRowsByItems = originals.legacyGetRecentRowsByItems
     arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
@@ -205,6 +216,7 @@ test("feed revalidation keeps live rows active without writing history", async (
     getRowsByFingerprints: globalActiveOpportunityRepo.getRowsByFingerprints,
     updateActiveRowsById: globalActiveOpportunityRepo.updateRowsById,
     insertHistoryRows: globalOpportunityHistoryRepo.insertRows,
+    insertLifecycleRows: globalOpportunityLifecycleLogRepo.insertRows,
     getLatestQuotesByItemNames: marketStateReadService.getLatestQuotesByItemNames,
     legacyGetRecentRowsByItems: arbitrageFeedRepo.getRecentRowsByItems,
     getActiveRowsByFingerprints: arbitrageFeedRepo.getActiveRowsByFingerprints,
@@ -242,6 +254,9 @@ test("feed revalidation keeps live rows active without writing history", async (
   globalOpportunityHistoryRepo.insertRows = async (rows = []) => {
     historyPayload = rows
     return rows
+  }
+  globalOpportunityLifecycleLogRepo.insertRows = async () => {
+    throw new Error("lifecycle log should not be written for unchanged live rows")
   }
   marketStateReadService.getLatestQuotesByItemNames = async () => ({
     [row.item_name]: {
@@ -296,6 +311,7 @@ test("feed revalidation keeps live rows active without writing history", async (
     globalActiveOpportunityRepo.getRowsByFingerprints = originals.getRowsByFingerprints
     globalActiveOpportunityRepo.updateRowsById = originals.updateActiveRowsById
     globalOpportunityHistoryRepo.insertRows = originals.insertHistoryRows
+    globalOpportunityLifecycleLogRepo.insertRows = originals.insertLifecycleRows
     marketStateReadService.getLatestQuotesByItemNames = originals.getLatestQuotesByItemNames
     arbitrageFeedRepo.getRecentRowsByItems = originals.legacyGetRecentRowsByItems
     arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
@@ -326,6 +342,7 @@ test("feed revalidation repairs missing legacy compatibility rows", async () => 
     getRowsByFingerprints: globalActiveOpportunityRepo.getRowsByFingerprints,
     updateActiveRowsById: globalActiveOpportunityRepo.updateRowsById,
     insertHistoryRows: globalOpportunityHistoryRepo.insertRows,
+    insertLifecycleRows: globalOpportunityLifecycleLogRepo.insertRows,
     getLatestQuotesByItemNames: marketStateReadService.getLatestQuotesByItemNames,
     legacyGetRecentRowsByItems: arbitrageFeedRepo.getRecentRowsByItems,
     getActiveRowsByFingerprints: arbitrageFeedRepo.getActiveRowsByFingerprints,
@@ -361,6 +378,7 @@ test("feed revalidation repairs missing legacy compatibility rows", async () => 
     return rows.length
   }
   globalOpportunityHistoryRepo.insertRows = async () => []
+  globalOpportunityLifecycleLogRepo.insertRows = async () => []
   marketStateReadService.getLatestQuotesByItemNames = async () => ({
     [row.item_name]: {
       steam: {
@@ -417,6 +435,7 @@ test("feed revalidation repairs missing legacy compatibility rows", async () => 
     globalActiveOpportunityRepo.getRowsByFingerprints = originals.getRowsByFingerprints
     globalActiveOpportunityRepo.updateRowsById = originals.updateActiveRowsById
     globalOpportunityHistoryRepo.insertRows = originals.insertHistoryRows
+    globalOpportunityLifecycleLogRepo.insertRows = originals.insertLifecycleRows
     marketStateReadService.getLatestQuotesByItemNames = originals.getLatestQuotesByItemNames
     arbitrageFeedRepo.getRecentRowsByItems = originals.legacyGetRecentRowsByItems
     arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
@@ -444,6 +463,7 @@ test("feed revalidation writes degraded history events and heartbeats progress",
     getRowsByFingerprints: globalActiveOpportunityRepo.getRowsByFingerprints,
     updateActiveRowsById: globalActiveOpportunityRepo.updateRowsById,
     insertHistoryRows: globalOpportunityHistoryRepo.insertRows,
+    insertLifecycleRows: globalOpportunityLifecycleLogRepo.insertRows,
     getLatestQuotesByItemNames: marketStateReadService.getLatestQuotesByItemNames,
     legacyGetRecentRowsByItems: arbitrageFeedRepo.getRecentRowsByItems,
     getActiveRowsByFingerprints: arbitrageFeedRepo.getActiveRowsByFingerprints,
@@ -455,6 +475,7 @@ test("feed revalidation writes degraded history events and heartbeats progress",
 
   let historyPayload = null
   let legacyInsertPayload = null
+  let lifecyclePayload = null
   let heartbeatCount = 0
   let persistedActiveRows = [row]
 
@@ -487,6 +508,10 @@ test("feed revalidation writes degraded history events and heartbeats progress",
     historyPayload = rows
     return rows
   }
+  globalOpportunityLifecycleLogRepo.insertRows = async (rows = []) => {
+    lifecyclePayload = rows
+    return rows
+  }
   marketStateReadService.getLatestQuotesByItemNames = async () => ({})
   arbitrageFeedRepo.getRecentRowsByItems = async () => []
   arbitrageFeedRepo.getActiveRowsByFingerprints = async () => []
@@ -509,6 +534,9 @@ test("feed revalidation writes degraded history events and heartbeats progress",
     assert.equal(Array.isArray(historyPayload), true)
     assert.equal(historyPayload[0].event_type, "degraded")
     assert.equal(historyPayload[0].active_opportunity_id, row.id)
+    assert.equal(Array.isArray(lifecyclePayload), true)
+    assert.equal(lifecyclePayload[0].lifecycle_status, "invalidated")
+    assert.equal(result.lifecycle.invalidated_total, 1)
     assert.equal(Array.isArray(legacyInsertPayload), true)
     assert.equal(legacyInsertPayload[0].is_active, false)
     assert.equal(heartbeatCount >= 2, true)
@@ -522,6 +550,7 @@ test("feed revalidation writes degraded history events and heartbeats progress",
     globalActiveOpportunityRepo.getRowsByFingerprints = originals.getRowsByFingerprints
     globalActiveOpportunityRepo.updateRowsById = originals.updateActiveRowsById
     globalOpportunityHistoryRepo.insertRows = originals.insertHistoryRows
+    globalOpportunityLifecycleLogRepo.insertRows = originals.insertLifecycleRows
     marketStateReadService.getLatestQuotesByItemNames = originals.getLatestQuotesByItemNames
     arbitrageFeedRepo.getRecentRowsByItems = originals.legacyGetRecentRowsByItems
     arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints

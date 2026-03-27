@@ -31,6 +31,12 @@ const DEFAULT_TARGET_LIMIT = Math.max(
 const DEFAULT_SELECTION_BATCH_SIZE = 30
 const DEFAULT_QUOTE_BATCH_SIZE = 20
 const DEFAULT_SNAPSHOT_BATCH_SIZE = 10
+const DEFAULT_WEAPON_SKIN_VERIFICATION_LIMIT = 12
+const DEFAULT_WEAPON_SKIN_VERIFICATION_POOL_MULTIPLIER = 8
+const DEFAULT_WEAPON_SKIN_VERIFICATION_MIN_POOL = 90
+const DEFAULT_WEAPON_SKIN_FALLBACK_PROBE_LIMIT = 2
+const DEFAULT_WEAPON_SKIN_VERIFICATION_RETRY_BUDGET = 2
+const DEFAULT_WEAPON_SKIN_VERIFICATION_COOLDOWN_MS = 30 * 60 * 1000
 const DEFAULT_HEALTH_WINDOW_HOURS = 2
 const DEFAULT_QUOTE_LOOKBACK_HOURS = 24 * 14
 const DEFAULT_REFRESH_CONCURRENCY = Math.max(Number(arbitrageMaxConcurrentMarketRequests || 4), 1)
@@ -62,6 +68,17 @@ const CATEGORY_HEALTH_REQUIREMENTS = Object.freeze({
     minFreshSnapshotRate: 0
   })
 })
+const WEAPON_SKIN_PRIORITY_TIER_WEIGHTS = Object.freeze({
+  tier_a: 20,
+  tier_b: 12
+})
+const WEAPON_SKIN_VERIFICATION_PRIORITY_BUCKETS = Object.freeze({
+  highest: 135,
+  high: 110,
+  medium: 85
+})
+const WEAPON_SKIN_STRUCTURAL_BLOCK_REASON_PATTERN =
+  /(invalid|unusable|anti[_\s-]?fake|below[_\s-]?min|impossible|unsupported|not[_\s-]?tradable|structural|economics)/i
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -328,6 +345,345 @@ function normalizeRecoveryCategories(values = []) {
     )
   )
   return normalized.length ? normalized : RECOVERY_CATEGORIES.slice()
+}
+
+function createPriorityBucketMap(initialValue = 0) {
+  const initial = Number(initialValue || 0)
+  return {
+    highest: initial,
+    high: initial,
+    medium: initial,
+    low: initial
+  }
+}
+
+function createQueuedRowsByStateMap(initialValue = 0) {
+  const initial = Number(initialValue || 0)
+  return {
+    eligible: initial,
+    near_eligible: initial,
+    enriching: initial,
+    candidate: initial
+  }
+}
+
+function normalizeWeaponSkinCandidateStatus(value = "") {
+  const status = normalizeText(value).toLowerCase()
+  if (["eligible", "near_eligible", "enriching", "candidate"].includes(status)) {
+    return status
+  }
+  return "candidate"
+}
+
+function createWeaponSkinVerificationState(state = {}) {
+  return {
+    byMarketHashName:
+      state?.byMarketHashName && typeof state.byMarketHashName === "object"
+        ? { ...state.byMarketHashName }
+        : {}
+  }
+}
+
+function getWeaponSkinVerificationDefaults(options = {}) {
+  return {
+    verificationLimit: Math.max(
+      Number(options.weaponSkinVerificationLimit || DEFAULT_WEAPON_SKIN_VERIFICATION_LIMIT),
+      1
+    ),
+    fallbackProbeLimit: Math.max(
+      Math.min(
+        Number(
+          options.weaponSkinFallbackProbeLimit || DEFAULT_WEAPON_SKIN_FALLBACK_PROBE_LIMIT
+        ),
+        3
+      ),
+      1
+    ),
+    retryBudget: Math.max(
+      Number(options.weaponSkinVerificationRetryBudget || DEFAULT_WEAPON_SKIN_VERIFICATION_RETRY_BUDGET),
+      1
+    ),
+    cooldownMs: Math.max(
+      Number(options.weaponSkinVerificationCooldownMs || DEFAULT_WEAPON_SKIN_VERIFICATION_COOLDOWN_MS),
+      1000
+    ),
+    candidatePoolLimit: Math.max(
+      Number(
+        options.weaponSkinVerificationCandidatePoolLimit ||
+          Math.max(
+            DEFAULT_WEAPON_SKIN_VERIFICATION_MIN_POOL,
+            Number(options.limit || DEFAULT_SELECTION_BATCH_SIZE) *
+              DEFAULT_WEAPON_SKIN_VERIFICATION_POOL_MULTIPLIER
+          )
+      ),
+      1
+    )
+  }
+}
+
+function resolveWeaponSkinVerificationCatalogGate(row = {}) {
+  const catalogStatus = normalizeText(
+    row?.catalog_status ?? row?.catalogStatus
+  ).toLowerCase()
+  const catalogBlockReason = normalizeText(
+    row?.catalog_block_reason ?? row?.catalogBlockReason
+  ).toLowerCase()
+  const candidateStatus = normalizeWeaponSkinCandidateStatus(
+    row?.candidate_status ?? row?.candidateStatus
+  )
+  const structurallyInvalid =
+    candidateStatus === "rejected" ||
+    catalogStatus === "blocked" ||
+    (catalogStatus === "shadow" &&
+      catalogBlockReason &&
+      WEAPON_SKIN_STRUCTURAL_BLOCK_REASON_PATTERN.test(catalogBlockReason))
+
+  return {
+    catalogStatus,
+    catalogBlockReason: catalogBlockReason || null,
+    structurallyInvalid
+  }
+}
+
+function getWeaponSkinVerificationRowState(
+  weaponSkinVerificationState = {},
+  marketHashName = "",
+  options = {}
+) {
+  if (
+    !weaponSkinVerificationState.byMarketHashName ||
+    typeof weaponSkinVerificationState.byMarketHashName !== "object"
+  ) {
+    weaponSkinVerificationState.byMarketHashName = {}
+  }
+  const name = normalizeText(marketHashName)
+  if (!name) {
+    return {
+      retriesRemaining: getWeaponSkinVerificationDefaults(options).retryBudget,
+      retryBudget: getWeaponSkinVerificationDefaults(options).retryBudget,
+      retryBudgetExhausted: false,
+      cooldownUntil: null,
+      verifiedFresh: false,
+      recomputedAt: null,
+      lastAttemptAt: null,
+      lastResult: null,
+      lastPriorityScore: 0
+    }
+  }
+  const defaults = getWeaponSkinVerificationDefaults(options)
+  if (!weaponSkinVerificationState.byMarketHashName[name]) {
+    weaponSkinVerificationState.byMarketHashName[name] = {
+      retriesRemaining: defaults.retryBudget,
+      retryBudget: defaults.retryBudget,
+      retryBudgetExhausted: false,
+      cooldownUntil: null,
+      verifiedFresh: false,
+      recomputedAt: null,
+      lastAttemptAt: null,
+      lastResult: null,
+      lastPriorityScore: 0
+    }
+  }
+  const entry = weaponSkinVerificationState.byMarketHashName[name]
+  entry.retryBudget = Math.max(Number(entry.retryBudget || defaults.retryBudget), 1)
+  if (!Number.isFinite(Number(entry.retriesRemaining))) {
+    entry.retriesRemaining = entry.retryBudget
+  }
+  entry.retriesRemaining = Math.max(Math.round(Number(entry.retriesRemaining || 0)), 0)
+  entry.retryBudgetExhausted =
+    Boolean(entry.retryBudgetExhausted) || entry.retriesRemaining <= 0
+  entry.cooldownUntil = toIsoOrNull(entry.cooldownUntil) || null
+  entry.lastAttemptAt = toIsoOrNull(entry.lastAttemptAt) || null
+  entry.recomputedAt = toIsoOrNull(entry.recomputedAt) || null
+  entry.lastResult = normalizeText(entry.lastResult) || null
+  entry.lastPriorityScore = Number(entry.lastPriorityScore || 0)
+  entry.verifiedFresh = Boolean(entry.verifiedFresh)
+  return entry
+}
+
+function isWeaponSkinVerificationCooldownActive(rowState = {}, nowMs = Date.now()) {
+  const cooldownUntil = toIsoOrNull(rowState?.cooldownUntil)
+  if (!cooldownUntil) return false
+  return new Date(cooldownUntil).getTime() > Number(nowMs || Date.now())
+}
+
+function resolveWeaponSkinVerificationPriorityBucket(score = 0) {
+  const safeScore = Number(score || 0)
+  if (safeScore >= WEAPON_SKIN_VERIFICATION_PRIORITY_BUCKETS.highest) return "highest"
+  if (safeScore >= WEAPON_SKIN_VERIFICATION_PRIORITY_BUCKETS.high) return "high"
+  if (safeScore >= WEAPON_SKIN_VERIFICATION_PRIORITY_BUCKETS.medium) return "medium"
+  return "low"
+}
+
+function computeWeaponSkinVerificationPriority(row = {}, nowMs = Date.now()) {
+  const candidateStatus = normalizeWeaponSkinCandidateStatus(
+    row?.candidate_status ?? row?.candidateStatus
+  )
+  const marketCoverageCount = Math.max(
+    Number((row?.market_coverage_count ?? row?.marketCoverageCount) || 0),
+    0
+  )
+  const liquidityRank = Math.max(Number((row?.liquidity_rank ?? row?.liquidityRank) || 0), 0)
+  const priorityTier = normalizeText(row?.priority_tier || row?.priorityTier).toLowerCase() || null
+  const priorityBoost = Math.max(Number((row?.priority_boost ?? row?.priorityBoost) || 0), 0)
+  const quoteFresh = isFreshWithinHours(row?.quote_fetched_at || row?.quoteFetchedAt, 2, nowMs)
+  const signalFresh = isFreshWithinHours(
+    row?.last_market_signal_at || row?.lastMarketSignalAt,
+    6,
+    nowMs
+  )
+  const opportunityPotential = Math.max(
+    Number(row?.opportunity_score ?? row?.opportunityScore ?? row?.catalog_quality_score ?? row?.catalogQualityScore ?? 0),
+    0
+  )
+  const candidateWeight =
+    candidateStatus === "eligible"
+      ? 90
+      : candidateStatus === "near_eligible"
+        ? 72
+        : candidateStatus === "enriching"
+          ? 38
+          : 24
+  const quoteWeight = quoteFresh ? 28 : 0
+  const coverageWeight = Math.min(marketCoverageCount * 8, 24)
+  const liquidityWeight = Math.min(liquidityRank * 0.3, 20)
+  const tierWeight = WEAPON_SKIN_PRIORITY_TIER_WEIGHTS[priorityTier] || 0
+  const boostWeight = Math.min(priorityBoost * 0.25, 22)
+  const signalWeight = signalFresh ? 10 : 0
+  const opportunityWeight = Math.min(opportunityPotential * 0.12, 12)
+  const score =
+    candidateWeight +
+    quoteWeight +
+    coverageWeight +
+    liquidityWeight +
+    tierWeight +
+    boostWeight +
+    signalWeight +
+    opportunityWeight
+  const strongQuoteSupport = quoteFresh && marketCoverageCount >= 2
+  const minimumQuoteSupport = quoteFresh && marketCoverageCount >= 1
+  const highPriorityCandidate =
+    candidateStatus === "eligible" ||
+    candidateStatus === "near_eligible" ||
+    liquidityRank >= 55 ||
+    priorityBoost >= 12 ||
+    priorityTier === "tier_a" ||
+    marketCoverageCount >= 3
+  const fallbackQualityCandidate =
+    liquidityRank >= 35 ||
+    priorityBoost >= 8 ||
+    ["tier_a", "tier_b"].includes(priorityTier) ||
+    opportunityPotential >= 45
+  const coldCandidate = ["candidate", "enriching"].includes(candidateStatus)
+  const lowPriorityCold =
+    coldCandidate &&
+    !(
+      liquidityRank >= 55 ||
+      priorityBoost >= 12 ||
+      priorityTier === "tier_a" ||
+      marketCoverageCount >= 2 ||
+      opportunityPotential >= 70
+    )
+  const primaryEligible =
+    strongQuoteSupport &&
+    (["eligible", "near_eligible"].includes(candidateStatus) || highPriorityCandidate)
+  const fallbackEligible =
+    minimumQuoteSupport && fallbackQualityCandidate && !lowPriorityCold
+
+  return {
+    candidateStatus,
+    quoteFresh,
+    marketCoverageCount,
+    liquidityRank,
+    priorityTier,
+    priorityBoost,
+    opportunityPotential,
+    minimumQuoteSupport,
+    strongQuoteSupport,
+    highPriorityCandidate,
+    fallbackQualityCandidate,
+    coldCandidate,
+    lowPriorityCold,
+    primaryEligible,
+    fallbackEligible,
+    priorityScore: Number(score.toFixed(2)),
+    priorityBucket: resolveWeaponSkinVerificationPriorityBucket(score)
+  }
+}
+
+function createWeaponSkinVerificationAggregate() {
+  return {
+    verificationQueueSize: 0,
+    topQueuedRowsCount: 0,
+    primaryQueueSize: 0,
+    fallbackProbeQueueSize: 0,
+    queuedRowsByState: createQueuedRowsByStateMap(),
+    attemptedVerificationRows: 0,
+    successfulVerificationRows: 0,
+    fallbackProbeRowsAttempted: 0,
+    fallbackProbeRowsSuccessful: 0,
+    cooledDownRows: 0,
+    retryBudgetBlockedRows: 0,
+    skippedLowPriorityRows: 0,
+    skippedPrimaryTooStrictCount: 0,
+    skippedFallbackBelowMinimumQualityCount: 0,
+    verificationPriorityBuckets: createPriorityBucketMap(),
+    recomputedVerifiedRows: 0,
+    fallbackProbeRowsRecomputed: 0,
+    verifiedScannableRows: 0,
+    fallbackProbeVerifiedScannableRows: 0,
+    weaponSkinScannerSourceIncreased: false,
+    fallbackProbeWeaponSkinScannerSourceIncreased: false,
+    fallbackLaneActivated: false,
+    queueEmptyReason: null
+  }
+}
+
+function mergeWeaponSkinVerificationAggregate(target = createWeaponSkinVerificationAggregate(), source = {}) {
+  const next = target
+  next.verificationQueueSize += Number(source.verificationQueueSize || 0)
+  next.topQueuedRowsCount += Number(source.topQueuedRowsCount || 0)
+  next.primaryQueueSize += Number(source.primaryQueueSize || 0)
+  next.fallbackProbeQueueSize += Number(source.fallbackProbeQueueSize || 0)
+  next.attemptedVerificationRows += Number(source.attemptedVerificationRows || 0)
+  next.successfulVerificationRows += Number(source.successfulVerificationRows || 0)
+  next.fallbackProbeRowsAttempted += Number(source.fallbackProbeRowsAttempted || 0)
+  next.fallbackProbeRowsSuccessful += Number(source.fallbackProbeRowsSuccessful || 0)
+  next.cooledDownRows += Number(source.cooledDownRows || 0)
+  next.retryBudgetBlockedRows += Number(source.retryBudgetBlockedRows || 0)
+  next.skippedLowPriorityRows += Number(source.skippedLowPriorityRows || 0)
+  next.skippedPrimaryTooStrictCount += Number(source.skippedPrimaryTooStrictCount || 0)
+  next.skippedFallbackBelowMinimumQualityCount += Number(
+    source.skippedFallbackBelowMinimumQualityCount || 0
+  )
+  next.recomputedVerifiedRows += Number(source.recomputedVerifiedRows || 0)
+  next.fallbackProbeRowsRecomputed += Number(source.fallbackProbeRowsRecomputed || 0)
+  next.verifiedScannableRows += Number(source.verifiedScannableRows || 0)
+  next.fallbackProbeVerifiedScannableRows += Number(
+    source.fallbackProbeVerifiedScannableRows || 0
+  )
+  next.weaponSkinScannerSourceIncreased =
+    Boolean(next.weaponSkinScannerSourceIncreased) ||
+    Boolean(source.weaponSkinScannerSourceIncreased)
+  next.fallbackProbeWeaponSkinScannerSourceIncreased =
+    Boolean(next.fallbackProbeWeaponSkinScannerSourceIncreased) ||
+    Boolean(source.fallbackProbeWeaponSkinScannerSourceIncreased)
+  next.fallbackLaneActivated =
+    Boolean(next.fallbackLaneActivated) || Boolean(source.fallbackLaneActivated)
+  if (!next.queueEmptyReason && normalizeText(source.queueEmptyReason)) {
+    next.queueEmptyReason = normalizeText(source.queueEmptyReason)
+  }
+
+  for (const state of Object.keys(next.queuedRowsByState)) {
+    next.queuedRowsByState[state] += Number(source.queuedRowsByState?.[state] || 0)
+  }
+  for (const bucket of Object.keys(next.verificationPriorityBuckets)) {
+    next.verificationPriorityBuckets[bucket] += Number(
+      source.verificationPriorityBuckets?.[bucket] || 0
+    )
+  }
+
+  return next
 }
 
 function resolveRecoveryCursor(categories = [], options = {}) {
@@ -604,6 +960,7 @@ function buildCheckpointState({
   targets = {},
   categoryProgressState = {},
   snapshotPacingState = {},
+  weaponSkinVerificationState = {},
   completedBatches = 0,
   processedRows = 0,
   processedRowsByCategory = emptyCategoryNumberMap(0),
@@ -614,7 +971,8 @@ function buildCheckpointState({
   const resumeState = {
     categories: Array.isArray(categories) ? categories.slice() : RECOVERY_CATEGORIES.slice(),
     categoryProgressState,
-    snapshotPacingState
+    snapshotPacingState,
+    weaponSkinVerificationState
   }
   const resumeStateToken = done ? null : encodeResumeStateToken(resumeState)
   return {
@@ -626,6 +984,7 @@ function buildCheckpointState({
     pauseReason: normalizeText(pauseReason) || null,
     categoryProgressState,
     snapshotPacingState,
+    weaponSkinVerificationState,
     resumeState: done ? null : resumeState,
     resumeStateToken,
     processedRowsByCategory: {
@@ -650,12 +1009,262 @@ function buildCheckpointState({
   }
 }
 
+function buildWeaponSkinVerificationQueue(rows = [], options = {}) {
+  const nowMs = Number(options.nowMs || Date.now())
+  const verificationState = createWeaponSkinVerificationState(
+    options.weaponSkinVerificationState || {}
+  )
+  const defaults = getWeaponSkinVerificationDefaults(options)
+  const primaryQueueable = []
+  const fallbackQueueable = []
+  let cooldownBlockedRows = 0
+  let retryBudgetBlockedRows = 0
+  let skippedLowPriorityRows = 0
+  let skippedPrimaryTooStrictCount = 0
+  let skippedFallbackBelowMinimumQualityCount = 0
+  let verificationNotNeededRows = 0
+
+  for (const row of dedupeRowsByMarketHashName(rows)) {
+    const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
+    if (!marketHashName) continue
+
+    const rowState = getWeaponSkinVerificationRowState(verificationState, marketHashName, options)
+    if (rowState.verifiedFresh) {
+      continue
+    }
+    if (rowState.retryBudgetExhausted) {
+      retryBudgetBlockedRows += 1
+      continue
+    }
+    if (isWeaponSkinVerificationCooldownActive(rowState, nowMs)) {
+      cooldownBlockedRows += 1
+      continue
+    }
+
+    const snapshotFresh = isFreshWithinHours(
+      row?.snapshot_captured_at || row?.snapshotCapturedAt,
+      DEFAULT_HEALTH_WINDOW_HOURS,
+      nowMs
+    )
+    const snapshotUsable =
+      snapshotFresh &&
+      normalizeText(row?.snapshot_state || row?.snapshotState).toLowerCase() !== "derived_only_snapshot"
+    if (snapshotUsable) {
+      verificationNotNeededRows += 1
+      continue
+    }
+
+    const priority = computeWeaponSkinVerificationPriority(row, nowMs)
+    if (priority.primaryEligible) {
+      rowState.lastPriorityScore = priority.priorityScore
+      primaryQueueable.push({
+        row,
+        marketHashName,
+        candidateStatus: priority.candidateStatus,
+        priorityScore: priority.priorityScore,
+        priorityBucket: priority.priorityBucket
+      })
+      continue
+    }
+
+    const catalogGate = resolveWeaponSkinVerificationCatalogGate(row)
+    if (catalogGate.structurallyInvalid) {
+      skippedLowPriorityRows += 1
+      skippedFallbackBelowMinimumQualityCount += 1
+      continue
+    }
+    if (priority.fallbackEligible) {
+      skippedPrimaryTooStrictCount += 1
+      fallbackQueueable.push({
+        row,
+        marketHashName,
+        candidateStatus: priority.candidateStatus,
+        priorityScore: priority.priorityScore,
+        priorityBucket: priority.priorityBucket
+      })
+      continue
+    }
+
+    if (!priority.minimumQuoteSupport || !priority.fallbackQualityCandidate || priority.lowPriorityCold) {
+      skippedLowPriorityRows += 1
+      skippedFallbackBelowMinimumQualityCount += 1
+      continue
+    }
+  }
+
+  const sortQueueEntries = (entries = []) =>
+    entries.sort(
+      (left, right) =>
+        Number(right.priorityScore || 0) - Number(left.priorityScore || 0) ||
+        Number(right.row?.priority_boost || 0) - Number(left.row?.priority_boost || 0) ||
+        Number(right.row?.liquidity_rank || 0) - Number(left.row?.liquidity_rank || 0) ||
+        String(left.marketHashName || "").localeCompare(String(right.marketHashName || ""))
+    )
+
+  sortQueueEntries(primaryQueueable)
+  sortQueueEntries(fallbackQueueable)
+
+  const selectedPrimary = primaryQueueable.slice(0, Math.max(defaults.verificationLimit, 1))
+  const fallbackLaneActivated = selectedPrimary.length === 0 && fallbackQueueable.length > 0
+  const selectedFallback = fallbackLaneActivated
+    ? fallbackQueueable.slice(0, Math.max(defaults.fallbackProbeLimit, 1))
+    : []
+  const activeQueue = fallbackLaneActivated ? fallbackQueueable : primaryQueueable
+  const selected = fallbackLaneActivated ? selectedFallback : selectedPrimary
+  const activeQueuedRowsByState = createQueuedRowsByStateMap()
+  const activePriorityBuckets = createPriorityBucketMap()
+
+  for (const entry of activeQueue) {
+    activeQueuedRowsByState[entry.candidateStatus] += 1
+    activePriorityBuckets[entry.priorityBucket] += 1
+  }
+
+  let queueEmptyReason = null
+  if (!selected.length) {
+    if (retryBudgetBlockedRows > 0) {
+      queueEmptyReason = "retry_budget_blocked"
+    } else if (cooldownBlockedRows > 0) {
+      queueEmptyReason = "cooldown_active"
+    } else if (verificationNotNeededRows > 0 && rows.length === verificationNotNeededRows) {
+      queueEmptyReason = "no_snapshot_verification_needed"
+    } else if (skippedPrimaryTooStrictCount > 0) {
+      queueEmptyReason = "primary_too_strict"
+    } else if (skippedFallbackBelowMinimumQualityCount > 0) {
+      queueEmptyReason = "fallback_below_minimum_quality"
+    } else if (!rows.length) {
+      queueEmptyReason = "no_rows_loaded"
+    } else {
+      queueEmptyReason = "no_quote_supported_candidates"
+    }
+  } else if (fallbackLaneActivated) {
+    queueEmptyReason = "primary_queue_empty_activated_fallback_probe"
+  }
+
+  return {
+    rows: selected.map((entry) => entry.row),
+    diagnostics: {
+      verificationQueueSize: activeQueue.length,
+      topQueuedRowsCount: selected.length,
+      primaryQueueSize: primaryQueueable.length,
+      fallbackProbeQueueSize: fallbackQueueable.length,
+      queuedRowsByState: activeQueuedRowsByState,
+      attemptedVerificationRows: 0,
+      successfulVerificationRows: 0,
+      fallbackProbeRowsAttempted: 0,
+      fallbackProbeRowsSuccessful: 0,
+      cooledDownRows: cooldownBlockedRows,
+      retryBudgetBlockedRows,
+      skippedLowPriorityRows,
+      skippedPrimaryTooStrictCount,
+      skippedFallbackBelowMinimumQualityCount,
+      verificationPriorityBuckets: activePriorityBuckets,
+      recomputedVerifiedRows: 0,
+      fallbackProbeRowsRecomputed: 0,
+      verifiedScannableRows: 0,
+      fallbackProbeVerifiedScannableRows: 0,
+      weaponSkinScannerSourceIncreased: false,
+      fallbackProbeWeaponSkinScannerSourceIncreased: false,
+      fallbackLaneActivated,
+      queueEmptyReason,
+      selectedPrimaryNames: selectedPrimary.map((entry) => entry.marketHashName),
+      selectedFallbackNames: selectedFallback.map((entry) => entry.marketHashName)
+    }
+  }
+}
+
+async function selectWeaponSkinVerificationBatch(options = {}) {
+  const limit = Math.max(Number(options.limit || DEFAULT_SELECTION_BATCH_SIZE), 1)
+  const candidatePoolLimit = Math.max(
+    Number(
+      options.weaponSkinVerificationCandidatePoolLimit ||
+        Math.max(
+          DEFAULT_WEAPON_SKIN_VERIFICATION_MIN_POOL,
+          limit * DEFAULT_WEAPON_SKIN_VERIFICATION_POOL_MULTIPLIER
+        )
+    ),
+    limit
+  )
+  const logProgress = options.logProgress
+  const rows = await runLoggedStage(
+    "weapon_skin_verification_queue",
+    {
+      logProgress,
+      meta: {
+        category: "weapon_skin",
+        batchIndex: Math.max(Number(options.batchIndex || 0), 0),
+        offset: Math.max(Number(options.offset || 0), 0),
+        limit,
+        candidatePoolLimit,
+        categoryTarget: Number(options.categoryTarget || 0)
+      }
+    },
+    async () =>
+      marketSourceCatalogRepo.listActiveTradable({
+        limit: candidatePoolLimit,
+        offset: 0,
+        categories: ["weapon_skin"]
+      })
+  )
+  const queue = buildWeaponSkinVerificationQueue(rows, options)
+  emitProgress(logProgress, {
+    type: "weapon_skin_verification_queue",
+    stage: "weapon_skin_verification_queue",
+    batchIndex: Math.max(Number(options.batchIndex || 0), 0),
+    verificationQueueSize: queue.diagnostics.verificationQueueSize,
+    topQueuedRowsCount: queue.diagnostics.topQueuedRowsCount,
+    primaryQueueSize: queue.diagnostics.primaryQueueSize,
+    fallbackProbeQueueSize: queue.diagnostics.fallbackProbeQueueSize,
+    queuedRowsByState: queue.diagnostics.queuedRowsByState,
+    cooledDownRows: queue.diagnostics.cooledDownRows,
+    retryBudgetBlockedRows: queue.diagnostics.retryBudgetBlockedRows,
+    skippedLowPriorityRows: queue.diagnostics.skippedLowPriorityRows,
+    skippedPrimaryTooStrictCount: queue.diagnostics.skippedPrimaryTooStrictCount,
+    skippedFallbackBelowMinimumQualityCount:
+      queue.diagnostics.skippedFallbackBelowMinimumQualityCount,
+    fallbackLaneActivated: queue.diagnostics.fallbackLaneActivated,
+    queueEmptyReason: queue.diagnostics.queueEmptyReason,
+    verificationPriorityBuckets: queue.diagnostics.verificationPriorityBuckets
+  })
+  return {
+    rows: queue.rows,
+    selectionDiagnostics: {
+      weaponSkinVerification: queue.diagnostics,
+      completeCategoryAfterBatch: true,
+      blockedReason:
+        queue.rows.length > 0
+          ? null
+          : queue.diagnostics.retryBudgetBlockedRows > 0
+            ? "retry_budget_exhausted"
+            : queue.diagnostics.cooledDownRows > 0
+              ? "active_cooldown_retry_later"
+              : null,
+      shouldRetryLater:
+        queue.rows.length === 0 &&
+        queue.diagnostics.retryBudgetBlockedRows <= 0 &&
+        queue.diagnostics.cooledDownRows > 0,
+      retryBudgetExhausted:
+        queue.rows.length === 0 && queue.diagnostics.retryBudgetBlockedRows > 0
+    }
+  }
+}
+
 async function selectRecoveryRowBatch(options = {}) {
   const category = normalizeText(options.category).toLowerCase() || "weapon_skin"
   const limit = Math.max(Number(options.limit || DEFAULT_SELECTION_BATCH_SIZE), 1)
   const offset = Math.max(Number(options.offset || 0), 0)
   const batchIndex = Math.max(Number(options.batchIndex || 0), 0)
   const logProgress = options.logProgress
+
+  if (category === "weapon_skin") {
+    return selectWeaponSkinVerificationBatch({
+      ...options,
+      category,
+      limit,
+      offset,
+      batchIndex,
+      logProgress
+    })
+  }
 
   const rows = await runLoggedStage(
     "universe_selection",
@@ -677,7 +1286,10 @@ async function selectRecoveryRowBatch(options = {}) {
       })
   )
 
-  return dedupeRowsByMarketHashName(rows)
+  return {
+    rows: dedupeRowsByMarketHashName(rows),
+    selectionDiagnostics: null
+  }
 }
 
 function extractVolume7dFallback(row = {}, record = {}) {
@@ -1251,6 +1863,7 @@ async function refreshSnapshots(rows = [], skinsByName = {}, options = {}) {
   const counters = createAttemptCounter()
   const targetSkins = []
   const batchReasonCounts = createSnapshotReasonMap()
+  const rowOutcomes = []
   const currentPacingState = () =>
     summarizeSnapshotPacingState(
       snapshotPacingState,
@@ -1270,6 +1883,12 @@ async function refreshSnapshots(rows = [], skinsByName = {}, options = {}) {
         "snapshot_missing_skin_mapping"
       )
       batchReasonCounts.snapshot_missing_skin_mapping += 1
+      rowOutcomes.push({
+        marketHashName,
+        category: rowCategory,
+        reason: "snapshot_missing_skin_mapping",
+        refreshed: false
+      })
       continue
     }
     targetSkins.push(skin)
@@ -1374,6 +1993,12 @@ async function refreshSnapshots(rows = [], skinsByName = {}, options = {}) {
       if (batchReasonCounts[reason] != null) {
         batchReasonCounts[reason] += 1
       }
+      rowOutcomes.push({
+        marketHashName,
+        category,
+        reason,
+        refreshed: reason === "snapshot_write_succeeded"
+      })
       if (
         reason === "snapshot_write_succeeded" &&
         counters.snapshotRefreshedNamesByCategory[category] instanceof Set
@@ -1435,7 +2060,313 @@ async function refreshSnapshots(rows = [], skinsByName = {}, options = {}) {
     blockedReason,
     shouldRetryLater,
     retryBudgetExhausted,
-    pacing
+    pacing,
+    rowOutcomes
+  }
+}
+
+function needsQuoteRepairRefresh(row = {}) {
+  const marketCoverageCount = Math.max(
+    Number(row?.market_coverage_count ?? row?.marketCoverageCount ?? 0),
+    0
+  )
+  const referencePrice = toFiniteOrNull(row?.reference_price ?? row?.referencePrice)
+  const quoteFetchedAt = toIsoOrNull(row?.quote_fetched_at || row?.quoteFetchedAt)
+  const lastSignalAt = toIsoOrNull(row?.last_market_signal_at || row?.lastMarketSignalAt)
+  const latestQuoteSignal = pickLatestIso(quoteFetchedAt, lastSignalAt)
+  return (
+    marketCoverageCount <= 0 ||
+    referencePrice == null ||
+    !quoteFetchedAt ||
+    !isFreshWithinHours(latestQuoteSignal, DEFAULT_HEALTH_WINDOW_HOURS)
+  )
+}
+
+function needsSnapshotRepairRefresh(row = {}) {
+  const snapshotCapturedAt = toIsoOrNull(row?.snapshot_captured_at || row?.snapshotCapturedAt)
+  const snapshotStale = row?.snapshot_stale == null ? Boolean(row?.snapshotStale) : Boolean(row.snapshot_stale)
+  const referencePrice = toFiniteOrNull(row?.reference_price ?? row?.referencePrice)
+  return (
+    !snapshotCapturedAt ||
+    snapshotStale ||
+    referencePrice == null ||
+    !isFreshWithinHours(snapshotCapturedAt, DEFAULT_HEALTH_WINDOW_HOURS)
+  )
+}
+
+async function repairCatalogRows(rows = [], options = {}) {
+  const repairRows = dedupeRowsByMarketHashName(rows).filter((row) => {
+    const category = normalizeText(row?.category || row?.itemCategory).toLowerCase()
+    return RECOVERY_CATEGORIES.includes(category)
+  })
+  if (!repairRows.length) {
+    return {
+      attemptedRows: 0,
+      quoteRowsSelected: 0,
+      snapshotRowsSelected: 0,
+      quoteRefresh: createAttemptCounter(),
+      snapshotRefresh: {
+        ...createAttemptCounter(),
+        blocked: false,
+        blockedReason: null,
+        shouldRetryLater: false,
+        retryBudgetExhausted: false,
+        pacing: {}
+      },
+      processedMarketHashNames: []
+    }
+  }
+
+  const marketHashNames = repairRows
+    .map((row) => normalizeText(row?.market_hash_name || row?.marketHashName))
+    .filter(Boolean)
+  const skins = await skinRepo.getByMarketHashNames(marketHashNames).catch(() => [])
+  const skinsByName = Object.fromEntries(
+    (Array.isArray(skins) ? skins : [])
+      .map((skin) => [normalizeText(skin?.market_hash_name), skin])
+      .filter(([marketHashName]) => Boolean(marketHashName))
+  )
+  const quoteRows = repairRows.filter((row) => needsQuoteRepairRefresh(row))
+  const snapshotRows = repairRows.filter((row) => needsSnapshotRepairRefresh(row))
+  const quoteRefresh =
+    quoteRows.length > 0
+      ? await refreshQuotes(quoteRows, {
+          ...options,
+          batchMeta: {
+            lane: "enrichment_repair",
+            ...((options?.batchMeta && typeof options.batchMeta === "object") ? options.batchMeta : {})
+          }
+        })
+      : createAttemptCounter()
+
+  let snapshotRefresh = {
+    ...createAttemptCounter(),
+    blocked: false,
+    blockedReason: null,
+    shouldRetryLater: false,
+    retryBudgetExhausted: false,
+    pacing: {},
+    rowOutcomes: []
+  }
+
+  for (const category of RECOVERY_CATEGORIES) {
+    const categoryRows = snapshotRows.filter(
+      (row) => normalizeText(row?.category || row?.itemCategory).toLowerCase() === category
+    )
+    if (!categoryRows.length) continue
+    const categoryRefresh = await refreshSnapshots(categoryRows, skinsByName, {
+      ...options,
+      batchMeta: {
+        category,
+        lane: "enrichment_repair",
+        ...((options?.batchMeta && typeof options.batchMeta === "object") ? options.batchMeta : {})
+      }
+    })
+    snapshotRefresh = {
+      ...snapshotRefresh,
+      ...mergeAttemptCounters(snapshotRefresh, categoryRefresh),
+      blocked: Boolean(snapshotRefresh.blocked || categoryRefresh.blocked),
+      blockedReason: categoryRefresh.blockedReason || snapshotRefresh.blockedReason || null,
+      shouldRetryLater: Boolean(snapshotRefresh.shouldRetryLater || categoryRefresh.shouldRetryLater),
+      retryBudgetExhausted: Boolean(
+        snapshotRefresh.retryBudgetExhausted || categoryRefresh.retryBudgetExhausted
+      ),
+      pacing:
+        categoryRefresh.pacing && typeof categoryRefresh.pacing === "object"
+          ? { ...(snapshotRefresh.pacing || {}), [category]: categoryRefresh.pacing }
+          : snapshotRefresh.pacing,
+      rowOutcomes: [
+        ...(Array.isArray(snapshotRefresh.rowOutcomes) ? snapshotRefresh.rowOutcomes : []),
+        ...(Array.isArray(categoryRefresh.rowOutcomes) ? categoryRefresh.rowOutcomes : [])
+      ]
+    }
+  }
+
+  return {
+    attemptedRows: repairRows.length,
+    quoteRowsSelected: quoteRows.length,
+    snapshotRowsSelected: snapshotRows.length,
+    quoteRefresh,
+    snapshotRefresh,
+    processedMarketHashNames: marketHashNames
+  }
+}
+
+function applyWeaponSkinVerificationOutcomes(
+  rowOutcomes = [],
+  weaponSkinVerificationState = {},
+  options = {}
+) {
+  const nowMs = Number(options.nowMs || Date.now())
+  const defaults = getWeaponSkinVerificationDefaults(options)
+  const cooldownMs = Math.max(Number(defaults.cooldownMs || DEFAULT_WEAPON_SKIN_VERIFICATION_COOLDOWN_MS), 1000)
+  const rateLimitRetryAt = toIsoOrNull(options.retryAfterIso)
+  const selectedFallbackNames = new Set(
+    (Array.isArray(options.selectedFallbackNames) ? options.selectedFallbackNames : [])
+      .map((value) => normalizeText(value))
+      .filter(Boolean)
+  )
+  const diagnostics = {
+    attemptedVerificationRows: 0,
+    successfulVerificationRows: 0,
+    fallbackProbeRowsAttempted: 0,
+    fallbackProbeRowsSuccessful: 0,
+    cooledDownRows: 0,
+    retryBudgetBlockedRows: 0
+  }
+
+  for (const outcome of Array.isArray(rowOutcomes) ? rowOutcomes : []) {
+    const marketHashName = normalizeText(outcome?.marketHashName)
+    const category = normalizeText(outcome?.category).toLowerCase()
+    if (category !== "weapon_skin" || !marketHashName) continue
+
+    const rowState = getWeaponSkinVerificationRowState(
+      weaponSkinVerificationState,
+      marketHashName,
+      options
+    )
+    const reason = normalizeText(outcome?.reason) || "snapshot_source_request_failed"
+    const fallbackProbeRow = selectedFallbackNames.has(marketHashName)
+    rowState.lastResult = reason
+    if (reason !== "snapshot_missing_skin_mapping") {
+      rowState.lastAttemptAt = new Date(nowMs).toISOString()
+      diagnostics.attemptedVerificationRows += 1
+      if (fallbackProbeRow) {
+        diagnostics.fallbackProbeRowsAttempted += 1
+      }
+    }
+
+    if (reason === "snapshot_write_succeeded") {
+      rowState.verifiedFresh = true
+      rowState.cooldownUntil = null
+      diagnostics.successfulVerificationRows += 1
+      if (fallbackProbeRow) {
+        diagnostics.fallbackProbeRowsSuccessful += 1
+      }
+      continue
+    }
+
+    if (reason === "snapshot_write_skipped" || reason === "snapshot_missing_skin_mapping") {
+      continue
+    }
+
+    rowState.verifiedFresh = false
+    rowState.retriesRemaining = Math.max(Number(rowState.retriesRemaining || defaults.retryBudget) - 1, 0)
+    rowState.retryBudgetExhausted = rowState.retriesRemaining <= 0
+    rowState.cooldownUntil =
+      rateLimitRetryAt && reason === "snapshot_rate_limited"
+        ? rateLimitRetryAt
+        : new Date(nowMs + cooldownMs).toISOString()
+    diagnostics.cooledDownRows += 1
+    if (rowState.retryBudgetExhausted) {
+      diagnostics.retryBudgetBlockedRows += 1
+    }
+  }
+
+  return diagnostics
+}
+
+async function recomputeVerifiedWeaponSkinRows(rows = [], rowOutcomes = [], options = {}) {
+  const selectedFallbackNames = new Set(
+    (Array.isArray(options.selectedFallbackNames) ? options.selectedFallbackNames : [])
+      .map((value) => normalizeText(value))
+      .filter(Boolean)
+  )
+  const verifiedNames = Array.from(
+    new Set(
+      (Array.isArray(rowOutcomes) ? rowOutcomes : [])
+        .filter((outcome) => normalizeText(outcome?.reason) === "snapshot_write_succeeded")
+        .map((outcome) => normalizeText(outcome?.marketHashName))
+        .filter(Boolean)
+    )
+  )
+  if (!verifiedNames.length) {
+    return {
+      recomputedVerifiedRows: 0,
+      verifiedScannableRows: 0,
+      weaponSkinScannerSourceIncreased: false
+    }
+  }
+
+  const verifiedRows = (Array.isArray(rows) ? rows : []).filter((row) =>
+    verifiedNames.includes(normalizeText(row?.market_hash_name || row?.marketHashName))
+  )
+  if (!verifiedRows.length) {
+    return {
+      recomputedVerifiedRows: 0,
+      verifiedScannableRows: 0,
+      weaponSkinScannerSourceIncreased: false
+    }
+  }
+
+  await runLoggedStage(
+    "verified_row_recompute",
+    {
+      logProgress: options.logProgress,
+      meta: {
+        ...(options.batchMeta && typeof options.batchMeta === "object" ? options.batchMeta : {}),
+        rowCount: verifiedRows.length,
+        marketHashNames: verifiedNames
+      }
+    },
+    async () =>
+      marketSourceCatalogService.recomputeCandidateReadinessRows(verifiedRows, {
+        categories: ["weapon_skin"]
+      })
+  )
+
+  const updatedRows = await runLoggedStage(
+    "verified_row_readback",
+    {
+      logProgress: options.logProgress,
+      meta: {
+        ...(options.batchMeta && typeof options.batchMeta === "object" ? options.batchMeta : {}),
+        rowCount: verifiedNames.length
+      }
+    },
+    async () =>
+      marketSourceCatalogService.getCatalogRowsByMarketHashNames(verifiedNames, {
+        categories: ["weapon_skin"],
+        activeOnly: true,
+        tradableOnly: true
+      })
+  )
+
+  const verifiedScannableRows = (Array.isArray(updatedRows) ? updatedRows : []).filter((row) => {
+    const compatible = marketSourceCatalogService.resolveCompatibleCatalogStatusFields(row)
+    return normalizeText(compatible?.catalogStatus || row?.catalog_status).toLowerCase() === "scannable"
+  }).length
+  const fallbackVerifiedNames = verifiedNames.filter((marketHashName) =>
+    selectedFallbackNames.has(marketHashName)
+  )
+  const fallbackProbeVerifiedScannableRows = (Array.isArray(updatedRows) ? updatedRows : []).filter((row) => {
+    const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
+    if (!selectedFallbackNames.has(marketHashName)) return false
+    const compatible = marketSourceCatalogService.resolveCompatibleCatalogStatusFields(row)
+    return normalizeText(compatible?.catalogStatus || row?.catalog_status).toLowerCase() === "scannable"
+  }).length
+
+  if (
+    options.weaponSkinVerificationState &&
+    typeof options.weaponSkinVerificationState === "object"
+  ) {
+    for (const marketHashName of verifiedNames) {
+      const rowState = getWeaponSkinVerificationRowState(
+        options.weaponSkinVerificationState,
+        marketHashName,
+        options
+      )
+      rowState.recomputedAt = new Date().toISOString()
+    }
+  }
+
+  return {
+    recomputedVerifiedRows: verifiedRows.length,
+    fallbackProbeRowsRecomputed: fallbackVerifiedNames.length,
+    verifiedScannableRows,
+    fallbackProbeVerifiedScannableRows,
+    weaponSkinScannerSourceIncreased: verifiedScannableRows > 0,
+    fallbackProbeWeaponSkinScannerSourceIncreased: fallbackProbeVerifiedScannableRows > 0
   }
 }
 
@@ -1553,6 +2484,14 @@ function buildFreshnessSummary(rows = [], quoteCoverageByItem = {}, snapshotsByS
 async function processRecoveryBatch(rows = [], options = {}) {
   const logProgress = options.logProgress
   const batchMeta = options.batchMeta && typeof options.batchMeta === "object" ? options.batchMeta : {}
+  const category =
+    normalizeText(batchMeta?.category).toLowerCase() ||
+    normalizeText(rows?.[0]?.category || rows?.[0]?.itemCategory).toLowerCase() ||
+    "weapon_skin"
+  const selectionDiagnostics =
+    options.selectionDiagnostics && typeof options.selectionDiagnostics === "object"
+      ? options.selectionDiagnostics
+      : {}
   const marketHashNames = rows
     .map((row) => normalizeText(row?.market_hash_name || row?.marketHashName))
     .filter(Boolean)
@@ -1646,6 +2585,36 @@ async function processRecoveryBatch(rows = [], options = {}) {
     logProgress,
     batchMeta
   })
+  const weaponSkinVerification = createWeaponSkinVerificationAggregate()
+  if (category === "weapon_skin") {
+    mergeWeaponSkinVerificationAggregate(
+      weaponSkinVerification,
+      selectionDiagnostics?.weaponSkinVerification || {}
+    )
+    mergeWeaponSkinVerificationAggregate(
+      weaponSkinVerification,
+      applyWeaponSkinVerificationOutcomes(
+        snapshotRefresh?.rowOutcomes || [],
+        options.weaponSkinVerificationState,
+        {
+          ...options,
+          retryAfterIso: snapshotRefresh?.pacing?.nextSafeRetryAt || null,
+          selectedFallbackNames:
+            selectionDiagnostics?.weaponSkinVerification?.selectedFallbackNames || []
+        }
+      )
+    )
+    mergeWeaponSkinVerificationAggregate(
+      weaponSkinVerification,
+      await recomputeVerifiedWeaponSkinRows(rows, snapshotRefresh?.rowOutcomes || [], {
+        ...options,
+        logProgress,
+        batchMeta,
+        selectedFallbackNames:
+          selectionDiagnostics?.weaponSkinVerification?.selectedFallbackNames || []
+      })
+    )
+  }
 
   const postQuoteCoverageMap = await runLoggedStage(
     "quote_refresh_selection",
@@ -1686,6 +2655,7 @@ async function processRecoveryBatch(rows = [], options = {}) {
     postRefreshBase,
     quoteRefresh,
     snapshotRefresh,
+    weaponSkinVerification: category === "weapon_skin" ? weaponSkinVerification : null,
     rowCount: rows.length
   }
 }
@@ -2033,10 +3003,14 @@ async function runFreshnessRecovery(options = {}) {
     categories,
     options.snapshotPacingOverrides
   )
+  const weaponSkinVerificationState = createWeaponSkinVerificationState(
+    resumeState?.weaponSkinVerificationState || options.weaponSkinVerificationState || {}
+  )
   const preRefresh = createFreshnessSummary()
   const postRefreshBase = createFreshnessSummary()
   const aggregateQuoteRefresh = createAttemptCounter()
   const aggregateSnapshotRefresh = createAttemptCounter()
+  const aggregateWeaponSkinVerification = createWeaponSkinVerificationAggregate()
   const processedRowsByCategory = emptyCategoryNumberMap(0)
   let processedRows = 0
   let completedBatches = 0
@@ -2106,16 +3080,53 @@ async function runFreshnessRecovery(options = {}) {
       })
 
       try {
-        const rows = await selectRecoveryRowBatch({
+        const { rows, selectionDiagnostics } = await selectRecoveryRowBatch({
           category,
           limit: batchLimit,
           offset: categoryOffset,
           batchIndex: completedBatches,
           categoryTarget,
-          logProgress
+          logProgress,
+          nowMs,
+          weaponSkinVerificationState,
+          weaponSkinVerificationLimit: options.weaponSkinVerificationLimit,
+          weaponSkinVerificationCandidatePoolLimit:
+            options.weaponSkinVerificationCandidatePoolLimit,
+          weaponSkinVerificationRetryBudget: options.weaponSkinVerificationRetryBudget,
+          weaponSkinVerificationCooldownMs: options.weaponSkinVerificationCooldownMs
         })
 
         if (!rows.length) {
+          mergeWeaponSkinVerificationAggregate(
+            aggregateWeaponSkinVerification,
+            selectionDiagnostics?.weaponSkinVerification || {}
+          )
+          const selectionBlockedReason = normalizeText(selectionDiagnostics?.blockedReason) || null
+          if (selectionBlockedReason) {
+            progressEntry.nextOffset = categoryOffset
+            progressEntry.done = false
+            progressEntry.blockedReason = selectionBlockedReason
+            if (selectionDiagnostics?.shouldRetryLater) {
+              cooledDownCategories.add(category)
+            }
+            if (selectionDiagnostics?.retryBudgetExhausted) {
+              exhaustedRetryBudgetCategories.add(category)
+            }
+            emitProgress(logProgress, {
+              type: "category_snapshot_blocked",
+              ...batchMeta,
+              rowCount: 0,
+              blockedReason: selectionBlockedReason,
+              nextSafeRetryAt:
+                snapshotPacingState?.byCategory?.[category]?.bySource?.steam_market_overview
+                  ?.nextSafeRetryAt || null,
+              retriesRemaining: Number(
+                snapshotPacingState?.byCategory?.[category]?.bySource?.steam_market_overview
+                  ?.retriesRemaining || 0
+              )
+            })
+            break
+          }
           emitProgress(logProgress, {
             type: "batch_empty",
             ...batchMeta
@@ -2131,14 +3142,20 @@ async function runFreshnessRecovery(options = {}) {
           resumeState,
           nowMs,
           snapshotPacingState,
+          weaponSkinVerificationState,
           logProgress,
-          batchMeta
+          batchMeta,
+          selectionDiagnostics
         })
 
         mergeFreshnessSummary(preRefresh, batchResult.preRefresh)
         mergeFreshnessSummary(postRefreshBase, batchResult.postRefreshBase)
         mergeAttemptCounters(aggregateQuoteRefresh, batchResult.quoteRefresh)
         mergeAttemptCounters(aggregateSnapshotRefresh, batchResult.snapshotRefresh)
+        mergeWeaponSkinVerificationAggregate(
+          aggregateWeaponSkinVerification,
+          batchResult.weaponSkinVerification || {}
+        )
 
         const rowCount = Number(batchResult.rowCount || rows.length || 0)
         processedRows += rowCount
@@ -2170,6 +3187,9 @@ async function runFreshnessRecovery(options = {}) {
         }
 
         categoryOffset += rowCount
+        if (selectionDiagnostics?.completeCategoryAfterBatch) {
+          categoryOffset = categoryTarget
+        }
         progressEntry.nextOffset = categoryOffset
         progressEntry.done = categoryOffset >= categoryTarget
         progressEntry.blockedReason = null
@@ -2335,6 +3355,7 @@ async function runFreshnessRecovery(options = {}) {
     targets,
     categoryProgressState,
     snapshotPacingState,
+    weaponSkinVerificationState,
     completedBatches,
     processedRows,
     processedRowsByCategory,
@@ -2438,12 +3459,16 @@ async function runFreshnessRecovery(options = {}) {
         aggregateSnapshotRefresh.snapshotReasonCounts || createSnapshotReasonMap()
       )
     },
+    weaponSkinVerification: {
+      ...aggregateWeaponSkinVerification
+    },
     catalogRecompute
   }
 }
 
 module.exports = {
   runFreshnessRecovery,
+  repairCatalogRows,
   __testables: {
     buildCategoryTargets,
     resolveRecoveryCursor,

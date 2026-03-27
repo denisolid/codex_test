@@ -3,6 +3,7 @@ const skinRepo = require("../repositories/skinRepository")
 const marketSourceCatalogRepo = require("../repositories/marketSourceCatalogRepository")
 const arbitrageFeedRepo = require("../repositories/arbitrageFeedRepository")
 const scannerRunRepo = require("../repositories/scannerRunRepository")
+const globalOpportunityLifecycleLogRepo = require("../repositories/globalOpportunityLifecycleLogRepository")
 const env = require("../config/env")
 const marketComparisonService = require("./marketComparisonService")
 const marketSourceCatalogService = require("./marketSourceCatalogService")
@@ -10,6 +11,11 @@ const marketImageService = require("./marketImageService")
 const candidateProgressionService = require("./scanner/candidateProgressionService")
 const scanSourceCohortService = require("./scanner/scanSourceCohortService")
 const globalFeedPublisher = require("./feed/globalFeedPublisher")
+const {
+  LIFECYCLE_STATUS,
+  resolveLifecycleStatusFromState,
+  buildLifecycleRow
+} = require("./feed/opportunityLifecyclePolicy")
 const planService = require("./planService")
 const premiumCategoryAccessService = require("./premiumCategoryAccessService")
 const {
@@ -41,10 +47,8 @@ const {
   SCAN_COHORT_DEGRADED_PRIMARY_SHARE,
   ENRICHMENT_JOB_TIMEOUT_MS,
   OPPORTUNITY_HARD_TIMEOUT_MS,
-  OPPORTUNITY_SCAN_ALLOW_LIVE_FETCH,
   SCAN_TIMEOUT_PER_BATCH_MS,
   DUPLICATE_WINDOW_HOURS,
-  ALLOW_CROSS_JOB_PARALLELISM,
   RECORD_SKIPPED_ALREADY_RUNNING
 } = require("./scanner/config")
 const { classifyCatalogState } = require("./scanner/stateModel")
@@ -62,6 +66,10 @@ const {
 const {
   resolvePublishValidationContextForOpportunity: resolveSharedPublishValidationContextForOpportunity
 } = require("./scanner/publishValidation")
+const {
+  revalidateOpportunitiesForEmit,
+  buildEmitRevalidationMetadata
+} = require("./scanner/emitRevalidationService")
 
 const MAX_API_LIMIT = 200
 const FEED_PAGE_SIZE = 200
@@ -1035,6 +1043,123 @@ function summarizeSelectedSourceRows(rows = [], batchSize = OPPORTUNITY_BATCH_RU
   }
 }
 
+function sumCounterMap(values = {}) {
+  if (!values || typeof values !== "object" || Array.isArray(values)) {
+    return 0
+  }
+  return Object.values(values).reduce((total, value) => {
+    const numeric = Number(value)
+    if (!Number.isFinite(numeric)) return total
+    return total + Math.max(numeric, 0)
+  }, 0)
+}
+
+function buildJobExecutionDiagnostics({
+  jobType,
+  selectedRows = 0,
+  skippedRows = 0,
+  enrichedRows = 0,
+  eligibleRows = 0,
+  emittedRows = 0,
+  blockedRows = 0
+} = {}) {
+  const normalizedJobType = normalizeText(jobType) || LEGACY_SCANNER_TYPE
+  return {
+    job_type: normalizedJobType,
+    selected_rows: Math.max(Math.round(Number(selectedRows || 0)), 0),
+    skipped_rows: Math.max(Math.round(Number(skippedRows || 0)), 0),
+    enriched_rows: Math.max(Math.round(Number(enrichedRows || 0)), 0),
+    eligible_rows: Math.max(Math.round(Number(eligibleRows || 0)), 0),
+    emitted_rows: Math.max(Math.round(Number(emittedRows || 0)), 0),
+    blocked_rows: Math.max(Math.round(Number(blockedRows || 0)), 0)
+  }
+}
+
+function buildEnrichmentJobExecutionDiagnostics({
+  forceRefresh = false,
+  sourceCatalogDiagnostics = {},
+  selectedRows = 0,
+  enrichedRows = 0
+} = {}) {
+  const sourceCatalog =
+    sourceCatalogDiagnostics?.sourceCatalog &&
+    typeof sourceCatalogDiagnostics.sourceCatalog === "object" &&
+    !Array.isArray(sourceCatalogDiagnostics.sourceCatalog)
+      ? sourceCatalogDiagnostics.sourceCatalog
+      : {}
+  const dueBacklogRowsByState =
+    sourceCatalogDiagnostics?.due_backlog_rows_by_state &&
+    typeof sourceCatalogDiagnostics.due_backlog_rows_by_state === "object" &&
+    !Array.isArray(sourceCatalogDiagnostics.due_backlog_rows_by_state)
+      ? sourceCatalogDiagnostics.due_backlog_rows_by_state
+      : {}
+  const processedRows = Number(
+    sourceCatalogDiagnostics?.progression_rows_processed_total || enrichedRows || selectedRows || 0
+  )
+  const effectiveSelectedRows = forceRefresh
+    ? Number(
+        sourceCatalog.incrementalRecomputeRows ||
+          sourceCatalog.fullRebuildRows ||
+          sourceCatalog.totalRows ||
+          processedRows ||
+          selectedRows ||
+          0
+      )
+    : Number(selectedRows || processedRows || 0)
+  const effectiveEnrichedRows = forceRefresh
+    ? Number(
+        sourceCatalog.incrementalRecomputeRows ||
+          sourceCatalog.fullRebuildRows ||
+          sourceCatalog.totalRows ||
+          processedRows ||
+          enrichedRows ||
+          0
+      )
+    : Number(enrichedRows || processedRows || 0)
+  const skippedRows = forceRefresh
+    ? Number(sourceCatalog.incrementalSkippedRows || 0)
+    : Math.max(sumCounterMap(dueBacklogRowsByState) - effectiveEnrichedRows, 0)
+  const eligibleRows = forceRefresh
+    ? Number(sourceCatalog.eligibleTradableRows || sourceCatalog.eligibleRows || 0)
+    : Number(sourceCatalogDiagnostics?.eligible_tradable_rows || 0)
+
+  return buildJobExecutionDiagnostics({
+    jobType: SCANNER_TYPES.ENRICHMENT,
+    selectedRows: effectiveSelectedRows,
+    skippedRows,
+    enrichedRows: effectiveEnrichedRows,
+    eligibleRows,
+    emittedRows: 0,
+    blockedRows: 0
+  })
+}
+
+function buildOpportunityJobExecutionDiagnostics({
+  selection = {},
+  evaluations = {},
+  eligibleRows = 0,
+  persisted = {}
+} = {}) {
+  const selectedRows = Number(selection?.selected?.length || 0)
+  const effectiveEligibleRows = Math.max(
+    Math.round(Number(eligibleRows || evaluations?.scannedItems || 0)),
+    0
+  )
+  return buildJobExecutionDiagnostics({
+    jobType: SCANNER_TYPES.OPPORTUNITY_SCAN,
+    selectedRows,
+    skippedRows: Math.max(selectedRows - effectiveEligibleRows, 0),
+    enrichedRows: 0,
+    eligibleRows: effectiveEligibleRows,
+    emittedRows: Number(persisted?.activeRowsWritten || 0),
+    blockedRows: Number(
+      persisted?.emitRevalidation?.blocked_on_emit_total ||
+        persisted?.publishValidation?.blocked ||
+        0
+    )
+  })
+}
+
 function normalizeRecoveryCandidateStatus(value = "") {
   const status = normalizeText(value).toLowerCase()
   if (
@@ -1318,9 +1443,9 @@ function buildCompareInput(candidate = {}) {
   }
 }
 
-async function compareCandidates(candidates = [], forceRefresh = false) {
+async function compareCandidates(candidates = []) {
   const byName = {}
-  const allowLiveFetch = OPPORTUNITY_SCAN_ALLOW_LIVE_FETCH && Boolean(forceRefresh)
+  const allowLiveFetch = false
   const skinportPipeline = createSkinportPipelineSummary()
   skinportPipeline.enabled = allowLiveFetch
   const diagnostics = {
@@ -1958,6 +2083,23 @@ async function persistFeedRowsLegacy(opportunities = [], scanRunId = null) {
         freshness_contract_incomplete: 0
       }
     },
+    emitRevalidation: {
+      emit_revalidation_checked: 0,
+      emitted_after_revalidation: 0,
+      blocked_on_emit_total: 0,
+      blocked_on_emit_by_reason: {},
+      stale_on_emit_count: 0,
+      unavailable_on_emit_count: 0,
+      non_executable_on_emit_count: 0,
+      invalid_market_integrity_on_emit_count: 0
+    },
+    lifecycle: {
+      detected_total: 0,
+      published_total: 0,
+      expired_total: 0,
+      invalidated_total: 0,
+      blocked_on_emit_total: 0
+    },
     cleanup: {
       olderMarkedInactive: 0,
       beyondLimitMarkedInactive: 0,
@@ -2000,6 +2142,13 @@ async function persistFeedRowsLegacy(opportunities = [], scanRunId = null) {
       fingerprint
     }
   })
+  const emitRevalidation = await revalidateOpportunitiesForEmit(rows, {
+    nowIso
+  })
+  counters.emitRevalidation = {
+    ...counters.emitRevalidation,
+    ...(emitRevalidation?.diagnostics || {})
+  }
   let previousRows = []
   try {
     previousRows = await arbitrageFeedRepo.getRecentRowsByItems({
@@ -2083,9 +2232,10 @@ async function persistFeedRowsLegacy(opportunities = [], scanRunId = null) {
   const insertRows = []
   const updateRows = []
   const deactivateRowsById = new Map()
+  const lifecycleRows = []
   const pendingInsertFingerprints = new Set()
 
-  for (const prepared of preparedRows) {
+  for (const [index, prepared] of preparedRows.entries()) {
     const opportunity = prepared.opportunity
     const key = prepared.key
     const fingerprint = normalizeText(prepared.fingerprint)
@@ -2096,12 +2246,15 @@ async function persistFeedRowsLegacy(opportunities = [], scanRunId = null) {
       matchedBy = previous ? "signature" : null
     }
 
-    const publishValidation = resolvePublishValidationContextForOpportunity(
-      opportunity,
-      Date.now(),
-      nowIso
-    )
+    const emitRevalidationResult =
+      Array.isArray(emitRevalidation?.results) && emitRevalidation.results[index]
+        ? emitRevalidation.results[index]
+        : null
+    const publishValidation =
+      emitRevalidationResult?.publishValidation ||
+      resolvePublishValidationContextForOpportunity(opportunity, Date.now(), nowIso)
     const publishValidationMetadata = buildPublishValidationMetadata(publishValidation)
+    const emitRevalidationMetadata = buildEmitRevalidationMetadata(emitRevalidationResult)
     const routeSignalObservedAt =
       toIsoOrNull(publishValidation?.routeSignalObservedAt) ||
       toIsoOrNull(prepared.insertRow?.market_signal_observed_at) ||
@@ -2128,7 +2281,8 @@ async function persistFeedRowsLegacy(opportunities = [], scanRunId = null) {
           toIsoOrNull(opportunity?.metadata?.latest_market_signal_at) ||
           toIsoOrNull(opportunity?.latestMarketSignalAt) ||
           null,
-        ...publishValidationMetadata
+        ...publishValidationMetadata,
+        ...emitRevalidationMetadata
       }
     }
     const insertRowForPublish = {
@@ -2140,17 +2294,57 @@ async function persistFeedRowsLegacy(opportunities = [], scanRunId = null) {
           routeSignalObservedAt ||
           toIsoOrNull(prepared.insertRow?.metadata?.latest_market_signal_at) ||
           null,
-        ...publishValidationMetadata
+        ...publishValidationMetadata,
+        ...emitRevalidationMetadata
       }
     }
+    const lifecycleSourceRow = {
+      ...insertRowForPublish,
+      ...opportunityWithValidation,
+      metadata: {
+        ...toJsonObject(insertRowForPublish.metadata),
+        ...toJsonObject(opportunityWithValidation.metadata)
+      }
+    }
+    const detectedLifecycleRow = buildLifecycleRow({
+      writerStage: "publish",
+      scanRunId,
+      lifecycleStatus: LIFECYCLE_STATUS.DETECTED,
+      sourceRow: lifecycleSourceRow,
+      eventAt: nowIso,
+      publishTimestamp: nowIso
+    })
+    if (detectedLifecycleRow) {
+      lifecycleRows.push(detectedLifecycleRow)
+      counters.lifecycle.detected_total += 1
+    }
 
-    if (!publishValidation.isPublishable) {
+    if (!emitRevalidationResult?.passed) {
       counters.publishValidation.blocked += 1
+      counters.lifecycle.blocked_on_emit_total += 1
       incrementCounterBy(
         counters.publishValidation.reasons,
-        normalizeText(publishValidation.staleReason) || "publish_validation_failed",
+        normalizeText(emitRevalidationResult?.detailReason) ||
+          normalizeText(publishValidation.staleReason) ||
+          normalizeText(emitRevalidationResult?.blockReason) ||
+          "emit_revalidation_failed",
         1
       )
+      const blockedLifecycleRow = buildLifecycleRow({
+        writerStage: "publish",
+        scanRunId,
+        lifecycleStatus: LIFECYCLE_STATUS.BLOCKED_ON_EMIT,
+        sourceRow: lifecycleSourceRow,
+        eventAt: nowIso,
+        reason:
+          normalizeText(emitRevalidationResult?.blockReason) ||
+          normalizeText(publishValidation.staleReason) ||
+          "emit_revalidation_failed",
+        publishTimestamp: nowIso
+      })
+      if (blockedLifecycleRow) {
+        lifecycleRows.push(blockedLifecycleRow)
+      }
       if (previous && Boolean(previous?.is_active) && normalizeText(previous?.id)) {
         const existingMetadata = toJsonObject(previous?.metadata)
         const refreshStatus = publishValidation.publishFreshnessState === "stale" ? "stale" : "degraded"
@@ -2172,6 +2366,7 @@ async function persistFeedRowsLegacy(opportunities = [], scanRunId = null) {
             metadata: {
               ...existingMetadata,
               ...publishValidationMetadata,
+              ...emitRevalidationMetadata,
               publish_validation: {
                 ...(toJsonObject(existingMetadata?.publish_validation)),
                 ...(toJsonObject(publishValidationMetadata?.publish_validation)),
@@ -2179,12 +2374,42 @@ async function persistFeedRowsLegacy(opportunities = [], scanRunId = null) {
               },
               feed_event: "expired",
               feed_event_reasons: [
-                normalizeText(publishValidation.staleReason) || "publish_validation_failed"
+                normalizeText(emitRevalidationResult?.blockReason) ||
+                  normalizeText(publishValidation.staleReason) ||
+                  "emit_revalidation_failed"
               ],
               feed_event_materially_changed: true
             }
           }
         })
+        const lifecycleStatus = resolveLifecycleStatusFromState({
+          liveStatus,
+          refreshStatus
+        })
+        const previousLifecycleRow = buildLifecycleRow({
+          writerStage: "publish",
+          scanRunId,
+          lifecycleStatus,
+          sourceRow: {
+            ...previous,
+            ...deactivateRowsById.get(previous.id)?.patch
+          },
+          eventAt: nowIso,
+          reason:
+            normalizeText(emitRevalidationResult?.blockReason) ||
+            normalizeText(publishValidation.staleReason) ||
+            "emit_revalidation_failed",
+          publishTimestamp:
+            toIsoOrNull(previous?.last_published_at || previous?.lastPublishedAt) || nowIso
+        })
+        if (previousLifecycleRow) {
+          lifecycleRows.push(previousLifecycleRow)
+          if (lifecycleStatus === LIFECYCLE_STATUS.EXPIRED) {
+            counters.lifecycle.expired_total += 1
+          } else if (lifecycleStatus === LIFECYCLE_STATUS.INVALIDATED) {
+            counters.lifecycle.invalidated_total += 1
+          }
+        }
       }
       continue
     }
@@ -2231,7 +2456,8 @@ async function persistFeedRowsLegacy(opportunities = [], scanRunId = null) {
     const insertRowWithEvent = attachEventMetaToInsertRow(insertRowForPublish, normalizedEvent)
     insertRowWithEvent.metadata = {
       ...toJsonObject(insertRowWithEvent.metadata),
-      ...publishValidationMetadata
+      ...publishValidationMetadata,
+      ...emitRevalidationMetadata
     }
 
     if (!previous) {
@@ -2283,10 +2509,41 @@ async function persistFeedRowsLegacy(opportunities = [], scanRunId = null) {
   }
   if (updateRows.length) {
     await arbitrageFeedRepo.updateRowsById(updateRows)
+    for (const entry of updateRows) {
+      const publishedLifecycleRow = buildLifecycleRow({
+        writerStage: "publish",
+        scanRunId,
+        lifecycleStatus: LIFECYCLE_STATUS.PUBLISHED,
+        sourceRow: entry?.patch || {},
+        eventAt: nowIso,
+        publishTimestamp: nowIso
+      })
+      if (publishedLifecycleRow) {
+        lifecycleRows.push(publishedLifecycleRow)
+        counters.lifecycle.published_total += 1
+      }
+    }
   }
   if (insertRows.length) {
     const inserted = await arbitrageFeedRepo.insertRows(insertRows)
     counters.insertedCount = Array.isArray(inserted) ? inserted.length : 0
+    for (let index = 0; index < insertRows.length; index += 1) {
+      const publishedLifecycleRow = buildLifecycleRow({
+        writerStage: "publish",
+        scanRunId,
+        lifecycleStatus: LIFECYCLE_STATUS.PUBLISHED,
+        sourceRow: insertRows[index],
+        eventAt: nowIso,
+        publishTimestamp: nowIso
+      })
+      if (publishedLifecycleRow) {
+        lifecycleRows.push(publishedLifecycleRow)
+        counters.lifecycle.published_total += 1
+      }
+    }
+  }
+  if (lifecycleRows.length) {
+    await globalOpportunityLifecycleLogRepo.insertRows(lifecycleRows)
   }
   const cutoffIso = new Date(Date.now() - FEED_WINDOW_HOURS * 60 * 60 * 1000).toISOString()
   const cleanupResults = await Promise.allSettled([
@@ -2300,6 +2557,9 @@ async function persistFeedRowsLegacy(opportunities = [], scanRunId = null) {
     counters.cleanup.hadTimeout ||= isStatementTimeoutError(reason)
     counters.cleanup.errors.push(normalizeText(reason?.message) || "older_cleanup_failed")
   }
+  counters.emitRevalidation.emitted_after_revalidation = Number(
+    counters.insertedCount + counters.updatedCount + counters.reactivatedCount
+  )
   return counters
 }
 
@@ -2332,6 +2592,19 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
       deactivated: 0,
       reasons: result?.validationReasons || {}
     },
+    emitRevalidation: result?.emitRevalidation || {
+      emit_revalidation_checked: 0,
+      emitted_after_revalidation: Number(result?.publishedCount || 0),
+      blocked_on_emit_total: Number(result?.blockedCount || 0),
+      blocked_on_emit_by_reason: {}
+    },
+    lifecycle: result?.lifecycle || {
+      detected_total: 0,
+      published_total: Number(result?.publishedCount || 0),
+      expired_total: 0,
+      invalidated_total: 0,
+      blocked_on_emit_total: Number(result?.blockedCount || 0)
+    },
     cleanup: {
       olderMarkedInactive: 0,
       beyondLimitMarkedInactive: 0,
@@ -2346,6 +2619,7 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
 }
 
 function mergeDiagnostics({
+  job = {},
   selection = {},
   compare = {},
   evaluations = {},
@@ -2356,6 +2630,7 @@ function mergeDiagnostics({
 } = {}) {
   const selectionDiag = selection.diagnostics || {}
   return {
+    ...job,
     scanStateCounts: {
       scanable: Number(selectionDiag.scanable || 0),
       scanableWithPenalties: Number(selectionDiag.scanableWithPenalties || 0),
@@ -2387,6 +2662,18 @@ function mergeDiagnostics({
         reasons: persisted?.publishValidation?.reasons || {},
         freshnessContract: persisted?.publishValidation?.freshnessContract || {}
       },
+      emitRevalidation:
+        persisted?.emitRevalidation &&
+        typeof persisted.emitRevalidation === "object" &&
+        !Array.isArray(persisted.emitRevalidation)
+          ? persisted.emitRevalidation
+          : {},
+      lifecycle:
+        persisted?.lifecycle &&
+        typeof persisted.lifecycle === "object" &&
+        !Array.isArray(persisted.lifecycle)
+          ? persisted.lifecycle
+          : {},
       cleanup: persisted.cleanup || {}
     },
     sourceCatalog,
@@ -2518,11 +2805,26 @@ async function runEnrichmentJob({ forceRefresh = false } = {}) {
     }
   }
 
+  const enrichedRows = Number(
+    forceRefresh
+      ? sourceCatalogDiagnostics?.sourceCatalog?.incrementalRecomputeRows ||
+          sourceCatalogDiagnostics?.sourceCatalog?.fullRebuildRows ||
+          sourceCatalogDiagnostics?.sourceCatalog?.totalRows ||
+          0
+      : sourceCatalogDiagnostics?.progression_rows_processed_total || names.length
+  )
+
   return {
-    selectedCount: names.length,
+    selectedCount: enrichedRows,
     opportunitiesFound: 0,
     newOpportunitiesAdded: 0,
     diagnostics: {
+      ...buildEnrichmentJobExecutionDiagnostics({
+        forceRefresh,
+        sourceCatalogDiagnostics,
+        selectedRows: enrichedRows,
+        enrichedRows
+      }),
       sourceCatalog: sourceCatalogDiagnostics,
       imageEnrichment: {
         attempted: names.length,
@@ -2532,7 +2834,7 @@ async function runEnrichmentJob({ forceRefresh = false } = {}) {
   }
 }
 
-async function runOpportunityJob({ forceRefresh = false, scanRunId = null } = {}) {
+async function runOpportunityJob({ scanRunId = null } = {}) {
   const runStartedAtMs = Date.now()
   const dbQueryStartedAtMs = Date.now()
   const catalogLoad = await loadScannerSourceRows()
@@ -2585,7 +2887,7 @@ async function runOpportunityJob({ forceRefresh = false, scanRunId = null } = {}
   const selectionMs = Date.now() - selectionStartedAtMs
 
   const computeStartedAtMs = Date.now()
-  const compared = await compareCandidates(selection.selected || [], forceRefresh)
+  const compared = await compareCandidates(selection.selected || [])
   const evaluated = (selection.selected || []).map((candidate) =>
     evaluateCandidateOpportunity(candidate, compared.byName?.[candidate.marketHashName] || {})
   )
@@ -2608,6 +2910,12 @@ async function runOpportunityJob({ forceRefresh = false, scanRunId = null } = {}
     opportunitiesFound: opportunities.length,
     newOpportunitiesAdded: Number(persisted.newCount || 0),
     diagnostics: mergeDiagnostics({
+      job: buildOpportunityJobExecutionDiagnostics({
+        selection,
+        evaluations: evaluationSummary,
+        eligibleRows: opportunities.length,
+        persisted
+      }),
       selection,
       compare: compared.diagnostics,
       evaluations: evaluationSummary,
@@ -2633,7 +2941,7 @@ async function runOpportunityJob({ forceRefresh = false, scanRunId = null } = {}
         safeBatchSize: OPPORTUNITY_SAFE_BATCH_SIZE,
         runtimeBatchTarget: OPPORTUNITY_BATCH_RUNTIME_TARGET,
         scanChunkSize: SCAN_CHUNK_SIZE,
-        scanAllowLiveFetch: OPPORTUNITY_SCAN_ALLOW_LIVE_FETCH,
+        scanAllowLiveFetch: false,
         hardTimeoutMs: OPPORTUNITY_HARD_TIMEOUT_MS
       }
     })
@@ -2642,6 +2950,8 @@ async function runOpportunityJob({ forceRefresh = false, scanRunId = null } = {}
 
 function formatRunResult(input = {}) {
   return {
+    jobType: input.jobType || input.job_type || null,
+    job_type: input.job_type || input.jobType || null,
     scanRunId: input.scanRunId || null,
     status: input.status || "started",
     alreadyRunning: Boolean(input.alreadyRunning),
@@ -2660,8 +2970,6 @@ function formatRunResult(input = {}) {
 async function runJobWithLock({
   scannerType,
   state,
-  peerState,
-  peerScannerType,
   timeoutMs,
   hardTimeoutMs = null,
   trigger,
@@ -2673,6 +2981,7 @@ async function runJobWithLock({
   const safeHardTimeoutMs = Math.max(Math.round(Number(hardTimeoutMs || 0)), 0)
   if (state.inFlight) {
     return formatRunResult({
+      jobType: safeScannerType,
       scanRunId: state.currentRunId || null,
       status: "already_running",
       alreadyRunning: true,
@@ -2682,19 +2991,6 @@ async function runJobWithLock({
           ? Date.now() - new Date(state.currentRunStartedAt).getTime()
           : null
     })
-  }
-  if (!ALLOW_CROSS_JOB_PARALLELISM && peerState.inFlight) {
-    return formatRunResult({
-      status: "blocked_by_cross_job",
-      blockedByCrossJob: true,
-      blockingScannerType: peerScannerType,
-      blockingRunId: peerState.currentRunId || null,
-      blockingRunStartedAt: peerState.currentRunStartedAt || null,
-      blockingElapsedMs:
-        peerState.currentRunStartedAt && toIsoOrNull(peerState.currentRunStartedAt)
-          ? Date.now() - new Date(peerState.currentRunStartedAt).getTime()
-          : null
-      })
   }
 
   if (safeHardTimeoutMs > 0) {
@@ -2717,7 +3013,10 @@ async function runJobWithLock({
   const startedAt = new Date().toISOString()
   let runInsert = await scannerRunRepo.tryCreateRunningRun({
     scannerType: safeScannerType,
-    startedAt
+    startedAt,
+    diagnosticsSummary: buildJobExecutionDiagnostics({
+      jobType: safeScannerType
+    })
   })
   if (runInsert.alreadyRunning && safeHardTimeoutMs > 0) {
     const existingStartedAt = toIsoOrNull(runInsert?.existingRun?.started_at)
@@ -2739,7 +3038,10 @@ async function runJobWithLock({
         .catch(() => 0)
       runInsert = await scannerRunRepo.tryCreateRunningRun({
         scannerType: safeScannerType,
-        startedAt
+        startedAt,
+        diagnosticsSummary: buildJobExecutionDiagnostics({
+          jobType: safeScannerType
+        })
       })
     }
   }
@@ -2750,10 +3052,17 @@ async function runJobWithLock({
         startedAt,
         completedAt: startedAt,
         status: "skipped_already_running",
-        diagnosticsSummary: { trigger, reason: "already_running" }
+        diagnosticsSummary: {
+          trigger,
+          reason: "already_running",
+          ...buildJobExecutionDiagnostics({
+            jobType: safeScannerType
+          })
+        }
       }).catch(() => null)
     }
     return formatRunResult({
+      jobType: safeScannerType,
       status: "already_running",
       alreadyRunning: true,
       existingRunId: runInsert.existingRun?.id || null,
@@ -2782,6 +3091,9 @@ async function runJobWithLock({
           trigger,
           timeoutMs: safeTimeoutMs,
           hardTimeoutMs: safeHardTimeoutMs || null,
+          ...buildJobExecutionDiagnostics({
+            jobType: safeScannerType
+          }),
           ...(result?.diagnostics || {})
         }
       })
@@ -2805,7 +3117,10 @@ async function runJobWithLock({
           errorCode: normalizeText(err?.code) || null,
           timeoutMs: safeTimeoutMs,
           hardTimeoutMs: safeHardTimeoutMs || null,
-          elapsedMs
+          elapsedMs,
+          ...buildJobExecutionDiagnostics({
+            jobType: safeScannerType
+          })
         }
       })
     } finally {
@@ -2823,6 +3138,7 @@ async function runJobWithLock({
   state.inFlight.catch(() => null)
 
   return formatRunResult({
+    jobType: safeScannerType,
     scanRunId: runId,
     status: "started",
     alreadyRunning: false,
@@ -2834,12 +3150,10 @@ async function enqueueScan(options = {}) {
   return runJobWithLock({
     scannerType: SCANNER_TYPES.OPPORTUNITY_SCAN,
     state: scannerState,
-    peerState: enrichmentState,
-    peerScannerType: SCANNER_TYPES.ENRICHMENT,
     timeoutMs: OPPORTUNITY_HARD_TIMEOUT_MS,
     hardTimeoutMs: OPPORTUNITY_HARD_TIMEOUT_MS,
     trigger: normalizeText(options.trigger || "system"),
-    forceRefresh: Boolean(options.forceRefresh),
+    forceRefresh: false,
     worker: runOpportunityJob
   })
 }
@@ -2848,9 +3162,8 @@ async function enqueueEnrichment(options = {}) {
   return runJobWithLock({
     scannerType: SCANNER_TYPES.ENRICHMENT,
     state: enrichmentState,
-    peerState: scannerState,
-    peerScannerType: SCANNER_TYPES.OPPORTUNITY_SCAN,
     timeoutMs: ENRICHMENT_JOB_TIMEOUT_MS,
+    hardTimeoutMs: ENRICHMENT_JOB_TIMEOUT_MS,
     trigger: normalizeText(options.trigger || "system"),
     forceRefresh: Boolean(options.forceRefresh),
     worker: runEnrichmentJob
@@ -2890,7 +3203,8 @@ async function getScannerStatusInternal(options = {}) {
     latestRun: latestRun || null,
     latestCompletedRun: latestCompletedRun || null,
     coordination: {
-      allowCrossJobParallelism: ALLOW_CROSS_JOB_PARALLELISM,
+      allowCrossJobParallelism: true,
+      singleActiveRunPerJobType: true,
       overdue: isScannerRunOverdue({ latestRun, latestCompletedRun })
     },
     jobs: {
@@ -3098,7 +3412,7 @@ exports.triggerRefresh = async (options = {}) => {
   const runEnrichment = !requestedJobType || requestedJobType === SCANNER_TYPES.ENRICHMENT
 
   const [opportunity, enrichment] = await Promise.all([
-    runOpportunity ? enqueueScan({ forceRefresh, trigger }) : Promise.resolve(null),
+    runOpportunity ? enqueueScan({ trigger }) : Promise.resolve(null),
     runEnrichment ? enqueueEnrichment({ forceRefresh, trigger }) : Promise.resolve(null)
   ])
 
@@ -3121,7 +3435,8 @@ exports.triggerRefresh = async (options = {}) => {
         planService.getPlanConfig(planContext?.entitlements || planContext?.planTier)
           .scannerRefreshIntervalMinutes || OPPORTUNITY_SCAN_INTERVAL_MINUTES
       ),
-      allowCrossJobParallelism: ALLOW_CROSS_JOB_PARALLELISM
+      allowCrossJobParallelism: true,
+      singleActiveRunPerJobType: true
     }
   }
 }
@@ -3193,12 +3508,16 @@ exports.stopScheduler = () => {
 }
 
 exports.forceRefresh = async () =>
-  enqueueScan({ forceRefresh: true, trigger: "manual" })
+  enqueueEnrichment({ forceRefresh: true, trigger: "manual" })
 
 exports.__testables = {
   normalizeCategoryFilter,
   classifyCatalogState,
+  compareCandidates,
   buildRoundRobinPool,
+  buildJobExecutionDiagnostics,
+  buildEnrichmentJobExecutionDiagnostics,
+  buildOpportunityJobExecutionDiagnostics,
   selectScanCandidates,
   evaluateCandidateOpportunity,
   summarizeEvaluations,
@@ -3223,7 +3542,9 @@ exports.__testables = {
   clearFeedFirstPageCache,
   confidenceLevel,
   clampScore,
+  formatRunResult,
   isScannerRunOverdue,
+  runJobWithLock,
   DEFAULT_UNIVERSE_LIMIT,
   OPPORTUNITY_BATCH_TARGET,
   SCAN_CHUNK_SIZE,

@@ -161,6 +161,21 @@ function normalizeCatalogRow(row = {}) {
     sourceOrigin: normalizeText(row.sourceOrigin || row.source_origin) || null,
     invalidReason: normalizeText(row.invalid_reason || row.invalidReason) || null,
     sourceTag: normalizeText(row.source_tag || row.sourceTag) || null,
+    alphaHotUniverseSource:
+      normalizeText(row.alpha_hot_universe_source || row.alphaHotUniverseSource) || null,
+    alphaHotPriorityScore:
+      toFiniteOrNull(row.alpha_hot_priority_score ?? row.alphaHotPriorityScore),
+    alphaHotRank: toFiniteOrNull(row.alpha_hot_rank ?? row.alphaHotRank),
+    alphaHotStateRank:
+      toFiniteOrNull(row.alpha_hot_state_rank ?? row.alphaHotStateRank),
+    alphaHotFreshnessState:
+      normalizeText(row.alpha_hot_freshness_state || row.alphaHotFreshnessState) || null,
+    alphaHotDiversityBucket:
+      normalizeText(row.alpha_hot_diversity_bucket || row.alphaHotDiversityBucket) || null,
+    alphaHotCategoryQuotaBucket:
+      normalizeText(
+        row.alpha_hot_category_quota_bucket || row.alphaHotCategoryQuotaBucket
+      ) || null,
     raw: row
   }
 }
