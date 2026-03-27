@@ -8,6 +8,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ||
 const sourceSeed = require("../src/config/marketSourceCatalogSeed")
 const {
   __testables: {
+    CATEGORY_AWARE_EVALUATION_REASONS,
     buildCategoryQuotas,
     buildCategoryQuotasForCategories,
     buildSourceCatalogQuotas,
@@ -152,6 +153,90 @@ test("source eligibility aligns weapon-skin liquidity floor with risky entry thr
   assert.equal(aligned.reason, "")
 })
 
+test("source eligibility softens weapon-skin missing liquidity into penalty path", () => {
+  const nowIso = new Date().toISOString()
+  const category = normalizeCategory("weapon_skin", "AK-47 | Slate (Field-Tested)")
+  const result = evaluateEligibility({
+    marketHashName: "AK-47 | Slate (Field-Tested)",
+    category,
+    tradable: true,
+    referencePrice: 9.5,
+    volume7d: null,
+    marketCoverageCount: 2,
+    snapshotStale: false,
+    quoteFetchedAt: nowIso,
+    latestMarketSignalAt: nowIso
+  })
+
+  assert.equal(result.eligible, false)
+  assert.equal(
+    result.reason,
+    CATEGORY_AWARE_EVALUATION_REASONS.PENALTY_MISSING_LIQUIDITY_WEAPON_SKIN
+  )
+  assert.equal(result.convertedHardRejectToPenalty, true)
+  assert.equal(result.recoveryPath, "near_eligible")
+})
+
+test("source eligibility softens recoverable stale weapon skins into cooldown path", () => {
+  const staleIso = new Date(Date.now() - 150 * 60 * 1000).toISOString()
+  const category = normalizeCategory("weapon_skin", "AK-47 | Redline (Field-Tested)")
+  const result = evaluateEligibility({
+    marketHashName: "AK-47 | Redline (Field-Tested)",
+    category,
+    tradable: true,
+    referencePrice: 12.5,
+    volume7d: 75,
+    marketCoverageCount: 3,
+    snapshotStale: true,
+    quoteFetchedAt: staleIso,
+    latestReferencePriceAt: staleIso,
+    latestMarketSignalAt: staleIso
+  })
+
+  assert.equal(result.eligible, false)
+  assert.equal(
+    result.reason,
+    CATEGORY_AWARE_EVALUATION_REASONS.PENALTY_STALE_MARKET_WEAPON_SKIN
+  )
+  assert.equal(result.convertedHardRejectToPenalty, true)
+  assert.equal(result.recoveryPath, "cooldown")
+})
+
+test("source eligibility treats low-value weapon skins contextually while keeping non-weapon strict", () => {
+  const freshIso = new Date().toISOString()
+  const weaponSkinCategory = normalizeCategory("weapon_skin", "USP-S | Blueprint (Field-Tested)")
+  const weaponSkin = evaluateEligibility({
+    marketHashName: "USP-S | Blueprint (Field-Tested)",
+    category: weaponSkinCategory,
+    tradable: true,
+    referencePrice: 1.75,
+    volume7d: 48,
+    marketCoverageCount: 2,
+    snapshotStale: false,
+    quoteFetchedAt: freshIso,
+    latestMarketSignalAt: freshIso
+  })
+  const caseCategory = normalizeCategory("case", "Fracture Case")
+  const caseRow = evaluateEligibility({
+    marketHashName: "Fracture Case",
+    category: caseCategory,
+    tradable: true,
+    referencePrice: 1.75,
+    volume7d: 200,
+    marketCoverageCount: 2,
+    snapshotStale: false,
+    quoteFetchedAt: freshIso,
+    latestMarketSignalAt: freshIso
+  })
+
+  assert.equal(
+    weaponSkin.reason,
+    CATEGORY_AWARE_EVALUATION_REASONS.CONTEXTUAL_LOW_VALUE_WEAPON_SKIN
+  )
+  assert.equal(weaponSkin.convertedHardRejectToPenalty, true)
+  assert.equal(caseRow.reason, "excludedLowValueItems")
+})
+
 test("source eligibility blocks case items below $2", () => {
   const category = normalizeCategory("case", "Fracture Case")
   const lowCost = evaluateEligibility({
@@ -164,6 +249,24 @@ test("source eligibility blocks case items below $2", () => {
 
   assert.equal(lowCost.eligible, false)
   assert.equal(lowCost.reason, "excludedLowValueItems")
+})
+
+test("source eligibility keeps non-weapon low liquidity strict", () => {
+  const category = normalizeCategory("case", "Revolution Case")
+  const result = evaluateEligibility({
+    marketHashName: "Revolution Case",
+    category,
+    tradable: true,
+    referencePrice: 3.1,
+    volume7d: 12,
+    marketCoverageCount: 3,
+    snapshotStale: false,
+    quoteFetchedAt: new Date().toISOString()
+  })
+
+  assert.equal(result.eligible, false)
+  assert.equal(result.reason, "excludedLowLiquidityItems")
+  assert.equal(result.convertedHardRejectToPenalty, false)
 })
 
 test("candidate state separates enriching from strict eligible", () => {
@@ -233,6 +336,53 @@ test("candidate state promotes partial-ready rows to near-eligible when freshnes
   assert.equal(Array.isArray(state.nearEligibleBlockers), true)
   assert.equal(state.nearEligibleBlockers.length, 0)
   assert.equal(state.eligibleBlockers.includes("market_coverage_insufficient"), true)
+})
+
+test("candidate state promotes recoverable stale weapon skins into near-eligible with penalty reason", () => {
+  const marketHashName = "AK-47 | Slate (Field-Tested)"
+  const category = normalizeCategory("weapon_skin", marketHashName)
+  const staleIso = new Date(Date.now() - 150 * 60 * 1000).toISOString()
+  const eligibility = evaluateEligibility({
+    marketHashName,
+    category,
+    tradable: true,
+    referencePrice: 11.4,
+    volume7d: 64,
+    marketCoverageCount: 3,
+    snapshotStale: true,
+    quoteFetchedAt: staleIso,
+    latestReferencePriceAt: staleIso,
+    latestMarketSignalAt: staleIso
+  })
+  const state = evaluateCandidateState({
+    marketHashName,
+    category,
+    tradable: true,
+    eligibility,
+    referencePrice: 11.4,
+    volume7d: 64,
+    marketCoverageCount: 3,
+    snapshot: { captured_at: staleIso, average_7d_price: 11.4, volume_24h: 12 },
+    snapshotStale: true,
+    quoteFetchedAt: staleIso,
+    liquidityRank: 56,
+    latestReferencePriceAt: staleIso,
+    latestMarketSignalAt: staleIso
+  })
+
+  assert.equal(
+    eligibility.reason,
+    CATEGORY_AWARE_EVALUATION_REASONS.PENALTY_STALE_MARKET_WEAPON_SKIN
+  )
+  assert.equal(normalizeCandidateStatus(state.candidateStatus), "near_eligible")
+  assert.equal(state.progressionBlockers.includes("freshness_not_usable"), false)
+  assert.equal(
+    state.progressionBlockers.includes(
+      CATEGORY_AWARE_EVALUATION_REASONS.PENALTY_STALE_MARKET_WEAPON_SKIN
+    ),
+    true
+  )
+  assert.equal(state.recoveryPath, "near_eligible")
 })
 
 test("candidate state promotes safe covered weapon skins without reference into near-eligible", () => {
@@ -313,6 +463,40 @@ test("candidate state keeps zero-coverage weapon skins in enriching", () => {
 
   assert.equal(normalizeCandidateStatus(state.candidateStatus), "enriching")
   assert.equal(state.nearEligibleBlockers.includes("market_coverage_insufficient"), true)
+})
+
+test("candidate state uses explicit hard reject reasons for fake or untradable rows", () => {
+  const marketHashName = "AK-47 | Slate (Field-Tested)"
+  const category = normalizeCategory("weapon_skin", marketHashName)
+  const eligibility = evaluateEligibility({
+    marketHashName,
+    category,
+    tradable: false,
+    referencePrice: 11,
+    volume7d: 60,
+    marketCoverageCount: 3,
+    snapshotStale: false,
+    quoteFetchedAt: new Date().toISOString()
+  })
+  const state = evaluateCandidateState({
+    marketHashName,
+    category,
+    tradable: false,
+    eligibility,
+    referencePrice: 11,
+    volume7d: 60,
+    marketCoverageCount: 3,
+    snapshot: { captured_at: new Date().toISOString() },
+    snapshotStale: false,
+    liquidityRank: 44
+  })
+
+  assert.equal(normalizeCandidateStatus(state.candidateStatus), "rejected")
+  assert.equal(
+    state.eligibilityReason,
+    CATEGORY_AWARE_EVALUATION_REASONS.HARD_REJECT_FAKE_OR_UNTRADABLE
+  )
+  assert.equal(state.progressionBlockers.includes("anti_fake_guard"), true)
 })
 
 test("catalog status blocks fully data-empty rows and shadows stale-only rows", () => {

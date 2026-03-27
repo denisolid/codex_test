@@ -121,8 +121,35 @@ function createListActiveTradableStub(rowsByCategory = {}) {
   }
 }
 
+function buildWeaponVerificationRow(marketHashName, overrides = {}) {
+  const freshIso = new Date().toISOString()
+  return {
+    market_hash_name: marketHashName,
+    category: "weapon_skin",
+    tradable: true,
+    is_active: true,
+    candidate_status: "near_eligible",
+    market_coverage_count: 3,
+    liquidity_rank: 72,
+    priority_tier: "tier_a",
+    priority_boost: 18,
+    catalog_quality_score: 82,
+    quote_fetched_at: freshIso,
+    last_market_signal_at: freshIso,
+    snapshot_captured_at: "2026-03-19T10:00:00.000Z",
+    snapshot_state: "missing_snapshot",
+    ...overrides
+  }
+}
+
+function buildWeaponRows(count, start = 0, overrides = {}) {
+  return Array.from({ length: count }, (_, index) =>
+    buildWeaponVerificationRow(`weapon_skin-${start + index}`, overrides)
+  )
+}
+
 test("runFreshnessRecovery refreshes quotes and snapshots before forced catalog recompute", async () => {
-  const weaponRows = buildRows("weapon_skin", 50)
+  const weaponRows = buildWeaponRows(50)
   const caseRows = buildRows("case", 5)
   const stickerRows = buildRows("sticker_capsule", 5)
   const allRows = [...weaponRows, ...caseRows, ...stickerRows]
@@ -141,6 +168,8 @@ test("runFreshnessRecovery refreshes quotes and snapshots before forced catalog 
     upsertRows: marketPriceRepo.upsertRows,
     getByMarketHashNames: skinRepo.getByMarketHashNames,
     prepareSourceCatalog: marketSourceCatalogService.prepareSourceCatalog,
+    recomputeCandidateReadinessRows: marketSourceCatalogService.recomputeCandidateReadinessRows,
+    getCatalogRowsByMarketHashNames: marketSourceCatalogService.getCatalogRowsByMarketHashNames,
     refreshSnapshotsForSkins: marketService.refreshSnapshotsForSkins,
     steamBatchGetPrices: steamMarket.batchGetPrices,
     skinportBatchGetPrices: skinportMarket.batchGetPrices,
@@ -178,6 +207,19 @@ test("runFreshnessRecovery refreshes quotes and snapshots before forced catalog 
     return rows.length
   }
   skinRepo.getByMarketHashNames = async () => skins
+  marketSourceCatalogService.recomputeCandidateReadinessRows = async (rows = []) => ({
+    updatedRows: rows.length
+  })
+  marketSourceCatalogService.getCatalogRowsByMarketHashNames = async (names = []) =>
+    names.map((name) => ({
+      market_hash_name: name,
+      category: "weapon_skin",
+      tradable: true,
+      is_active: true,
+      candidate_status: "eligible",
+      scan_eligible: true,
+      catalog_status: "scannable"
+    }))
   marketService.refreshSnapshotsForSkins = async (rows = []) =>
     rows.map((skin) => ({
       skinId: skin.id,
@@ -237,7 +279,8 @@ test("runFreshnessRecovery refreshes quotes and snapshots before forced catalog 
     const diagnostics = await upstreamMarketFreshnessRecoveryService.runFreshnessRecovery({
       limit: 200,
       quoteBatchSize: 200,
-      snapshotBatchSize: 200
+      snapshotBatchSize: 200,
+      weaponSkinVerificationLimit: 12
     })
 
     assert.equal(diagnostics.healthGate.healthyEnough, true)
@@ -253,8 +296,10 @@ test("runFreshnessRecovery refreshes quotes and snapshots before forced catalog 
       "case",
       "sticker_capsule"
     ])
-    assert.equal(diagnostics.postRefresh.byCategory.weapon_skin.quote.coverageReady >= 40, true)
-    assert.equal(diagnostics.postRefresh.byCategory.weapon_skin.snapshot.fresh >= 25, true)
+    assert.equal(diagnostics.weaponSkinVerification.topQueuedRowsCount, 12)
+    assert.equal(diagnostics.weaponSkinVerification.successfulVerificationRows, 12)
+    assert.equal(diagnostics.postRefresh.byCategory.weapon_skin.quote.coverageReady > 0, true)
+    assert.equal(diagnostics.postRefresh.byCategory.weapon_skin.snapshot.fresh > 0, true)
     assert.equal(diagnostics.catalogRecompute.scannableRows, 61)
     assert.equal(diagnostics.catalogRecompute.scannableRowsByCategory.weapon_skin, 50)
     assert.equal(diagnostics.catalogRecompute.opportunityScanSafeToResume, true)
@@ -274,6 +319,10 @@ test("runFreshnessRecovery refreshes quotes and snapshots before forced catalog 
     marketPriceRepo.upsertRows = originals.upsertRows
     skinRepo.getByMarketHashNames = originals.getByMarketHashNames
     marketSourceCatalogService.prepareSourceCatalog = originals.prepareSourceCatalog
+    marketSourceCatalogService.recomputeCandidateReadinessRows =
+      originals.recomputeCandidateReadinessRows
+    marketSourceCatalogService.getCatalogRowsByMarketHashNames =
+      originals.getCatalogRowsByMarketHashNames
     marketService.refreshSnapshotsForSkins = originals.refreshSnapshotsForSkins
     steamMarket.batchGetPrices = originals.steamBatchGetPrices
     skinportMarket.batchGetPrices = originals.skinportBatchGetPrices
@@ -283,7 +332,7 @@ test("runFreshnessRecovery refreshes quotes and snapshots before forced catalog 
 })
 
 test("runFreshnessRecovery skips recompute when upstream freshness is still unhealthy", async () => {
-  const weaponRows = buildRows("weapon_skin", 10)
+  const weaponRows = buildWeaponRows(10)
   const caseRows = buildRows("case", 2)
   const stickerRows = buildRows("sticker_capsule", 2)
   const allRows = [...weaponRows, ...caseRows, ...stickerRows]
@@ -374,14 +423,7 @@ test("runFreshnessRecovery skips recompute when upstream freshness is still unhe
 })
 
 test("runFreshnessRecovery preserves earlier batch progress and returns a checkpoint on timeout", async () => {
-  const weaponRows = buildRows("weapon_skin", 70)
-  const caseRows = buildRows("case", 5)
-  const stickerRows = buildRows("sticker_capsule", 5)
-  const allRows = [...weaponRows, ...caseRows, ...stickerRows]
-  const skins = allRows.map((row, index) => ({
-    id: index + 1,
-    market_hash_name: row.market_hash_name
-  }))
+  const caseRows = buildRows("case", 70)
   const staleIso = "2026-03-19T10:00:00.000Z"
   const freshIso = new Date().toISOString()
 
@@ -404,12 +446,10 @@ test("runFreshnessRecovery preserves earlier batch progress and returns a checkp
   const upsertedPriceRows = []
 
   marketSourceCatalogRepo.listActiveTradable = createListActiveTradableStub({
-    weapon_skin: weaponRows,
-    case: caseRows,
-    sticker_capsule: stickerRows
+    case: caseRows
   })
   marketQuoteRepo.getLatestCoverageByItemNames = async (names = []) => {
-    if (names.some((name) => name === "weapon_skin-30")) {
+    if (names.some((name) => name === "case-30")) {
       const error = new Error("canceling statement due to statement timeout")
       error.code = "57014"
       throw error
@@ -438,8 +478,7 @@ test("runFreshnessRecovery preserves earlier batch progress and returns a checkp
     upsertedPriceRows.push(...rows)
     return rows.length
   }
-  skinRepo.getByMarketHashNames = async (names = []) =>
-    skins.filter((skin) => names.includes(skin.market_hash_name))
+  skinRepo.getByMarketHashNames = async () => []
   marketService.refreshSnapshotsForSkins = async (rows = []) =>
     rows.map((skin) => ({
       skinId: skin.id,
@@ -479,6 +518,7 @@ test("runFreshnessRecovery preserves earlier batch progress and returns a checkp
 
   try {
     const diagnostics = await upstreamMarketFreshnessRecoveryService.runFreshnessRecovery({
+      categories: ["case"],
       limit: 120,
       selectionBatchSize: 30,
       quoteBatchSize: 20,
@@ -488,7 +528,7 @@ test("runFreshnessRecovery preserves earlier batch progress and returns a checkp
     assert.equal(diagnostics.completed, false)
     assert.equal(diagnostics.timedOut, true)
     assert.equal(diagnostics.failedStage, "quote_refresh_selection")
-    assert.equal(diagnostics.checkpoint.nextCategory, "weapon_skin")
+    assert.equal(diagnostics.checkpoint.nextCategory, "case")
     assert.equal(diagnostics.checkpoint.nextOffset, 30)
     assert.equal(diagnostics.catalogRecompute.executed, false)
     assert.equal(insertedQuoteRows.length > 0, true)
@@ -510,12 +550,7 @@ test("runFreshnessRecovery preserves earlier batch progress and returns a checkp
 })
 
 test("runFreshnessRecovery can pause after a limited number of batches and expose a resume checkpoint", async () => {
-  const weaponRows = buildRows("weapon_skin", 70)
-  const allRows = [...weaponRows]
-  const skins = allRows.map((row, index) => ({
-    id: index + 1,
-    market_hash_name: row.market_hash_name
-  }))
+  const caseRows = buildRows("case", 70)
   const staleIso = "2026-03-19T10:00:00.000Z"
   const freshIso = new Date().toISOString()
 
@@ -535,7 +570,7 @@ test("runFreshnessRecovery can pause after a limited number of batches and expos
   }
 
   marketSourceCatalogRepo.listActiveTradable = createListActiveTradableStub({
-    weapon_skin: weaponRows
+    case: caseRows
   })
   marketQuoteRepo.getLatestCoverageByItemNames = async (names = []) =>
     buildFreshCoverage(
@@ -555,19 +590,8 @@ test("runFreshnessRecovery can pause after a limited number of batches and expos
     )
   marketQuoteRepo.insertRows = async (rows = []) => rows.length
   marketPriceRepo.upsertRows = async (rows = []) => rows.length
-  skinRepo.getByMarketHashNames = async (names = []) =>
-    skins.filter((skin) => names.includes(skin.market_hash_name))
-  marketService.refreshSnapshotsForSkins = async (rows = []) =>
-    rows.map((skin) => ({
-      skinId: skin.id,
-      marketHashName: skin.market_hash_name,
-      refreshed: true,
-      snapshot: {
-        skin_id: skin.id,
-        captured_at: freshIso,
-        source: "steam-market-overview+price-history"
-      }
-    }))
+  skinRepo.getByMarketHashNames = async () => []
+  marketService.refreshSnapshotsForSkins = async () => []
   marketSourceCatalogService.prepareSourceCatalog = async () => {
     throw new Error("should not recompute while paused")
   }
@@ -596,7 +620,7 @@ test("runFreshnessRecovery can pause after a limited number of batches and expos
 
   try {
     const diagnostics = await upstreamMarketFreshnessRecoveryService.runFreshnessRecovery({
-      categories: ["weapon_skin"],
+      categories: ["case"],
       limit: 60,
       selectionBatchSize: 30,
       quoteBatchSize: 20,
@@ -608,11 +632,11 @@ test("runFreshnessRecovery can pause after a limited number of batches and expos
     assert.equal(diagnostics.paused, true)
     assert.equal(diagnostics.timedOut, false)
     assert.equal(diagnostics.failedStage, null)
-    assert.equal(diagnostics.checkpoint.nextCategory, "weapon_skin")
+    assert.equal(diagnostics.checkpoint.nextCategory, "case")
     assert.equal(diagnostics.checkpoint.nextOffset, 30)
     assert.equal(diagnostics.catalogRecompute.executed, false)
     assert.deepEqual(diagnostics.checkpoint.resumeArgs.slice(0, 2), [
-      "--start-category=weapon_skin",
+      "--start-category=case",
       "--start-offset=30"
     ])
     assert.equal(
@@ -636,10 +660,11 @@ test("runFreshnessRecovery can pause after a limited number of batches and expos
 })
 
 test("runFreshnessRecovery reports snapshot failure reasons and keeps the health gate strict", async () => {
-  const weaponRows = buildRows("weapon_skin", 30)
+  const weaponRows = buildWeaponRows(30)
   const mappedSkins = weaponRows.slice(0, 20).map((row, index) => ({
     id: index + 1,
-    market_hash_name: row.market_hash_name
+    market_hash_name: row.market_hash_name,
+    category: row.category
   }))
   const freshIso = new Date().toISOString()
 
@@ -697,7 +722,8 @@ test("runFreshnessRecovery reports snapshot failure reasons and keeps the health
       limit: 30,
       selectionBatchSize: 30,
       quoteBatchSize: 20,
-      snapshotBatchSize: 10
+      snapshotBatchSize: 10,
+      weaponSkinVerificationLimit: 30
     })
 
     assert.equal(diagnostics.completed, true)
@@ -735,8 +761,433 @@ test("runFreshnessRecovery reports snapshot failure reasons and keeps the health
   }
 })
 
+test("runFreshnessRecovery uses a high-priority weapon-skin verification queue and recomputes only verified rows", async () => {
+  const queueRows = [
+    buildWeaponVerificationRow("weapon-eligible-top", {
+      candidate_status: "eligible",
+      liquidity_rank: 88,
+      priority_tier: "tier_a",
+      priority_boost: 22,
+      catalog_quality_score: 90
+    }),
+    buildWeaponVerificationRow("weapon-near-top", {
+      candidate_status: "near_eligible",
+      liquidity_rank: 74,
+      priority_tier: "tier_b",
+      priority_boost: 14,
+      catalog_quality_score: 78
+    }),
+    buildWeaponVerificationRow("weapon-candidate-low", {
+      candidate_status: "candidate",
+      liquidity_rank: 6,
+      priority_tier: null,
+      priority_boost: 0,
+      catalog_quality_score: 12,
+      market_coverage_count: 2
+    }),
+    buildWeaponVerificationRow("weapon-near-cooldown", {
+      candidate_status: "near_eligible",
+      liquidity_rank: 70,
+      priority_boost: 16
+    }),
+    buildWeaponVerificationRow("weapon-eligible-exhausted", {
+      candidate_status: "eligible",
+      liquidity_rank: 80,
+      priority_boost: 19
+    })
+  ]
+  const freshIso = new Date().toISOString()
+  const staleIso = "2026-03-19T10:00:00.000Z"
+  const mappedSkins = queueRows.map((row, index) => ({
+    id: index + 1,
+    market_hash_name: row.market_hash_name
+  }))
+  const skinIdByName = Object.fromEntries(mappedSkins.map((skin) => [skin.market_hash_name, skin.id]))
+
+  const originals = {
+    listActiveTradable: marketSourceCatalogRepo.listActiveTradable,
+    getLatestCoverageByItemNames: marketQuoteRepo.getLatestCoverageByItemNames,
+    getLatestBySkinIds: marketSnapshotRepo.getLatestBySkinIds,
+    insertRows: marketQuoteRepo.insertRows,
+    upsertRows: marketPriceRepo.upsertRows,
+    getByMarketHashNames: skinRepo.getByMarketHashNames,
+    prepareSourceCatalog: marketSourceCatalogService.prepareSourceCatalog,
+    recomputeCandidateReadinessRows: marketSourceCatalogService.recomputeCandidateReadinessRows,
+    getCatalogRowsByMarketHashNames: marketSourceCatalogService.getCatalogRowsByMarketHashNames,
+    refreshSnapshotsForSkins: marketService.refreshSnapshotsForSkins,
+    steamBatchGetPrices: steamMarket.batchGetPrices,
+    skinportBatchGetPrices: skinportMarket.batchGetPrices,
+    csfloatBatchGetPrices: csfloatMarket.batchGetPrices,
+    dmarketBatchGetPrices: dmarketMarket.batchGetPrices
+  }
+
+  const attemptedNames = []
+  const recomputedNames = []
+  let snapshotLookupCount = 0
+
+  marketSourceCatalogRepo.listActiveTradable = createListActiveTradableStub({
+    weapon_skin: queueRows
+  })
+  marketQuoteRepo.getLatestCoverageByItemNames = async (names = []) =>
+    buildFreshCoverage(
+      names.map((name) => ({ market_hash_name: name })),
+      freshIso
+    )
+  marketSnapshotRepo.getLatestBySkinIds = async (skinIds = []) => {
+    snapshotLookupCount += 1
+    if (snapshotLookupCount === 1) {
+      return Object.fromEntries(
+        skinIds.map((skinId) => [
+          skinId,
+          {
+            skin_id: skinId,
+            captured_at: staleIso,
+            source: "steam-market-overview+price-history"
+          }
+        ])
+      )
+    }
+    return Object.fromEntries(
+      skinIds.map((skinId) => {
+        const marketHashName = mappedSkins.find((skin) => skin.id === skinId)?.market_hash_name
+        const fresh = attemptedNames.includes(marketHashName)
+        return [
+          skinId,
+          {
+            skin_id: skinId,
+            captured_at: fresh ? freshIso : staleIso,
+            source: "steam-market-overview+price-history"
+          }
+        ]
+      })
+    )
+  }
+  marketQuoteRepo.insertRows = async () => 0
+  marketPriceRepo.upsertRows = async () => 0
+  skinRepo.getByMarketHashNames = async (names = []) =>
+    mappedSkins.filter((skin) => names.includes(skin.market_hash_name))
+  marketSourceCatalogService.prepareSourceCatalog = async () => {
+    throw new Error("should not run broad recompute for targeted weapon verification")
+  }
+  marketSourceCatalogService.recomputeCandidateReadinessRows = async (rows = []) => {
+    recomputedNames.push(...rows.map((row) => row.market_hash_name))
+    return { persistedUpdateRows: rows.length }
+  }
+  marketSourceCatalogService.getCatalogRowsByMarketHashNames = async (names = []) =>
+    names.map((name) => ({
+      market_hash_name: name,
+      category: "weapon_skin",
+      tradable: true,
+      is_active: true,
+      candidate_status: "eligible",
+      scan_eligible: true,
+      catalog_status: "scannable"
+    }))
+  marketService.refreshSnapshotsForSkins = async (skins = []) => {
+    attemptedNames.push(...skins.map((skin) => skin.market_hash_name))
+    return skins.map((skin) => ({
+      skinId: skin.id,
+      marketHashName: skin.market_hash_name,
+      refreshed: true,
+      snapshot: {
+        skin_id: skin.id,
+        captured_at: freshIso,
+        source: "steam-market-overview+price-history"
+      },
+      refreshReason: "snapshot_write_succeeded"
+    }))
+  }
+  steamMarket.batchGetPrices = async () => ({})
+  skinportMarket.batchGetPrices = async () => ({})
+  csfloatMarket.batchGetPrices = async () => ({})
+  dmarketMarket.batchGetPrices = async () => ({})
+
+  try {
+    const diagnostics = await upstreamMarketFreshnessRecoveryService.runFreshnessRecovery({
+      categories: ["weapon_skin"],
+      limit: 60,
+      selectionBatchSize: 30,
+      quoteBatchSize: 20,
+      snapshotBatchSize: 10,
+      weaponSkinVerificationLimit: 2,
+      recompute: false,
+      resumeState: {
+        weaponSkinVerificationState: {
+          byMarketHashName: {
+            "weapon-near-cooldown": {
+              retriesRemaining: 2,
+              retryBudget: 2,
+              retryBudgetExhausted: false,
+              cooldownUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString()
+            },
+            "weapon-eligible-exhausted": {
+              retriesRemaining: 0,
+              retryBudget: 2,
+              retryBudgetExhausted: true,
+              cooldownUntil: null
+            }
+          }
+        }
+      }
+    })
+
+    assert.deepEqual(attemptedNames, ["weapon-eligible-top", "weapon-near-top"])
+    assert.deepEqual(recomputedNames, ["weapon-eligible-top", "weapon-near-top"])
+    assert.equal(diagnostics.weaponSkinVerification.verificationQueueSize, 2)
+    assert.equal(diagnostics.weaponSkinVerification.topQueuedRowsCount, 2)
+    assert.equal(diagnostics.weaponSkinVerification.primaryQueueSize, 2)
+    assert.equal(diagnostics.weaponSkinVerification.fallbackProbeQueueSize, 0)
+    assert.equal(diagnostics.weaponSkinVerification.queuedRowsByState.eligible, 1)
+    assert.equal(diagnostics.weaponSkinVerification.queuedRowsByState.near_eligible, 1)
+    assert.equal(diagnostics.weaponSkinVerification.retryBudgetBlockedRows, 1)
+    assert.equal(diagnostics.weaponSkinVerification.cooledDownRows, 1)
+    assert.equal(diagnostics.weaponSkinVerification.skippedLowPriorityRows, 1)
+    assert.equal(diagnostics.weaponSkinVerification.skippedPrimaryTooStrictCount, 0)
+    assert.equal(diagnostics.weaponSkinVerification.skippedFallbackBelowMinimumQualityCount, 1)
+    assert.equal(diagnostics.weaponSkinVerification.attemptedVerificationRows, 2)
+    assert.equal(diagnostics.weaponSkinVerification.successfulVerificationRows, 2)
+    assert.equal(diagnostics.weaponSkinVerification.fallbackProbeRowsAttempted, 0)
+    assert.equal(diagnostics.weaponSkinVerification.fallbackProbeRowsSuccessful, 0)
+    assert.equal(diagnostics.weaponSkinVerification.recomputedVerifiedRows, 2)
+    assert.equal(diagnostics.weaponSkinVerification.fallbackProbeRowsRecomputed, 0)
+    assert.equal(diagnostics.weaponSkinVerification.verifiedScannableRows, 2)
+    assert.equal(diagnostics.weaponSkinVerification.fallbackProbeVerifiedScannableRows, 0)
+    assert.equal(diagnostics.weaponSkinVerification.weaponSkinScannerSourceIncreased, true)
+    assert.equal(
+      diagnostics.weaponSkinVerification.fallbackProbeWeaponSkinScannerSourceIncreased,
+      false
+    )
+    assert.equal(diagnostics.weaponSkinVerification.fallbackLaneActivated, false)
+    assert.equal(diagnostics.weaponSkinVerification.queueEmptyReason, null)
+  } finally {
+    marketSourceCatalogRepo.listActiveTradable = originals.listActiveTradable
+    marketQuoteRepo.getLatestCoverageByItemNames = originals.getLatestCoverageByItemNames
+    marketSnapshotRepo.getLatestBySkinIds = originals.getLatestBySkinIds
+    marketQuoteRepo.insertRows = originals.insertRows
+    marketPriceRepo.upsertRows = originals.upsertRows
+    skinRepo.getByMarketHashNames = originals.getByMarketHashNames
+    marketSourceCatalogService.prepareSourceCatalog = originals.prepareSourceCatalog
+    marketSourceCatalogService.recomputeCandidateReadinessRows =
+      originals.recomputeCandidateReadinessRows
+    marketSourceCatalogService.getCatalogRowsByMarketHashNames =
+      originals.getCatalogRowsByMarketHashNames
+    marketService.refreshSnapshotsForSkins = originals.refreshSnapshotsForSkins
+    steamMarket.batchGetPrices = originals.steamBatchGetPrices
+    skinportMarket.batchGetPrices = originals.skinportBatchGetPrices
+    csfloatMarket.batchGetPrices = originals.csfloatBatchGetPrices
+    dmarketMarket.batchGetPrices = originals.dmarketBatchGetPrices
+  }
+})
+
+test("runFreshnessRecovery activates the tiny fallback probe lane only when the primary weapon queue is empty", async () => {
+  const freshIso = new Date().toISOString()
+  const queueRows = [
+    buildWeaponVerificationRow("weapon-fallback-top", {
+      candidate_status: "candidate",
+      market_coverage_count: 1,
+      liquidity_rank: 60,
+      priority_tier: "tier_a",
+      priority_boost: 14,
+      catalog_quality_score: 88,
+      quote_fetched_at: freshIso,
+      last_market_signal_at: freshIso
+    }),
+    buildWeaponVerificationRow("weapon-fallback-second", {
+      candidate_status: "candidate",
+      market_coverage_count: 1,
+      liquidity_rank: 56,
+      priority_tier: "tier_b",
+      priority_boost: 12,
+      catalog_quality_score: 64,
+      quote_fetched_at: freshIso,
+      last_market_signal_at: freshIso
+    }),
+    buildWeaponVerificationRow("weapon-cooldown-blocked", {
+      candidate_status: "candidate",
+      market_coverage_count: 1,
+      liquidity_rank: 58,
+      priority_tier: "tier_a",
+      priority_boost: 15,
+      catalog_quality_score: 80,
+      quote_fetched_at: freshIso,
+      last_market_signal_at: freshIso
+    }),
+    buildWeaponVerificationRow("weapon-retry-blocked", {
+      candidate_status: "candidate",
+      market_coverage_count: 1,
+      liquidity_rank: 57,
+      priority_tier: "tier_a",
+      priority_boost: 13,
+      catalog_quality_score: 79,
+      quote_fetched_at: freshIso,
+      last_market_signal_at: freshIso
+    }),
+    buildWeaponVerificationRow("weapon-low-priority-trash", {
+      candidate_status: "candidate",
+      market_coverage_count: 0,
+      liquidity_rank: 8,
+      priority_tier: null,
+      priority_boost: 0,
+      catalog_quality_score: 12,
+      quote_fetched_at: freshIso,
+      last_market_signal_at: freshIso
+    })
+  ]
+  const mappedSkins = queueRows.map((row, index) => ({
+    id: index + 1,
+    market_hash_name: row.market_hash_name,
+    category: row.category
+  }))
+  const attemptedNames = []
+  const recomputedNames = []
+
+  const originals = {
+    listActiveTradable: marketSourceCatalogRepo.listActiveTradable,
+    getLatestCoverageByItemNames: marketQuoteRepo.getLatestCoverageByItemNames,
+    getLatestBySkinIds: marketSnapshotRepo.getLatestBySkinIds,
+    insertRows: marketQuoteRepo.insertRows,
+    upsertRows: marketPriceRepo.upsertRows,
+    getByMarketHashNames: skinRepo.getByMarketHashNames,
+    prepareSourceCatalog: marketSourceCatalogService.prepareSourceCatalog,
+    recomputeCandidateReadinessRows: marketSourceCatalogService.recomputeCandidateReadinessRows,
+    getCatalogRowsByMarketHashNames: marketSourceCatalogService.getCatalogRowsByMarketHashNames,
+    refreshSnapshotsForSkins: marketService.refreshSnapshotsForSkins,
+    steamBatchGetPrices: steamMarket.batchGetPrices,
+    skinportBatchGetPrices: skinportMarket.batchGetPrices,
+    csfloatBatchGetPrices: csfloatMarket.batchGetPrices,
+    dmarketBatchGetPrices: dmarketMarket.batchGetPrices
+  }
+
+  marketSourceCatalogRepo.listActiveTradable = createListActiveTradableStub({
+    weapon_skin: queueRows
+  })
+  marketQuoteRepo.getLatestCoverageByItemNames = async (names = []) =>
+    buildFreshCoverage(
+      names.map((name) => ({ market_hash_name: name })),
+      freshIso
+    )
+  marketSnapshotRepo.getLatestBySkinIds = async () => ({})
+  marketQuoteRepo.insertRows = async () => 0
+  marketPriceRepo.upsertRows = async () => 0
+  skinRepo.getByMarketHashNames = async (names = []) =>
+    mappedSkins.filter((skin) => names.includes(skin.market_hash_name))
+  marketSourceCatalogService.prepareSourceCatalog = async () => {
+    throw new Error("should not run broad recompute for fallback probe lane")
+  }
+  marketSourceCatalogService.recomputeCandidateReadinessRows = async (rows = []) => {
+    recomputedNames.push(...rows.map((row) => row.market_hash_name))
+    return { persistedUpdateRows: rows.length }
+  }
+  marketSourceCatalogService.getCatalogRowsByMarketHashNames = async (names = []) =>
+    names.map((name) => ({
+      market_hash_name: name,
+      category: "weapon_skin",
+      tradable: true,
+      is_active: true,
+      candidate_status: "eligible",
+      scan_eligible: true,
+      catalog_status: "scannable"
+    }))
+  marketService.refreshSnapshotsForSkins = async (skins = []) => {
+    attemptedNames.push(...skins.map((skin) => skin.market_hash_name))
+    return skins.map((skin) => ({
+      skinId: skin.id,
+      marketHashName: skin.market_hash_name,
+      refreshed: true,
+      snapshot: {
+        skin_id: skin.id,
+        captured_at: freshIso,
+        source: "steam-market-overview+price-history"
+      },
+      refreshReason: "snapshot_write_succeeded"
+    }))
+  }
+  steamMarket.batchGetPrices = async () => ({})
+  skinportMarket.batchGetPrices = async () => ({})
+  csfloatMarket.batchGetPrices = async () => ({})
+  dmarketMarket.batchGetPrices = async () => ({})
+
+  try {
+    const diagnostics = await upstreamMarketFreshnessRecoveryService.runFreshnessRecovery({
+      categories: ["weapon_skin"],
+      limit: 60,
+      selectionBatchSize: 30,
+      quoteBatchSize: 20,
+      snapshotBatchSize: 10,
+      weaponSkinVerificationLimit: 3,
+      weaponSkinFallbackProbeLimit: 2,
+      recompute: false,
+      resumeState: {
+        weaponSkinVerificationState: {
+          byMarketHashName: {
+            "weapon-cooldown-blocked": {
+              retriesRemaining: 2,
+              retryBudget: 2,
+              retryBudgetExhausted: false,
+              cooldownUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString()
+            },
+            "weapon-retry-blocked": {
+              retriesRemaining: 0,
+              retryBudget: 2,
+              retryBudgetExhausted: true,
+              cooldownUntil: null
+            }
+          }
+        }
+      }
+    })
+
+    assert.deepEqual(attemptedNames, ["weapon-fallback-top", "weapon-fallback-second"])
+    assert.deepEqual(recomputedNames, ["weapon-fallback-top", "weapon-fallback-second"])
+    assert.equal(diagnostics.weaponSkinVerification.primaryQueueSize, 0)
+    assert.equal(diagnostics.weaponSkinVerification.fallbackProbeQueueSize, 2)
+    assert.equal(diagnostics.weaponSkinVerification.verificationQueueSize, 2)
+    assert.equal(diagnostics.weaponSkinVerification.topQueuedRowsCount, 2)
+    assert.equal(diagnostics.weaponSkinVerification.fallbackLaneActivated, true)
+    assert.equal(
+      diagnostics.weaponSkinVerification.queueEmptyReason,
+      "primary_queue_empty_activated_fallback_probe"
+    )
+    assert.equal(diagnostics.weaponSkinVerification.retryBudgetBlockedRows, 1)
+    assert.equal(diagnostics.weaponSkinVerification.cooledDownRows, 1)
+    assert.equal(diagnostics.weaponSkinVerification.skippedPrimaryTooStrictCount, 2)
+    assert.equal(diagnostics.weaponSkinVerification.skippedLowPriorityRows, 1)
+    assert.equal(diagnostics.weaponSkinVerification.skippedFallbackBelowMinimumQualityCount, 1)
+    assert.equal(diagnostics.weaponSkinVerification.attemptedVerificationRows, 2)
+    assert.equal(diagnostics.weaponSkinVerification.successfulVerificationRows, 2)
+    assert.equal(diagnostics.weaponSkinVerification.fallbackProbeRowsAttempted, 2)
+    assert.equal(diagnostics.weaponSkinVerification.fallbackProbeRowsSuccessful, 2)
+    assert.equal(diagnostics.weaponSkinVerification.recomputedVerifiedRows, 2)
+    assert.equal(diagnostics.weaponSkinVerification.fallbackProbeRowsRecomputed, 2)
+    assert.equal(diagnostics.weaponSkinVerification.verifiedScannableRows, 2)
+    assert.equal(diagnostics.weaponSkinVerification.fallbackProbeVerifiedScannableRows, 2)
+    assert.equal(diagnostics.weaponSkinVerification.weaponSkinScannerSourceIncreased, true)
+    assert.equal(
+      diagnostics.weaponSkinVerification.fallbackProbeWeaponSkinScannerSourceIncreased,
+      true
+    )
+  } finally {
+    marketSourceCatalogRepo.listActiveTradable = originals.listActiveTradable
+    marketQuoteRepo.getLatestCoverageByItemNames = originals.getLatestCoverageByItemNames
+    marketSnapshotRepo.getLatestBySkinIds = originals.getLatestBySkinIds
+    marketQuoteRepo.insertRows = originals.insertRows
+    marketPriceRepo.upsertRows = originals.upsertRows
+    skinRepo.getByMarketHashNames = originals.getByMarketHashNames
+    marketSourceCatalogService.prepareSourceCatalog = originals.prepareSourceCatalog
+    marketSourceCatalogService.recomputeCandidateReadinessRows =
+      originals.recomputeCandidateReadinessRows
+    marketSourceCatalogService.getCatalogRowsByMarketHashNames =
+      originals.getCatalogRowsByMarketHashNames
+    marketService.refreshSnapshotsForSkins = originals.refreshSnapshotsForSkins
+    steamMarket.batchGetPrices = originals.steamBatchGetPrices
+    skinportMarket.batchGetPrices = originals.skinportBatchGetPrices
+    csfloatMarket.batchGetPrices = originals.csfloatBatchGetPrices
+    dmarketMarket.batchGetPrices = originals.dmarketBatchGetPrices
+  }
+})
+
 test("runFreshnessRecovery applies snapshot cooldown after rate limiting and continues with other categories", async () => {
-  const weaponRows = buildRows("weapon_skin", 30)
+  const weaponRows = buildWeaponRows(30)
   const caseRows = buildRows("case", 30)
   const stickerRows = buildRows("sticker_capsule", 30)
   const allRows = [...weaponRows, ...caseRows, ...stickerRows]
@@ -883,12 +1334,16 @@ test("runFreshnessRecovery applies snapshot cooldown after rate limiting and con
 })
 
 test("runFreshnessRecovery skips snapshot retries while cooldown is active and preserves resume pacing state", async () => {
-  const weaponRows = buildRows("weapon_skin", 30)
+  const freshIso = "2026-03-27T12:00:00.000Z"
+  const weaponRows = buildWeaponRows(30, 0, {
+    quote_fetched_at: freshIso,
+    last_market_signal_at: freshIso
+  })
   const mappedSkins = weaponRows.map((row, index) => ({
     id: index + 1,
-    market_hash_name: row.market_hash_name
+    market_hash_name: row.market_hash_name,
+    category: row.category
   }))
-  const freshIso = "2026-03-27T12:00:00.000Z"
   const nowMs = new Date(freshIso).getTime()
 
   const originals = {
@@ -994,12 +1449,16 @@ test("runFreshnessRecovery skips snapshot retries while cooldown is active and p
 })
 
 test("runFreshnessRecovery surfaces snapshot retry budget exhaustion clearly", async () => {
-  const weaponRows = buildRows("weapon_skin", 30)
+  const freshIso = "2026-03-27T12:00:00.000Z"
+  const weaponRows = buildWeaponRows(30, 0, {
+    quote_fetched_at: freshIso,
+    last_market_signal_at: freshIso
+  })
   const mappedSkins = weaponRows.map((row, index) => ({
     id: index + 1,
-    market_hash_name: row.market_hash_name
+    market_hash_name: row.market_hash_name,
+    category: row.category
   }))
-  const freshIso = "2026-03-27T12:00:00.000Z"
   const nowMs = new Date(freshIso).getTime()
 
   const originals = {

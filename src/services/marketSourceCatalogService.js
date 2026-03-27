@@ -309,6 +309,11 @@ const CATALOG_PROMOTION_REASON_KEYS = Object.freeze([
   "missing_snapshot",
   "missing_liquidity_context",
   "low_volume_context",
+  "penalty_missing_liquidity_weapon_skin",
+  "penalty_stale_market_weapon_skin",
+  "contextual_low_value_weapon_skin",
+  "hard_reject_invalid_market_integrity",
+  "hard_reject_fake_or_untradable",
   "structural_reason",
   "candidate_not_ready"
 ])
@@ -383,12 +388,20 @@ const CATALOG_SHADOW_REASONS = Object.freeze({
   WEAK_MARKET_COVERAGE: "weak_market_coverage",
   INCOMPLETE_REFERENCE_PRICING: "incomplete_reference_pricing"
 })
+const CATEGORY_AWARE_EVALUATION_REASONS = Object.freeze({
+  PENALTY_MISSING_LIQUIDITY_WEAPON_SKIN: "penalty_missing_liquidity_weapon_skin",
+  PENALTY_STALE_MARKET_WEAPON_SKIN: "penalty_stale_market_weapon_skin",
+  CONTEXTUAL_LOW_VALUE_WEAPON_SKIN: "contextual_low_value_weapon_skin",
+  HARD_REJECT_INVALID_MARKET_INTEGRITY: "hard_reject_invalid_market_integrity",
+  HARD_REJECT_FAKE_OR_UNTRADABLE: "hard_reject_fake_or_untradable"
+})
 const PRIORITY_TIERS = Object.freeze({
   TIER_A: "tier_a",
   TIER_B: "tier_b"
 })
 const PRIORITY_TIER_SET = new Set(Object.values(PRIORITY_TIERS))
 const MIN_SCAN_COST_USD = 2
+const WEAPON_SKIN_RECOVERABLE_STALE_MULTIPLIER = 2
 
 const BASE_INGEST_EXCLUDED_REASON_COUNTER = Object.freeze({
   excludedDuplicate: 0,
@@ -477,6 +490,40 @@ function buildFreshnessByCategoryMap(initialValue = 0) {
   return Object.fromEntries(
     SCANNER_SCOPE_CATEGORIES.map((category) => [category, buildFreshnessNumberMap(initialValue)])
   )
+}
+
+function buildDynamicReasonByCategoryMap() {
+  return Object.fromEntries(SCANNER_SCOPE_CATEGORIES.map((category) => [category, {}]))
+}
+
+function incrementReasonByCategory(counter = {}, category = "", reason = "", amount = 1) {
+  const key = normalizeCategory(category)
+  const normalizedReason = normalizeText(reason)
+  if (!key || !normalizedReason) return
+  if (!counter[key] || typeof counter[key] !== "object" || Array.isArray(counter[key])) {
+    counter[key] = {}
+  }
+  counter[key][normalizedReason] = Number(counter[key][normalizedReason] || 0) + Number(amount || 0)
+}
+
+function buildWeaponSkinRecoveryPathCounter() {
+  return {
+    penalty: 0,
+    fallback: 0,
+    near_eligible: 0,
+    cooldown: 0,
+    eligible: 0,
+    rejected: 0,
+    penalty_missing_liquidity_weapon_skin: 0,
+    penalty_stale_market_weapon_skin: 0,
+    contextual_low_value_weapon_skin: 0
+  }
+}
+
+function incrementNamedCounter(counter = {}, key = "", amount = 1) {
+  const normalizedKey = normalizeText(key)
+  if (!normalizedKey || !Object.prototype.hasOwnProperty.call(counter, normalizedKey)) return
+  counter[normalizedKey] = Number(counter[normalizedKey] || 0) + Number(amount || 0)
 }
 
 function normalizeCandidateStatus(value, fallback = CATALOG_CANDIDATE_STATUS.CANDIDATE) {
@@ -957,6 +1004,27 @@ function resolveCoverageDiagnosticState(coverageCount = 0, minCoverage = 2) {
   return COVERAGE_DIAGNOSTIC_STATES.READY
 }
 
+function isRecoverableWeaponSkinStale({
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
+  freshness = {},
+  hasReference = false,
+  marketCoverageCount = 0
+} = {}) {
+  if (normalizeCategory(category) !== ITEM_CATEGORIES.WEAPON_SKIN) return false
+  if (Boolean(freshness?.usable)) return false
+  if (normalizeText(freshness?.state).toLowerCase() !== CATALOG_FRESHNESS_STATES.STALE) return false
+  if (!hasReference) return false
+  if (!Boolean(freshness?.hasAnySignal)) return false
+  const ageMinutes = Number(freshness?.ageMinutes)
+  const staleThresholdMinutes = Number(freshness?.staleThresholdMinutes || 0)
+  if (!Number.isFinite(ageMinutes) || ageMinutes <= 0) return false
+  if (staleThresholdMinutes <= 0) return false
+  if (ageMinutes > staleThresholdMinutes * WEAPON_SKIN_RECOVERABLE_STALE_MULTIPLIER) {
+    return false
+  }
+  return Math.max(Number(marketCoverageCount || 0), 0) > 0 || Boolean(freshness?.hasQuoteFreshness)
+}
+
 function resolveReferenceDiagnosticState({
   referencePrice = null,
   snapshotHasPriceSignal = false
@@ -1002,11 +1070,13 @@ function buildProgressionBlockers({
   referenceState = REFERENCE_DIAGNOSTIC_STATES.MISSING,
   liquidityState = LIQUIDITY_DIAGNOSTIC_STATES.MISSING,
   coverageState = COVERAGE_DIAGNOSTIC_STATES.MISSING,
-  snapshotIncomplete = false
+  snapshotIncomplete = false,
+  evaluationReasons = []
 } = {}) {
   if (candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE) return []
 
   const blockers = []
+  blockers.push(...uniqueTextList(evaluationReasons))
   if (rejectedReason || progress.hasStructuralReason) {
     blockers.push("anti_fake_guard")
   }
@@ -1089,6 +1159,13 @@ function computeCatalogProgressContext({
   })
   const hasReference = safeReferencePrice != null
   const isWeaponSkin = normalizedCategory === ITEM_CATEGORIES.WEAPON_SKIN
+  const recoverableWeaponSkinStale = isRecoverableWeaponSkinStale({
+    category: normalizedCategory,
+    freshness,
+    hasReference,
+    marketCoverageCount: coverageCount
+  })
+  const nearEligibleFreshnessUsable = freshness.usable || recoverableWeaponSkinStale
   const hasAnyCoverage = coverageCount >= 1
   const sufficientCoverage = coverageCount >= minCoverage
   const partialCoverage = coverageCount >= Math.max(1, Math.min(minCoverage - 1, minCoverage))
@@ -1108,7 +1185,7 @@ function computeCatalogProgressContext({
     !hasReference &&
     !hasStructuralReason &&
     hasAnyCoverage &&
-    freshness.usable &&
+    nearEligibleFreshnessUsable &&
     (coverageCount >= minCoverage || hasLiquidityContext || hasUtilitySignal)
   const nearEligibleSupportCount = countTrueValues([
     hasReference,
@@ -1137,8 +1214,10 @@ function computeCatalogProgressContext({
   if (!hasReference) {
     eligibleBlockers.push("missing_reference")
   }
-  if (!freshness.usable) {
+  if (!nearEligibleFreshnessUsable) {
     nearEligibleBlockers.push("freshness_not_usable")
+  }
+  if (!freshness.usable) {
     eligibleBlockers.push("freshness_not_usable")
   }
   if (!partialMarketSupport) {
@@ -1190,7 +1269,7 @@ function computeCatalogProgressContext({
     eligibleBlockers,
     canReachNearEligible:
       !nearEligibleBlockers.length &&
-      freshness.usable &&
+      nearEligibleFreshnessUsable &&
       partialMarketSupport &&
       (!isWeaponSkin || hasAnyCoverage) &&
       (hasReference || weaponSkinCoverageLedNearEligible) &&
@@ -1207,12 +1286,13 @@ function computeCatalogProgressContext({
       countTrueValues([
         hasReference,
         inferredSnapshotPresence,
-        freshness.usable,
+        nearEligibleFreshnessUsable,
         partialCoverage,
         reasonableVolume,
         coverageCount > 0,
         hasUtilitySignal
       ]) >= 2,
+    recoverableWeaponSkinStale,
     hasStructuralReason,
     coverageState: resolveCoverageDiagnosticState(coverageCount, minCoverage),
     referenceState: resolvedReferenceState,
@@ -2332,6 +2412,39 @@ function computeCatalogMaturity({
   }
 }
 
+function resolveCategoryAwareRecoveryPath({
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
+  candidateStatus = CATALOG_CANDIDATE_STATUS.CANDIDATE,
+  penaltyReasons = [],
+  hardRejectReason = ""
+} = {}) {
+  const normalizedCategory = normalizeCategory(category)
+  const normalizedStatus = normalizeCandidateStatus(candidateStatus)
+  const reasons = uniqueTextList(penaltyReasons)
+  if (hardRejectReason || normalizedStatus === CATALOG_CANDIDATE_STATUS.REJECTED) {
+    return "rejected"
+  }
+  if (normalizedStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE) {
+    return "eligible"
+  }
+  if (normalizedStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE) {
+    return "near_eligible"
+  }
+  if (normalizedCategory !== ITEM_CATEGORIES.WEAPON_SKIN) {
+    return "fallback"
+  }
+  if (reasons.includes(CATEGORY_AWARE_EVALUATION_REASONS.PENALTY_STALE_MARKET_WEAPON_SKIN)) {
+    return "cooldown"
+  }
+  if (reasons.includes(CATEGORY_AWARE_EVALUATION_REASONS.PENALTY_MISSING_LIQUIDITY_WEAPON_SKIN)) {
+    return "fallback"
+  }
+  if (reasons.includes(CATEGORY_AWARE_EVALUATION_REASONS.CONTEXTUAL_LOW_VALUE_WEAPON_SKIN)) {
+    return "cooldown"
+  }
+  return "fallback"
+}
+
 function evaluateCandidateState({
   marketHashName = "",
   category = "",
@@ -2368,6 +2481,8 @@ function evaluateCandidateState({
     Number(marketCoverageCount || 0) < Number(rules.minMarketCoverage || 0)
   const missingLiquidityContext = volume7d == null
   const effectiveSnapshotStale = Boolean(snapshotCapturedAt) && Boolean(snapshotStale)
+  const hardRejectReason = normalizeText(eligibility?.hardRejectReason) || ""
+  const penaltyReasons = uniqueTextList(eligibility?.penaltyReasons || [])
   const progress = computeCatalogProgressContext({
     category: normalizedCategory,
     referencePrice,
@@ -2388,11 +2503,13 @@ function evaluateCandidateState({
 
   let rejectedReason = ""
   if (!tradable) {
-    rejectedReason = "rejectedNotTradable"
+    rejectedReason = CATEGORY_AWARE_EVALUATION_REASONS.HARD_REJECT_FAKE_OR_UNTRADABLE
   } else if (!isScannerScopeCategory(normalizedCategory)) {
     rejectedReason = "rejectedOutOfScopeCategory"
   } else if (hasExcludedNamePattern(marketHashName)) {
-    rejectedReason = "rejectedNamePattern"
+    rejectedReason = CATEGORY_AWARE_EVALUATION_REASONS.HARD_REJECT_INVALID_MARKET_INTEGRITY
+  } else if (hardRejectReason) {
+    rejectedReason = hardRejectReason
   } else if (referencePrice != null && referencePrice < hardFloor) {
     rejectedReason = "rejectedHardValueFloor"
   }
@@ -2434,7 +2551,17 @@ function evaluateCandidateState({
     referenceState: progress.referenceState,
     liquidityState: progress.liquidityState,
     coverageState: progress.coverageState,
-    snapshotIncomplete: progress.snapshotIncomplete
+    snapshotIncomplete: progress.snapshotIncomplete,
+    evaluationReasons:
+      candidateStatus === CATALOG_CANDIDATE_STATUS.REJECTED
+        ? uniqueTextList([rejectedReason, ...penaltyReasons])
+        : penaltyReasons
+  })
+  const recoveryPath = resolveCategoryAwareRecoveryPath({
+    category: normalizedCategory,
+    candidateStatus,
+    penaltyReasons,
+    hardRejectReason: rejectedReason
   })
 
   const enrichmentPriority = computeEnrichmentPriority({
@@ -2476,6 +2603,9 @@ function evaluateCandidateState({
     eligibilityReason,
     strictEligible,
     strictReason,
+    penaltyReasons,
+    convertedHardRejectToPenalty: Boolean(eligibility?.convertedHardRejectToPenalty),
+    recoveryPath,
     enrichmentPriority,
     maturityState: maturity.maturityState,
     maturityScore: maturity.maturityScore,
@@ -2489,6 +2619,7 @@ function evaluateCandidateState({
     coverageState: progress.coverageState,
     progressionStatus,
     progressionBlockers,
+    hardRejectReason: rejectedReason || null,
     antiFakeBlocked: Boolean(rejectedReason) || progress.hasStructuralReason
   }
 }
@@ -2713,7 +2844,10 @@ function resolveCompatibleCatalogStatusFields(row = {}) {
 }
 
 function evaluateEligibility({
+  marketHashName = "",
   category,
+  tradable = true,
+  invalidReason = "",
   referencePrice,
   volume7d,
   marketCoverageCount,
@@ -2736,25 +2870,144 @@ function evaluateEligibility({
     snapshotStale,
     hasSnapshot: Boolean(snapshotCapturedAt) || (referencePrice != null && snapshotStale === false)
   })
+  const normalizedCategory = normalizeCategory(category, marketHashName)
+  const isWeaponSkin = normalizedCategory === ITEM_CATEGORIES.WEAPON_SKIN
+  const normalizedCoverage = Math.max(Number(marketCoverageCount || 0), 0)
+  const hasReference = referencePrice != null
+  const weakCoverage = normalizedCoverage < Number(rules.minMarketCoverage || 0)
+  const lowLiquidity = volume7d == null || volume7d < Number(rules.minVolume7d || 0)
+  const lowValue = hasReference && referencePrice < Number(rules.minReferencePrice || 0)
+  const recoverableWeaponSkinStale = isRecoverableWeaponSkinStale({
+    category: normalizedCategory,
+    freshness,
+    hasReference,
+    marketCoverageCount: normalizedCoverage
+  })
 
-  if (!isScannerScopeCategory(category)) {
-    return { eligible: false, reason: "excludedOutOfScopeCategory" }
+  if (!isScannerScopeCategory(normalizedCategory)) {
+    return {
+      eligible: false,
+      reason: "excludedOutOfScopeCategory",
+      hardRejectReason: null,
+      penaltyReasons: [],
+      convertedHardRejectToPenalty: false,
+      recoveryPath: "rejected"
+    }
   }
-  if (referencePrice == null) return { eligible: false, reason: "excludedMissingReferenceItems" }
+  if (!tradable) {
+    return {
+      eligible: false,
+      reason: CATEGORY_AWARE_EVALUATION_REASONS.HARD_REJECT_FAKE_OR_UNTRADABLE,
+      hardRejectReason: CATEGORY_AWARE_EVALUATION_REASONS.HARD_REJECT_FAKE_OR_UNTRADABLE,
+      penaltyReasons: [],
+      convertedHardRejectToPenalty: false,
+      recoveryPath: "rejected"
+    }
+  }
+  if (
+    hasStructuralCatalogReason(invalidReason) ||
+    hasExcludedNamePattern(marketHashName)
+  ) {
+    return {
+      eligible: false,
+      reason: CATEGORY_AWARE_EVALUATION_REASONS.HARD_REJECT_INVALID_MARKET_INTEGRITY,
+      hardRejectReason: CATEGORY_AWARE_EVALUATION_REASONS.HARD_REJECT_INVALID_MARKET_INTEGRITY,
+      penaltyReasons: [],
+      convertedHardRejectToPenalty: false,
+      recoveryPath: "rejected"
+    }
+  }
+  if (referencePrice == null) {
+    return {
+      eligible: false,
+      reason: "excludedMissingReferenceItems",
+      hardRejectReason: null,
+      penaltyReasons: [],
+      convertedHardRejectToPenalty: false,
+      recoveryPath: "cooldown"
+    }
+  }
+  if (isWeaponSkin && lowValue && (normalizedCoverage > 0 || freshness.hasAnySignal)) {
+    return {
+      eligible: false,
+      reason: CATEGORY_AWARE_EVALUATION_REASONS.CONTEXTUAL_LOW_VALUE_WEAPON_SKIN,
+      hardRejectReason: null,
+      penaltyReasons: [CATEGORY_AWARE_EVALUATION_REASONS.CONTEXTUAL_LOW_VALUE_WEAPON_SKIN],
+      convertedHardRejectToPenalty: true,
+      recoveryPath: freshness.usable && normalizedCoverage > 0 ? "fallback" : "cooldown"
+    }
+  }
   if (referencePrice < Number(rules.minReferencePrice || 0)) {
-    return { eligible: false, reason: "excludedLowValueItems" }
+    return {
+      eligible: false,
+      reason: "excludedLowValueItems",
+      hardRejectReason: null,
+      penaltyReasons: [],
+      convertedHardRejectToPenalty: false,
+      recoveryPath: "rejected"
+    }
   }
-  if (volume7d == null || volume7d < Number(rules.minVolume7d || 0)) {
-    return { eligible: false, reason: "excludedLowLiquidityItems" }
+  if (isWeaponSkin && lowLiquidity && normalizedCoverage > 0 && (freshness.usable || freshness.hasAnySignal)) {
+    return {
+      eligible: false,
+      reason: CATEGORY_AWARE_EVALUATION_REASONS.PENALTY_MISSING_LIQUIDITY_WEAPON_SKIN,
+      hardRejectReason: null,
+      penaltyReasons: [
+        CATEGORY_AWARE_EVALUATION_REASONS.PENALTY_MISSING_LIQUIDITY_WEAPON_SKIN
+      ],
+      convertedHardRejectToPenalty: true,
+      recoveryPath: freshness.usable ? "near_eligible" : "fallback"
+    }
   }
-  if (Number(marketCoverageCount || 0) < Number(rules.minMarketCoverage || 0)) {
-    return { eligible: false, reason: "excludedWeakMarketCoverageItems" }
+  if (lowLiquidity) {
+    return {
+      eligible: false,
+      reason: "excludedLowLiquidityItems",
+      hardRejectReason: null,
+      penaltyReasons: [],
+      convertedHardRejectToPenalty: false,
+      recoveryPath: "fallback"
+    }
+  }
+  if (weakCoverage) {
+    return {
+      eligible: false,
+      reason: "excludedWeakMarketCoverageItems",
+      hardRejectReason: null,
+      penaltyReasons: [],
+      convertedHardRejectToPenalty: false,
+      recoveryPath: "fallback"
+    }
+  }
+  if (isWeaponSkin && !freshness.usable && recoverableWeaponSkinStale) {
+    return {
+      eligible: false,
+      reason: CATEGORY_AWARE_EVALUATION_REASONS.PENALTY_STALE_MARKET_WEAPON_SKIN,
+      hardRejectReason: null,
+      penaltyReasons: [CATEGORY_AWARE_EVALUATION_REASONS.PENALTY_STALE_MARKET_WEAPON_SKIN],
+      convertedHardRejectToPenalty: true,
+      recoveryPath: "cooldown"
+    }
   }
   if (!freshness.usable) {
-    return { eligible: false, reason: "excludedStaleItems" }
+    return {
+      eligible: false,
+      reason: "excludedStaleItems",
+      hardRejectReason: null,
+      penaltyReasons: [],
+      convertedHardRejectToPenalty: false,
+      recoveryPath: "cooldown"
+    }
   }
 
-  return { eligible: true, reason: "" }
+  return {
+    eligible: true,
+    reason: "",
+    hardRejectReason: null,
+    penaltyReasons: [],
+    convertedHardRejectToPenalty: false,
+    recoveryPath: "eligible"
+  }
 }
 
 function buildPriorityTierNumberMap(initialValue = 0) {
@@ -2850,6 +3103,16 @@ async function enrichSourceCatalog(options = {}) {
       enrichingFreshnessByStateByCategory: buildFreshnessByCategoryMap(),
       nearEligibleFreshnessByState: buildFreshnessNumberMap(),
       nearEligibleFreshnessByStateByCategory: buildFreshnessByCategoryMap(),
+      hardRejectToPenaltyConversionsByCategory: buildCategoryNumberMap(),
+      hard_reject_to_penalty_conversions_by_category: buildCategoryNumberMap(),
+      nearEligibleByCategory: buildCategoryNumberMap(),
+      near_eligible_by_category: buildCategoryNumberMap(),
+      eligibleByCategory: buildCategoryNumberMap(),
+      eligible_by_category: buildCategoryNumberMap(),
+      topRejectReasonsByCategory: buildDynamicReasonByCategoryMap(),
+      top_reject_reasons_by_category: buildDynamicReasonByCategoryMap(),
+      weaponSkinRecoveryPaths: buildWeaponSkinRecoveryPathCounter(),
+      weapon_skin_recovery_paths: buildWeaponSkinRecoveryPathCounter(),
       candidateFunnelByCategory: buildEmptyCategoryCounter(),
       byCategory: buildEmptyCategoryCounter(),
       eligibleRowsByCategory: buildCategoryNumberMap(),
@@ -2914,6 +3177,9 @@ async function enrichSourceCatalog(options = {}) {
   const enrichingFreshnessByStateByCategory = buildFreshnessByCategoryMap()
   const nearEligibleFreshnessByState = buildFreshnessNumberMap()
   const nearEligibleFreshnessByStateByCategory = buildFreshnessByCategoryMap()
+  const hardRejectToPenaltyConversionsByCategory = buildCategoryNumberMap()
+  const topRejectReasonsByCategory = buildDynamicReasonByCategoryMap()
+  const weaponSkinRecoveryPaths = buildWeaponSkinRecoveryPathCounter()
   const updates = []
   const nowIso = new Date().toISOString()
   let skippedUnchangedRows = 0
@@ -3041,7 +3307,10 @@ async function enrichSourceCatalog(options = {}) {
     })
 
     const eligibility = evaluateEligibility({
+      marketHashName,
       category,
+      tradable,
+      invalidReason: row?.invalid_reason || row?.invalidReason,
       referencePrice,
       volume7d,
       marketCoverageCount,
@@ -3087,6 +3356,9 @@ async function enrichSourceCatalog(options = {}) {
       candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE &&
       candidateState.strictEligible
     const maturityState = normalizeMaturityState(candidateState.maturityState)
+    if (candidateState.convertedHardRejectToPenalty) {
+      hardRejectToPenaltyConversionsByCategory[category] += 1
+    }
     candidateFunnel[candidateStatus] = Number(candidateFunnel[candidateStatus] || 0) + 1
     maturityFunnel[maturityState] = Number(maturityFunnel[maturityState] || 0) + 1
     if (!maturityFunnelByCategory[category]) {
@@ -3111,6 +3383,19 @@ async function enrichSourceCatalog(options = {}) {
     } else if (candidateStatus === CATALOG_CANDIDATE_STATUS.REJECTED) {
       counts.rejectedRows += 1
       byCategory[category].rejected += 1
+      incrementReasonByCategory(
+        topRejectReasonsByCategory,
+        category,
+        candidateState.hardRejectReason || candidateState.eligibilityReason
+      )
+    }
+    if (category === ITEM_CATEGORIES.WEAPON_SKIN) {
+      incrementNamedCounter(weaponSkinRecoveryPaths, candidateState.recoveryPath, 1)
+      for (const reason of Array.isArray(candidateState.penaltyReasons)
+        ? candidateState.penaltyReasons
+        : []) {
+        incrementNamedCounter(weaponSkinRecoveryPaths, reason, 1)
+      }
     }
     if (
       previousCandidateStatus !== CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE &&
@@ -3338,6 +3623,16 @@ async function enrichSourceCatalog(options = {}) {
     nearEligibleFreshnessByStateByCategory,
     candidateFunnelByCategory: byCategory,
     byCategory,
+    hardRejectToPenaltyConversionsByCategory,
+    hard_reject_to_penalty_conversions_by_category: hardRejectToPenaltyConversionsByCategory,
+    nearEligibleByCategory: nearEligibleRowsByCategory,
+    near_eligible_by_category: nearEligibleRowsByCategory,
+    eligibleByCategory: eligibleRowsByCategory,
+    eligible_by_category: eligibleRowsByCategory,
+    topRejectReasonsByCategory,
+    top_reject_reasons_by_category: topRejectReasonsByCategory,
+    weaponSkinRecoveryPaths,
+    weapon_skin_recovery_paths: weaponSkinRecoveryPaths,
     eligibleRowsByCategory,
     nearEligibleRowsByCategory,
     candidateRowsByCategory,
@@ -4100,6 +4395,7 @@ module.exports = {
   resolveCompatibleCatalogStatusFields,
   isUniverseBackfillReadyRow,
   __testables: {
+    CATEGORY_AWARE_EVALUATION_REASONS,
     normalizeCategory,
     normalizeCandidateStatus,
     normalizeMaturityState,
@@ -4112,6 +4408,7 @@ module.exports = {
     evaluateCandidateState,
     evaluateEligibility,
     isUniverseBackfillReadyRow,
+    isRecoverableWeaponSkinStale,
     buildCategoryQuotas,
     buildCategoryQuotasForCategories,
     buildSourceCatalogQuotas,

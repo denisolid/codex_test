@@ -1,6 +1,8 @@
 const marketSourceCatalogRepo = require("../../repositories/marketSourceCatalogRepository")
 const marketSourceCatalogService = require("../marketSourceCatalogService")
 const catalogPriorityCoverageService = require("../catalogPriorityCoverageService")
+const upstreamMarketFreshnessRecoveryService = require("../upstreamMarketFreshnessRecoveryService")
+const enrichmentRepairService = require("./enrichmentRepairService")
 const {
   ENRICHMENT_BATCH_TARGET,
   ENRICHMENT_INTERVAL_MS,
@@ -80,6 +82,67 @@ function dedupeRowsByMarketHashName(rows = []) {
     deduped.push(row)
   }
   return deduped
+}
+
+function sortProgressionRows(rows = [], nowMs = Date.now()) {
+  return [...(Array.isArray(rows) ? rows : [])].sort((left, right) => {
+    const leftNeedsRepair = enrichmentRepairService.getRepairNeeds(left, nowMs).needsRepair
+    const rightNeedsRepair = enrichmentRepairService.getRepairNeeds(right, nowMs).needsRepair
+    if (leftNeedsRepair !== rightNeedsRepair) {
+      return Number(rightNeedsRepair) - Number(leftNeedsRepair)
+    }
+    if (leftNeedsRepair && rightNeedsRepair) {
+      const repairPriorityDelta =
+        enrichmentRepairService.buildRepairPriorityScore(right, nowMs) -
+        enrichmentRepairService.buildRepairPriorityScore(left, nowMs)
+      if (repairPriorityDelta !== 0) return repairPriorityDelta
+    }
+    const enrichmentPriorityDelta =
+      Number(right?.enrichment_priority ?? right?.enrichmentPriority ?? 0) -
+      Number(left?.enrichment_priority ?? left?.enrichmentPriority ?? 0)
+    if (enrichmentPriorityDelta !== 0) return enrichmentPriorityDelta
+    const priorityBoostDelta =
+      Number(right?.priority_boost ?? right?.priorityBoost ?? 0) -
+      Number(left?.priority_boost ?? left?.priorityBoost ?? 0)
+    if (priorityBoostDelta !== 0) return priorityBoostDelta
+    const liquidityDelta =
+      Number(right?.liquidity_rank ?? right?.liquidityRank ?? 0) -
+      Number(left?.liquidity_rank ?? left?.liquidityRank ?? 0)
+    if (liquidityDelta !== 0) return liquidityDelta
+    const lastSignalDelta =
+      new Date(toIsoOrNull(right?.last_market_signal_at || right?.lastMarketSignalAt) || 0).getTime() -
+      new Date(toIsoOrNull(left?.last_market_signal_at || left?.lastMarketSignalAt) || 0).getTime()
+    if (lastSignalDelta !== 0) return lastSignalDelta
+    return normalizeText(left?.market_hash_name || left?.marketHashName).localeCompare(
+      normalizeText(right?.market_hash_name || right?.marketHashName)
+    )
+  })
+}
+
+function mergeUniqueRows(primaryRows = [], secondaryRows = []) {
+  return dedupeRowsByMarketHashName([
+    ...(Array.isArray(primaryRows) ? primaryRows : []),
+    ...(Array.isArray(secondaryRows) ? secondaryRows : [])
+  ])
+}
+
+function buildRepairSummaryFromRefresh(repairRefresh = {}) {
+  const snapshotOutcomes = Array.isArray(repairRefresh?.snapshotRefresh?.rowOutcomes)
+    ? repairRefresh.snapshotRefresh.rowOutcomes
+    : []
+  return {
+    attemptedRows: Number(repairRefresh?.attemptedRows || 0),
+    quoteRowsSelected: Number(repairRefresh?.quoteRowsSelected || 0),
+    snapshotRowsSelected: Number(repairRefresh?.snapshotRowsSelected || 0),
+    snapshotBlocked: Boolean(repairRefresh?.snapshotRefresh?.blocked),
+    snapshotBlockedReason: normalizeText(repairRefresh?.snapshotRefresh?.blockedReason) || null,
+    snapshotOutcomesByReason: snapshotOutcomes.reduce((acc, outcome) => {
+      const reason = normalizeText(outcome?.reason)
+      if (!reason) return acc
+      acc[reason] = Number(acc[reason] || 0) + 1
+      return acc
+    }, {})
+  }
 }
 
 function summarizeDueBacklog(rowsByState = {}, nowMs = Date.now()) {
@@ -234,11 +297,32 @@ async function runProgressionBatch(options = {}) {
   )
 
   const dueSummary = summarizeDueBacklog(rowsByState, nowMs)
-  const selectedRows = dedupeRowsByMarketHashName(
-    PROGRESSION_STATE_ORDER.flatMap((state) =>
-      Array.isArray(rowsByState?.[state]) ? rowsByState[state] : []
-    )
-  ).slice(0, batchSize)
+  const dueRows = sortProgressionRows(
+    dedupeRowsByMarketHashName(
+      PROGRESSION_STATE_ORDER.flatMap((state) =>
+        Array.isArray(rowsByState?.[state]) ? rowsByState[state] : []
+      )
+    ).filter((row) => !enrichmentRepairService.isRepairCooldownActive(row, nowMs)),
+    nowMs
+  )
+  const repairSelection = enrichmentRepairService.selectRepairCandidates(dueRows, {
+    limit: batchSize,
+    nowMs
+  })
+  const repairSelectedNames = new Set(
+    (repairSelection.rows || [])
+      .map((row) => normalizeText(row?.market_hash_name || row?.marketHashName))
+      .filter(Boolean)
+  )
+  const selectedRows = mergeUniqueRows(
+    repairSelection.rows,
+    dueRows.filter((row) => {
+      const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
+      return marketHashName && !repairSelectedNames.has(marketHashName)
+    })
+  )
+    .filter((row) => !enrichmentRepairService.isRepairCooldownActive(row, nowMs))
+    .slice(0, batchSize)
 
   let priorityCoverage = {
     totalPriorityItemsConfigured: 0,
@@ -258,6 +342,39 @@ async function runProgressionBatch(options = {}) {
     priorityCoverage = {
       ...priorityCoverage,
       error: normalizeText(err?.message) || "priority_coverage_sync_failed"
+    }
+  }
+
+  let repairRefresh = {
+    attemptedRows: 0,
+    quoteRowsSelected: 0,
+    snapshotRowsSelected: 0,
+    quoteRefresh: {},
+    snapshotRefresh: {
+      blocked: false,
+      blockedReason: null,
+      rowOutcomes: []
+    },
+    processedMarketHashNames: []
+  }
+  if (repairSelection.rows.length > 0) {
+    try {
+      repairRefresh = await upstreamMarketFreshnessRecoveryService.repairCatalogRows(
+        repairSelection.rows,
+        {
+          quoteBatchSize: Math.max(Math.min(repairSelection.rows.length, 8), 1),
+          snapshotBatchSize: Math.max(Math.min(repairSelection.rows.length, 4), 1),
+          batchMeta: {
+            lane: "enrichment_repair",
+            rowCount: repairSelection.rows.length
+          }
+        }
+      )
+    } catch (err) {
+      repairRefresh = {
+        ...repairRefresh,
+        error: normalizeText(err?.message) || "repair_refresh_failed"
+      }
     }
   }
 
@@ -281,7 +398,43 @@ async function runProgressionBatch(options = {}) {
           }
         )
       : []
-  const transitionMetrics = buildTransitionMetrics(selectedRows, reloadedRows)
+  const reloadedRowsByName = new Map(
+    (Array.isArray(reloadedRows) ? reloadedRows : []).map((row) => [
+      normalizeText(row?.market_hash_name || row?.marketHashName),
+      row
+    ])
+  )
+  const repairDecisions = repairSelection.rows
+    .map((row) => {
+      const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
+      if (!marketHashName) return null
+      return enrichmentRepairService.buildRepairDecision({
+        previousRow: row,
+        currentRow: reloadedRowsByName.get(marketHashName) || row,
+        nowMs
+      })
+    })
+    .filter(Boolean)
+  const repairPatchRows = repairDecisions
+    .map((decision) => (decision?.attempted ? decision.patch : null))
+    .filter(Boolean)
+  let finalRows = Array.isArray(reloadedRows) ? reloadedRows.slice() : []
+  if (repairPatchRows.length > 0) {
+    await marketSourceCatalogRepo.upsertRows(repairPatchRows)
+    const finalRowsByName = new Map(
+      finalRows.map((row) => [normalizeText(row?.market_hash_name || row?.marketHashName), row])
+    )
+    for (const patchRow of repairPatchRows) {
+      finalRowsByName.set(
+        normalizeText(patchRow?.market_hash_name || patchRow?.marketHashName),
+        patchRow
+      )
+    }
+    finalRows = Array.from(finalRowsByName.values())
+  }
+  const repairSummary = enrichmentRepairService.summarizeRepairDecisions(repairDecisions)
+  const repairRefreshSummary = buildRepairSummaryFromRefresh(repairRefresh)
+  const transitionMetrics = buildTransitionMetrics(selectedRows, finalRows)
   const coverageRows = await marketSourceCatalogRepo.listCoverageSummary({
     limit: metricsSampleLimit,
     categories: SCAN_COHORT_CATEGORIES
@@ -315,6 +468,44 @@ async function runProgressionBatch(options = {}) {
       hot_cohort_size: Number(coverageMetrics.hotCohortSize || 0),
       warm_cohort_size: Number(coverageMetrics.warmCohortSize || 0),
       cold_probe_size: Number(coverageMetrics.coldProbeSize || 0),
+      repair_candidates_selected: Number(repairSelection?.diagnostics?.repair_candidates_selected || 0),
+      repaired_rows: Number(repairSummary.repaired_rows || 0),
+      repaired_to_near_eligible: Number(repairSummary.repaired_to_near_eligible || 0),
+      repaired_to_eligible: Number(repairSummary.repaired_to_eligible || 0),
+      cooldown_after_failed_repair: Number(repairSummary.cooldown_after_failed_repair || 0),
+      rejected_after_failed_repair: Number(repairSummary.rejected_after_failed_repair || 0),
+      top_failed_repair_reasons: repairSummary.top_failed_repair_reasons || {},
+      hard_reject_to_penalty_conversions_by_category:
+        progressionDiagnostics?.hard_reject_to_penalty_conversions_by_category ||
+        progressionDiagnostics?.hardRejectToPenaltyConversionsByCategory ||
+        {},
+      near_eligible_by_category:
+        progressionDiagnostics?.near_eligible_by_category ||
+        progressionDiagnostics?.nearEligibleByCategory ||
+        {},
+      eligible_by_category:
+        progressionDiagnostics?.eligible_by_category ||
+        progressionDiagnostics?.eligibleByCategory ||
+        {},
+      top_reject_reasons_by_category:
+        progressionDiagnostics?.top_reject_reasons_by_category ||
+        progressionDiagnostics?.topRejectReasonsByCategory ||
+        {},
+      weapon_skin_recovery_paths:
+        progressionDiagnostics?.weapon_skin_recovery_paths ||
+        progressionDiagnostics?.weaponSkinRecoveryPaths ||
+        {},
+      repairLane: {
+        selectedRows: Number(repairSelection?.diagnostics?.repair_candidates_selected || 0),
+        skippedCooldownRows: Number(repairSelection?.diagnostics?.skippedCooldownRows || 0),
+        skippedNonRepairRows: Number(repairSelection?.diagnostics?.skippedNonRepairRows || 0),
+        quoteRowsSelected: Number(repairRefreshSummary.quoteRowsSelected || 0),
+        snapshotRowsSelected: Number(repairRefreshSummary.snapshotRowsSelected || 0),
+        snapshotBlocked: Boolean(repairRefreshSummary.snapshotBlocked),
+        snapshotBlockedReason: repairRefreshSummary.snapshotBlockedReason,
+        snapshotOutcomesByReason: repairRefreshSummary.snapshotOutcomesByReason || {},
+        error: normalizeText(repairRefresh?.error) || null
+      },
       consecutive_near_eligible_growth_runs: consecutiveNearEligibleGrowth,
       degradedScannerHealth,
       priorityCoverage: {
@@ -333,6 +524,7 @@ module.exports = {
     isRowDueForProgression,
     summarizeDueBacklog,
     buildCoverageMetrics,
-    buildTransitionMetrics
+    buildTransitionMetrics,
+    sortProgressionRows
   }
 }

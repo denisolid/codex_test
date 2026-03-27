@@ -1,11 +1,16 @@
 const env = require("../../config/env")
 const globalActiveOpportunityRepo = require("../../repositories/globalActiveOpportunityRepository")
 const globalOpportunityHistoryRepo = require("../../repositories/globalOpportunityHistoryRepository")
+const globalOpportunityLifecycleLogRepo = require("../../repositories/globalOpportunityLifecycleLogRepository")
 const diagnosticsWriter = require("../diagnosticsWriter")
 const marketStateReadService = require("../marketStateReadService")
 const scannerRunLeaseService = require("../scannerRunLeaseService")
 const feedCompatibilityProjector = require("./feedCompatibilityProjector")
 const { buildHistoryRow, resolveExitEventType } = require("./feedHistoryPolicy")
+const {
+  LIFECYCLE_STATUS,
+  buildLifecycleRow
+} = require("./opportunityLifecyclePolicy")
 const {
   FEED_REVALIDATION_INTERVAL_MS,
   FEED_REVALIDATION_INTERVAL_MINUTES,
@@ -109,7 +114,14 @@ async function runSweepForRows(rows = [], { nowIso, trigger, runId, heartbeat } 
       degradedCount: 0,
       unchangedCount: 0,
       historyRowsWritten: 0,
-      compatibilityRowsWritten: 0
+      compatibilityRowsWritten: 0,
+      lifecycle: {
+        detected_total: 0,
+        published_total: 0,
+        expired_total: 0,
+        invalidated_total: 0,
+        blocked_on_emit_total: 0
+      }
     }
   }
 
@@ -131,6 +143,7 @@ async function runSweepForRows(rows = [], { nowIso, trigger, runId, heartbeat } 
 
   const activeUpdates = []
   const historyPlans = []
+  const lifecyclePlans = []
   const projectionContextByFingerprint = {}
   let refreshedLiveCount = 0
   let staleExpiredCount = 0
@@ -186,6 +199,14 @@ async function runSweepForRows(rows = [], { nowIso, trigger, runId, heartbeat } 
       eventType: exitEventType,
       reason
     })
+    lifecyclePlans.push({
+      fingerprint,
+      lifecycleStatus:
+        exitEventType === "expired"
+          ? LIFECYCLE_STATUS.EXPIRED
+          : LIFECYCLE_STATUS.INVALIDATED,
+      reason
+    })
   }
 
   await globalActiveOpportunityRepo.updateRowsById(activeUpdates)
@@ -227,6 +248,36 @@ async function runSweepForRows(rows = [], { nowIso, trigger, runId, heartbeat } 
   const insertedHistory = historyRows.length
     ? await globalOpportunityHistoryRepo.insertRows(historyRows)
     : []
+  const lifecycleRows = lifecyclePlans
+    .map((plan) =>
+      buildLifecycleRow({
+        writerStage: "revalidate",
+        scanRunId: runId,
+        lifecycleStatus: plan.lifecycleStatus,
+        activeOpportunityId:
+          persistedActiveByFingerprint[normalizeText(plan.fingerprint).toLowerCase()]?.id || null,
+        sourceRow: persistedActiveByFingerprint[normalizeText(plan.fingerprint).toLowerCase()],
+        eventAt: safeNowIso,
+        reason: plan.reason,
+        publishTimestamp:
+          toIsoOrNull(
+            persistedActiveByFingerprint[normalizeText(plan.fingerprint).toLowerCase()]
+              ?.last_published_at
+          ) || safeNowIso
+      })
+    )
+    .filter(Boolean)
+  if (lifecycleRows.length) {
+    await globalOpportunityLifecycleLogRepo.insertRows(lifecycleRows)
+  }
+
+  const lifecycle = {
+    detected_total: 0,
+    published_total: 0,
+    expired_total: staleExpiredCount,
+    invalidated_total: degradedCount,
+    blocked_on_emit_total: 0
+  }
 
   const result = {
     scannedCount: safeRows.length,
@@ -235,12 +286,14 @@ async function runSweepForRows(rows = [], { nowIso, trigger, runId, heartbeat } 
     degradedCount,
     unchangedCount,
     historyRowsWritten: Array.isArray(insertedHistory) ? insertedHistory.length : 0,
-    compatibilityRowsWritten: Number(compatibilityResult?.rowsWritten || 0)
+    compatibilityRowsWritten: Number(compatibilityResult?.rowsWritten || 0),
+    lifecycle
   }
 
   await diagnosticsWriter.writeRevalidationBatch({
     runId,
     counters: result,
+    lifecycle,
     trigger,
     timings: {
       ranAt: safeNowIso

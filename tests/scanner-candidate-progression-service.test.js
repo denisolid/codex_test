@@ -10,6 +10,8 @@ const marketSourceCatalogRepo = require("../src/repositories/marketSourceCatalog
 const marketSourceCatalogService = require("../src/services/marketSourceCatalogService")
 const catalogPriorityCoverageService = require("../src/services/catalogPriorityCoverageService")
 const candidateProgressionService = require("../src/services/scanner/candidateProgressionService")
+const upstreamMarketFreshnessRecoveryService = require("../src/services/upstreamMarketFreshnessRecoveryService")
+const enrichmentRepairService = require("../src/services/scanner/enrichmentRepairService")
 const { ENRICHMENT_INTERVAL_MS } = require("../src/services/scanner/config")
 
 test("candidate progression due cadence follows state-specific retry windows", () => {
@@ -63,8 +65,10 @@ test("candidate progression batch exposes backlog, promotions, and cohort metric
     listDueProgressionRows: marketSourceCatalogRepo.listDueProgressionRows,
     listByMarketHashNames: marketSourceCatalogRepo.listByMarketHashNames,
     listCoverageSummary: marketSourceCatalogRepo.listCoverageSummary,
+    upsertRows: marketSourceCatalogRepo.upsertRows,
     recomputeCandidateReadinessRows: marketSourceCatalogService.recomputeCandidateReadinessRows,
-    syncPriorityCoverageSet: catalogPriorityCoverageService.syncPriorityCoverageSet
+    syncPriorityCoverageSet: catalogPriorityCoverageService.syncPriorityCoverageSet,
+    repairCatalogRows: upstreamMarketFreshnessRecoveryService.repairCatalogRows
   }
 
   const nowMs = Date.now()
@@ -104,7 +108,38 @@ test("candidate progression batch exposes backlog, promotions, and cohort metric
   marketSourceCatalogService.recomputeCandidateReadinessRows = async (rows = []) => ({
     promotedToNearEligible: 0,
     promotedToEligible: 1,
-    processedMarketHashNames: rows.map((row) => row.market_hash_name)
+    processedMarketHashNames: rows.map((row) => row.market_hash_name),
+    hard_reject_to_penalty_conversions_by_category: {
+      weapon_skin: 1,
+      case: 0,
+      sticker_capsule: 0
+    },
+    near_eligible_by_category: {
+      weapon_skin: 1,
+      case: 0,
+      sticker_capsule: 0
+    },
+    eligible_by_category: {
+      weapon_skin: 0,
+      case: 1,
+      sticker_capsule: 0
+    },
+    top_reject_reasons_by_category: {
+      weapon_skin: {},
+      case: {},
+      sticker_capsule: {}
+    },
+    weapon_skin_recovery_paths: {
+      penalty: 1,
+      fallback: 0,
+      near_eligible: 1,
+      cooldown: 0,
+      eligible: 0,
+      rejected: 0,
+      penalty_missing_liquidity_weapon_skin: 1,
+      penalty_stale_market_weapon_skin: 0,
+      contextual_low_value_weapon_skin: 0
+    }
   })
   marketSourceCatalogRepo.listByMarketHashNames = async () => [
     {
@@ -155,6 +190,7 @@ test("candidate progression batch exposes backlog, promotions, and cohort metric
       eligibility_reason: "candidate_not_ready"
     }
   ]
+  marketSourceCatalogRepo.upsertRows = async (rows = []) => rows
   catalogPriorityCoverageService.syncPriorityCoverageSet = async (options = {}) => {
     assert.equal(options.allowCatalogInsert, false)
     return {
@@ -167,6 +203,18 @@ test("candidate progression batch exposes backlog, promotions, and cohort metric
       policyHintsByTier: {}
     }
   }
+  upstreamMarketFreshnessRecoveryService.repairCatalogRows = async () => ({
+    attemptedRows: 0,
+    quoteRowsSelected: 0,
+    snapshotRowsSelected: 0,
+    quoteRefresh: {},
+    snapshotRefresh: {
+      blocked: false,
+      blockedReason: null,
+      rowOutcomes: []
+    },
+    processedMarketHashNames: []
+  })
 
   try {
     const result = await candidateProgressionService.runProgressionBatch({
@@ -183,12 +231,272 @@ test("candidate progression batch exposes backlog, promotions, and cohort metric
     assert.equal(result.diagnostics.hot_cohort_size, 1)
     assert.equal(result.diagnostics.warm_cohort_size, 1)
     assert.equal(result.diagnostics.cold_probe_size, 1)
+    assert.equal(
+      result.diagnostics.hard_reject_to_penalty_conversions_by_category.weapon_skin,
+      1
+    )
+    assert.equal(result.diagnostics.near_eligible_by_category.weapon_skin, 1)
+    assert.equal(result.diagnostics.eligible_by_category.case, 1)
+    assert.equal(result.diagnostics.weapon_skin_recovery_paths.penalty, 1)
   } finally {
     marketSourceCatalogRepo.listDueProgressionRows = originals.listDueProgressionRows
     marketSourceCatalogRepo.listByMarketHashNames = originals.listByMarketHashNames
     marketSourceCatalogRepo.listCoverageSummary = originals.listCoverageSummary
+    marketSourceCatalogRepo.upsertRows = originals.upsertRows
     marketSourceCatalogService.recomputeCandidateReadinessRows =
       originals.recomputeCandidateReadinessRows
     catalogPriorityCoverageService.syncPriorityCoverageSet = originals.syncPriorityCoverageSet
+    upstreamMarketFreshnessRecoveryService.repairCatalogRows = originals.repairCatalogRows
+  }
+})
+
+test("repair lane prioritizes partially usable rows over empty rows", () => {
+  const nowMs = Date.now()
+  const partialRow = {
+    market_hash_name: "AK-47 | Slate (Field-Tested)",
+    category: "weapon_skin",
+    candidate_status: "enriching",
+    tradable: true,
+    is_active: true,
+    market_coverage_count: 1,
+    reference_price: 12.3,
+    quote_fetched_at: new Date(nowMs - 20 * 60 * 1000).toISOString(),
+    snapshot_captured_at: null,
+    liquidity_rank: 44,
+    enrichment_priority: 28
+  }
+  const emptyRow = {
+    market_hash_name: "USP-S | Blueprint (Field-Tested)",
+    category: "weapon_skin",
+    candidate_status: "candidate",
+    tradable: true,
+    is_active: true,
+    market_coverage_count: 0,
+    reference_price: null,
+    quote_fetched_at: null,
+    snapshot_captured_at: null,
+    liquidity_rank: 0,
+    enrichment_priority: 3
+  }
+
+  const selection = enrichmentRepairService.selectRepairCandidates([emptyRow, partialRow], {
+    limit: 2,
+    nowMs
+  })
+
+  assert.equal(selection.rows.length, 2)
+  assert.equal(selection.rows[0].market_hash_name, partialRow.market_hash_name)
+})
+
+test("repair lane cools down repeatedly unrepaired rows and records failure reasons", async () => {
+  const originals = {
+    listDueProgressionRows: marketSourceCatalogRepo.listDueProgressionRows,
+    listByMarketHashNames: marketSourceCatalogRepo.listByMarketHashNames,
+    listCoverageSummary: marketSourceCatalogRepo.listCoverageSummary,
+    upsertRows: marketSourceCatalogRepo.upsertRows,
+    recomputeCandidateReadinessRows: marketSourceCatalogService.recomputeCandidateReadinessRows,
+    syncPriorityCoverageSet: catalogPriorityCoverageService.syncPriorityCoverageSet,
+    repairCatalogRows: upstreamMarketFreshnessRecoveryService.repairCatalogRows
+  }
+
+  const nowMs = Date.now()
+  const dueCandidate = {
+    market_hash_name: "M4A1-S | Nitrogen (Field-Tested)",
+    category: "weapon_skin",
+    tradable: true,
+    is_active: true,
+    candidate_status: "enriching",
+    scan_eligible: false,
+    catalog_status: "shadow",
+    market_coverage_count: 0,
+    reference_price: null,
+    quote_fetched_at: null,
+    snapshot_captured_at: null,
+    progression_status: "blocked_from_near_eligible",
+    progression_blockers: ["repair_attempts:1"],
+    last_enriched_at: new Date(nowMs - ENRICHMENT_INTERVAL_MS * 3).toISOString()
+  }
+
+  marketSourceCatalogRepo.listDueProgressionRows = async ({ candidateStatuses = [] } = {}) => {
+    return candidateStatuses[0] === "enriching" ? [dueCandidate] : []
+  }
+  marketSourceCatalogService.recomputeCandidateReadinessRows = async (rows = []) => ({
+    promotedToNearEligible: 0,
+    promotedToEligible: 0,
+    processedMarketHashNames: rows.map((row) => row.market_hash_name)
+  })
+  marketSourceCatalogRepo.listByMarketHashNames = async () => [
+    {
+      ...dueCandidate,
+      progression_status: "blocked_from_near_eligible",
+      progression_blockers: ["missing_reference", "missing_snapshot"],
+      candidate_status: "enriching",
+      scan_eligible: false,
+      catalog_status: "shadow",
+      last_enriched_at: new Date(nowMs).toISOString()
+    }
+  ]
+  marketSourceCatalogRepo.listCoverageSummary = async () => []
+  marketSourceCatalogRepo.upsertRows = async (rows = []) => rows
+  catalogPriorityCoverageService.syncPriorityCoverageSet = async () => ({
+    totalPriorityItemsConfigured: 0,
+    matchedExistingCatalogItems: 0,
+    insertedMissingCatalogItems: 0,
+    unmatchedPriorityItems: [],
+    entries: [],
+    byKey: new Map(),
+    policyHintsByTier: {}
+  })
+  upstreamMarketFreshnessRecoveryService.repairCatalogRows = async () => ({
+    attemptedRows: 1,
+    quoteRowsSelected: 1,
+    snapshotRowsSelected: 1,
+    quoteRefresh: {},
+    snapshotRefresh: {
+      blocked: false,
+      blockedReason: null,
+      rowOutcomes: [
+        {
+          marketHashName: dueCandidate.market_hash_name,
+          category: "weapon_skin",
+          reason: "snapshot_live_overview_missing",
+          refreshed: false
+        }
+      ]
+    },
+    processedMarketHashNames: [dueCandidate.market_hash_name]
+  })
+
+  try {
+    const result = await candidateProgressionService.runProgressionBatch({
+      batchSize: 5,
+      nowMs
+    })
+
+    assert.equal(result.diagnostics.repair_candidates_selected, 1)
+    assert.equal(result.diagnostics.repaired_rows, 0)
+    assert.equal(result.diagnostics.cooldown_after_failed_repair, 1)
+    assert.equal(
+      Number(result.diagnostics.top_failed_repair_reasons.still_unusable_market_coverage || 0) >= 1,
+      true
+    )
+  } finally {
+    marketSourceCatalogRepo.listDueProgressionRows = originals.listDueProgressionRows
+    marketSourceCatalogRepo.listByMarketHashNames = originals.listByMarketHashNames
+    marketSourceCatalogRepo.listCoverageSummary = originals.listCoverageSummary
+    marketSourceCatalogRepo.upsertRows = originals.upsertRows
+    marketSourceCatalogService.recomputeCandidateReadinessRows =
+      originals.recomputeCandidateReadinessRows
+    catalogPriorityCoverageService.syncPriorityCoverageSet = originals.syncPriorityCoverageSet
+    upstreamMarketFreshnessRecoveryService.repairCatalogRows = originals.repairCatalogRows
+  }
+})
+
+test("repair lane promotes refreshed rows into near_eligible or eligible outcomes", async () => {
+  const originals = {
+    listDueProgressionRows: marketSourceCatalogRepo.listDueProgressionRows,
+    listByMarketHashNames: marketSourceCatalogRepo.listByMarketHashNames,
+    listCoverageSummary: marketSourceCatalogRepo.listCoverageSummary,
+    upsertRows: marketSourceCatalogRepo.upsertRows,
+    recomputeCandidateReadinessRows: marketSourceCatalogService.recomputeCandidateReadinessRows,
+    syncPriorityCoverageSet: catalogPriorityCoverageService.syncPriorityCoverageSet,
+    repairCatalogRows: upstreamMarketFreshnessRecoveryService.repairCatalogRows
+  }
+
+  const nowMs = Date.now()
+  const dueCandidate = {
+    market_hash_name: "AK-47 | Frontside Misty (Field-Tested)",
+    category: "weapon_skin",
+    tradable: true,
+    is_active: true,
+    candidate_status: "near_eligible",
+    scan_eligible: false,
+    catalog_status: "shadow",
+    market_coverage_count: 0,
+    reference_price: null,
+    quote_fetched_at: null,
+    snapshot_captured_at: null,
+    last_enriched_at: new Date(nowMs - ENRICHMENT_INTERVAL_MS * 2).toISOString()
+  }
+
+  marketSourceCatalogRepo.listDueProgressionRows = async ({ candidateStatuses = [] } = {}) => {
+    return candidateStatuses[0] === "near_eligible" ? [dueCandidate] : []
+  }
+  marketSourceCatalogService.recomputeCandidateReadinessRows = async (rows = []) => ({
+    promotedToNearEligible: 0,
+    promotedToEligible: 1,
+    processedMarketHashNames: rows.map((row) => row.market_hash_name)
+  })
+  marketSourceCatalogRepo.listByMarketHashNames = async () => [
+    {
+      ...dueCandidate,
+      candidate_status: "eligible",
+      scan_eligible: true,
+      catalog_status: "scannable",
+      market_coverage_count: 3,
+      reference_price: 24.4,
+      quote_fetched_at: new Date(nowMs).toISOString(),
+      snapshot_captured_at: new Date(nowMs).toISOString(),
+      progression_status: "eligible",
+      progression_blockers: []
+    }
+  ]
+  marketSourceCatalogRepo.listCoverageSummary = async () => [
+    {
+      ...dueCandidate,
+      candidate_status: "eligible",
+      scan_eligible: true,
+      catalog_status: "scannable"
+    }
+  ]
+  marketSourceCatalogRepo.upsertRows = async (rows = []) => rows
+  catalogPriorityCoverageService.syncPriorityCoverageSet = async () => ({
+    totalPriorityItemsConfigured: 0,
+    matchedExistingCatalogItems: 0,
+    insertedMissingCatalogItems: 0,
+    unmatchedPriorityItems: [],
+    entries: [],
+    byKey: new Map(),
+    policyHintsByTier: {}
+  })
+  upstreamMarketFreshnessRecoveryService.repairCatalogRows = async () => ({
+    attemptedRows: 1,
+    quoteRowsSelected: 1,
+    snapshotRowsSelected: 1,
+    quoteRefresh: {},
+    snapshotRefresh: {
+      blocked: false,
+      blockedReason: null,
+      rowOutcomes: [
+        {
+          marketHashName: dueCandidate.market_hash_name,
+          category: "weapon_skin",
+          reason: "snapshot_write_succeeded",
+          refreshed: true
+        }
+      ]
+    },
+    processedMarketHashNames: [dueCandidate.market_hash_name]
+  })
+
+  try {
+    const result = await candidateProgressionService.runProgressionBatch({
+      batchSize: 5,
+      nowMs
+    })
+
+    assert.equal(result.diagnostics.repair_candidates_selected, 1)
+    assert.equal(result.diagnostics.repaired_rows, 1)
+    assert.equal(result.diagnostics.repaired_to_eligible, 1)
+    assert.equal(result.diagnostics.cooldown_after_failed_repair, 0)
+  } finally {
+    marketSourceCatalogRepo.listDueProgressionRows = originals.listDueProgressionRows
+    marketSourceCatalogRepo.listByMarketHashNames = originals.listByMarketHashNames
+    marketSourceCatalogRepo.listCoverageSummary = originals.listCoverageSummary
+    marketSourceCatalogRepo.upsertRows = originals.upsertRows
+    marketSourceCatalogService.recomputeCandidateReadinessRows =
+      originals.recomputeCandidateReadinessRows
+    catalogPriorityCoverageService.syncPriorityCoverageSet = originals.syncPriorityCoverageSet
+    upstreamMarketFreshnessRecoveryService.repairCatalogRows = originals.repairCatalogRows
   }
 })

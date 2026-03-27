@@ -74,6 +74,7 @@ function summarizeRecoveryDiagnostics(diag = {}) {
     categoryHealthGate: diag?.categoryHealthGate || {},
     quoteRefresh: diag?.quoteRefresh || {},
     snapshotRefresh: diag?.snapshotRefresh || {},
+    weaponSkinVerification: diag?.weaponSkinVerification || {},
     snapshotPacing: diag?.snapshotPacing || {},
     postRefresh: {
       totalRows: Number(diag?.postRefresh?.totalRows || 0),

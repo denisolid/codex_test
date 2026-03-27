@@ -2,6 +2,8 @@ const test = require("node:test")
 const assert = require("node:assert/strict")
 const arbitrageFeedRepo = require("../src/repositories/arbitrageFeedRepository")
 const marketSourceCatalogRepo = require("../src/repositories/marketSourceCatalogRepository")
+const scannerRunRepo = require("../src/repositories/scannerRunRepository")
+const globalOpportunityLifecycleLogRepo = require("../src/repositories/globalOpportunityLifecycleLogRepository")
 
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || "https://example.supabase.co"
 process.env.SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "anon"
@@ -10,6 +12,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY =
 
 const env = require("../src/config/env")
 const globalFeedPublisher = require("../src/services/feed/globalFeedPublisher")
+const marketComparisonService = require("../src/services/marketComparisonService")
 const scanSourceCohortService = require("../src/services/scanner/scanSourceCohortService")
 const {
   evaluatePublishValidation,
@@ -25,7 +28,10 @@ const {
   __testables: {
     normalizeCategoryFilter,
     classifyCatalogState,
+    compareCandidates,
     buildRoundRobinPool,
+    buildEnrichmentJobExecutionDiagnostics,
+    buildOpportunityJobExecutionDiagnostics,
     selectScanCandidates,
     evaluateCandidateOpportunity,
     summarizeEvaluations,
@@ -47,6 +53,7 @@ const {
     buildFeedPageCacheKey,
     clearFeedFirstPageCache,
     isScannerRunOverdue,
+    runJobWithLock,
     DEFAULT_UNIVERSE_LIMIT,
     OPPORTUNITY_BATCH_TARGET,
     SCAN_CHUNK_SIZE,
@@ -72,6 +79,79 @@ function buildCatalogRow(index, category = "weapon_skin") {
     snapshot_stale: false,
     snapshot_captured_at: new Date().toISOString(),
     quote_fetched_at: new Date().toISOString()
+  }
+}
+
+function buildEmitComparedItem(opportunity = {}, overrides = {}) {
+  const metadata = opportunity?.metadata || {}
+  const buyMarket = overrides.buyMarket || opportunity.buyMarket || "steam"
+  const sellMarket = overrides.sellMarket || opportunity.sellMarket || "skinport"
+  const buyRouteUpdatedAt =
+    overrides.buyRouteUpdatedAt ??
+    opportunity.buyRouteUpdatedAt ??
+    metadata.buy_route_updated_at ??
+    null
+  const sellRouteUpdatedAt =
+    overrides.sellRouteUpdatedAt ??
+    opportunity.sellRouteUpdatedAt ??
+    metadata.sell_route_updated_at ??
+    null
+  const buyRouteAvailable =
+    overrides.buyRouteAvailable ??
+    opportunity.buyRouteAvailable ??
+    metadata.buy_route_available ??
+    true
+  const sellRouteAvailable =
+    overrides.sellRouteAvailable ??
+    opportunity.sellRouteAvailable ??
+    metadata.sell_route_available ??
+    true
+  const sellListingAvailable =
+    overrides.sellListingAvailable ??
+    opportunity.sellListingAvailable ??
+    metadata.sell_listing_available ??
+    (sellMarket === "skinport" ? true : null)
+
+  return {
+    marketHashName: opportunity.marketHashName || opportunity.itemName,
+    itemCategory: opportunity.itemCategory || opportunity.category || "weapon_skin",
+    referencePrice: opportunity.referencePrice || 10,
+    volume7d: opportunity.liquidity || 100,
+    perMarket: [
+      {
+        source: buyMarket,
+        available: Boolean(buyRouteAvailable),
+        grossPrice: overrides.buyGrossPrice ?? opportunity.buyPrice ?? 10,
+        updatedAt: buyRouteUpdatedAt,
+        orderbook:
+          overrides.buyOrderbook || {
+            buy_top1: overrides.buyGrossPrice ?? opportunity.buyPrice ?? 10,
+            buy_top2: (overrides.buyGrossPrice ?? opportunity.buyPrice ?? 10) * 1.01
+          },
+        raw: {
+          listing_available: null
+        }
+      },
+      {
+        source: sellMarket,
+        available: Boolean(sellRouteAvailable),
+        grossPrice: overrides.sellGrossPrice ?? opportunity.sellNet ?? 12,
+        netPriceAfterFees: overrides.sellNetPrice ?? opportunity.sellNet ?? 12,
+        updatedAt: sellRouteUpdatedAt,
+        orderbook:
+          overrides.sellOrderbook || {
+            sell_top1: overrides.sellGrossPrice ?? opportunity.sellNet ?? 12,
+            sell_top2: (overrides.sellGrossPrice ?? opportunity.sellNet ?? 12) * 0.99
+          },
+        raw: {
+          listing_available: sellListingAvailable,
+          listing_id:
+            overrides.sellListingId ??
+            metadata.skinport_listing_id ??
+            (sellListingAvailable === false ? null : "sp-emit-test")
+        }
+      }
+    ]
   }
 }
 
@@ -412,6 +492,187 @@ test("candidate selection preserves sell-side volume when generic volume is zero
 
   assert.equal(selection.selected.length, 1)
   assert.equal(selection.selected[0].volume7d, 37)
+})
+
+test("enrichment job diagnostics stay enrichment-only and expose requested counters", () => {
+  const diagnostics = buildEnrichmentJobExecutionDiagnostics({
+    forceRefresh: false,
+    selectedRows: 6,
+    enrichedRows: 6,
+    sourceCatalogDiagnostics: {
+      progression_rows_processed_total: 6,
+      due_backlog_rows_by_state: {
+        eligible: 3,
+        near_eligible: 4,
+        enriching: 1
+      },
+      eligible_tradable_rows: 11
+    }
+  })
+
+  assert.deepEqual(diagnostics, {
+    job_type: "enrichment",
+    selected_rows: 6,
+    skipped_rows: 2,
+    enriched_rows: 6,
+    eligible_rows: 11,
+    emitted_rows: 0,
+    blocked_rows: 0
+  })
+})
+
+test("opportunity job diagnostics separate skipped blocked and emitted rows", () => {
+  const diagnostics = buildOpportunityJobExecutionDiagnostics({
+    selection: {
+      selected: [{ marketHashName: "AK-47 | Redline" }, { marketHashName: "AWP | Asiimov" }]
+    },
+    eligibleRows: 1,
+    persisted: {
+      activeRowsWritten: 1,
+      publishValidation: {
+        blocked: 1
+      }
+    }
+  })
+
+  assert.deepEqual(diagnostics, {
+    job_type: "opportunity_scan",
+    selected_rows: 2,
+    skipped_rows: 1,
+    enriched_rows: 0,
+    eligible_rows: 1,
+    emitted_rows: 1,
+    blocked_rows: 1
+  })
+})
+
+test("opportunity comparison keeps live refresh disabled even when refresh is requested", async () => {
+  const originalCompareItems = marketComparisonService.compareItems
+  let capturedOptions = null
+
+  marketComparisonService.compareItems = async (_rows, options = {}) => {
+    capturedOptions = options
+    return {
+      items: [
+        {
+          marketHashName: "AK-47 | Redline (Field-Tested)"
+        }
+      ],
+      diagnostics: {
+        liveFetch: {
+          bySource: {}
+        }
+      }
+    }
+  }
+
+  try {
+    const result = await compareCandidates([
+      {
+        marketHashName: "AK-47 | Redline (Field-Tested)",
+        category: "weapon_skin",
+        referencePrice: 13.25
+      }
+    ], true)
+
+    assert.equal(Boolean(capturedOptions), true)
+    assert.equal(capturedOptions.allowLiveFetch, false)
+    assert.equal(capturedOptions.forceRefresh, false)
+    assert.equal(result.diagnostics.allowLiveFetch, false)
+    assert.equal(result.diagnostics.forceRefresh, false)
+  } finally {
+    marketComparisonService.compareItems = originalCompareItems
+  }
+})
+
+test("job lock enforces one active run per job type and records job diagnostics", async () => {
+  const originals = {
+    tryCreateRunningRun: scannerRunRepo.tryCreateRunningRun,
+    markCompleted: scannerRunRepo.markCompleted,
+    timeoutStaleRunningRuns: scannerRunRepo.timeoutStaleRunningRuns,
+    deleteOlderThan: scannerRunRepo.deleteOlderThan
+  }
+
+  const completions = []
+  const state = {
+    inFlight: null,
+    currentRunId: null,
+    currentRunStartedAt: null
+  }
+  let workerRuns = 0
+
+  scannerRunRepo.tryCreateRunningRun = async () => ({
+    run: { id: "enrichment-run-1" },
+    alreadyRunning: false,
+    conflictReason: null,
+    existingRun: null
+  })
+  scannerRunRepo.markCompleted = async (_runId, payload = {}) => {
+    completions.push(payload)
+    return payload
+  }
+  scannerRunRepo.timeoutStaleRunningRuns = async () => 0
+  scannerRunRepo.deleteOlderThan = async () => 0
+
+  try {
+    const started = await runJobWithLock({
+      scannerType: "enrichment",
+      state,
+      timeoutMs: 5000,
+      hardTimeoutMs: 5000,
+      trigger: "test",
+      forceRefresh: false,
+      worker: async () => {
+        workerRuns += 1
+        return {
+          selectedCount: 4,
+          opportunitiesFound: 0,
+          newOpportunitiesAdded: 0,
+          diagnostics: {
+            job_type: "enrichment",
+            selected_rows: 4,
+            skipped_rows: 1,
+            enriched_rows: 4,
+            eligible_rows: 3,
+            emitted_rows: 0,
+            blocked_rows: 0
+          }
+        }
+      }
+    })
+
+    assert.equal(started.status, "started")
+    assert.equal(started.job_type, "enrichment")
+    await state.inFlight
+    assert.equal(workerRuns, 1)
+    assert.equal(completions.length, 1)
+    assert.equal(completions[0].diagnosticsSummary.job_type, "enrichment")
+    assert.equal(completions[0].diagnosticsSummary.selected_rows, 4)
+
+    state.inFlight = Promise.resolve()
+    state.currentRunId = "enrichment-run-2"
+    state.currentRunStartedAt = new Date().toISOString()
+    const blocked = await runJobWithLock({
+      scannerType: "enrichment",
+      state,
+      timeoutMs: 5000,
+      hardTimeoutMs: 5000,
+      trigger: "test",
+      forceRefresh: false,
+      worker: async () => {
+        throw new Error("worker should not run while enrichment is already active")
+      }
+    })
+
+    assert.equal(blocked.status, "already_running")
+    assert.equal(blocked.alreadyRunning, true)
+    assert.equal(blocked.job_type, "enrichment")
+  } finally {
+    scannerRunRepo.tryCreateRunningRun = originals.tryCreateRunningRun
+    scannerRunRepo.markCompleted = originals.markCompleted
+    scannerRunRepo.timeoutStaleRunningRuns = originals.timeoutStaleRunningRuns
+    scannerRunRepo.deleteOlderThan = originals.deleteOlderThan
+  }
 })
 
 test("candidate selection reserves one knife and one glove when quality gates pass", () => {
@@ -769,6 +1030,102 @@ test("scanner source loader uses persisted hot/warm/cold cohorts on the healthy 
   }
 })
 
+test("scanner source loader prefers alpha hot universe over broad persisted cohort rows", async () => {
+  const originals = {
+    listHotScanCohort: marketSourceCatalogRepo.listHotScanCohort,
+    listWarmScanCohort: marketSourceCatalogRepo.listWarmScanCohort,
+    listColdScanCohort: marketSourceCatalogRepo.listColdScanCohort,
+    listCandidatePool: marketSourceCatalogRepo.listCandidatePool,
+    listActiveTradable: marketSourceCatalogRepo.listActiveTradable
+  }
+
+  marketSourceCatalogRepo.listHotScanCohort = async () => [
+    ...Array.from({ length: 10 }, (_, index) => ({
+      ...buildCatalogRow(index + 1, "weapon_skin"),
+      market_hash_name: `AWP | Lightning Strike #${index + 1}`,
+      item_name: `AWP | Lightning Strike #${index + 1}`,
+      liquidity_rank: 90 - index
+    })),
+    ...Array.from({ length: 6 }, (_, index) => ({
+      ...buildCatalogRow(index + 1, "weapon_skin"),
+      market_hash_name: `AK-47 | Slate #${index + 1}`,
+      item_name: `AK-47 | Slate #${index + 1}`,
+      liquidity_rank: 70 - index
+    })),
+    {
+      ...buildCatalogRow(99, "weapon_skin"),
+      market_hash_name: "Missing Coverage | Test",
+      item_name: "Missing Coverage | Test",
+      reference_price: null,
+      market_coverage_count: 0
+    }
+  ]
+  marketSourceCatalogRepo.listWarmScanCohort = async () => [
+    {
+      ...buildCatalogRow(1, "case"),
+      market_hash_name: "Revolution Case",
+      item_name: "Revolution Case",
+      category: "case",
+      candidate_status: "near_eligible",
+      scan_eligible: false,
+      scanCohort: "warm"
+    },
+    {
+      ...buildCatalogRow(2, "sticker_capsule"),
+      market_hash_name: "Sticker Capsule 2",
+      item_name: "Sticker Capsule 2",
+      category: "sticker_capsule",
+      candidate_status: "near_eligible",
+      scan_eligible: false,
+      scanCohort: "warm"
+    }
+  ]
+  marketSourceCatalogRepo.listColdScanCohort = async () => [
+    {
+      ...buildCatalogRow(3, "weapon_skin"),
+      market_hash_name: "Cold Candidate | Test",
+      item_name: "Cold Candidate | Test",
+      candidate_status: "candidate",
+      scan_eligible: false,
+      scanCohort: "cold"
+    }
+  ]
+  marketSourceCatalogRepo.listCandidatePool = async () => []
+  marketSourceCatalogRepo.listActiveTradable = async () => []
+
+  try {
+    const loaded = await loadScannerSourceRows()
+    assert.equal(loaded?.diagnostics?.selection_layer, "alpha_hot_universe")
+    assert.equal(loaded?.diagnostics?.hot_universe_size, loaded.rows.length)
+    assert.equal(loaded.rows.some((row) => row?.alpha_hot_universe_source === "alpha_hot_universe"), true)
+    assert.equal(loaded.rows.some((row) => row?.scanCohort === "cold"), false)
+    assert.equal(loaded.rows.some((row) => row?.market_hash_name === "Missing Coverage | Test"), false)
+    assert.equal(Number(loaded?.diagnostics?.hot_universe_by_category?.case || 0) >= 1, true)
+    assert.equal(Number(loaded?.diagnostics?.hot_universe_by_category?.sticker_capsule || 0) >= 1, true)
+    assert.equal(Number(loaded?.diagnostics?.intake_by_category?.weapon_skin || 0) >= 1, true)
+    assert.equal(Number(loaded?.diagnostics?.intake_by_subtype?.sniper || 0) >= 1, true)
+    assert.equal(Number(loaded?.diagnostics?.intake_by_subtype?.rifle || 0) >= 1, true)
+    assert.equal(
+      Number.isFinite(Number(loaded?.diagnostics?.quota_skips_by_category?.weapon_skin || 0)),
+      true
+    )
+    assert.equal(Number(loaded?.diagnostics?.rows_excluded_for_missing_coverage || 0) >= 1, true)
+    const weaponFamilies = new Set(
+      loaded.rows
+        .filter((row) => row?.category === "weapon_skin")
+        .map((row) => String(row?.alpha_hot_diversity_bucket || "").split(":")[1] || "unknown")
+    )
+    assert.equal(weaponFamilies.has("awp"), true)
+    assert.equal(weaponFamilies.has("ak-47"), true)
+  } finally {
+    marketSourceCatalogRepo.listHotScanCohort = originals.listHotScanCohort
+    marketSourceCatalogRepo.listWarmScanCohort = originals.listWarmScanCohort
+    marketSourceCatalogRepo.listColdScanCohort = originals.listColdScanCohort
+    marketSourceCatalogRepo.listCandidatePool = originals.listCandidatePool
+    marketSourceCatalogRepo.listActiveTradable = originals.listActiveTradable
+  }
+})
+
 test("scanner source loader still produces rows when catalog_status is missing or null", async () => {
   const originals = {
     listHotScanCohort: marketSourceCatalogRepo.listHotScanCohort,
@@ -903,13 +1260,16 @@ test("scanner source loader uses active tradable fallback only after cohort fall
         row?.category === "case" &&
         String(row?.fallbackSource || "").toLowerCase() === "activetradable"
     )
-    assert.equal(hasFallbackCase, true)
+    assert.equal(hasFallbackCase, false)
     assert.equal(loaded?.diagnostics?.fallbackUsed, true)
     assert.equal(loaded?.diagnostics?.cohortQueryFailures?.candidatePool, true)
     assert.equal(
       Number(loaded?.diagnostics?.fallbackRowsLoadedBySource?.activeTradable || 0) >= 1,
       true
     )
+    assert.equal(Number(loaded?.diagnostics?.hot_universe_by_category?.weapon_skin || 0) >= 1, true)
+    assert.equal(Number(loaded?.diagnostics?.hot_universe_by_category?.case || 0), 0)
+    assert.equal(Number(loaded?.diagnostics?.rows_excluded_for_low_maturity || 0) >= 1, true)
   } finally {
     marketSourceCatalogRepo.listHotScanCohort = originals.listHotScanCohort
     marketSourceCatalogRepo.listWarmScanCohort = originals.listWarmScanCohort
@@ -3078,16 +3438,22 @@ test("persistFeedRows updates active fingerprint match instead of inserting dupl
   }
 
   const originals = {
+    compareItems: marketComparisonService.compareItems,
     getRecentRowsByItems: arbitrageFeedRepo.getRecentRowsByItems,
     getActiveRowsByFingerprints: arbitrageFeedRepo.getActiveRowsByFingerprints,
     updateRowsById: arbitrageFeedRepo.updateRowsById,
     insertRows: arbitrageFeedRepo.insertRows,
-    markInactiveOlderThan: arbitrageFeedRepo.markInactiveOlderThan
+    markInactiveOlderThan: arbitrageFeedRepo.markInactiveOlderThan,
+    insertLifecycleRows: globalOpportunityLifecycleLogRepo.insertRows
   }
 
   let updateRowsPayload = null
   let insertRowsPayload = null
+  let lifecyclePayload = null
 
+  marketComparisonService.compareItems = async () => ({
+    items: [buildEmitComparedItem(opportunity)]
+  })
   arbitrageFeedRepo.getRecentRowsByItems = async () => [existingRow]
   arbitrageFeedRepo.getActiveRowsByFingerprints = async () => [existingRow]
   arbitrageFeedRepo.updateRowsById = async (rows = []) => {
@@ -3099,6 +3465,10 @@ test("persistFeedRows updates active fingerprint match instead of inserting dupl
     return rows.map((row, index) => ({ id: row?.id || `new-${index}` }))
   }
   arbitrageFeedRepo.markInactiveOlderThan = async () => 0
+  globalOpportunityLifecycleLogRepo.insertRows = async (rows = []) => {
+    lifecyclePayload = rows
+    return rows
+  }
 
   try {
     const result = await persistFeedRows([opportunity], "scan-run-1")
@@ -3122,12 +3492,21 @@ test("persistFeedRows updates active fingerprint match instead of inserting dupl
     assert.equal(updateRowsPayload[0]?.patch?.metadata?.item_canonical_rarity, "classified")
     assert.equal(updateRowsPayload[0]?.patch?.metadata?.item_rarity, "Classified")
     assert.equal(updateRowsPayload[0]?.patch?.metadata?.item_rarity_color, "#d32ce6")
+    assert.equal(Array.isArray(lifecyclePayload), true)
+    assert.deepEqual(
+      lifecyclePayload.map((row) => row.lifecycle_status),
+      ["detected", "published"]
+    )
+    assert.equal(result.lifecycle.detected_total, 1)
+    assert.equal(result.lifecycle.published_total, 1)
   } finally {
+    marketComparisonService.compareItems = originals.compareItems
     arbitrageFeedRepo.getRecentRowsByItems = originals.getRecentRowsByItems
     arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
     arbitrageFeedRepo.updateRowsById = originals.updateRowsById
     arbitrageFeedRepo.insertRows = originals.insertRows
     arbitrageFeedRepo.markInactiveOlderThan = originals.markInactiveOlderThan
+    globalOpportunityLifecycleLogRepo.insertRows = originals.insertLifecycleRows
   }
 })
 
@@ -3164,16 +3543,27 @@ test("persistFeedRows blocks stale candidates at publish time", async () => {
   }
 
   const originals = {
+    compareItems: marketComparisonService.compareItems,
     getRecentRowsByItems: arbitrageFeedRepo.getRecentRowsByItems,
     getActiveRowsByFingerprints: arbitrageFeedRepo.getActiveRowsByFingerprints,
     updateRowsById: arbitrageFeedRepo.updateRowsById,
     insertRows: arbitrageFeedRepo.insertRows,
-    markInactiveOlderThan: arbitrageFeedRepo.markInactiveOlderThan
+    markInactiveOlderThan: arbitrageFeedRepo.markInactiveOlderThan,
+    insertLifecycleRows: globalOpportunityLifecycleLogRepo.insertRows
   }
 
   let updateRowsPayload = null
   let insertRowsPayload = null
+  let lifecyclePayload = null
 
+  marketComparisonService.compareItems = async () => ({
+    items: [
+      buildEmitComparedItem(opportunity, {
+        buyRouteUpdatedAt: staleIso,
+        sellRouteUpdatedAt: staleIso
+      })
+    ]
+  })
   arbitrageFeedRepo.getRecentRowsByItems = async () => []
   arbitrageFeedRepo.getActiveRowsByFingerprints = async () => []
   arbitrageFeedRepo.updateRowsById = async (rows = []) => {
@@ -3185,6 +3575,10 @@ test("persistFeedRows blocks stale candidates at publish time", async () => {
     return rows.map((row, index) => ({ id: row?.id || `new-${index}` }))
   }
   arbitrageFeedRepo.markInactiveOlderThan = async () => 0
+  globalOpportunityLifecycleLogRepo.insertRows = async (rows = []) => {
+    lifecyclePayload = rows
+    return rows
+  }
 
   try {
     const result = await persistFeedRows([opportunity], "scan-run-stale-block")
@@ -3192,15 +3586,25 @@ test("persistFeedRows blocks stale candidates at publish time", async () => {
     assert.equal(result.publishValidation.blocked, 1)
     assert.equal(result.publishValidation.reasons.buy_and_sell_route_stale, 1)
     assert.equal(result.publishValidation.freshnessContract.buy_and_sell_route_stale, 1)
+    assert.equal(result.emitRevalidation.stale_on_emit_count, 1)
+    assert.equal(result.emitRevalidation.blocked_on_emit_by_reason.stale_on_emit, 1)
     assert.equal(result.publishValidation.deactivated, 0)
     assert.equal(updateRowsPayload, null)
     assert.equal(insertRowsPayload, null)
+    assert.equal(Array.isArray(lifecyclePayload), true)
+    assert.deepEqual(
+      lifecyclePayload.map((row) => row.lifecycle_status),
+      ["detected", "blocked_on_emit"]
+    )
+    assert.equal(result.lifecycle.blocked_on_emit_total, 1)
   } finally {
+    marketComparisonService.compareItems = originals.compareItems
     arbitrageFeedRepo.getRecentRowsByItems = originals.getRecentRowsByItems
     arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
     arbitrageFeedRepo.updateRowsById = originals.updateRowsById
     arbitrageFeedRepo.insertRows = originals.insertRows
     arbitrageFeedRepo.markInactiveOlderThan = originals.markInactiveOlderThan
+    globalOpportunityLifecycleLogRepo.insertRows = originals.insertLifecycleRows
   }
 })
 
@@ -3265,15 +3669,34 @@ test("persistFeedRows blocks missing route and missing listing at publish time",
   }
 
   const originals = {
+    compareItems: marketComparisonService.compareItems,
     getRecentRowsByItems: arbitrageFeedRepo.getRecentRowsByItems,
     getActiveRowsByFingerprints: arbitrageFeedRepo.getActiveRowsByFingerprints,
     updateRowsById: arbitrageFeedRepo.updateRowsById,
     insertRows: arbitrageFeedRepo.insertRows,
-    markInactiveOlderThan: arbitrageFeedRepo.markInactiveOlderThan
+    markInactiveOlderThan: arbitrageFeedRepo.markInactiveOlderThan,
+    insertLifecycleRows: globalOpportunityLifecycleLogRepo.insertRows
   }
 
   let insertRowsPayload = null
+  let lifecyclePayload = null
 
+  marketComparisonService.compareItems = async (rows = []) => ({
+    items: rows.map((row) => {
+      if (row.marketHashName === missingRoute.marketHashName) {
+        return buildEmitComparedItem(missingRoute, {
+          sellRouteAvailable: false,
+          sellRouteUpdatedAt: null,
+          sellListingAvailable: false,
+          sellListingId: null
+        })
+      }
+      return buildEmitComparedItem(missingListing, {
+        sellListingAvailable: false,
+        sellListingId: null
+      })
+    })
+  })
   arbitrageFeedRepo.getRecentRowsByItems = async () => []
   arbitrageFeedRepo.getActiveRowsByFingerprints = async () => []
   arbitrageFeedRepo.updateRowsById = async () => 0
@@ -3282,6 +3705,10 @@ test("persistFeedRows blocks missing route and missing listing at publish time",
     return rows.map((row, index) => ({ id: row?.id || `new-${index}` }))
   }
   arbitrageFeedRepo.markInactiveOlderThan = async () => 0
+  globalOpportunityLifecycleLogRepo.insertRows = async (rows = []) => {
+    lifecyclePayload = rows
+    return rows
+  }
 
   try {
     const result = await persistFeedRows(
@@ -3293,17 +3720,119 @@ test("persistFeedRows blocks missing route and missing listing at publish time",
     assert.equal(result.publishValidation.reasons.missing_sell_route, 1)
     assert.equal(result.publishValidation.reasons.missing_sell_listing, 1)
     assert.equal(result.publishValidation.freshnessContract.sell_route_unavailable, 1)
+    assert.equal(result.emitRevalidation.unavailable_on_emit_count, 2)
+    assert.equal(result.emitRevalidation.blocked_on_emit_by_reason.unavailable_on_emit, 2)
     assert.equal(insertRowsPayload, null)
+    assert.equal(Array.isArray(lifecyclePayload), true)
+    assert.deepEqual(
+      lifecyclePayload.map((row) => row.lifecycle_status),
+      ["detected", "blocked_on_emit", "detected", "blocked_on_emit"]
+    )
   } finally {
+    marketComparisonService.compareItems = originals.compareItems
     arbitrageFeedRepo.getRecentRowsByItems = originals.getRecentRowsByItems
     arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
     arbitrageFeedRepo.updateRowsById = originals.updateRowsById
     arbitrageFeedRepo.insertRows = originals.insertRows
     arbitrageFeedRepo.markInactiveOlderThan = originals.markInactiveOlderThan
+    globalOpportunityLifecycleLogRepo.insertRows = originals.insertLifecycleRows
+  }
+})
+
+test("persistFeedRows blocks non-executable rows at emit time", async () => {
+  const nowIso = new Date().toISOString()
+  const opportunity = {
+    marketHashName: "Galil AR | Stone Cold (Field-Tested)",
+    itemName: "Galil AR | Stone Cold (Field-Tested)",
+    itemCategory: "weapon_skin",
+    buyMarket: "steam",
+    buyPrice: 6.2,
+    sellMarket: "skinport",
+    sellNet: 7.1,
+    profit: 0.9,
+    spread: 14.5,
+    score: 68,
+    executionConfidence: "Medium",
+    qualityGrade: "RISKY",
+    liquidityBand: "Medium",
+    liquidity: 70,
+    marketCoverage: 2,
+    referencePrice: 6.6,
+    buyRouteAvailable: true,
+    sellRouteAvailable: true,
+    buyRouteUpdatedAt: nowIso,
+    sellRouteUpdatedAt: nowIso,
+    metadata: {
+      buy_route_available: true,
+      sell_route_available: true,
+      buy_route_updated_at: nowIso,
+      sell_route_updated_at: nowIso,
+      sell_listing_available: true,
+      skinport_listing_id: "sp-galil"
+    }
+  }
+
+  const originals = {
+    compareItems: marketComparisonService.compareItems,
+    getRecentRowsByItems: arbitrageFeedRepo.getRecentRowsByItems,
+    getActiveRowsByFingerprints: arbitrageFeedRepo.getActiveRowsByFingerprints,
+    updateRowsById: arbitrageFeedRepo.updateRowsById,
+    insertRows: arbitrageFeedRepo.insertRows,
+    markInactiveOlderThan: arbitrageFeedRepo.markInactiveOlderThan,
+    insertLifecycleRows: globalOpportunityLifecycleLogRepo.insertRows
+  }
+
+  let insertRowsPayload = null
+  let lifecyclePayload = null
+
+  marketComparisonService.compareItems = async () => ({
+    items: [
+      buildEmitComparedItem(opportunity, {
+        buyGrossPrice: 7.5,
+        sellGrossPrice: 7.1,
+        sellNetPrice: 6.9
+      })
+    ]
+  })
+  arbitrageFeedRepo.getRecentRowsByItems = async () => []
+  arbitrageFeedRepo.getActiveRowsByFingerprints = async () => []
+  arbitrageFeedRepo.updateRowsById = async () => 0
+  arbitrageFeedRepo.insertRows = async (rows = []) => {
+    insertRowsPayload = rows
+    return rows
+  }
+  arbitrageFeedRepo.markInactiveOlderThan = async () => 0
+  globalOpportunityLifecycleLogRepo.insertRows = async (rows = []) => {
+    lifecyclePayload = rows
+    return rows
+  }
+
+  try {
+    const result = await persistFeedRows([opportunity], "scan-run-non-executable")
+    assert.equal(result.insertedCount, 0)
+    assert.equal(result.publishValidation.blocked, 1)
+    assert.equal(result.publishValidation.reasons.non_positive_profit, 1)
+    assert.equal(result.emitRevalidation.non_executable_on_emit_count, 1)
+    assert.equal(result.emitRevalidation.blocked_on_emit_by_reason.non_executable_on_emit, 1)
+    assert.equal(insertRowsPayload, null)
+    assert.equal(Array.isArray(lifecyclePayload), true)
+    assert.deepEqual(
+      lifecyclePayload.map((row) => row.lifecycle_status),
+      ["detected", "blocked_on_emit"]
+    )
+  } finally {
+    marketComparisonService.compareItems = originals.compareItems
+    arbitrageFeedRepo.getRecentRowsByItems = originals.getRecentRowsByItems
+    arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
+    arbitrageFeedRepo.updateRowsById = originals.updateRowsById
+    arbitrageFeedRepo.insertRows = originals.insertRows
+    arbitrageFeedRepo.markInactiveOlderThan = originals.markInactiveOlderThan
+    globalOpportunityLifecycleLogRepo.insertRows = originals.insertLifecycleRows
   }
 })
 
 test("persistFeedRows deactivates older active duplicate rows for same fingerprint before update", async () => {
+  const nowIso = new Date().toISOString()
   const opportunity = {
     marketHashName: "★ Broken Fang Gloves | Jade (Field-Tested)",
     itemName: "★ Broken Fang Gloves | Jade (Field-Tested)",
@@ -3321,7 +3850,17 @@ test("persistFeedRows deactivates older active duplicate rows for same fingerpri
     liquidity: 500,
     marketCoverage: 2,
     referencePrice: 103.2,
+    buyRouteAvailable: true,
+    sellRouteAvailable: true,
+    buyRouteUpdatedAt: nowIso,
+    sellRouteUpdatedAt: nowIso,
     metadata: {
+      buy_route_available: true,
+      sell_route_available: true,
+      buy_route_updated_at: nowIso,
+      sell_route_updated_at: nowIso,
+      buy_listing_available: true,
+      sell_listing_available: true,
       buy_url: "https://csfloat.com/search?market_hash_name=Broken+Fang+Gloves+Jade",
       sell_url:
         "https://steamcommunity.com/market/listings/730/%E2%98%85%20Broken%20Fang%20Gloves%20%7C%20Jade%20(Field-Tested)"
@@ -3363,18 +3902,24 @@ test("persistFeedRows deactivates older active duplicate rows for same fingerpri
   }
 
   const originals = {
+    compareItems: marketComparisonService.compareItems,
     getRecentRowsByItems: arbitrageFeedRepo.getRecentRowsByItems,
     getActiveRowsByFingerprints: arbitrageFeedRepo.getActiveRowsByFingerprints,
     markRowsInactiveByIds: arbitrageFeedRepo.markRowsInactiveByIds,
     updateRowsById: arbitrageFeedRepo.updateRowsById,
     insertRows: arbitrageFeedRepo.insertRows,
-    markInactiveOlderThan: arbitrageFeedRepo.markInactiveOlderThan
+    markInactiveOlderThan: arbitrageFeedRepo.markInactiveOlderThan,
+    insertLifecycleRows: globalOpportunityLifecycleLogRepo.insertRows
   }
 
   let markedInactiveIds = null
   let updateRowsPayload = null
   let insertRowsPayload = null
+  let lifecyclePayload = null
 
+  marketComparisonService.compareItems = async () => ({
+    items: [buildEmitComparedItem(opportunity)]
+  })
   arbitrageFeedRepo.getRecentRowsByItems = async () => [existingNewest, existingOlder]
   arbitrageFeedRepo.getActiveRowsByFingerprints = async () => [existingNewest, existingOlder]
   arbitrageFeedRepo.markRowsInactiveByIds = async (ids = []) => {
@@ -3390,6 +3935,10 @@ test("persistFeedRows deactivates older active duplicate rows for same fingerpri
     return rows.map((row, index) => ({ id: row?.id || `new-${index}` }))
   }
   arbitrageFeedRepo.markInactiveOlderThan = async () => 0
+  globalOpportunityLifecycleLogRepo.insertRows = async (rows = []) => {
+    lifecyclePayload = rows
+    return rows
+  }
 
   try {
     const result = await persistFeedRows([opportunity], "scan-run-dup-cleanup")
@@ -3399,13 +3948,20 @@ test("persistFeedRows deactivates older active duplicate rows for same fingerpri
     assert.equal(updateRowsPayload.length, 1)
     assert.equal(updateRowsPayload[0].id, "feed-row-newest")
     assert.equal(insertRowsPayload, null)
+    assert.equal(Array.isArray(lifecyclePayload), true)
+    assert.deepEqual(
+      lifecyclePayload.map((row) => row.lifecycle_status),
+      ["detected", "published"]
+    )
   } finally {
+    marketComparisonService.compareItems = originals.compareItems
     arbitrageFeedRepo.getRecentRowsByItems = originals.getRecentRowsByItems
     arbitrageFeedRepo.getActiveRowsByFingerprints = originals.getActiveRowsByFingerprints
     arbitrageFeedRepo.markRowsInactiveByIds = originals.markRowsInactiveByIds
     arbitrageFeedRepo.updateRowsById = originals.updateRowsById
     arbitrageFeedRepo.insertRows = originals.insertRows
     arbitrageFeedRepo.markInactiveOlderThan = originals.markInactiveOlderThan
+    globalOpportunityLifecycleLogRepo.insertRows = originals.insertLifecycleRows
   }
 })
 
