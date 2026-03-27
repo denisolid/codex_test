@@ -59,6 +59,7 @@ function summarizeRecoveryDiagnostics(diag = {}) {
     generatedAt: diag?.generatedAt || null,
     completed: Boolean(diag?.completed),
     paused: Boolean(diag?.paused),
+    pauseReason: diag?.pauseReason || null,
     timedOut: Boolean(diag?.timedOut),
     failedStage: diag?.failedStage || null,
     error: diag?.error || null,
@@ -70,8 +71,10 @@ function summarizeRecoveryDiagnostics(diag = {}) {
     checkpoint: diag?.checkpoint || null,
     targets: diag?.targets || {},
     healthGate: diag?.healthGate || {},
+    categoryHealthGate: diag?.categoryHealthGate || {},
     quoteRefresh: diag?.quoteRefresh || {},
     snapshotRefresh: diag?.snapshotRefresh || {},
+    snapshotPacing: diag?.snapshotPacing || {},
     postRefresh: {
       totalRows: Number(diag?.postRefresh?.totalRows || 0),
       rowsStillStale: Number(diag?.postRefresh?.rowsStillStale || 0),
@@ -135,6 +138,7 @@ async function main() {
       ? Math.max(toInt(cli["max-batches"], 0), 1)
       : null
   const categories = parseList(cli.categories)
+  const resumeState = cli["resume-state"] ? String(cli["resume-state"]).trim() : null
   const startCategory = cli["start-category"] ? String(cli["start-category"]).trim() : null
   const startOffset = Math.max(toInt(cli["start-offset"], 0), 0)
   const skipScan = toBoolean(cli["skip-scan"], false)
@@ -148,6 +152,7 @@ async function main() {
       {
         step: "refresh_upstream_market_freshness",
         categories: categories.length ? categories : undefined,
+        resumeStatePresent: Boolean(resumeState),
         startCategory,
         startOffset,
         targetUniverseSize,
@@ -169,6 +174,7 @@ async function main() {
     quoteBatchSize,
     snapshotBatchSize,
     maxBatches,
+    resumeState,
     startCategory,
     startOffset,
     targetUniverseSize,
@@ -198,7 +204,11 @@ async function main() {
     return
   }
 
-  if (skipScan || !diagnostics?.healthGate?.healthyEnough || !diagnostics?.catalogRecompute?.executed) {
+  if (
+    skipScan ||
+    !diagnostics?.catalogRecompute?.executed ||
+    !diagnostics?.catalogRecompute?.opportunityScanSafeToResume
+  ) {
     return
   }
 

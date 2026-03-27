@@ -275,6 +275,9 @@ const SOURCE_CATALOG_QUOTA_BASE_TOTAL = Object.values(SOURCE_CATALOG_QUOTA_RULES
 
 const CATEGORY_DEFAULT_COUNTER = Object.freeze({
   total: 0,
+  scannable: 0,
+  shadow: 0,
+  blocked: 0,
   cold: 0,
   candidate: 0,
   enriching: 0,
@@ -1594,6 +1597,59 @@ function buildSourceCatalogQuotas(targetSize) {
   )
 }
 
+function normalizeCatalogScopeCategories(categories = []) {
+  const requested = Array.isArray(categories) ? categories : []
+  const normalized = []
+  const seen = new Set()
+
+  for (const value of requested) {
+    const category = normalizeCategory(value)
+    if (!isScannerScopeCategory(category) || seen.has(category)) continue
+    seen.add(category)
+    normalized.push(category)
+  }
+
+  return normalized.length ? normalized : [...CATEGORY_PRIORITY]
+}
+
+function isFullCatalogScope(categories = []) {
+  const scoped = normalizeCatalogScopeCategories(categories)
+  return (
+    scoped.length === CATEGORY_PRIORITY.length &&
+    CATEGORY_PRIORITY.every((category) => scoped.includes(category))
+  )
+}
+
+function buildCategoryQuotasForCategories(targetSize, categories = CATEGORY_PRIORITY) {
+  const scopedCategories = normalizeCatalogScopeCategories(categories)
+  const scopedQuotas = buildScaledQuotas(
+    targetSize,
+    CATEGORY_QUOTA_RULES,
+    scopedCategories,
+    CATEGORY_QUOTA_BASE_TOTAL
+  )
+  const quotas = buildCategoryNumberMap()
+  for (const category of scopedCategories) {
+    quotas[category] = Number(scopedQuotas?.[category] || 0)
+  }
+  return quotas
+}
+
+function buildSourceCatalogQuotasForCategories(targetSize, categories = CATEGORY_PRIORITY) {
+  const scopedCategories = normalizeCatalogScopeCategories(categories)
+  const scopedQuotas = buildScaledQuotas(
+    targetSize,
+    SOURCE_CATALOG_QUOTA_RULES,
+    scopedCategories,
+    SOURCE_CATALOG_QUOTA_BASE_TOTAL
+  )
+  const quotas = buildCategoryNumberMap()
+  for (const category of scopedCategories) {
+    quotas[category] = Number(scopedQuotas?.[category] || 0)
+  }
+  return quotas
+}
+
 function buildBaseDiagnostics() {
   return {
     generatedAt: new Date().toISOString(),
@@ -1910,8 +1966,14 @@ function toSourceCatalogSeedRows(rows = [], sourceTag = "curated_seed", sourceRa
   return output
 }
 
-function pickSourceCatalogRowsByQuota(candidates = [], limit = SOURCE_CATALOG_LIMIT) {
+function pickSourceCatalogRowsByQuota(
+  candidates = [],
+  limit = SOURCE_CATALOG_LIMIT,
+  categories = CATEGORY_PRIORITY
+) {
   const safeLimit = Math.max(Math.round(Number(limit || SOURCE_CATALOG_LIMIT)), 1)
+  const scopedCategories = normalizeCatalogScopeCategories(categories)
+  const scopedCategorySet = new Set(scopedCategories)
   const deduped = []
   const seen = new Set()
   const excludedByReason = { ...BASE_INGEST_EXCLUDED_REASON_COUNTER }
@@ -1926,7 +1988,7 @@ function pickSourceCatalogRowsByQuota(candidates = [], limit = SOURCE_CATALOG_LI
       continue
     }
     const category = normalizeCategory(row?.category, marketHashName)
-    if (!isScannerScopeCategory(category)) {
+    if (!isScannerScopeCategory(category) || !scopedCategorySet.has(category)) {
       excludedByReason.excludedOutOfScopeCategory += 1
       continue
     }
@@ -1943,7 +2005,7 @@ function pickSourceCatalogRowsByQuota(candidates = [], limit = SOURCE_CATALOG_LI
     })
   }
 
-  const quotas = buildSourceCatalogQuotas(safeLimit)
+  const quotas = buildSourceCatalogQuotasForCategories(safeLimit, scopedCategories)
   const buckets = Object.fromEntries(CATEGORY_PRIORITY.map((category) => [category, []]))
   for (const row of deduped) {
     buckets[row.category].push(row)
@@ -2019,14 +2081,16 @@ function resolveSeedBuilder(limit = SOURCE_CATALOG_LIMIT) {
   return Array.isArray(sourceCatalogSeed) ? sourceCatalogSeed.slice(0, limit) : []
 }
 
-async function ingestSourceCatalogSeeds() {
+async function ingestSourceCatalogSeeds(options = {}) {
+  const scopedCategories = normalizeCatalogScopeCategories(options.categories)
+  const scopedCategorySet = new Set(scopedCategories)
   const ingestExclusions = { ...BASE_INGEST_EXCLUDED_REASON_COUNTER }
   const curatedSeedRows = toSourceCatalogSeedRows(
     resolveSeedBuilder(Math.max(SOURCE_CATALOG_LIMIT * 2, 1000)),
     "curated_seed",
     20,
     ingestExclusions
-  )
+  ).filter((row) => scopedCategorySet.has(normalizeCategory(row?.category, row?.marketHashName)))
 
   let skinIndexRows = []
   try {
@@ -2038,14 +2102,15 @@ async function ingestSourceCatalogSeeds() {
       "skin_index_curated",
       10,
       ingestExclusions
-    )
+    ).filter((row) => scopedCategorySet.has(normalizeCategory(row?.category, row?.marketHashName)))
   } catch (err) {
     console.error("[source-catalog] Failed to read skin index for source expansion", err.message)
   }
 
   const selection = pickSourceCatalogRowsByQuota(
     [...curatedSeedRows, ...skinIndexRows],
-    SOURCE_CATALOG_LIMIT
+    SOURCE_CATALOG_LIMIT,
+    scopedCategories
   )
   for (const [reason, count] of Object.entries(selection.excludedByReason || {})) {
     if (ingestExclusions[reason] == null) continue
@@ -2711,6 +2776,7 @@ function resolvePriorityEntryForCatalogRow(row = {}, priorityByKey = new Map()) 
 }
 
 async function enrichSourceCatalog(options = {}) {
+  const scopedCategories = normalizeCatalogScopeCategories(options?.categories)
   const priorityCoverage =
     options?.priorityCoverage && typeof options.priorityCoverage === "object"
       ? options.priorityCoverage
@@ -2720,7 +2786,7 @@ async function enrichSourceCatalog(options = {}) {
     ? options.rows
     : await marketSourceCatalogRepo.listActiveTradable({
         limit: 12000,
-        categories: CATEGORY_PRIORITY
+        categories: scopedCategories
       })
   if (!rows.length) {
     return {
@@ -3152,16 +3218,19 @@ async function enrichSourceCatalog(options = {}) {
     if (catalogStatus === CATALOG_STATUS.SCANNABLE) {
       counts.scannable += 1
       counts.scannerSourceSize += 1
+      byCategory[category].scannable += 1
       if (isPriorityItem && priorityTier && scannerSourceCountsByTier[priorityTier] != null) {
         scannerSourceCountsByTier[priorityTier] += 1
       }
     } else if (catalogStatus === CATALOG_STATUS.SHADOW) {
       counts.shadow += 1
+      byCategory[category].shadow += 1
       if (catalogBlockReason && Object.prototype.hasOwnProperty.call(shadowByReason, catalogBlockReason)) {
         shadowByReason[catalogBlockReason] = Number(shadowByReason[catalogBlockReason] || 0) + 1
       }
     } else {
       counts.blocked += 1
+      byCategory[category].blocked += 1
       if (catalogBlockReason && Object.prototype.hasOwnProperty.call(blockedByReason, catalogBlockReason)) {
         blockedByReason[catalogBlockReason] = Number(blockedByReason[catalogBlockReason] || 0) + 1
       }
@@ -3481,19 +3550,20 @@ function countCatalogRowsByCategory(rows = []) {
   return counts
 }
 
-async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) {
+async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, options = {}) {
   const safeTarget = Math.max(Math.round(Number(targetSize || DEFAULT_UNIVERSE_TARGET)), 1)
+  const scopedCategories = normalizeCatalogScopeCategories(options.categories)
   const strictEligibleRows = normalizeCatalogCandidateRows(
     await marketSourceCatalogRepo.listScanEligible({
       limit: Math.max(SOURCE_CATALOG_LIMIT, safeTarget * 3),
-      categories: CATEGORY_PRIORITY
+      categories: scopedCategories
     }),
     "strict_eligible"
   )
   const candidatePoolRows = normalizeCatalogCandidateRows(
     await marketSourceCatalogRepo.listCandidatePool({
       limit: Math.max(SOURCE_CATALOG_LIMIT, safeTarget * 3),
-      categories: CATEGORY_PRIORITY,
+      categories: scopedCategories,
       candidateStatuses: [
         CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE,
         CATALOG_CANDIDATE_STATUS.ENRICHING,
@@ -3529,7 +3599,7 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
         Number(b.reference_price || 0) - Number(a.reference_price || 0)
     )
 
-  const quotas = buildCategoryQuotas(safeTarget)
+  const quotas = buildCategoryQuotasForCategories(safeTarget, scopedCategories)
   const { selected, leftovers, selectedByCategory } = takeTopByCategory(rankedRows, quotas)
   const selectedByCategoryQuotaStage = buildCategoryNumberMap()
   for (const category of CATEGORY_PRIORITY) {
@@ -3639,16 +3709,31 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET) 
 
 async function runPipeline(options = {}) {
   const startedAt = Date.now()
+  const scopedCategories = normalizeCatalogScopeCategories(options.categories)
+  const fullScope = isFullCatalogScope(scopedCategories)
   const targetUniverseSize = Math.max(
     Math.round(Number(options.targetUniverseSize || DEFAULT_UNIVERSE_TARGET)),
     1
   )
   const base = buildBaseDiagnostics()
   base.targetUniverseSize = targetUniverseSize
+  base.scopeCategories = scopedCategories
+  base.sourceCatalog.sourceCatalogQuotaTargetByCategory = buildSourceCatalogQuotasForCategories(
+    SOURCE_CATALOG_LIMIT,
+    scopedCategories
+  )
+  base.universeBuild.quotas = buildCategoryQuotasForCategories(targetUniverseSize, scopedCategories)
+  base.universeBuild.quotaTargetByCategory = buildCategoryQuotasForCategories(
+    targetUniverseSize,
+    scopedCategories
+  )
 
-  const ingest = await ingestSourceCatalogSeeds()
+  const ingest = await ingestSourceCatalogSeeds({ categories: scopedCategories })
   const priorityCoverage = await catalogPriorityCoverageService
-    .syncPriorityCoverageSet({ allowCatalogInsert: true })
+    .syncPriorityCoverageSet({
+      allowCatalogInsert:
+        options.allowCatalogInsert == null ? fullScope : Boolean(options.allowCatalogInsert)
+    })
     .catch((err) => ({
       setName: null,
       version: 1,
@@ -3663,8 +3748,13 @@ async function runPipeline(options = {}) {
       policyHintsByTier: {},
       error: normalizeText(err?.message) || "priority_coverage_sync_failed"
     }))
-  const sourceCoverage = await enrichSourceCatalog({ priorityCoverage })
-  const universeBuild = await rebuildUniverseFromCatalog(targetUniverseSize)
+  const sourceCoverage = await enrichSourceCatalog({
+    priorityCoverage,
+    categories: scopedCategories
+  })
+  const universeBuild = await rebuildUniverseFromCatalog(targetUniverseSize, {
+    categories: scopedCategories
+  })
 
   return {
     ...base,
@@ -3672,6 +3762,7 @@ async function runPipeline(options = {}) {
     refreshed: true,
     skipped: false,
     elapsedMs: Date.now() - startedAt,
+    scopeCategories: scopedCategories,
     sourceCatalog: {
       ...base.sourceCatalog,
       targetRows: SOURCE_CATALOG_LIMIT,
@@ -3871,6 +3962,40 @@ function shouldBypassSkipForRecovery(diagnostics = {}, targetUniverseSize = DEFA
 async function prepareSourceCatalog(options = {}) {
   const forceRefresh = Boolean(options.forceRefresh)
   const targetUniverseSize = Number(options.targetUniverseSize || DEFAULT_UNIVERSE_TARGET)
+  const scopedCategories = normalizeCatalogScopeCategories(options.categories)
+  const fullScope = isFullCatalogScope(scopedCategories)
+
+  if (!fullScope) {
+    try {
+      return await runPipeline({
+        targetUniverseSize,
+        categories: scopedCategories,
+        allowCatalogInsert: false
+      })
+    } catch (err) {
+      const safeTarget = Math.max(
+        Math.round(Number(targetUniverseSize || DEFAULT_UNIVERSE_TARGET)),
+        1
+      )
+      const fallback = {
+        ...buildBaseDiagnostics(),
+        generatedAt: new Date().toISOString(),
+        targetUniverseSize: safeTarget,
+        refreshed: false,
+        skipped: false,
+        error: String(err?.message || "source_catalog_pipeline_failed"),
+        scopeCategories: scopedCategories
+      }
+      fallback.sourceCatalog.sourceCatalogQuotaTargetByCategory =
+        buildSourceCatalogQuotasForCategories(SOURCE_CATALOG_LIMIT, scopedCategories)
+      fallback.universeBuild.quotas = buildCategoryQuotasForCategories(safeTarget, scopedCategories)
+      fallback.universeBuild.quotaTargetByCategory = buildCategoryQuotasForCategories(
+        safeTarget,
+        scopedCategories
+      )
+      return fallback
+    }
+  }
 
   if (
     !shouldRefresh(forceRefresh) &&
@@ -3988,8 +4113,12 @@ module.exports = {
     evaluateEligibility,
     isUniverseBackfillReadyRow,
     buildCategoryQuotas,
+    buildCategoryQuotasForCategories,
     buildSourceCatalogQuotas,
+    buildSourceCatalogQuotasForCategories,
     resolveVolume7d,
-    shouldBypassSkipForRecovery
+    shouldBypassSkipForRecovery,
+    normalizeCatalogScopeCategories,
+    isFullCatalogScope
   }
 }
