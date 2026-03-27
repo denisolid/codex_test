@@ -9,7 +9,9 @@ const sourceSeed = require("../src/config/marketSourceCatalogSeed")
 const {
   __testables: {
     buildCategoryQuotas,
+    buildCategoryQuotasForCategories,
     buildSourceCatalogQuotas,
+    buildSourceCatalogQuotasForCategories,
     computeCatalogMaturity,
     classifyCatalogStatus,
     computeEnrichmentPriority,
@@ -20,6 +22,7 @@ const {
     normalizeCandidateStatus,
     normalizeMaturityState,
     normalizeCategory,
+    normalizeCatalogScopeCategories,
     resolveCompatibleCatalogStatusFields,
     shouldBypassSkipForRecovery
   }
@@ -83,6 +86,31 @@ test("source catalog quotas preserve 5k composition with category-aware scaling"
   assert.equal(Number(scaled.weapon_skin || 0), 2640)
   assert.equal(Number(scaled.case || 0), 210)
   assert.equal(Number(scaled.sticker_capsule || 0), 150)
+})
+
+test("scoped catalog quotas zero blocked categories and reallocate healthy categories safely", () => {
+  assert.deepEqual(normalizeCatalogScopeCategories(["case", "sticker_capsule", "case"]), [
+    "case",
+    "sticker_capsule"
+  ])
+
+  const universeQuotas = buildCategoryQuotasForCategories(1000, ["case", "sticker_capsule"])
+  assert.equal(Number(universeQuotas.weapon_skin || 0), 0)
+  assert.equal(Number(universeQuotas.case || 0) > 0, true)
+  assert.equal(Number(universeQuotas.sticker_capsule || 0) > 0, true)
+  assert.equal(
+    Object.values(universeQuotas).reduce((sum, value) => sum + Number(value || 0), 0),
+    1000
+  )
+
+  const sourceQuotas = buildSourceCatalogQuotasForCategories(500, ["case", "sticker_capsule"])
+  assert.equal(Number(sourceQuotas.weapon_skin || 0), 0)
+  assert.equal(Number(sourceQuotas.case || 0) > 0, true)
+  assert.equal(Number(sourceQuotas.sticker_capsule || 0) > 0, true)
+  assert.equal(
+    Object.values(sourceQuotas).reduce((sum, value) => sum + Number(value || 0), 0),
+    500
+  )
 })
 
 test("source eligibility rejects weak liquidity and coverage before universe build", () => {

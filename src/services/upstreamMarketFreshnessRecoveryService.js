@@ -344,6 +344,106 @@ function resolveRecoveryCursor(categories = [], options = {}) {
   }
 }
 
+function createCategoryProgressState(categories = RECOVERY_CATEGORIES, targets = {}, options = {}) {
+  const safeCategories = normalizeRecoveryCategories(categories)
+  const resumeState =
+    options.resumeState && typeof options.resumeState === "object" ? options.resumeState : {}
+  const resumeProgress =
+    resumeState.categoryProgressState && typeof resumeState.categoryProgressState === "object"
+      ? resumeState.categoryProgressState
+      : {}
+  const cursor = resolveRecoveryCursor(safeCategories, options)
+  const startedFromCursor = !Object.keys(resumeProgress).length
+
+  return Object.fromEntries(
+    safeCategories.map((category) => {
+      const target = Math.max(Number(targets?.[category] || 0), 0)
+      const resumeEntry =
+        resumeProgress?.[category] && typeof resumeProgress[category] === "object"
+          ? resumeProgress[category]
+          : null
+      if (resumeEntry) {
+        const nextOffset = Math.min(
+          Math.max(Number(resumeEntry.nextOffset || 0), 0),
+          target
+        )
+        return [
+          category,
+          {
+            nextOffset,
+            done:
+              resumeEntry.done == null ? nextOffset >= target : Boolean(resumeEntry.done),
+            blockedReason: normalizeText(resumeEntry.blockedReason) || null
+          }
+        ]
+      }
+
+      if (!startedFromCursor) {
+        return [
+          category,
+          {
+            nextOffset: 0,
+            done: false,
+            blockedReason: null
+          }
+        ]
+      }
+
+      const categoryIndex = safeCategories.indexOf(category)
+      const startIndex = safeCategories.indexOf(cursor.startCategory)
+      if (startIndex >= 0 && categoryIndex < startIndex) {
+        return [
+          category,
+          {
+            nextOffset: target,
+            done: true,
+            blockedReason: null
+          }
+        ]
+      }
+      if (category === cursor.startCategory) {
+        const nextOffset = Math.min(cursor.startOffset, target)
+        return [
+          category,
+          {
+            nextOffset,
+            done: nextOffset >= target,
+            blockedReason: null
+          }
+        ]
+      }
+      return [
+        category,
+        {
+          nextOffset: 0,
+          done: false,
+          blockedReason: null
+        }
+      ]
+    })
+  )
+}
+
+function buildNextRecoveryCursor(categories = RECOVERY_CATEGORIES, categoryProgressState = {}, targets = {}) {
+  const safeCategories = normalizeRecoveryCategories(categories)
+  for (const category of safeCategories) {
+    const target = Math.max(Number(targets?.[category] || 0), 0)
+    const entry = categoryProgressState?.[category] || {}
+    const nextOffset = Math.max(Number(entry.nextOffset || 0), 0)
+    const done = Boolean(entry.done) || nextOffset >= target
+    if (!done) {
+      return {
+        nextCategory: category,
+        nextOffset
+      }
+    }
+  }
+  return {
+    nextCategory: null,
+    nextOffset: 0
+  }
+}
+
 function mergeStringSet(target, source) {
   if (!(target instanceof Set) || !(source instanceof Set)) return
   for (const value of source) {
@@ -386,6 +486,28 @@ function mergeAttemptCounters(target = createAttemptCounter(), source = {}) {
 
   if (Array.isArray(source.snapshotBatchDiagnostics) && source.snapshotBatchDiagnostics.length) {
     next.snapshotBatchDiagnostics.push(...source.snapshotBatchDiagnostics)
+  }
+
+  next.snapshotCooldownAppliedCount =
+    Number(next.snapshotCooldownAppliedCount || 0) +
+    Number(source.snapshotCooldownAppliedCount || 0)
+  next.snapshotBatchesSkippedDueToCooldown =
+    Number(next.snapshotBatchesSkippedDueToCooldown || 0) +
+    Number(source.snapshotBatchesSkippedDueToCooldown || 0)
+  next.snapshotRetryBudgetExhaustedCount =
+    Number(next.snapshotRetryBudgetExhaustedCount || 0) +
+    Number(source.snapshotRetryBudgetExhaustedCount || 0)
+
+  for (const category of RECOVERY_CATEGORIES) {
+    next.snapshotCooldownAppliedByCategory[category] =
+      Number(next.snapshotCooldownAppliedByCategory?.[category] || 0) +
+      Number(source.snapshotCooldownAppliedByCategory?.[category] || 0)
+    next.snapshotBatchesSkippedDueToCooldownByCategory[category] =
+      Number(next.snapshotBatchesSkippedDueToCooldownByCategory?.[category] || 0) +
+      Number(source.snapshotBatchesSkippedDueToCooldownByCategory?.[category] || 0)
+    next.snapshotRetryBudgetExhaustedByCategory[category] =
+      Number(next.snapshotRetryBudgetExhaustedByCategory?.[category] || 0) +
+      Number(source.snapshotRetryBudgetExhaustedByCategory?.[category] || 0)
   }
 
   next.quoteRowsInserted =
@@ -479,19 +601,33 @@ function mergeFreshnessSummary(target = createFreshnessSummary(), source = {}) {
 
 function buildCheckpointState({
   categories = RECOVERY_CATEGORIES,
-  nextCategory = null,
-  nextOffset = 0,
+  targets = {},
+  categoryProgressState = {},
+  snapshotPacingState = {},
   completedBatches = 0,
   processedRows = 0,
   processedRowsByCategory = emptyCategoryNumberMap(0),
+  pauseReason = null,
   done = false
 } = {}) {
+  const cursor = buildNextRecoveryCursor(categories, categoryProgressState, targets)
+  const resumeState = {
+    categories: Array.isArray(categories) ? categories.slice() : RECOVERY_CATEGORIES.slice(),
+    categoryProgressState,
+    snapshotPacingState
+  }
+  const resumeStateToken = done ? null : encodeResumeStateToken(resumeState)
   return {
     categories: Array.isArray(categories) ? categories.slice() : RECOVERY_CATEGORIES.slice(),
-    nextCategory: done ? null : nextCategory || null,
-    nextOffset: done ? 0 : Math.max(Number(nextOffset || 0), 0),
+    nextCategory: done ? null : cursor.nextCategory || null,
+    nextOffset: done ? 0 : Math.max(Number(cursor.nextOffset || 0), 0),
     completedBatches: Math.max(Number(completedBatches || 0), 0),
     processedRows: Math.max(Number(processedRows || 0), 0),
+    pauseReason: normalizeText(pauseReason) || null,
+    categoryProgressState,
+    snapshotPacingState,
+    resumeState: done ? null : resumeState,
+    resumeStateToken,
     processedRowsByCategory: {
       ...emptyCategoryNumberMap(0),
       ...(processedRowsByCategory && typeof processedRowsByCategory === "object"
@@ -504,11 +640,12 @@ function buildCheckpointState({
         : {})
     },
     resumeArgs:
-      done || !nextCategory
+      done || !cursor.nextCategory
         ? []
         : [
-            `--start-category=${nextCategory}`,
-            `--start-offset=${Math.max(Number(nextOffset || 0), 0)}`
+            `--start-category=${cursor.nextCategory}`,
+            `--start-offset=${Math.max(Number(cursor.nextOffset || 0), 0)}`,
+            `--resume-state=${resumeStateToken}`
           ]
   }
 }
@@ -648,6 +785,231 @@ const SNAPSHOT_TRANSIENT_REASON_SET = new Set([
   "snapshot_http_error",
   "snapshot_rate_limited"
 ])
+const SNAPSHOT_SOURCE_KEY = "steam_market_overview"
+const SNAPSHOT_PACING_DEFAULTS = Object.freeze({
+  weapon_skin: Object.freeze({
+    preferredBatchSize: 3,
+    cooldownMs: 15 * 60 * 1000,
+    maxCooldownMs: 60 * 60 * 1000,
+    retryBudget: 2
+  }),
+  case: Object.freeze({
+    preferredBatchSize: 2,
+    cooldownMs: 5 * 60 * 1000,
+    maxCooldownMs: 20 * 60 * 1000,
+    retryBudget: 2
+  }),
+  sticker_capsule: Object.freeze({
+    preferredBatchSize: 2,
+    cooldownMs: 5 * 60 * 1000,
+    maxCooldownMs: 20 * 60 * 1000,
+    retryBudget: 2
+  })
+})
+
+function getSnapshotPacingDefaults(category = "weapon_skin", overrides = {}) {
+  const safeCategory = normalizeText(category).toLowerCase() || "weapon_skin"
+  const baseDefaults = SNAPSHOT_PACING_DEFAULTS[safeCategory] || SNAPSHOT_PACING_DEFAULTS.weapon_skin
+  const categoryOverrides =
+    overrides && typeof overrides === "object" ? overrides[safeCategory] || {} : {}
+  return {
+    preferredBatchSize: Math.max(
+      Number(categoryOverrides.preferredBatchSize || baseDefaults.preferredBatchSize || 1),
+      1
+    ),
+    cooldownMs: Math.max(
+      Number(categoryOverrides.cooldownMs || baseDefaults.cooldownMs || 60000),
+      1000
+    ),
+    maxCooldownMs: Math.max(
+      Number(categoryOverrides.maxCooldownMs || baseDefaults.maxCooldownMs || 60000),
+      Number(categoryOverrides.cooldownMs || baseDefaults.cooldownMs || 60000)
+    ),
+    retryBudget: Math.max(
+      Number(categoryOverrides.retryBudget ?? baseDefaults.retryBudget ?? 0),
+      0
+    )
+  }
+}
+
+function toIsoFromMsOrNull(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) return null
+  return new Date(numeric).toISOString()
+}
+
+function toMsFromIsoOrNull(value) {
+  const iso = toIsoOrNull(value)
+  if (!iso) return null
+  const ts = new Date(iso).getTime()
+  return Number.isFinite(ts) ? ts : null
+}
+
+function createSnapshotSourcePacingState(category = "weapon_skin", source = SNAPSHOT_SOURCE_KEY, seed = {}, overrides = {}) {
+  const defaults = getSnapshotPacingDefaults(category, overrides)
+  const retriesRemaining = Math.max(
+    Number(
+      seed?.retriesRemaining == null ? defaults.retryBudget : seed.retriesRemaining
+    ),
+    0
+  )
+  return {
+    source,
+    preferredBatchSize: defaults.preferredBatchSize,
+    cooldownMsApplied: Math.max(Number(seed?.cooldownMsApplied || 0), 0),
+    nextSafeRetryAt: toIsoOrNull(seed?.nextSafeRetryAt) || null,
+    retriesRemaining,
+    retryBudget: defaults.retryBudget,
+    retryBudgetExhausted:
+      seed?.retryBudgetExhausted == null
+        ? retriesRemaining <= 0
+        : Boolean(seed.retryBudgetExhausted),
+    rateLimitHits: Math.max(Number(seed?.rateLimitHits || 0), 0),
+    batchesSkippedDueToCooldown: Math.max(Number(seed?.batchesSkippedDueToCooldown || 0), 0),
+    cooldownAppliedCount: Math.max(Number(seed?.cooldownAppliedCount || 0), 0),
+    lastRateLimitedAt: toIsoOrNull(seed?.lastRateLimitedAt) || null,
+    lastBlockedReason: normalizeText(seed?.lastBlockedReason) || null
+  }
+}
+
+function createSnapshotPacingState(seed = {}, categories = RECOVERY_CATEGORIES, overrides = {}) {
+  const safeCategories = normalizeRecoveryCategories(categories)
+  const byCategorySeed = seed?.byCategory && typeof seed.byCategory === "object" ? seed.byCategory : {}
+  return {
+    byCategory: Object.fromEntries(
+      safeCategories.map((category) => {
+        const categorySeed =
+          byCategorySeed?.[category]?.bySource?.[SNAPSHOT_SOURCE_KEY] ||
+          byCategorySeed?.[category] ||
+          {}
+        return [
+          category,
+          {
+            bySource: {
+              [SNAPSHOT_SOURCE_KEY]: createSnapshotSourcePacingState(
+                category,
+                SNAPSHOT_SOURCE_KEY,
+                categorySeed,
+                overrides
+              )
+            }
+          }
+        ]
+      })
+    )
+  }
+}
+
+function getSnapshotSourcePacingState(snapshotPacingState = {}, category = "weapon_skin", overrides = {}) {
+  if (!snapshotPacingState.byCategory || typeof snapshotPacingState.byCategory !== "object") {
+    snapshotPacingState.byCategory = {}
+  }
+  if (!snapshotPacingState.byCategory[category]) {
+    snapshotPacingState.byCategory[category] = { bySource: {} }
+  }
+  if (
+    !snapshotPacingState.byCategory[category].bySource ||
+    typeof snapshotPacingState.byCategory[category].bySource !== "object"
+  ) {
+    snapshotPacingState.byCategory[category].bySource = {}
+  }
+  if (!snapshotPacingState.byCategory[category].bySource[SNAPSHOT_SOURCE_KEY]) {
+    snapshotPacingState.byCategory[category].bySource[SNAPSHOT_SOURCE_KEY] =
+      createSnapshotSourcePacingState(category, SNAPSHOT_SOURCE_KEY, {}, overrides)
+  }
+  return snapshotPacingState.byCategory[category].bySource[SNAPSHOT_SOURCE_KEY]
+}
+
+function isSnapshotCooldownActive(sourceState = {}, nowMs = Date.now()) {
+  const nextSafeRetryMs = toMsFromIsoOrNull(sourceState?.nextSafeRetryAt)
+  return Number.isFinite(nextSafeRetryMs) && nextSafeRetryMs > nowMs
+}
+
+function getSnapshotRemainingCooldownMs(sourceState = {}, nowMs = Date.now()) {
+  const nextSafeRetryMs = toMsFromIsoOrNull(sourceState?.nextSafeRetryAt)
+  if (!Number.isFinite(nextSafeRetryMs)) return 0
+  return Math.max(nextSafeRetryMs - nowMs, 0)
+}
+
+function applySnapshotRateLimitState(
+  snapshotPacingState = {},
+  category = "weapon_skin",
+  options = {}
+) {
+  const overrides = options.snapshotPacingOverrides || {}
+  const nowMs = Number(options.nowMs || Date.now())
+  const sourceState = getSnapshotSourcePacingState(snapshotPacingState, category, overrides)
+  const defaults = getSnapshotPacingDefaults(category, overrides)
+  sourceState.rateLimitHits = Math.max(Number(sourceState.rateLimitHits || 0), 0) + 1
+  sourceState.cooldownAppliedCount = Math.max(Number(sourceState.cooldownAppliedCount || 0), 0) + 1
+  if (Number(sourceState.retriesRemaining || 0) > 0) {
+    sourceState.retriesRemaining -= 1
+  }
+  sourceState.retryBudgetExhausted = Number(sourceState.retriesRemaining || 0) <= 0
+  const cooldownMs = Math.min(
+    defaults.cooldownMs * 2 ** Math.max(sourceState.rateLimitHits - 1, 0),
+    defaults.maxCooldownMs
+  )
+  sourceState.cooldownMsApplied = cooldownMs
+  sourceState.lastRateLimitedAt = toIsoFromMsOrNull(nowMs)
+  sourceState.nextSafeRetryAt = toIsoFromMsOrNull(nowMs + cooldownMs)
+  sourceState.lastBlockedReason = sourceState.retryBudgetExhausted
+    ? "retry_budget_exhausted"
+    : "active_cooldown_retry_later"
+  return {
+    cooldownMsApplied: cooldownMs,
+    nextSafeRetryAt: sourceState.nextSafeRetryAt,
+    retriesRemaining: Number(sourceState.retriesRemaining || 0),
+    retryBudgetExhausted: Boolean(sourceState.retryBudgetExhausted)
+  }
+}
+
+function summarizeSnapshotPacingState(snapshotPacingState = {}, categories = RECOVERY_CATEGORIES, nowMs = Date.now(), overrides = {}) {
+  const safeCategories = normalizeRecoveryCategories(categories)
+  return Object.fromEntries(
+    safeCategories.map((category) => {
+      const state = getSnapshotSourcePacingState(snapshotPacingState, category, overrides)
+      const cooldownActive = isSnapshotCooldownActive(state, nowMs)
+      return [
+        category,
+        {
+          source: SNAPSHOT_SOURCE_KEY,
+          preferredBatchSize: Number(state.preferredBatchSize || getSnapshotPacingDefaults(category, overrides).preferredBatchSize || 1),
+          cooldownActive,
+          cooldownMsApplied: Number(state.cooldownMsApplied || 0),
+          remainingCooldownMs: getSnapshotRemainingCooldownMs(state, nowMs),
+          nextSafeRetryAt: state.nextSafeRetryAt || null,
+          retriesRemaining: Number(state.retriesRemaining || 0),
+          retryBudget: Number(state.retryBudget || getSnapshotPacingDefaults(category, overrides).retryBudget || 0),
+          retryBudgetExhausted: Boolean(state.retryBudgetExhausted),
+          batchesSkippedDueToCooldown: Number(state.batchesSkippedDueToCooldown || 0),
+          cooldownAppliedCount: Number(state.cooldownAppliedCount || 0),
+          rateLimitHits: Number(state.rateLimitHits || 0),
+          lastRateLimitedAt: state.lastRateLimitedAt || null,
+          lastBlockedReason: state.lastBlockedReason || null,
+          retryCurrentlyUseful:
+            !cooldownActive && !Boolean(state.retryBudgetExhausted),
+          retryTemporarilyBlocked:
+            cooldownActive && !Boolean(state.retryBudgetExhausted)
+        }
+      ]
+    })
+  )
+}
+
+function encodeResumeStateToken(value = {}) {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url")
+}
+
+function decodeResumeStateToken(value = "") {
+  const text = normalizeText(value)
+  if (!text) return {}
+  try {
+    return JSON.parse(Buffer.from(text, "base64url").toString("utf8"))
+  } catch (_error) {
+    return {}
+  }
+}
 
 function createSnapshotReasonMap() {
   return Object.fromEntries(SNAPSHOT_REASON_KEYS.map((reason) => [reason, 0]))
@@ -716,6 +1078,12 @@ function createAttemptCounter() {
       RECOVERY_CATEGORIES.map((category) => [category, createSnapshotReasonMap()])
     ),
     snapshotBatchDiagnostics: [],
+    snapshotCooldownAppliedCount: 0,
+    snapshotBatchesSkippedDueToCooldown: 0,
+    snapshotRetryBudgetExhaustedCount: 0,
+    snapshotCooldownAppliedByCategory: emptyCategoryNumberMap(0),
+    snapshotBatchesSkippedDueToCooldownByCategory: emptyCategoryNumberMap(0),
+    snapshotRetryBudgetExhaustedByCategory: emptyCategoryNumberMap(0),
     quoteRowsInserted: 0,
     marketPriceRowsUpserted: 0,
     quoteSourceDiagnostics: Object.fromEntries(
@@ -851,8 +1219,30 @@ function isStrictSnapshotUsable(snapshot = {}) {
 }
 
 async function refreshSnapshots(rows = [], skinsByName = {}, options = {}) {
+  const category =
+    normalizeText(options?.batchMeta?.category).toLowerCase() ||
+    normalizeText(rows?.[0]?.category || rows?.[0]?.itemCategory).toLowerCase() ||
+    "weapon_skin"
+  const snapshotPacingOverrides =
+    options.snapshotPacingOverrides && typeof options.snapshotPacingOverrides === "object"
+      ? options.snapshotPacingOverrides
+      : {}
+  const snapshotPacingState =
+    options.snapshotPacingState && typeof options.snapshotPacingState === "object"
+      ? options.snapshotPacingState
+      : createSnapshotPacingState({}, [category], snapshotPacingOverrides)
+  const sourceState = getSnapshotSourcePacingState(
+    snapshotPacingState,
+    category,
+    snapshotPacingOverrides
+  )
+  const pacingDefaults = getSnapshotPacingDefaults(category, snapshotPacingOverrides)
+  const nowMs = Number(options.nowMs || Date.now())
   const snapshotBatchSize = Math.max(
-    Number(options.snapshotBatchSize || DEFAULT_SNAPSHOT_BATCH_SIZE),
+    Math.min(
+      Number(options.snapshotBatchSize || DEFAULT_SNAPSHOT_BATCH_SIZE),
+      Number(sourceState.preferredBatchSize || pacingDefaults.preferredBatchSize || 1)
+    ),
     1
   )
   const concurrency = Math.max(Number(options.concurrency || DEFAULT_REFRESH_CONCURRENCY), 1)
@@ -861,27 +1251,94 @@ async function refreshSnapshots(rows = [], skinsByName = {}, options = {}) {
   const counters = createAttemptCounter()
   const targetSkins = []
   const batchReasonCounts = createSnapshotReasonMap()
+  const currentPacingState = () =>
+    summarizeSnapshotPacingState(
+      snapshotPacingState,
+      [category],
+      nowMs,
+      snapshotPacingOverrides
+    )[category]
 
   for (const row of Array.isArray(rows) ? rows : []) {
     const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
-    const category = normalizeText(row?.category || row?.itemCategory).toLowerCase()
+    const rowCategory = normalizeText(row?.category || row?.itemCategory).toLowerCase()
     const skin = skinsByName[marketHashName] || null
     if (!skin) {
       incrementSnapshotReasonCounter(
         counters,
-        category,
+        rowCategory,
         "snapshot_missing_skin_mapping"
       )
       batchReasonCounts.snapshot_missing_skin_mapping += 1
       continue
     }
     targetSkins.push(skin)
-    if (counters.snapshotAttemptedByCategory[category] != null) {
-      counters.snapshotAttemptedByCategory[category] += 1
+    if (counters.snapshotAttemptedByCategory[rowCategory] != null) {
+      counters.snapshotAttemptedByCategory[rowCategory] += 1
+    }
+  }
+
+  if (sourceState.retryBudgetExhausted) {
+    counters.snapshotRetryBudgetExhaustedCount += 1
+    counters.snapshotRetryBudgetExhaustedByCategory[category] += 1
+    const pacing = currentPacingState()
+    const batchDiagnostics = {
+      ...batchMeta,
+      reasonCounts: batchReasonCounts,
+      blockedReason: "retry_budget_exhausted",
+      pacing
+    }
+    counters.snapshotBatchDiagnostics.push(batchDiagnostics)
+    emitProgress(logProgress, {
+      type: "snapshot_retry_budget_exhausted",
+      stage: "snapshot_writes",
+      ...batchDiagnostics
+    })
+    return {
+      ...counters,
+      blocked: true,
+      blockedReason: "retry_budget_exhausted",
+      shouldRetryLater: false,
+      retryBudgetExhausted: true,
+      pacing
+    }
+  }
+
+  if (isSnapshotCooldownActive(sourceState, nowMs)) {
+    sourceState.batchesSkippedDueToCooldown = Math.max(
+      Number(sourceState.batchesSkippedDueToCooldown || 0),
+      0
+    ) + 1
+    counters.snapshotBatchesSkippedDueToCooldown += 1
+    counters.snapshotBatchesSkippedDueToCooldownByCategory[category] += 1
+    const pacing = currentPacingState()
+    const batchDiagnostics = {
+      ...batchMeta,
+      reasonCounts: batchReasonCounts,
+      blockedReason: "active_cooldown_retry_later",
+      pacing
+    }
+    counters.snapshotBatchDiagnostics.push(batchDiagnostics)
+    emitProgress(logProgress, {
+      type: "snapshot_cooldown_skip",
+      stage: "snapshot_writes",
+      ...batchDiagnostics
+    })
+    return {
+      ...counters,
+      blocked: true,
+      blockedReason: "active_cooldown_retry_later",
+      shouldRetryLater: true,
+      retryBudgetExhausted: false,
+      pacing
     }
   }
 
   const chunks = chunkArray(targetSkins, snapshotBatchSize)
+  let blocked = false
+  let blockedReason = null
+  let shouldRetryLater = false
+  let retryBudgetExhausted = false
   for (const [chunkIndex, chunk] of chunks.entries()) {
     const refreshed = await runLoggedStage(
       "snapshot_writes",
@@ -924,12 +1381,46 @@ async function refreshSnapshots(rows = [], skinsByName = {}, options = {}) {
         counters.snapshotRefreshedNamesByCategory[category].add(marketHashName)
       }
     }
+
+    if (batchReasonCounts.snapshot_rate_limited > 0) {
+      const pacingUpdate = applySnapshotRateLimitState(snapshotPacingState, category, {
+        nowMs,
+        snapshotPacingOverrides
+      })
+      counters.snapshotCooldownAppliedCount += 1
+      counters.snapshotCooldownAppliedByCategory[category] += 1
+      if (pacingUpdate.retryBudgetExhausted) {
+        counters.snapshotRetryBudgetExhaustedCount += 1
+        counters.snapshotRetryBudgetExhaustedByCategory[category] += 1
+      }
+      blocked = true
+      retryBudgetExhausted = Boolean(pacingUpdate.retryBudgetExhausted)
+      blockedReason = retryBudgetExhausted
+        ? "retry_budget_exhausted"
+        : "active_cooldown_retry_later"
+      shouldRetryLater = !retryBudgetExhausted
+      emitProgress(logProgress, {
+        type: "snapshot_cooldown_applied",
+        stage: "snapshot_writes",
+        ...batchMeta,
+        snapshotChunkIndex: chunkIndex,
+        snapshotChunkSize: chunk.length,
+        cooldownMsApplied: pacingUpdate.cooldownMsApplied,
+        nextSafeRetryAt: pacingUpdate.nextSafeRetryAt,
+        retriesRemaining: pacingUpdate.retriesRemaining,
+        retryBudgetExhausted
+      })
+      break
+    }
   }
 
+  const pacing = currentPacingState()
   const batchDiagnostics = {
     ...batchMeta,
     reasonCounts: batchReasonCounts,
-    ...summarizeSnapshotReasonCounts(batchReasonCounts)
+    ...summarizeSnapshotReasonCounts(batchReasonCounts),
+    blockedReason,
+    pacing
   }
   counters.snapshotBatchDiagnostics.push(batchDiagnostics)
   emitProgress(logProgress, {
@@ -938,7 +1429,14 @@ async function refreshSnapshots(rows = [], skinsByName = {}, options = {}) {
     ...batchDiagnostics
   })
 
-  return counters
+  return {
+    ...counters,
+    blocked,
+    blockedReason,
+    shouldRetryLater,
+    retryBudgetExhausted,
+    pacing
+  }
 }
 
 function buildSkinMaps(rows = [], skins = []) {
@@ -1325,10 +1823,164 @@ function evaluateRecoveryHealth(summary = {}) {
   return healthGate
 }
 
-function summarizeCatalogRecompute(diagnostics = {}) {
+function buildCategoryHealthGate({
+  categories = RECOVERY_CATEGORIES,
+  healthGate = {},
+  snapshotPacingSummary = {},
+  categoryProgressState = {}
+} = {}) {
+  const scopedCategories = normalizeRecoveryCategories(categories)
+  const scopedCategorySet = new Set(scopedCategories)
+  const byCategory = {}
+  const healthyCategories = []
+  const blockedCategories = []
+
+  for (const category of RECOVERY_CATEGORIES) {
+    const bucket = healthGate?.byCategory?.[category] || {}
+    const pacing = snapshotPacingSummary?.[category] || {}
+    const progress = categoryProgressState?.[category] || {}
+    const reasons = Array.isArray(bucket?.reasons) ? [...bucket.reasons] : []
+    const progressBlockedReason = normalizeText(progress?.blockedReason)
+    if (progressBlockedReason && !reasons.includes(progressBlockedReason)) {
+      reasons.push(progressBlockedReason)
+    }
+
+    const inScope = scopedCategorySet.has(category)
+    const totalRows = Number(bucket?.totalRows || 0)
+    const categoryHealthy = inScope && Boolean(bucket?.healthyEnough)
+    const blocked = inScope && !categoryHealthy
+
+    byCategory[category] = {
+      inScope,
+      evaluated: inScope && totalRows > 0,
+      healthyEnough: categoryHealthy,
+      blocked,
+      totalRows,
+      freshCoverageRows: Number(bucket?.freshCoverageRows || 0),
+      freshCoverageRate: Number(bucket?.freshCoverageRate || 0),
+      freshSnapshotRows: Number(bucket?.freshSnapshotRows || 0),
+      freshSnapshotRate: Number(bucket?.freshSnapshotRate || 0),
+      quoteHealthy: Boolean(bucket?.quoteHealthy),
+      snapshotHealthy: Boolean(bucket?.snapshotHealthy),
+      reasons,
+      cooldownActive: Boolean(pacing?.cooldownActive),
+      nextSafeRetryAt: pacing?.nextSafeRetryAt || null,
+      retriesRemaining: Number(pacing?.retriesRemaining || 0)
+    }
+
+    if (!inScope) continue
+    if (categoryHealthy) {
+      healthyCategories.push(category)
+    } else {
+      blockedCategories.push(category)
+    }
+  }
+
+  return {
+    healthyEnough: blockedCategories.length === 0 && healthyCategories.length > 0,
+    evaluatedCategories: scopedCategories,
+    healthyCategories,
+    blockedCategories,
+    byCategory
+  }
+}
+
+function buildRecomputePlan({
+  categories = RECOVERY_CATEGORIES,
+  categoryHealthGate = {},
+  pauseReason = null,
+  failedStage = null,
+  recomputeEnabled = true
+} = {}) {
+  const scopedCategories = normalizeRecoveryCategories(categories)
+  const healthyCategories = Array.isArray(categoryHealthGate?.healthyCategories)
+    ? [...categoryHealthGate.healthyCategories]
+    : []
+  const blockedCategories = Array.isArray(categoryHealthGate?.blockedCategories)
+    ? [...categoryHealthGate.blockedCategories]
+    : []
+  const plan = {
+    recomputeMode: "none",
+    recomputedCategories: [],
+    blockedCategories,
+    opportunityScanSafeToResume: false,
+    opportunityScanResumeCategories: healthyCategories,
+    skippedReason: null
+  }
+
+  if (!recomputeEnabled) {
+    plan.skippedReason = "skip_requested"
+    return plan
+  }
+  if (failedStage) {
+    plan.skippedReason = "recovery_failed"
+    return plan
+  }
+  if (pauseReason === "manual_max_batches_pause") {
+    plan.skippedReason = "manual_max_batches_pause"
+    return plan
+  }
+  if (!healthyCategories.length) {
+    plan.skippedReason = "upstream_not_healthy_enough"
+    return plan
+  }
+
+  plan.recomputedCategories = healthyCategories
+  plan.recomputeMode =
+    healthyCategories.length === scopedCategories.length &&
+    scopedCategories.every((category) => healthyCategories.includes(category))
+      ? "full"
+      : "partial"
+  plan.opportunityScanSafeToResume = healthyCategories.length > 0
+  return plan
+}
+
+function summarizeCatalogRecompute(diagnostics = {}, plan = {}) {
   const sourceCatalog = diagnostics?.sourceCatalog || diagnostics || {}
+  const byCategory = sourceCatalog?.byCategory && typeof sourceCatalog.byCategory === "object"
+    ? sourceCatalog.byCategory
+    : {}
+  const scannableRowsByCategory = emptyCategoryNumberMap(0)
+  const eligibleTradableRowsByCategory = emptyCategoryNumberMap(0)
+  const nearEligibleRowsByCategory = emptyCategoryNumberMap(0)
+  const scannerSourceSizeByCategory = emptyCategoryNumberMap(0)
+
+  for (const category of RECOVERY_CATEGORIES) {
+    const bucket = byCategory?.[category] || {}
+    scannableRowsByCategory[category] = Number(
+      sourceCatalog?.scannableRowsByCategory?.[category] || bucket?.scannable || 0
+    )
+    eligibleTradableRowsByCategory[category] = Number(
+      sourceCatalog?.eligibleRowsByCategory?.[category] || bucket?.eligible || 0
+    )
+    nearEligibleRowsByCategory[category] = Number(
+      sourceCatalog?.nearEligibleRowsByCategory?.[category] || bucket?.nearEligible || 0
+    )
+    scannerSourceSizeByCategory[category] = Number(
+      sourceCatalog?.scannerSourceSizeByCategory?.[category] ||
+        sourceCatalog?.scanner_source_size_by_category?.[category] ||
+        bucket?.scannable ||
+        0
+    )
+  }
+
+  const hasExplicitCategoryScannerSource = Object.values(scannerSourceSizeByCategory).some(
+    (value) => Number(value || 0) > 0
+  )
+  const opportunityScanResumeCategories = hasExplicitCategoryScannerSource
+    ? (Array.isArray(plan?.opportunityScanResumeCategories)
+        ? plan.opportunityScanResumeCategories
+        : []
+      ).filter((category) => Number(scannerSourceSizeByCategory?.[category] || 0) > 0)
+    : Array.isArray(plan?.opportunityScanResumeCategories)
+      ? [...plan.opportunityScanResumeCategories]
+      : []
+
   return {
     executed: true,
+    recomputeMode: plan?.recomputeMode || "full",
+    recomputedCategories: Array.isArray(plan?.recomputedCategories) ? plan.recomputedCategories : [],
+    blockedCategories: Array.isArray(plan?.blockedCategories) ? plan.blockedCategories : [],
     generatedAt: diagnostics?.generatedAt || null,
     scannableRows: Number(sourceCatalog?.scannable || 0),
     shadowRows: Number(sourceCatalog?.shadow || 0),
@@ -1338,24 +1990,49 @@ function summarizeCatalogRecompute(diagnostics = {}) {
     scanEligibleRows: Number(sourceCatalog?.eligibleRows || 0),
     scannerSourceSize: Number(
       sourceCatalog?.scanner_source_size || sourceCatalog?.scannerSourceSize || 0
-    )
+    ),
+    scannableRowsByCategory,
+    eligibleTradableRowsByCategory,
+    nearEligibleRowsByCategory,
+    scannerSourceSizeByCategory,
+    opportunityScanSafeToResume: opportunityScanResumeCategories.length > 0,
+    opportunityScanResumeCategories
   }
 }
 
 async function runFreshnessRecovery(options = {}) {
   const logProgress = options.logProgress
-  const cursor = resolveRecoveryCursor(options.categories, options)
-  const categories = cursor.categories
+  const resumeState =
+    typeof options.resumeState === "string"
+      ? decodeResumeStateToken(options.resumeState)
+      : options.resumeState && typeof options.resumeState === "object"
+        ? options.resumeState
+        : {}
+  const categories = normalizeRecoveryCategories(
+    Array.isArray(options.categories) && options.categories.length
+      ? options.categories
+      : resumeState?.categories
+  )
   const targetLimit = Math.max(Number(options.limit || DEFAULT_TARGET_LIMIT), 1)
   const selectionBatchSize = Math.max(
     Number(options.selectionBatchSize || DEFAULT_SELECTION_BATCH_SIZE),
     1
   )
+  const nowMs = Number(options.nowMs || Date.now())
   const maxBatches =
     Number.isFinite(Number(options.maxBatches)) && Number(options.maxBatches) > 0
       ? Math.max(Math.round(Number(options.maxBatches)), 1)
       : null
   const targets = buildCategoryTargets(targetLimit, categories)
+  const categoryProgressState = createCategoryProgressState(categories, targets, {
+    ...options,
+    resumeState
+  })
+  const snapshotPacingState = createSnapshotPacingState(
+    resumeState?.snapshotPacingState || options.snapshotPacingState || {},
+    categories,
+    options.snapshotPacingOverrides
+  )
   const preRefresh = createFreshnessSummary()
   const postRefreshBase = createFreshnessSummary()
   const aggregateQuoteRefresh = createAttemptCounter()
@@ -1364,15 +2041,12 @@ async function runFreshnessRecovery(options = {}) {
   let processedRows = 0
   let completedBatches = 0
   let paused = false
+  let pauseReason = null
   let timedOut = false
   let failedStage = null
   let errorSummary = null
-  let nextCategory = cursor.startCategory
-  let nextOffset = cursor.startOffset
-
-  const startIndex = categories.indexOf(cursor.startCategory)
-  const orderedCategories =
-    startIndex >= 0 ? categories.slice(startIndex) : categories.slice()
+  const cooledDownCategories = new Set()
+  const exhaustedRetryBudgetCategories = new Set()
 
   emitProgress(logProgress, {
     type: "recovery_plan",
@@ -1381,25 +2055,37 @@ async function runFreshnessRecovery(options = {}) {
     targetLimit,
     selectionBatchSize,
     maxBatches,
-    startCategory: cursor.startCategory,
-    startOffset: cursor.startOffset
+    startCategory: buildNextRecoveryCursor(categories, categoryProgressState, targets).nextCategory,
+    startOffset: buildNextRecoveryCursor(categories, categoryProgressState, targets).nextOffset,
+    resumeStatePresent: Boolean(Object.keys(resumeState || {}).length),
+    snapshotPacingState: summarizeSnapshotPacingState(
+      snapshotPacingState,
+      categories,
+      nowMs,
+      options.snapshotPacingOverrides
+    )
   })
 
-  batchLoop: for (const category of orderedCategories) {
-    let categoryOffset = category === cursor.startCategory ? cursor.startOffset : 0
-    let categoryProcessed = category === cursor.startCategory ? cursor.startOffset : 0
+  batchLoop: for (const category of categories) {
+    const progressEntry = categoryProgressState[category] || {
+      nextOffset: 0,
+      done: false,
+      blockedReason: null
+    }
+    let categoryOffset = Math.max(Number(progressEntry.nextOffset || 0), 0)
     const categoryTarget = Math.max(Number(targets?.[category] || 0), 0)
 
-    while (categoryProcessed < categoryTarget) {
+    while (categoryOffset < categoryTarget) {
       if (maxBatches != null && completedBatches >= maxBatches) {
         paused = true
-        nextCategory = category
-        nextOffset = categoryOffset
+        pauseReason = "manual_max_batches_pause"
+        progressEntry.nextOffset = categoryOffset
+        progressEntry.done = false
         break batchLoop
       }
 
       const batchLimit = Math.max(
-        Math.min(selectionBatchSize, categoryTarget - categoryProcessed),
+        Math.min(selectionBatchSize, categoryTarget - categoryOffset),
         1
       )
       const batchMeta = {
@@ -1434,11 +2120,17 @@ async function runFreshnessRecovery(options = {}) {
             type: "batch_empty",
             ...batchMeta
           })
+          progressEntry.nextOffset = categoryTarget
+          progressEntry.done = true
+          progressEntry.blockedReason = null
           break
         }
 
         const batchResult = await processRecoveryBatch(rows, {
           ...options,
+          resumeState,
+          nowMs,
+          snapshotPacingState,
           logProgress,
           batchMeta
         })
@@ -1452,11 +2144,35 @@ async function runFreshnessRecovery(options = {}) {
         processedRows += rowCount
         processedRowsByCategory[category] =
           Number(processedRowsByCategory?.[category] || 0) + rowCount
-        categoryProcessed += rowCount
-        categoryOffset += rowCount
         completedBatches += 1
-        nextCategory = category
-        nextOffset = categoryOffset
+
+        const snapshotBlocked = Boolean(batchResult.snapshotRefresh?.blocked)
+        if (snapshotBlocked) {
+          progressEntry.nextOffset = categoryOffset
+          progressEntry.done = false
+          progressEntry.blockedReason =
+            normalizeText(batchResult.snapshotRefresh?.blockedReason) || null
+          if (batchResult.snapshotRefresh?.shouldRetryLater) {
+            cooledDownCategories.add(category)
+          }
+          if (batchResult.snapshotRefresh?.retryBudgetExhausted) {
+            exhaustedRetryBudgetCategories.add(category)
+          }
+          emitProgress(logProgress, {
+            type: "category_snapshot_blocked",
+            ...batchMeta,
+            rowCount,
+            blockedReason: batchResult.snapshotRefresh?.blockedReason || null,
+            nextSafeRetryAt: batchResult.snapshotRefresh?.pacing?.nextSafeRetryAt || null,
+            retriesRemaining: Number(batchResult.snapshotRefresh?.pacing?.retriesRemaining || 0)
+          })
+          break
+        }
+
+        categoryOffset += rowCount
+        progressEntry.nextOffset = categoryOffset
+        progressEntry.done = categoryOffset >= categoryTarget
+        progressEntry.blockedReason = null
 
         emitProgress(logProgress, {
           type: "batch_done",
@@ -1477,11 +2193,31 @@ async function runFreshnessRecovery(options = {}) {
           code: stageError.code,
           timedOut: Boolean(stageError.timedOut)
         }
-        nextCategory = category
-        nextOffset = categoryOffset
+        progressEntry.nextOffset = categoryOffset
+        progressEntry.done = false
+        progressEntry.blockedReason = "hard_failure"
         break batchLoop
       }
     }
+  }
+
+  const nextCursor = buildNextRecoveryCursor(categories, categoryProgressState, targets)
+  const hasRemainingWork = Boolean(nextCursor.nextCategory)
+
+  if (failedStage) {
+    paused = true
+    pauseReason = "hard_failure"
+  } else if (!pauseReason && exhaustedRetryBudgetCategories.size) {
+    paused = true
+    pauseReason = "retry_budget_exhausted"
+  } else if (!pauseReason && cooledDownCategories.size) {
+    paused = true
+    pauseReason = "active_cooldown_retry_later"
+  } else if (!pauseReason && hasRemainingWork) {
+    paused = true
+    pauseReason = "active_cooldown_retry_later"
+  } else if (!pauseReason) {
+    pauseReason = "work_completed"
   }
 
   const postRefresh = applyRefreshCounters(
@@ -1501,39 +2237,59 @@ async function runFreshnessRecovery(options = {}) {
     },
     async () => evaluateRecoveryHealth(postRefresh)
   )
-  healthGate.recoveryComplete = !paused && !failedStage
+  const snapshotPacingSummary = summarizeSnapshotPacingState(
+    snapshotPacingState,
+    categories,
+    nowMs,
+    options.snapshotPacingOverrides
+  )
+  const completed = !paused && !failedStage && !hasRemainingWork
+  healthGate.recoveryComplete = completed
   if (!healthGate.recoveryComplete) {
     healthGate.healthyEnough = false
-    if (paused) {
-      healthGate.reasons.unshift("recovery_paused")
+    if (pauseReason) {
+      healthGate.reasons.unshift(`recovery_paused:${pauseReason}`)
     }
     if (failedStage) {
       healthGate.reasons.unshift(`recovery_failed:${failedStage}`)
-    } else {
+    } else if (!pauseReason) {
       healthGate.reasons.unshift("recovery_incomplete")
     }
   }
+  const categoryHealthGate = buildCategoryHealthGate({
+    categories,
+    healthGate,
+    snapshotPacingSummary,
+    categoryProgressState
+  })
+  const recomputePlan = buildRecomputePlan({
+    categories,
+    categoryHealthGate,
+    pauseReason,
+    failedStage,
+    recomputeEnabled: options.recompute !== false
+  })
 
   let catalogRecompute = {
     executed: false,
-    skippedReason: paused
-      ? "recovery_paused"
-      : failedStage
-        ? "recovery_failed"
-        : healthGate.healthyEnough
-          ? options.recompute === false
-            ? "skip_requested"
-            : null
-          : "upstream_not_healthy_enough"
+    recomputeMode: recomputePlan.recomputeMode,
+    recomputedCategories: recomputePlan.recomputedCategories,
+    blockedCategories: recomputePlan.blockedCategories,
+    opportunityScanSafeToResume: false,
+    opportunityScanResumeCategories: [],
+    skippedReason: recomputePlan.skippedReason
   }
 
-  if (!paused && !failedStage && healthGate.healthyEnough && options.recompute !== false) {
+  if (recomputePlan.recomputedCategories.length) {
     try {
       const diagnostics = await runLoggedStage(
         "force_recompute",
         {
           logProgress,
           meta: {
+            recomputeMode: recomputePlan.recomputeMode,
+            recomputedCategories: recomputePlan.recomputedCategories,
+            blockedCategories: recomputePlan.blockedCategories,
             targetUniverseSize: Number(
               options.targetUniverseSize || arbitrageDefaultUniverseLimit || 3000
             )
@@ -1542,12 +2298,13 @@ async function runFreshnessRecovery(options = {}) {
         async () =>
           marketSourceCatalogService.prepareSourceCatalog({
             forceRefresh: true,
+            categories: recomputePlan.recomputedCategories,
             targetUniverseSize: Number(
               options.targetUniverseSize || arbitrageDefaultUniverseLimit || 3000
             )
           })
       )
-      catalogRecompute = summarizeCatalogRecompute(diagnostics)
+      catalogRecompute = summarizeCatalogRecompute(diagnostics, recomputePlan)
     } catch (error) {
       const stageError = error?.recoveryStageError || buildStageError("force_recompute", error)
       failedStage = stageError.stage
@@ -1563,22 +2320,27 @@ async function runFreshnessRecovery(options = {}) {
       healthGate.reasons.unshift(`recovery_failed:${stageError.stage}`)
       catalogRecompute = {
         executed: false,
+        recomputeMode: recomputePlan.recomputeMode,
+        recomputedCategories: recomputePlan.recomputedCategories,
+        blockedCategories: recomputePlan.blockedCategories,
+        opportunityScanSafeToResume: false,
+        opportunityScanResumeCategories: [],
         skippedReason: "force_recompute_failed"
       }
     }
   }
 
-  const completed = !paused && !failedStage
   const checkpoint = buildCheckpointState({
     categories,
-    nextCategory,
-    nextOffset,
+    targets,
+    categoryProgressState,
+    snapshotPacingState,
     completedBatches,
     processedRows,
     processedRowsByCategory,
+    pauseReason,
     done: completed
   })
-
   return {
     generatedAt: new Date().toISOString(),
     categories,
@@ -1587,6 +2349,7 @@ async function runFreshnessRecovery(options = {}) {
     selectionBatchSize,
     completed,
     paused,
+    pauseReason,
     timedOut,
     completedBatches,
     processedRows,
@@ -1596,7 +2359,9 @@ async function runFreshnessRecovery(options = {}) {
     checkpoint,
     preRefresh,
     postRefresh,
+    snapshotPacing: snapshotPacingSummary,
     healthGate,
+    categoryHealthGate,
     quoteRefresh: {
       rowsAttempted: Number(postRefresh?.quote?.attemptedRows || 0),
       rowsRefreshed: Number(postRefresh?.quote?.refreshedRows || 0),
@@ -1621,17 +2386,34 @@ async function runFreshnessRecovery(options = {}) {
       rowsStillStale: Number(postRefresh?.snapshot?.staleRows || 0),
       rowsMissing: Number(postRefresh?.snapshot?.missingRows || 0),
       rowsMissingSkin: Number(postRefresh?.snapshot?.missingSkinRows || 0),
+      cooldownAppliedCount: Number(aggregateSnapshotRefresh.snapshotCooldownAppliedCount || 0),
+      batchesSkippedDueToCooldown: Number(
+        aggregateSnapshotRefresh.snapshotBatchesSkippedDueToCooldown || 0
+      ),
+      retryBudgetExhaustedCount: Number(
+        aggregateSnapshotRefresh.snapshotRetryBudgetExhaustedCount || 0
+      ),
       failureReasons: {
         ...(aggregateSnapshotRefresh.snapshotReasonCounts || createSnapshotReasonMap())
       },
       byCategory: Object.fromEntries(
-        RECOVERY_CATEGORIES.map((category) => [
+        categories.map((category) => [
           category,
           {
             reasons: {
               ...(aggregateSnapshotRefresh.snapshotReasonCountsByCategory?.[category] ||
                 createSnapshotReasonMap())
             },
+            pacing: snapshotPacingSummary?.[category] || null,
+            cooldownAppliedCount: Number(
+              aggregateSnapshotRefresh.snapshotCooldownAppliedByCategory?.[category] || 0
+            ),
+            batchesSkippedDueToCooldown: Number(
+              aggregateSnapshotRefresh.snapshotBatchesSkippedDueToCooldownByCategory?.[category] || 0
+            ),
+            retryBudgetExhaustedCount: Number(
+              aggregateSnapshotRefresh.snapshotRetryBudgetExhaustedByCategory?.[category] || 0
+            ),
             ...summarizeSnapshotReasonCounts(
               aggregateSnapshotRefresh.snapshotReasonCountsByCategory?.[category] ||
                 createSnapshotReasonMap()
@@ -1642,6 +2424,16 @@ async function runFreshnessRecovery(options = {}) {
       batches: Array.isArray(aggregateSnapshotRefresh.snapshotBatchDiagnostics)
         ? aggregateSnapshotRefresh.snapshotBatchDiagnostics
         : [],
+      nextSafeRetryAt: Object.values(snapshotPacingSummary)
+        .map((state) => state?.nextSafeRetryAt || null)
+        .filter(Boolean)
+        .sort()[0] || null,
+      retryCurrentlyUseful: Object.values(snapshotPacingSummary).some(
+        (state) => Boolean(state?.retryCurrentlyUseful)
+      ),
+      retryTemporarilyBlocked: Object.values(snapshotPacingSummary).some(
+        (state) => Boolean(state?.retryTemporarilyBlocked)
+      ),
       ...summarizeSnapshotReasonCounts(
         aggregateSnapshotRefresh.snapshotReasonCounts || createSnapshotReasonMap()
       )
