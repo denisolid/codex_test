@@ -51,6 +51,63 @@ function isSnapshotFresh(snapshot, ttlMinutes) {
   return Date.now() - capturedAt <= Math.max(ttlMinutes, 1) * 60 * 1000;
 }
 
+function normalizeText(value) {
+  return String(value || "").trim();
+}
+
+function hasOverviewSignalFields(overview) {
+  const rawPayload =
+    overview?.rawPayload && typeof overview.rawPayload === "object"
+      ? overview.rawPayload
+      : {};
+  return (
+    rawPayload.lowest_price != null ||
+    rawPayload.median_price != null ||
+    rawPayload.volume != null
+  );
+}
+
+function hasOverviewPriceFields(overview) {
+  const rawPayload =
+    overview?.rawPayload && typeof overview.rawPayload === "object"
+      ? overview.rawPayload
+      : {};
+  return rawPayload.lowest_price != null || rawPayload.median_price != null;
+}
+
+function hasParsedOverviewPrice(overview) {
+  return overview?.lowestPrice != null || overview?.medianPrice != null;
+}
+
+function classifySnapshotRefreshFailure(error) {
+  const code = normalizeText(error?.code).toUpperCase();
+  const statusCode = Number(error?.statusCode || 0);
+  const message = normalizeText(error?.message || error).toLowerCase();
+
+  if (code === "SNAPSHOT_EMPTY_PAYLOAD") {
+    return "snapshot_empty_payload";
+  }
+  if (code === "SNAPSHOT_PARSE_FAILED") {
+    return "snapshot_parse_failed";
+  }
+  if (code === "SNAPSHOT_LIVE_OVERVIEW_MISSING") {
+    return "snapshot_live_overview_missing";
+  }
+  if (code === "SNAPSHOT_DERIVED_ONLY_REJECTED") {
+    return "snapshot_derived_only_rejected";
+  }
+  if (code === "STEAM_MARKET_RATE_LIMITED" || statusCode === 429 || message.includes("rate limited")) {
+    return "snapshot_rate_limited";
+  }
+  if (message.includes("unexpected token") || message.includes("json")) {
+    return "snapshot_parse_failed";
+  }
+  if (statusCode >= 400 && statusCode < 600) {
+    return "snapshot_http_error";
+  }
+  return "snapshot_source_request_failed";
+}
+
 function deriveStatsFromHistory(historyRows, fallbackPrice) {
   const now = Date.now();
   const oneDayMs = 24 * 60 * 60 * 1000;
@@ -160,9 +217,13 @@ async function buildAndStoreSnapshot(skin, options = {}) {
   let volume24h = derived.volume24h;
   let source = "derived-price-history";
   let hasLivePriceSignal = false;
+  let overview = null;
 
   try {
-    const overview = await steamMarketPriceService.getPriceOverview(skin.market_hash_name);
+    overview = await steamMarketPriceService.getPriceOverview(skin.market_hash_name, {
+      includeRawPayload: true
+    });
+    const hasAnyOverviewSignal = hasOverviewSignalFields(overview);
     if (overview.lowestPrice != null) {
       lowestListingPrice = overview.lowestPrice;
       hasLivePriceSignal = true;
@@ -175,7 +236,9 @@ async function buildAndStoreSnapshot(skin, options = {}) {
     if (overview.volume != null) {
       volume24h = overview.volume;
     }
-    source = "steam-market-overview+price-history";
+    if (hasAnyOverviewSignal || overview.volume != null) {
+      source = "steam-market-overview+price-history";
+    }
   } catch (_err) {
     if (requireLiveOverview) {
       throw _err;
@@ -184,7 +247,33 @@ async function buildAndStoreSnapshot(skin, options = {}) {
   }
 
   if (requireLiveOverview && !hasLivePriceSignal) {
-    throw new AppError("Live market overview did not provide a usable price signal", 502);
+    if (!hasOverviewSignalFields(overview)) {
+      throw new AppError(
+        "Live market overview returned empty payload",
+        502,
+        "SNAPSHOT_EMPTY_PAYLOAD"
+      );
+    }
+    if (hasOverviewPriceFields(overview) && !hasParsedOverviewPrice(overview)) {
+      throw new AppError(
+        "Live market overview payload could not be parsed into a usable price",
+        502,
+        "SNAPSHOT_PARSE_FAILED"
+      );
+    }
+    throw new AppError(
+      "Live market overview did not provide a usable price signal",
+      502,
+      "SNAPSHOT_LIVE_OVERVIEW_MISSING"
+    );
+  }
+
+  if (requireLiveOverview && source === "derived-price-history") {
+    throw new AppError(
+      "Derived-only snapshot rejected while live overview is required",
+      502,
+      "SNAPSHOT_DERIVED_ONLY_REJECTED"
+    );
   }
 
   const average7dPrice =
@@ -239,7 +328,10 @@ async function refreshSnapshotsForSkins(skins = [], options = {}) {
           refreshed: false,
           skippedFresh: true,
           snapshot: existing,
-          error: null
+          error: null,
+          refreshReason: "snapshot_write_skipped",
+          errorCode: null,
+          errorStatusCode: null
         };
       }
 
@@ -253,7 +345,10 @@ async function refreshSnapshotsForSkins(skins = [], options = {}) {
           refreshed: true,
           skippedFresh: false,
           snapshot,
-          error: null
+          error: null,
+          refreshReason: "snapshot_write_succeeded",
+          errorCode: null,
+          errorStatusCode: null
         };
       } catch (err) {
         return {
@@ -262,7 +357,10 @@ async function refreshSnapshotsForSkins(skins = [], options = {}) {
           refreshed: false,
           skippedFresh: false,
           snapshot: existing,
-          error: String(err?.message || err || "snapshot_refresh_failed")
+          error: String(err?.message || err || "snapshot_refresh_failed"),
+          refreshReason: classifySnapshotRefreshFailure(err),
+          errorCode: normalizeText(err?.code) || null,
+          errorStatusCode: Number(err?.statusCode || 0) || null
         };
       }
     },
@@ -417,6 +515,7 @@ exports.__testables = {
   buildQuickSellTiers,
   deriveStatsFromHistory,
   isSnapshotFresh,
+  classifySnapshotRefreshFailure,
   buildAndStoreSnapshot,
   clamp,
   round2

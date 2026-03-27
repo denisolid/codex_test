@@ -25,11 +25,12 @@ const RECOVERY_SOURCES = Object.freeze({
   dmarket: dmarketMarket
 })
 const DEFAULT_TARGET_LIMIT = Math.max(
-  Math.min(Number(arbitrageDefaultUniverseLimit || 3000), 900),
-  150
+  Math.min(Number(arbitrageDefaultUniverseLimit || 3000), 180),
+  60
 )
-const DEFAULT_QUOTE_BATCH_SIZE = 80
-const DEFAULT_SNAPSHOT_BATCH_SIZE = 60
+const DEFAULT_SELECTION_BATCH_SIZE = 30
+const DEFAULT_QUOTE_BATCH_SIZE = 20
+const DEFAULT_SNAPSHOT_BATCH_SIZE = 10
 const DEFAULT_HEALTH_WINDOW_HOURS = 2
 const DEFAULT_QUOTE_LOOKBACK_HOURS = 24 * 14
 const DEFAULT_REFRESH_CONCURRENCY = Math.max(Number(arbitrageMaxConcurrentMarketRequests || 4), 1)
@@ -205,6 +206,75 @@ function createFreshnessSummary() {
   }
 }
 
+function createStageLogger(logProgress) {
+  return typeof logProgress === "function" ? logProgress : () => {}
+}
+
+function emitProgress(logProgress, payload = {}) {
+  try {
+    createStageLogger(logProgress)({
+      ts: new Date().toISOString(),
+      ...payload
+    })
+  } catch (_err) {
+    // Progress logging must never fail the recovery path.
+  }
+}
+
+function isStatementTimeoutError(error) {
+  const code = normalizeText(error?.code).toUpperCase()
+  const message = normalizeText(error?.message).toLowerCase()
+  return (
+    code === "57014" ||
+    message.includes("statement timeout") ||
+    message.includes("canceling statement due to statement timeout")
+  )
+}
+
+function buildStageError(stage = "", error = null, meta = {}) {
+  return {
+    stage: normalizeText(stage) || "unknown_stage",
+    message: normalizeText(error?.message) || "unknown_error",
+    code: normalizeText(error?.code) || null,
+    timedOut: isStatementTimeoutError(error),
+    ...meta
+  }
+}
+
+async function runLoggedStage(stage = "", options = {}, fn) {
+  const safeStage = normalizeText(stage) || "unknown_stage"
+  const logProgress = options?.logProgress
+  const meta = options?.meta && typeof options.meta === "object" ? options.meta : {}
+  const startedAt = Date.now()
+  emitProgress(logProgress, {
+    type: "stage_start",
+    stage: safeStage,
+    ...meta
+  })
+  try {
+    const value = await fn()
+    emitProgress(logProgress, {
+      type: "stage_done",
+      stage: safeStage,
+      durationMs: Date.now() - startedAt,
+      ...meta
+    })
+    return value
+  } catch (error) {
+    const stageError = buildStageError(safeStage, error, {
+      durationMs: Date.now() - startedAt,
+      ...meta
+    })
+    emitProgress(logProgress, {
+      type: "stage_error",
+      ...stageError
+    })
+    throw Object.assign(error || new Error("unknown_error"), {
+      recoveryStageError: stageError
+    })
+  }
+}
+
 function buildCategoryTargets(totalLimit = DEFAULT_TARGET_LIMIT, categories = RECOVERY_CATEGORIES) {
   const safeCategories = RECOVERY_CATEGORIES.filter((category) => categories.includes(category))
   const safeTotal = Math.max(Math.round(Number(totalLimit || DEFAULT_TARGET_LIMIT)), safeCategories.length)
@@ -249,25 +319,228 @@ function dedupeRowsByMarketHashName(rows = []) {
   return deduped
 }
 
-async function listRecoveryRows(options = {}) {
-  const categories = Array.isArray(options.categories) ? options.categories : RECOVERY_CATEGORIES
-  const targets = buildCategoryTargets(options.limit, categories)
-  const results = await Promise.all(
-    Object.entries(targets).map(async ([category, limit]) => [
-      category,
-      await marketSourceCatalogRepo.listActiveTradable({
-        limit,
-        categories: [category]
-      })
-    ])
+function normalizeRecoveryCategories(values = []) {
+  const normalized = Array.from(
+    new Set(
+      (Array.isArray(values) ? values : [])
+        .map((value) => normalizeText(value).toLowerCase())
+        .filter((value) => RECOVERY_CATEGORIES.includes(value))
+    )
   )
+  return normalized.length ? normalized : RECOVERY_CATEGORIES.slice()
+}
 
+function resolveRecoveryCursor(categories = [], options = {}) {
+  const safeCategories = normalizeRecoveryCategories(categories)
+  const requestedStartCategory = normalizeText(options.startCategory).toLowerCase()
+  const startCategory = safeCategories.includes(requestedStartCategory)
+    ? requestedStartCategory
+    : safeCategories[0] || null
+  const startOffset = Math.max(Number(options.startOffset || 0), 0)
   return {
-    targets,
-    rows: dedupeRowsByMarketHashName(
-      results.flatMap(([, rows]) => (Array.isArray(rows) ? rows : []))
+    categories: safeCategories,
+    startCategory,
+    startOffset
+  }
+}
+
+function mergeStringSet(target, source) {
+  if (!(target instanceof Set) || !(source instanceof Set)) return
+  for (const value of source) {
+    const normalized = normalizeText(value)
+    if (normalized) {
+      target.add(normalized)
+    }
+  }
+}
+
+function mergeAttemptCounters(target = createAttemptCounter(), source = {}) {
+  const next = target
+  for (const category of RECOVERY_CATEGORIES) {
+    next.quoteAttemptedByCategory[category] =
+      Number(next.quoteAttemptedByCategory?.[category] || 0) +
+      Number(source.quoteAttemptedByCategory?.[category] || 0)
+    next.snapshotAttemptedByCategory[category] =
+      Number(next.snapshotAttemptedByCategory?.[category] || 0) +
+      Number(source.snapshotAttemptedByCategory?.[category] || 0)
+    mergeStringSet(
+      next.quoteRefreshedNamesByCategory?.[category],
+      source.quoteRefreshedNamesByCategory?.[category]
+    )
+    mergeStringSet(
+      next.snapshotRefreshedNamesByCategory?.[category],
+      source.snapshotRefreshedNamesByCategory?.[category]
+    )
+    for (const reason of SNAPSHOT_REASON_KEYS) {
+      next.snapshotReasonCountsByCategory[category][reason] =
+        Number(next.snapshotReasonCountsByCategory?.[category]?.[reason] || 0) +
+        Number(source.snapshotReasonCountsByCategory?.[category]?.[reason] || 0)
+    }
+  }
+
+  for (const reason of SNAPSHOT_REASON_KEYS) {
+    next.snapshotReasonCounts[reason] =
+      Number(next.snapshotReasonCounts?.[reason] || 0) +
+      Number(source.snapshotReasonCounts?.[reason] || 0)
+  }
+
+  if (Array.isArray(source.snapshotBatchDiagnostics) && source.snapshotBatchDiagnostics.length) {
+    next.snapshotBatchDiagnostics.push(...source.snapshotBatchDiagnostics)
+  }
+
+  next.quoteRowsInserted =
+    Number(next.quoteRowsInserted || 0) + Number(source.quoteRowsInserted || 0)
+  next.marketPriceRowsUpserted =
+    Number(next.marketPriceRowsUpserted || 0) + Number(source.marketPriceRowsUpserted || 0)
+
+  for (const sourceName of RECOVERY_SOURCE_ORDER) {
+    const existing = next.quoteSourceDiagnostics?.[sourceName] || {
+      refreshed: 0,
+      failed: 0,
+      error: null
+    }
+    const incoming = source.quoteSourceDiagnostics?.[sourceName] || {}
+    existing.refreshed = Number(existing.refreshed || 0) + Number(incoming.refreshed || 0)
+    existing.failed = Number(existing.failed || 0) + Number(incoming.failed || 0)
+    existing.error = incoming.error || existing.error || null
+    next.quoteSourceDiagnostics[sourceName] = existing
+  }
+
+  return next
+}
+
+function mergeCategoryFreshnessSummary(target = createCategorySummary(), source = {}) {
+  target.totalRows += Number(source.totalRows || 0)
+  target.rowsStillStale += Number(source.rowsStillStale || 0)
+  target.upstreamNewerThanCatalog += Number(source.upstreamNewerThanCatalog || 0)
+
+  for (const field of ["attempted", "refreshed", "fresh", "coverageReady", "stale", "missing"]) {
+    target.quote[field] = Number(target.quote?.[field] || 0) + Number(source.quote?.[field] || 0)
+  }
+  updateFreshnessRange(target.quote, source.quote?.freshestAt)
+  updateFreshnessRange(target.quote, source.quote?.oldestAt)
+
+  for (const field of [
+    "attempted",
+    "refreshed",
+    "fresh",
+    "stale",
+    "missing",
+    "missingSkin",
+    "derivedOnly"
+  ]) {
+    target.snapshot[field] =
+      Number(target.snapshot?.[field] || 0) + Number(source.snapshot?.[field] || 0)
+  }
+  updateFreshnessRange(target.snapshot, source.snapshot?.freshestAt)
+  updateFreshnessRange(target.snapshot, source.snapshot?.oldestAt)
+
+  return target
+}
+
+function mergeFreshnessSummary(target = createFreshnessSummary(), source = {}) {
+  target.totalRows += Number(source.totalRows || 0)
+  target.rowsStillStale += Number(source.rowsStillStale || 0)
+  target.upstreamNewerThanCatalog += Number(source.upstreamNewerThanCatalog || 0)
+
+  for (const field of [
+    "attemptedRows",
+    "refreshedRows",
+    "freshRows",
+    "coverageReadyRows",
+    "staleRows",
+    "missingRows"
+  ]) {
+    target.quote[field] = Number(target.quote?.[field] || 0) + Number(source.quote?.[field] || 0)
+  }
+
+  for (const field of [
+    "attemptedRows",
+    "refreshedRows",
+    "freshRows",
+    "staleRows",
+    "missingRows",
+    "missingSkinRows",
+    "derivedOnlyRows"
+  ]) {
+    target.snapshot[field] =
+      Number(target.snapshot?.[field] || 0) + Number(source.snapshot?.[field] || 0)
+  }
+
+  for (const category of RECOVERY_CATEGORIES) {
+    mergeCategoryFreshnessSummary(
+      target.byCategory[category],
+      source.byCategory?.[category] || createCategorySummary()
     )
   }
+
+  return target
+}
+
+function buildCheckpointState({
+  categories = RECOVERY_CATEGORIES,
+  nextCategory = null,
+  nextOffset = 0,
+  completedBatches = 0,
+  processedRows = 0,
+  processedRowsByCategory = emptyCategoryNumberMap(0),
+  done = false
+} = {}) {
+  return {
+    categories: Array.isArray(categories) ? categories.slice() : RECOVERY_CATEGORIES.slice(),
+    nextCategory: done ? null : nextCategory || null,
+    nextOffset: done ? 0 : Math.max(Number(nextOffset || 0), 0),
+    completedBatches: Math.max(Number(completedBatches || 0), 0),
+    processedRows: Math.max(Number(processedRows || 0), 0),
+    processedRowsByCategory: {
+      ...emptyCategoryNumberMap(0),
+      ...(processedRowsByCategory && typeof processedRowsByCategory === "object"
+        ? Object.fromEntries(
+            Object.entries(processedRowsByCategory).map(([category, value]) => [
+              category,
+              Math.max(Number(value || 0), 0)
+            ])
+          )
+        : {})
+    },
+    resumeArgs:
+      done || !nextCategory
+        ? []
+        : [
+            `--start-category=${nextCategory}`,
+            `--start-offset=${Math.max(Number(nextOffset || 0), 0)}`
+          ]
+  }
+}
+
+async function selectRecoveryRowBatch(options = {}) {
+  const category = normalizeText(options.category).toLowerCase() || "weapon_skin"
+  const limit = Math.max(Number(options.limit || DEFAULT_SELECTION_BATCH_SIZE), 1)
+  const offset = Math.max(Number(options.offset || 0), 0)
+  const batchIndex = Math.max(Number(options.batchIndex || 0), 0)
+  const logProgress = options.logProgress
+
+  const rows = await runLoggedStage(
+    "universe_selection",
+    {
+      logProgress,
+      meta: {
+        category,
+        batchIndex,
+        offset,
+        limit,
+        categoryTarget: Number(options.categoryTarget || 0)
+      }
+    },
+    async () =>
+      marketSourceCatalogRepo.listActiveTradable({
+        limit,
+        offset,
+        categories: [category]
+      })
+  )
+
+  return dedupeRowsByMarketHashName(rows)
 }
 
 function extractVolume7dFallback(row = {}, record = {}) {
@@ -357,6 +630,77 @@ function buildItemsForSource(rows = []) {
   }))
 }
 
+const SNAPSHOT_REASON_KEYS = Object.freeze([
+  "snapshot_source_request_failed",
+  "snapshot_http_error",
+  "snapshot_rate_limited",
+  "snapshot_empty_payload",
+  "snapshot_parse_failed",
+  "snapshot_missing_skin_mapping",
+  "snapshot_live_overview_missing",
+  "snapshot_derived_only_rejected",
+  "snapshot_write_skipped",
+  "snapshot_write_succeeded"
+])
+
+const SNAPSHOT_TRANSIENT_REASON_SET = new Set([
+  "snapshot_source_request_failed",
+  "snapshot_http_error",
+  "snapshot_rate_limited"
+])
+
+function createSnapshotReasonMap() {
+  return Object.fromEntries(SNAPSHOT_REASON_KEYS.map((reason) => [reason, 0]))
+}
+
+function incrementSnapshotReasonCounter(counters = {}, category = "", reason = "", amount = 1) {
+  const safeCategory = normalizeText(category).toLowerCase()
+  const safeReason = SNAPSHOT_REASON_KEYS.includes(reason) ? reason : "snapshot_source_request_failed"
+  const safeAmount = Math.max(Number(amount || 0), 0)
+  if (!safeAmount) return
+
+  if (counters.snapshotReasonCounts?.[safeReason] != null) {
+    counters.snapshotReasonCounts[safeReason] += safeAmount
+  }
+  if (
+    counters.snapshotReasonCountsByCategory?.[safeCategory] &&
+    counters.snapshotReasonCountsByCategory[safeCategory][safeReason] != null
+  ) {
+    counters.snapshotReasonCountsByCategory[safeCategory][safeReason] += safeAmount
+  }
+}
+
+function summarizeSnapshotReasonCounts(reasonCounts = {}) {
+  const totalFailures = SNAPSHOT_REASON_KEYS.filter((reason) => reason !== "snapshot_write_succeeded")
+    .filter((reason) => reason !== "snapshot_write_skipped")
+    .reduce((sum, reason) => sum + Number(reasonCounts?.[reason] || 0), 0)
+  const dominantFailureReason = SNAPSHOT_REASON_KEYS.filter((reason) => {
+    if (reason === "snapshot_write_succeeded" || reason === "snapshot_write_skipped") return false
+    return Number(reasonCounts?.[reason] || 0) > 0
+  }).sort((left, right) => Number(reasonCounts?.[right] || 0) - Number(reasonCounts?.[left] || 0))[0] || null
+  const transientFailureCount = SNAPSHOT_REASON_KEYS.filter((reason) =>
+    SNAPSHOT_TRANSIENT_REASON_SET.has(reason)
+  ).reduce((sum, reason) => sum + Number(reasonCounts?.[reason] || 0), 0)
+  const classification =
+    totalFailures <= 0
+      ? "none"
+      : transientFailureCount === totalFailures
+        ? "upstream"
+        : transientFailureCount === 0
+          ? "internal_or_strict"
+          : "mixed"
+
+  return {
+    totalFailures,
+    dominantFailureReason,
+    failureClassification: classification,
+    retryLikelyHelpful:
+      totalFailures > 0 &&
+      transientFailureCount > 0 &&
+      transientFailureCount >= Math.ceil(totalFailures / 2)
+  }
+}
+
 function createAttemptCounter() {
   return {
     quoteAttemptedByCategory: emptyCategoryNumberMap(0),
@@ -367,6 +711,11 @@ function createAttemptCounter() {
     snapshotRefreshedNamesByCategory: Object.fromEntries(
       RECOVERY_CATEGORIES.map((category) => [category, new Set()])
     ),
+    snapshotReasonCounts: createSnapshotReasonMap(),
+    snapshotReasonCountsByCategory: Object.fromEntries(
+      RECOVERY_CATEGORIES.map((category) => [category, createSnapshotReasonMap()])
+    ),
+    snapshotBatchDiagnostics: [],
     quoteRowsInserted: 0,
     marketPriceRowsUpserted: 0,
     quoteSourceDiagnostics: Object.fromEntries(
@@ -380,6 +729,8 @@ async function refreshQuotes(rows = [], options = {}) {
   const concurrency = Math.max(Number(options.concurrency || DEFAULT_REFRESH_CONCURRENCY), 1)
   const timeoutMs = Math.max(Number(options.timeoutMs || marketCompareTimeoutMs || 9000), 500)
   const maxRetries = Math.max(Number(options.maxRetries || marketCompareMaxRetries || 3), 1)
+  const logProgress = options.logProgress
+  const batchMeta = options.batchMeta && typeof options.batchMeta === "object" ? options.batchMeta : {}
   const counters = createAttemptCounter()
   const rowsByName = Object.fromEntries(
     (Array.isArray(rows) ? rows : []).map((row) => [
@@ -395,7 +746,8 @@ async function refreshQuotes(rows = [], options = {}) {
     }
   }
 
-  for (const chunk of chunkArray(rows, quoteBatchSize)) {
+  const chunks = chunkArray(rows, quoteBatchSize)
+  for (const [chunkIndex, chunk] of chunks.entries()) {
     const sourceItems = buildItemsForSource(chunk)
     if (!sourceItems.length) continue
 
@@ -456,10 +808,34 @@ async function refreshQuotes(rows = [], options = {}) {
     const marketPriceRows = chunkMarketPriceRows.filter(Boolean)
     const quoteRows = chunkQuoteRows.filter(Boolean)
     if (marketPriceRows.length) {
-      counters.marketPriceRowsUpserted += await marketPriceRepo.upsertRows(marketPriceRows)
+      counters.marketPriceRowsUpserted += await runLoggedStage(
+        "market_prices_upserts",
+        {
+          logProgress,
+          meta: {
+            ...batchMeta,
+            quoteChunkIndex: chunkIndex,
+            quoteChunkSize: chunk.length,
+            rowCount: marketPriceRows.length
+          }
+        },
+        async () => marketPriceRepo.upsertRows(marketPriceRows)
+      )
     }
     if (quoteRows.length) {
-      counters.quoteRowsInserted += await marketQuoteRepo.insertRows(quoteRows)
+      counters.quoteRowsInserted += await runLoggedStage(
+        "quote_writes",
+        {
+          logProgress,
+          meta: {
+            ...batchMeta,
+            quoteChunkIndex: chunkIndex,
+            quoteChunkSize: chunk.length,
+            rowCount: quoteRows.length
+          }
+        },
+        async () => marketQuoteRepo.insertRows(quoteRows)
+      )
     }
   }
 
@@ -480,35 +856,87 @@ async function refreshSnapshots(rows = [], skinsByName = {}, options = {}) {
     1
   )
   const concurrency = Math.max(Number(options.concurrency || DEFAULT_REFRESH_CONCURRENCY), 1)
+  const logProgress = options.logProgress
+  const batchMeta = options.batchMeta && typeof options.batchMeta === "object" ? options.batchMeta : {}
   const counters = createAttemptCounter()
   const targetSkins = []
+  const batchReasonCounts = createSnapshotReasonMap()
 
   for (const row of Array.isArray(rows) ? rows : []) {
     const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
     const category = normalizeText(row?.category || row?.itemCategory).toLowerCase()
     const skin = skinsByName[marketHashName] || null
-    if (!skin) continue
+    if (!skin) {
+      incrementSnapshotReasonCounter(
+        counters,
+        category,
+        "snapshot_missing_skin_mapping"
+      )
+      batchReasonCounts.snapshot_missing_skin_mapping += 1
+      continue
+    }
     targetSkins.push(skin)
     if (counters.snapshotAttemptedByCategory[category] != null) {
       counters.snapshotAttemptedByCategory[category] += 1
     }
   }
 
-  for (const chunk of chunkArray(targetSkins, snapshotBatchSize)) {
-    const refreshed = await marketService.refreshSnapshotsForSkins(chunk, {
-      concurrency,
-      refreshStaleOnly: true,
-      requireLiveOverview: true
-    })
+  const chunks = chunkArray(targetSkins, snapshotBatchSize)
+  for (const [chunkIndex, chunk] of chunks.entries()) {
+    const refreshed = await runLoggedStage(
+      "snapshot_writes",
+      {
+        logProgress,
+        meta: {
+          ...batchMeta,
+          snapshotChunkIndex: chunkIndex,
+          snapshotChunkSize: chunk.length,
+          rowCount: chunk.length
+        }
+      },
+      async () =>
+        marketService.refreshSnapshotsForSkins(chunk, {
+          concurrency,
+          refreshStaleOnly: true,
+          requireLiveOverview: true
+        })
+    )
     for (const result of Array.isArray(refreshed) ? refreshed : []) {
-      if (!result?.refreshed) continue
       const marketHashName = normalizeText(result?.marketHashName)
       const category = normalizeText(skinsByName[marketHashName]?.category).toLowerCase()
-      if (counters.snapshotRefreshedNamesByCategory[category] instanceof Set) {
+      const reason =
+        SNAPSHOT_REASON_KEYS.includes(result?.refreshReason) &&
+        normalizeText(result?.refreshReason)
+          ? result.refreshReason
+          : result?.refreshed
+            ? "snapshot_write_succeeded"
+            : result?.skippedFresh
+              ? "snapshot_write_skipped"
+              : "snapshot_source_request_failed"
+      incrementSnapshotReasonCounter(counters, category, reason)
+      if (batchReasonCounts[reason] != null) {
+        batchReasonCounts[reason] += 1
+      }
+      if (
+        reason === "snapshot_write_succeeded" &&
+        counters.snapshotRefreshedNamesByCategory[category] instanceof Set
+      ) {
         counters.snapshotRefreshedNamesByCategory[category].add(marketHashName)
       }
     }
   }
+
+  const batchDiagnostics = {
+    ...batchMeta,
+    reasonCounts: batchReasonCounts,
+    ...summarizeSnapshotReasonCounts(batchReasonCounts)
+  }
+  counters.snapshotBatchDiagnostics.push(batchDiagnostics)
+  emitProgress(logProgress, {
+    type: "snapshot_batch_summary",
+    stage: "snapshot_writes",
+    ...batchDiagnostics
+  })
 
   return counters
 }
@@ -622,6 +1050,146 @@ function buildFreshnessSummary(rows = [], quoteCoverageByItem = {}, snapshotsByS
   }
 
   return summary
+}
+
+async function processRecoveryBatch(rows = [], options = {}) {
+  const logProgress = options.logProgress
+  const batchMeta = options.batchMeta && typeof options.batchMeta === "object" ? options.batchMeta : {}
+  const marketHashNames = rows
+    .map((row) => normalizeText(row?.market_hash_name || row?.marketHashName))
+    .filter(Boolean)
+  const skins = marketHashNames.length
+    ? await runLoggedStage(
+        "skin_lookup",
+        {
+          logProgress,
+          meta: {
+            ...batchMeta,
+            rowCount: marketHashNames.length
+          }
+        },
+        async () => skinRepo.getByMarketHashNames(marketHashNames)
+      )
+    : []
+  const { skinsByName, skinIds } = buildSkinMaps(rows, skins)
+  const quoteCoverageMap = await runLoggedStage(
+    "quote_refresh_selection",
+    {
+      logProgress,
+      meta: {
+        ...batchMeta,
+        phase: "pre",
+        rowCount: marketHashNames.length
+      }
+    },
+    async () =>
+      marketQuoteRepo.getLatestCoverageByItemNames(marketHashNames, {
+        lookbackHours: DEFAULT_QUOTE_LOOKBACK_HOURS
+      })
+  )
+  const snapshotMap = await runLoggedStage(
+    "snapshot_refresh_selection",
+    {
+      logProgress,
+      meta: {
+        ...batchMeta,
+        phase: "pre",
+        rowCount: skinIds.length
+      }
+    },
+    async () => (skinIds.length ? marketSnapshotRepo.getLatestBySkinIds(skinIds) : {})
+  )
+  const preRefresh = buildFreshnessSummary(rows, quoteCoverageMap, snapshotMap, skinsByName)
+
+  const quoteRowsNeedingRefresh = rows.filter((row) => {
+    const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
+    const coverage = quoteCoverageMap?.[marketHashName] || {}
+    return (
+      !isFreshWithinHours(coverage?.latestFetchedAt, DEFAULT_HEALTH_WINDOW_HOURS) ||
+      Number(coverage?.marketCoverageCount || 0) < 2
+    )
+  })
+  emitProgress(logProgress, {
+    type: "selection_summary",
+    stage: "quote_refresh_selection",
+    ...batchMeta,
+    rowCount: rows.length,
+    selectedRows: quoteRowsNeedingRefresh.length
+  })
+
+  const snapshotRowsNeedingRefresh = rows.filter((row) => {
+    const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
+    const skin = skinsByName[marketHashName] || null
+    const skinId = Number(skin?.id || 0)
+    if (!Number.isInteger(skinId) || skinId <= 0) return true
+    const snapshot = snapshotMap?.[skinId] || null
+    if (!snapshot) return true
+    if (!isStrictSnapshotUsable(snapshot)) return true
+    return !isFreshWithinHours(
+      snapshot?.captured_at || snapshot?.capturedAt,
+      DEFAULT_HEALTH_WINDOW_HOURS
+    )
+  })
+  emitProgress(logProgress, {
+    type: "selection_summary",
+    stage: "snapshot_refresh_selection",
+    ...batchMeta,
+    rowCount: rows.length,
+    selectedRows: snapshotRowsNeedingRefresh.length
+  })
+
+  const quoteRefresh = await refreshQuotes(quoteRowsNeedingRefresh, {
+    ...options,
+    logProgress,
+    batchMeta
+  })
+  const snapshotRefresh = await refreshSnapshots(snapshotRowsNeedingRefresh, skinsByName, {
+    ...options,
+    logProgress,
+    batchMeta
+  })
+
+  const postQuoteCoverageMap = await runLoggedStage(
+    "quote_refresh_selection",
+    {
+      logProgress,
+      meta: {
+        ...batchMeta,
+        phase: "post",
+        rowCount: marketHashNames.length
+      }
+    },
+    async () =>
+      marketQuoteRepo.getLatestCoverageByItemNames(marketHashNames, {
+        lookbackHours: DEFAULT_QUOTE_LOOKBACK_HOURS
+      })
+  )
+  const postSnapshotMap = await runLoggedStage(
+    "snapshot_refresh_selection",
+    {
+      logProgress,
+      meta: {
+        ...batchMeta,
+        phase: "post",
+        rowCount: skinIds.length
+      }
+    },
+    async () => (skinIds.length ? marketSnapshotRepo.getLatestBySkinIds(skinIds) : {})
+  )
+  const postRefreshBase = buildFreshnessSummary(
+    rows,
+    postQuoteCoverageMap,
+    postSnapshotMap,
+    skinsByName
+  )
+
+  return {
+    preRefresh,
+    postRefreshBase,
+    quoteRefresh,
+    snapshotRefresh,
+    rowCount: rows.length
+  }
 }
 
 function applyRefreshCounters(summary = {}, quoteRefresh = {}, snapshotRefresh = {}) {
@@ -775,79 +1343,257 @@ function summarizeCatalogRecompute(diagnostics = {}) {
 }
 
 async function runFreshnessRecovery(options = {}) {
-  const categories = Array.isArray(options.categories) ? options.categories : RECOVERY_CATEGORIES
+  const logProgress = options.logProgress
+  const cursor = resolveRecoveryCursor(options.categories, options)
+  const categories = cursor.categories
   const targetLimit = Math.max(Number(options.limit || DEFAULT_TARGET_LIMIT), 1)
-  const { rows, targets } = await listRecoveryRows({
-    categories,
-    limit: targetLimit
-  })
-  const marketHashNames = rows
-    .map((row) => normalizeText(row?.market_hash_name || row?.marketHashName))
-    .filter(Boolean)
-  const skins = marketHashNames.length ? await skinRepo.getByMarketHashNames(marketHashNames) : []
-  const { skinsByName, skinIds } = buildSkinMaps(rows, skins)
-
-  const quoteCoverageMap = await marketQuoteRepo.getLatestCoverageByItemNames(marketHashNames, {
-    lookbackHours: DEFAULT_QUOTE_LOOKBACK_HOURS
-  })
-  const snapshotMap = skinIds.length ? await marketSnapshotRepo.getLatestBySkinIds(skinIds) : {}
-  const preRefresh = buildFreshnessSummary(rows, quoteCoverageMap, snapshotMap, skinsByName)
-
-  const quoteRowsNeedingRefresh = rows.filter((row) => {
-    const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
-    const coverage = quoteCoverageMap?.[marketHashName] || {}
-    return (
-      !isFreshWithinHours(coverage?.latestFetchedAt, DEFAULT_HEALTH_WINDOW_HOURS) ||
-      Number(coverage?.marketCoverageCount || 0) < 2
-    )
-  })
-  const snapshotRowsNeedingRefresh = rows.filter((row) => {
-    const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
-    const skin = skinsByName[marketHashName] || null
-    const skinId = Number(skin?.id || 0)
-    if (!Number.isInteger(skinId) || skinId <= 0) return false
-    const snapshot = snapshotMap?.[skinId] || null
-    if (!snapshot) return true
-    if (!isStrictSnapshotUsable(snapshot)) return true
-    return !isFreshWithinHours(
-      snapshot?.captured_at || snapshot?.capturedAt,
-      DEFAULT_HEALTH_WINDOW_HOURS
-    )
-  })
-
-  const quoteRefresh = await refreshQuotes(quoteRowsNeedingRefresh, options)
-  const snapshotRefresh = await refreshSnapshots(snapshotRowsNeedingRefresh, skinsByName, options)
-
-  const postQuoteCoverageMap = await marketQuoteRepo.getLatestCoverageByItemNames(marketHashNames, {
-    lookbackHours: DEFAULT_QUOTE_LOOKBACK_HOURS
-  })
-  const postSnapshotMap = skinIds.length ? await marketSnapshotRepo.getLatestBySkinIds(skinIds) : {}
-  const postRefreshBase = buildFreshnessSummary(
-    rows,
-    postQuoteCoverageMap,
-    postSnapshotMap,
-    skinsByName
+  const selectionBatchSize = Math.max(
+    Number(options.selectionBatchSize || DEFAULT_SELECTION_BATCH_SIZE),
+    1
   )
-  const postRefresh = applyRefreshCounters(postRefreshBase, quoteRefresh, snapshotRefresh)
-  const healthGate = evaluateRecoveryHealth(postRefresh)
+  const maxBatches =
+    Number.isFinite(Number(options.maxBatches)) && Number(options.maxBatches) > 0
+      ? Math.max(Math.round(Number(options.maxBatches)), 1)
+      : null
+  const targets = buildCategoryTargets(targetLimit, categories)
+  const preRefresh = createFreshnessSummary()
+  const postRefreshBase = createFreshnessSummary()
+  const aggregateQuoteRefresh = createAttemptCounter()
+  const aggregateSnapshotRefresh = createAttemptCounter()
+  const processedRowsByCategory = emptyCategoryNumberMap(0)
+  let processedRows = 0
+  let completedBatches = 0
+  let paused = false
+  let timedOut = false
+  let failedStage = null
+  let errorSummary = null
+  let nextCategory = cursor.startCategory
+  let nextOffset = cursor.startOffset
+
+  const startIndex = categories.indexOf(cursor.startCategory)
+  const orderedCategories =
+    startIndex >= 0 ? categories.slice(startIndex) : categories.slice()
+
+  emitProgress(logProgress, {
+    type: "recovery_plan",
+    categories,
+    targets,
+    targetLimit,
+    selectionBatchSize,
+    maxBatches,
+    startCategory: cursor.startCategory,
+    startOffset: cursor.startOffset
+  })
+
+  batchLoop: for (const category of orderedCategories) {
+    let categoryOffset = category === cursor.startCategory ? cursor.startOffset : 0
+    let categoryProcessed = category === cursor.startCategory ? cursor.startOffset : 0
+    const categoryTarget = Math.max(Number(targets?.[category] || 0), 0)
+
+    while (categoryProcessed < categoryTarget) {
+      if (maxBatches != null && completedBatches >= maxBatches) {
+        paused = true
+        nextCategory = category
+        nextOffset = categoryOffset
+        break batchLoop
+      }
+
+      const batchLimit = Math.max(
+        Math.min(selectionBatchSize, categoryTarget - categoryProcessed),
+        1
+      )
+      const batchMeta = {
+        batchIndex: completedBatches,
+        category,
+        offset: categoryOffset,
+        limit: batchLimit,
+        categoryTarget
+      }
+
+      emitProgress(logProgress, {
+        type: "batch_start",
+        ...batchMeta,
+        processedRows,
+        processedRowsByCategory: {
+          ...processedRowsByCategory
+        }
+      })
+
+      try {
+        const rows = await selectRecoveryRowBatch({
+          category,
+          limit: batchLimit,
+          offset: categoryOffset,
+          batchIndex: completedBatches,
+          categoryTarget,
+          logProgress
+        })
+
+        if (!rows.length) {
+          emitProgress(logProgress, {
+            type: "batch_empty",
+            ...batchMeta
+          })
+          break
+        }
+
+        const batchResult = await processRecoveryBatch(rows, {
+          ...options,
+          logProgress,
+          batchMeta
+        })
+
+        mergeFreshnessSummary(preRefresh, batchResult.preRefresh)
+        mergeFreshnessSummary(postRefreshBase, batchResult.postRefreshBase)
+        mergeAttemptCounters(aggregateQuoteRefresh, batchResult.quoteRefresh)
+        mergeAttemptCounters(aggregateSnapshotRefresh, batchResult.snapshotRefresh)
+
+        const rowCount = Number(batchResult.rowCount || rows.length || 0)
+        processedRows += rowCount
+        processedRowsByCategory[category] =
+          Number(processedRowsByCategory?.[category] || 0) + rowCount
+        categoryProcessed += rowCount
+        categoryOffset += rowCount
+        completedBatches += 1
+        nextCategory = category
+        nextOffset = categoryOffset
+
+        emitProgress(logProgress, {
+          type: "batch_done",
+          ...batchMeta,
+          rowCount,
+          processedRows,
+          processedRowsByCategory: {
+            ...processedRowsByCategory
+          }
+        })
+      } catch (error) {
+        const stageError = error?.recoveryStageError || buildStageError("unknown_stage", error)
+        failedStage = stageError.stage
+        timedOut = Boolean(stageError.timedOut)
+        errorSummary = {
+          stage: stageError.stage,
+          message: stageError.message,
+          code: stageError.code,
+          timedOut: Boolean(stageError.timedOut)
+        }
+        nextCategory = category
+        nextOffset = categoryOffset
+        break batchLoop
+      }
+    }
+  }
+
+  const postRefresh = applyRefreshCounters(
+    postRefreshBase,
+    aggregateQuoteRefresh,
+    aggregateSnapshotRefresh
+  )
+
+  const healthGate = await runLoggedStage(
+    "health_gate_evaluation",
+    {
+      logProgress,
+      meta: {
+        completedBatches,
+        processedRows
+      }
+    },
+    async () => evaluateRecoveryHealth(postRefresh)
+  )
+  healthGate.recoveryComplete = !paused && !failedStage
+  if (!healthGate.recoveryComplete) {
+    healthGate.healthyEnough = false
+    if (paused) {
+      healthGate.reasons.unshift("recovery_paused")
+    }
+    if (failedStage) {
+      healthGate.reasons.unshift(`recovery_failed:${failedStage}`)
+    } else {
+      healthGate.reasons.unshift("recovery_incomplete")
+    }
+  }
 
   let catalogRecompute = {
     executed: false,
-    skippedReason: healthGate.healthyEnough ? null : "upstream_not_healthy_enough"
+    skippedReason: paused
+      ? "recovery_paused"
+      : failedStage
+        ? "recovery_failed"
+        : healthGate.healthyEnough
+          ? options.recompute === false
+            ? "skip_requested"
+            : null
+          : "upstream_not_healthy_enough"
   }
-  if (healthGate.healthyEnough && options.recompute !== false) {
-    const diagnostics = await marketSourceCatalogService.prepareSourceCatalog({
-      forceRefresh: true,
-      targetUniverseSize: Number(options.targetUniverseSize || arbitrageDefaultUniverseLimit || 3000)
-    })
-    catalogRecompute = summarizeCatalogRecompute(diagnostics)
+
+  if (!paused && !failedStage && healthGate.healthyEnough && options.recompute !== false) {
+    try {
+      const diagnostics = await runLoggedStage(
+        "force_recompute",
+        {
+          logProgress,
+          meta: {
+            targetUniverseSize: Number(
+              options.targetUniverseSize || arbitrageDefaultUniverseLimit || 3000
+            )
+          }
+        },
+        async () =>
+          marketSourceCatalogService.prepareSourceCatalog({
+            forceRefresh: true,
+            targetUniverseSize: Number(
+              options.targetUniverseSize || arbitrageDefaultUniverseLimit || 3000
+            )
+          })
+      )
+      catalogRecompute = summarizeCatalogRecompute(diagnostics)
+    } catch (error) {
+      const stageError = error?.recoveryStageError || buildStageError("force_recompute", error)
+      failedStage = stageError.stage
+      timedOut = Boolean(stageError.timedOut)
+      errorSummary = {
+        stage: stageError.stage,
+        message: stageError.message,
+        code: stageError.code,
+        timedOut: Boolean(stageError.timedOut)
+      }
+      healthGate.healthyEnough = false
+      healthGate.recoveryComplete = false
+      healthGate.reasons.unshift(`recovery_failed:${stageError.stage}`)
+      catalogRecompute = {
+        executed: false,
+        skippedReason: "force_recompute_failed"
+      }
+    }
   }
+
+  const completed = !paused && !failedStage
+  const checkpoint = buildCheckpointState({
+    categories,
+    nextCategory,
+    nextOffset,
+    completedBatches,
+    processedRows,
+    processedRowsByCategory,
+    done: completed
+  })
 
   return {
     generatedAt: new Date().toISOString(),
     categories,
     targets,
     targetLimit,
+    selectionBatchSize,
+    completed,
+    paused,
+    timedOut,
+    completedBatches,
+    processedRows,
+    processedRowsByCategory,
+    failedStage,
+    error: errorSummary,
+    checkpoint,
     preRefresh,
     postRefresh,
     healthGate,
@@ -856,10 +1602,10 @@ async function runFreshnessRecovery(options = {}) {
       rowsRefreshed: Number(postRefresh?.quote?.refreshedRows || 0),
       rowsStillStale: Number(postRefresh?.quote?.staleRows || 0),
       rowsMissing: Number(postRefresh?.quote?.missingRows || 0),
-      quoteRowsInserted: Number(quoteRefresh.quoteRowsInserted || 0),
-      marketPriceRowsUpserted: Number(quoteRefresh.marketPriceRowsUpserted || 0),
+      quoteRowsInserted: Number(aggregateQuoteRefresh.quoteRowsInserted || 0),
+      marketPriceRowsUpserted: Number(aggregateQuoteRefresh.marketPriceRowsUpserted || 0),
       bySource: Object.fromEntries(
-        Object.entries(quoteRefresh.quoteSourceDiagnostics || {}).map(([source, diag]) => [
+        Object.entries(aggregateQuoteRefresh.quoteSourceDiagnostics || {}).map(([source, diag]) => [
           source,
           {
             refreshed: Number(diag?.refreshed || 0),
@@ -874,7 +1620,31 @@ async function runFreshnessRecovery(options = {}) {
       rowsRefreshed: Number(postRefresh?.snapshot?.refreshedRows || 0),
       rowsStillStale: Number(postRefresh?.snapshot?.staleRows || 0),
       rowsMissing: Number(postRefresh?.snapshot?.missingRows || 0),
-      rowsMissingSkin: Number(postRefresh?.snapshot?.missingSkinRows || 0)
+      rowsMissingSkin: Number(postRefresh?.snapshot?.missingSkinRows || 0),
+      failureReasons: {
+        ...(aggregateSnapshotRefresh.snapshotReasonCounts || createSnapshotReasonMap())
+      },
+      byCategory: Object.fromEntries(
+        RECOVERY_CATEGORIES.map((category) => [
+          category,
+          {
+            reasons: {
+              ...(aggregateSnapshotRefresh.snapshotReasonCountsByCategory?.[category] ||
+                createSnapshotReasonMap())
+            },
+            ...summarizeSnapshotReasonCounts(
+              aggregateSnapshotRefresh.snapshotReasonCountsByCategory?.[category] ||
+                createSnapshotReasonMap()
+            )
+          }
+        ])
+      ),
+      batches: Array.isArray(aggregateSnapshotRefresh.snapshotBatchDiagnostics)
+        ? aggregateSnapshotRefresh.snapshotBatchDiagnostics
+        : [],
+      ...summarizeSnapshotReasonCounts(
+        aggregateSnapshotRefresh.snapshotReasonCounts || createSnapshotReasonMap()
+      )
     },
     catalogRecompute
   }
@@ -884,6 +1654,9 @@ module.exports = {
   runFreshnessRecovery,
   __testables: {
     buildCategoryTargets,
+    resolveRecoveryCursor,
+    mergeAttemptCounters,
+    mergeFreshnessSummary,
     buildFreshnessSummary,
     applyRefreshCounters,
     evaluateRecoveryHealth,

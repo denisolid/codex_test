@@ -16,6 +16,25 @@ function toInt(value, fallback) {
   return Number.isFinite(parsed) ? Math.round(parsed) : fallback
 }
 
+function toBoolean(value, fallback = false) {
+  if (typeof value === "boolean") return value
+  if (value == null) return fallback
+  const text = String(value).trim().toLowerCase()
+  if (!text) return fallback
+  if (["1", "true", "yes", "on"].includes(text)) return true
+  if (["0", "false", "no", "off"].includes(text)) return false
+  return fallback
+}
+
+function parseList(value) {
+  const text = String(value || "").trim()
+  if (!text) return []
+  return text
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+}
+
 function normalizeArgKey(raw = "") {
   return String(raw || "")
     .trim()
@@ -38,7 +57,17 @@ function parseArgs(argv = []) {
 function summarizeRecoveryDiagnostics(diag = {}) {
   return {
     generatedAt: diag?.generatedAt || null,
+    completed: Boolean(diag?.completed),
+    paused: Boolean(diag?.paused),
+    timedOut: Boolean(diag?.timedOut),
+    failedStage: diag?.failedStage || null,
+    error: diag?.error || null,
     targetLimit: Number(diag?.targetLimit || 0),
+    selectionBatchSize: Number(diag?.selectionBatchSize || 0),
+    completedBatches: Number(diag?.completedBatches || 0),
+    processedRows: Number(diag?.processedRows || 0),
+    processedRowsByCategory: diag?.processedRowsByCategory || {},
+    checkpoint: diag?.checkpoint || null,
     targets: diag?.targets || {},
     healthGate: diag?.healthGate || {},
     quoteRefresh: diag?.quoteRefresh || {},
@@ -96,22 +125,21 @@ async function waitForRunCompletion(runId, options = {}) {
 
 async function main() {
   const cli = parseArgs(process.argv.slice(2))
-  const targetUniverseSize = Math.max(
-    toInt(
-      cli.target ||
-        process.env.ARBITRAGE_SCANNER_UNIVERSE_TARGET_SIZE ||
-        process.env.ARBITRAGE_DEFAULT_UNIVERSE_LIMIT ||
-        3000,
-      3000
-    ),
-    1
-  )
-  const refreshLimit = Math.max(toInt(cli.limit, 900), 1)
-  const quoteBatchSize = Math.max(toInt(cli["quote-batch"], 80), 1)
-  const snapshotBatchSize = Math.max(toInt(cli["snapshot-batch"], 60), 1)
-  const skipScan = Boolean(cli["skip-scan"] || false)
-  const skipRecompute = Boolean(cli["skip-recompute"] || false)
-  const wait = Boolean(cli.wait || false)
+  const targetUniverseSize = Math.max(toInt(cli.target, 600), 1)
+  const refreshLimit = Math.max(toInt(cli.limit, 180), 1)
+  const selectionBatchSize = Math.max(toInt(cli["selection-batch"], 30), 1)
+  const quoteBatchSize = Math.max(toInt(cli["quote-batch"], 20), 1)
+  const snapshotBatchSize = Math.max(toInt(cli["snapshot-batch"], 10), 1)
+  const maxBatches =
+    Number.isFinite(Number(cli["max-batches"])) && Number(cli["max-batches"]) > 0
+      ? Math.max(toInt(cli["max-batches"], 0), 1)
+      : null
+  const categories = parseList(cli.categories)
+  const startCategory = cli["start-category"] ? String(cli["start-category"]).trim() : null
+  const startOffset = Math.max(toInt(cli["start-offset"], 0), 0)
+  const skipScan = toBoolean(cli["skip-scan"], false)
+  const skipRecompute = toBoolean(cli["skip-recompute"], false)
+  const wait = toBoolean(cli.wait, false)
   const waitMs = Math.max(toInt(cli["wait-ms"], 600000), 10000)
   const pollMs = Math.max(toInt(cli["poll-ms"], 5000), 1000)
 
@@ -119,10 +147,15 @@ async function main() {
     JSON.stringify(
       {
         step: "refresh_upstream_market_freshness",
+        categories: categories.length ? categories : undefined,
+        startCategory,
+        startOffset,
         targetUniverseSize,
         refreshLimit,
+        selectionBatchSize,
         quoteBatchSize,
         snapshotBatchSize,
+        maxBatches,
         recompute: !skipRecompute
       },
       null,
@@ -130,11 +163,24 @@ async function main() {
     )
   )
   const diagnostics = await upstreamMarketFreshnessRecoveryService.runFreshnessRecovery({
+    categories: categories.length ? categories : undefined,
     limit: refreshLimit,
+    selectionBatchSize,
     quoteBatchSize,
     snapshotBatchSize,
+    maxBatches,
+    startCategory,
+    startOffset,
     targetUniverseSize,
-    recompute: !skipRecompute
+    recompute: !skipRecompute,
+    logProgress(event = {}) {
+      console.log(
+        JSON.stringify({
+          step: "recovery_progress",
+          ...event
+        })
+      )
+    }
   })
   console.log(
     JSON.stringify(
@@ -146,6 +192,11 @@ async function main() {
       2
     )
   )
+
+  if (diagnostics?.timedOut || diagnostics?.failedStage) {
+    process.exitCode = 1
+    return
+  }
 
   if (skipScan || !diagnostics?.healthGate?.healthyEnough || !diagnostics?.catalogRecompute?.executed) {
     return
