@@ -732,20 +732,20 @@ function resolveTier({
   if (hardReject) return OPPORTUNITY_TIERS.REJECTED
   const confidenceLvl = confidenceLevel(confidence)
   if (
-    finalScore >= Number(profile.strongScoreFloor || 0) &&
+    finalScore >= Number(profile.eligibleScoreFloor || 0) &&
     confidenceLvl >= 2 &&
     profit >= Number(profile.minProfitUsd || 0)
   ) {
-    return OPPORTUNITY_TIERS.STRONG
+    return OPPORTUNITY_TIERS.ELIGIBLE
   }
-  if (finalScore >= Number(profile.riskyScoreFloor || 0) && profit > 0) {
-    return OPPORTUNITY_TIERS.RISKY
+  if (finalScore >= Number(profile.nearEligibleScoreFloor || 0) && profit > 0) {
+    return OPPORTUNITY_TIERS.NEAR_ELIGIBLE
   }
-  if (profit > 0 && finalScore >= Number(profile.speculativeScoreFloor || 0)) {
-    return OPPORTUNITY_TIERS.SPECULATIVE
+  if (profit > 0 && finalScore >= Number(profile.candidateScoreFloor || 0)) {
+    return OPPORTUNITY_TIERS.CANDIDATE
   }
   if (profit > 0) {
-    return OPPORTUNITY_TIERS.SPECULATIVE
+    return OPPORTUNITY_TIERS.CANDIDATE
   }
   return OPPORTUNITY_TIERS.REJECTED
 }
@@ -862,13 +862,12 @@ function resolveRouteAvailabilityContext(comparedItem = {}, base = {}) {
 }
 
 function buildEvaluationDisposition({ tier, hardRejectReasons = [], softRejectReasons = [] } = {}) {
-  if (Array.isArray(hardRejectReasons) && hardRejectReasons.length) return "hard_reject"
-  if (Array.isArray(softRejectReasons) && softRejectReasons.length) return "soft_skip"
-  if (tier === OPPORTUNITY_TIERS.STRONG) return "strong_eligible"
-  if (tier === OPPORTUNITY_TIERS.RISKY || tier === OPPORTUNITY_TIERS.SPECULATIVE) {
-    return "risky_eligible"
-  }
-  return "hard_reject"
+  if (Array.isArray(hardRejectReasons) && hardRejectReasons.length) return OPPORTUNITY_TIERS.REJECTED
+  if (Array.isArray(softRejectReasons) && softRejectReasons.length) return OPPORTUNITY_TIERS.REJECTED
+  if (tier === OPPORTUNITY_TIERS.ELIGIBLE) return OPPORTUNITY_TIERS.ELIGIBLE
+  if (tier === OPPORTUNITY_TIERS.NEAR_ELIGIBLE) return OPPORTUNITY_TIERS.NEAR_ELIGIBLE
+  if (tier === OPPORTUNITY_TIERS.CANDIDATE) return OPPORTUNITY_TIERS.CANDIDATE
+  return OPPORTUNITY_TIERS.REJECTED
 }
 
 function evaluateDefaultOpportunityDecision({
@@ -1042,9 +1041,9 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
   const liquidityBand = normalizeText(decision?.liquidityBand || defaultLiquidityBand) || defaultLiquidityBand
   const marketCoverageBand = resolveCoverageBand(diagnostics?.market_coverage?.score)
   const badges = []
-  if (tier === OPPORTUNITY_TIERS.STRONG) badges.push("Strong setup")
-  if (tier === OPPORTUNITY_TIERS.RISKY) badges.push("Risk-adjusted")
-  if (tier === OPPORTUNITY_TIERS.SPECULATIVE) badges.push("Speculative")
+  if (tier === OPPORTUNITY_TIERS.ELIGIBLE) badges.push("Eligible setup")
+  if (tier === OPPORTUNITY_TIERS.NEAR_ELIGIBLE) badges.push("Near-eligible")
+  if (tier === OPPORTUNITY_TIERS.CANDIDATE) badges.push("Candidate")
   if (penaltyFlags.includes(DIAGNOSTIC_FLAGS.DATA_FRESHNESS)) badges.push("Stale market signal")
   if (penaltyFlags.includes(DIAGNOSTIC_FLAGS.EXECUTABLE_DEPTH)) {
     badges.push("Thin executable depth")
@@ -1136,16 +1135,17 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
     itemRarity: null,
     itemRarityColor: null,
     scoreCategory:
-      tier === OPPORTUNITY_TIERS.STRONG
-        ? "Strong"
-        : tier === OPPORTUNITY_TIERS.RISKY
-          ? "Risky"
-          : tier === OPPORTUNITY_TIERS.SPECULATIVE
-            ? "Speculative"
+      tier === OPPORTUNITY_TIERS.ELIGIBLE
+        ? "Eligible"
+        : tier === OPPORTUNITY_TIERS.NEAR_ELIGIBLE
+          ? "Near eligible"
+          : tier === OPPORTUNITY_TIERS.CANDIDATE
+            ? "Candidate"
             : "Rejected",
     qualityGrade: String(tier || OPPORTUNITY_TIERS.REJECTED).toUpperCase(),
-    isHighConfidenceEligible: tier === OPPORTUNITY_TIERS.STRONG,
-    isRiskyEligible: tier === OPPORTUNITY_TIERS.STRONG || tier === OPPORTUNITY_TIERS.RISKY,
+    isHighConfidenceEligible: tier === OPPORTUNITY_TIERS.ELIGIBLE,
+    isRiskyEligible:
+      tier === OPPORTUNITY_TIERS.ELIGIBLE || tier === OPPORTUNITY_TIERS.NEAR_ELIGIBLE,
     flags: Array.from(new Set([...penaltyFlags, ...riskLabels, ...softRejectReasons, ...hardRejectReasons])),
     badges: Array.from(new Set(badges)),
     metadata: {
@@ -1155,6 +1155,7 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
       decision_policy:
         category === ITEM_CATEGORIES.WEAPON_SKIN ? "weapon_skin_v2" : "generic_v1",
       risk_labels: riskLabels,
+      rejected_reasons: Array.from(new Set([...softSkipReasons, ...hardRejectReasons])),
       soft_skip_reasons: softSkipReasons,
       soft_reject_reasons: softRejectReasons,
       penalty_flags: penaltyFlags,
@@ -1253,6 +1254,7 @@ function evaluateCandidateOpportunity(candidate = {}, comparedItem = {}) {
           data_freshness: toArray(diagnostics?.data_freshness?.reasons),
           emitted_tags: penaltyFlags,
           risk_labels: riskLabels,
+          rejected_reasons: Array.from(new Set([...softSkipReasons, ...hardRejectReasons])),
           soft_skip_reasons: softSkipReasons,
           soft_reject_reasons: softRejectReasons,
           publish_preview_result: publishPreviewResult

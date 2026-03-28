@@ -1,4 +1,6 @@
-const DEFAULT_PUBLISH_MAX_SIGNAL_AGE_MS = 2 * 60 * 60 * 1000
+const { PUBLISH_MAX_SIGNAL_AGE_MS } = require("./config")
+
+const DEFAULT_PUBLISH_MAX_SIGNAL_AGE_MS = PUBLISH_MAX_SIGNAL_AGE_MS
 
 function normalizeText(value) {
   return String(value || "").trim()

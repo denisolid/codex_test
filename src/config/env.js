@@ -286,10 +286,6 @@ module.exports = {
     process.env.ARBITRAGE_INSERT_DUPLICATES == null
       ? false
       : process.env.ARBITRAGE_INSERT_DUPLICATES === "true",
-  globalFeedV2Enabled:
-    process.env.GLOBAL_FEED_V2_ENABLED == null
-      ? false
-      : process.env.GLOBAL_FEED_V2_ENABLED === "true",
   globalFeedRevalidationIntervalMinutes: Number(
     process.env.GLOBAL_FEED_REVALIDATION_INTERVAL_MINUTES || 0
   ),

@@ -1,5 +1,5 @@
 const AppError = require("../utils/AppError")
-const arbitrageFeedRepo = require("../repositories/arbitrageFeedRepository")
+const globalActiveOpportunityRepo = require("../repositories/globalActiveOpportunityRepository")
 const { mapFeedRowToApiRow } = require("./scanner/feedPipeline")
 const { sourceFeePercent, round2, roundPrice } = require("../markets/marketUtils")
 const { CATEGORY_PROFILES, ITEM_CATEGORIES } = require("./scanner/config")
@@ -846,12 +846,19 @@ function buildInsightPayloadFromOpportunity(opportunity = {}, options = {}) {
   }
 }
 
-function buildCacheKey(opportunityId) {
-  return normalizeText(opportunityId)
+function normalizeInsightSource() {
+  return "scanner_v2"
 }
 
-function getCachedInsight(opportunityId) {
-  const key = buildCacheKey(opportunityId)
+function buildCacheKey(opportunityId, source = "scanner_v2") {
+  const safeId = normalizeText(opportunityId)
+  const safeSource = normalizeInsightSource(source)
+  if (!safeId) return ""
+  return `${safeSource}:${safeId}`
+}
+
+function getCachedInsight(opportunityId, source = "scanner_v2") {
+  const key = buildCacheKey(opportunityId, source)
   if (!key) return null
   const hit = insightCache.get(key)
   if (!hit) return null
@@ -878,8 +885,8 @@ function pruneInsightCache() {
   }
 }
 
-function setCachedInsight(opportunityId, payload) {
-  const key = buildCacheKey(opportunityId)
+function setCachedInsight(opportunityId, payload, source = "scanner_v2") {
+  const key = buildCacheKey(opportunityId, source)
   if (!key || !payload) return
   insightCache.set(key, {
     expiresAt: Date.now() + INSIGHT_CACHE_TTL_MS,
@@ -890,16 +897,17 @@ function setCachedInsight(opportunityId, payload) {
 
 async function getInsightForFeedId(opportunityId, options = {}) {
   const safeId = normalizeText(opportunityId)
+  const source = normalizeInsightSource(options.source)
   if (!safeId) {
     throw new AppError("opportunity_id is required", 400, "VALIDATION_ERROR")
   }
   const forceRefresh = normalizeBoolean(options.forceRefresh)
   if (!forceRefresh) {
-    const cached = getCachedInsight(safeId)
+    const cached = getCachedInsight(safeId, source)
     if (cached) return cached
   }
 
-  const row = await arbitrageFeedRepo.getById(safeId)
+  const row = await globalActiveOpportunityRepo.getById(safeId)
   if (!row) {
     throw new AppError("Opportunity not found", 404, "OPPORTUNITY_NOT_FOUND")
   }
@@ -924,7 +932,7 @@ async function getInsightForFeedId(opportunityId, options = {}) {
     ...insight
   }
 
-  setCachedInsight(safeId, payload)
+  setCachedInsight(safeId, payload, source)
   return payload
 }
 
@@ -970,7 +978,11 @@ function clearInsightCache() {
 }
 
 exports.INSIGHT_CACHE_TTL_MS = INSIGHT_CACHE_TTL_MS
-exports.getOpportunityInsight = getInsightForFeedId
+exports.getOpportunityInsight = (opportunityId, options = {}) =>
+  getInsightForFeedId(opportunityId, {
+    ...options,
+    source: options.source || "scanner_v2"
+  })
 exports.precomputeInsightsForOpportunityIds = precomputeInsightsForOpportunityIds
 exports.deriveInsightPayloadFromOpportunity = buildInsightPayloadFromOpportunity
 

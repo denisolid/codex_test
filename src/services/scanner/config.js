@@ -36,6 +36,17 @@ function toNumber(value, fallback, options = {}) {
   return Math.min(Math.max(base, min), max)
 }
 
+function buildProfileThresholdMap(fieldName) {
+  return Object.freeze(
+    Object.fromEntries(
+      Object.entries(CATEGORY_PROFILES).map(([category, profile]) => [
+        category,
+        Number(profile?.[fieldName] || 0)
+      ])
+    )
+  )
+}
+
 const SCANNER_TYPES = Object.freeze({
   ENRICHMENT: "enrichment",
   OPPORTUNITY_SCAN: "opportunity_scan",
@@ -85,9 +96,9 @@ const CATEGORY_PROFILES = Object.freeze({
     minMarketCoverage: 2,
     hardSpreadMaxPercent: 320,
     referenceRejectRatio: 2.7,
-    strongScoreFloor: 76,
-    riskyScoreFloor: 50,
-    speculativeScoreFloor: 28
+    eligibleScoreFloor: 76,
+    nearEligibleScoreFloor: 50,
+    candidateScoreFloor: 28
   }),
   [ITEM_CATEGORIES.CASE]: Object.freeze({
     minPriceUsd: 2,
@@ -97,9 +108,9 @@ const CATEGORY_PROFILES = Object.freeze({
     minMarketCoverage: 2,
     hardSpreadMaxPercent: 320,
     referenceRejectRatio: 2.7,
-    strongScoreFloor: 74,
-    riskyScoreFloor: 47,
-    speculativeScoreFloor: 24
+    eligibleScoreFloor: 74,
+    nearEligibleScoreFloor: 47,
+    candidateScoreFloor: 24
   }),
   [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
     minPriceUsd: 2,
@@ -109,9 +120,9 @@ const CATEGORY_PROFILES = Object.freeze({
     minMarketCoverage: 2,
     hardSpreadMaxPercent: 320,
     referenceRejectRatio: 2.7,
-    strongScoreFloor: 74,
-    riskyScoreFloor: 47,
-    speculativeScoreFloor: 24
+    eligibleScoreFloor: 74,
+    nearEligibleScoreFloor: 47,
+    candidateScoreFloor: 24
   }),
   [ITEM_CATEGORIES.KNIFE]: Object.freeze({
     minPriceUsd: 20,
@@ -121,9 +132,9 @@ const CATEGORY_PROFILES = Object.freeze({
     minMarketCoverage: 2,
     hardSpreadMaxPercent: 260,
     referenceRejectRatio: 2.45,
-    strongScoreFloor: 70,
-    riskyScoreFloor: 44,
-    speculativeScoreFloor: 22
+    eligibleScoreFloor: 70,
+    nearEligibleScoreFloor: 44,
+    candidateScoreFloor: 22
   }),
   [ITEM_CATEGORIES.GLOVE]: Object.freeze({
     minPriceUsd: 20,
@@ -133,9 +144,9 @@ const CATEGORY_PROFILES = Object.freeze({
     minMarketCoverage: 2,
     hardSpreadMaxPercent: 260,
     referenceRejectRatio: 2.45,
-    strongScoreFloor: 70,
-    riskyScoreFloor: 44,
-    speculativeScoreFloor: 22
+    eligibleScoreFloor: 70,
+    nearEligibleScoreFloor: 44,
+    candidateScoreFloor: 22
   }),
   [ITEM_CATEGORIES.FUTURE_KNIFE]: Object.freeze({
     minPriceUsd: 20,
@@ -145,9 +156,9 @@ const CATEGORY_PROFILES = Object.freeze({
     minMarketCoverage: 2,
     hardSpreadMaxPercent: 260,
     referenceRejectRatio: 2.45,
-    strongScoreFloor: 68,
-    riskyScoreFloor: 42,
-    speculativeScoreFloor: 22
+    eligibleScoreFloor: 68,
+    nearEligibleScoreFloor: 42,
+    candidateScoreFloor: 22
   }),
   [ITEM_CATEGORIES.FUTURE_GLOVE]: Object.freeze({
     minPriceUsd: 20,
@@ -157,9 +168,9 @@ const CATEGORY_PROFILES = Object.freeze({
     minMarketCoverage: 2,
     hardSpreadMaxPercent: 260,
     referenceRejectRatio: 2.45,
-    strongScoreFloor: 68,
-    riskyScoreFloor: 42,
-    speculativeScoreFloor: 22
+    eligibleScoreFloor: 68,
+    nearEligibleScoreFloor: 42,
+    candidateScoreFloor: 22
   })
 })
 
@@ -176,15 +187,15 @@ const PENALTY_WEIGHTS = Object.freeze({
 })
 
 const SCAN_STATE = Object.freeze({
-  SCANABLE: "scanable",
-  SCANABLE_WITH_PENALTIES: "scanable_with_penalties",
-  HARD_REJECT: "hard_reject"
+  ELIGIBLE: "eligible",
+  NEAR_ELIGIBLE: "near_eligible",
+  REJECTED: "rejected"
 })
 
 const OPPORTUNITY_TIERS = Object.freeze({
-  STRONG: "strong",
-  RISKY: "risky",
-  SPECULATIVE: "speculative",
+  ELIGIBLE: "eligible",
+  NEAR_ELIGIBLE: "near_eligible",
+  CANDIDATE: "candidate",
   REJECTED: "rejected"
 })
 
@@ -294,12 +305,24 @@ const MIN_CONFIDENCE_CHANGE_LEVELS = Math.max(
   0
 )
 
+const PUBLISH_MAX_SIGNAL_AGE_MS = 2 * 60 * 60 * 1000
+
 const PROGRESSION_RETRY_INTERVAL_MULTIPLIERS = Object.freeze({
   near_eligible: 1,
   eligible: 2,
   enriching: 2,
   candidate: 6
 })
+
+const REPAIR_FRESHNESS_RULES_MINUTES = Object.freeze({
+  weapon_skin: 120,
+  case: 180,
+  sticker_capsule: 240,
+  knife: 240,
+  glove: 240
+})
+const REPAIR_MAX_REJECT_ATTEMPTS = 3
+const REPAIR_BACKOFF_MULTIPLIERS = Object.freeze([1, 2, 4, 8])
 
 const SCAN_COHORT_PRIMARY_POOL_MULTIPLIER = 2
 const SCAN_COHORT_HOT_SHARE = 1
@@ -336,6 +359,66 @@ const SCAN_COHORT_FALLBACK_COMBINED_SHARE = 0.15
 const SCAN_COHORT_FALLBACK_COMBINED_MAX = 6
 const SCAN_COHORT_DEGRADED_FALLBACK_SHARE = 0.1
 const SCAN_COHORT_DEGRADED_PRIMARY_SHARE = 0.75
+const EMIT_REVALIDATION_CHUNK_SIZE = Math.max(1, Math.min(Number(SCAN_CHUNK_SIZE || 20), 20))
+const EMIT_REVALIDATION_TIMEOUT_MS = Math.max(
+  1000,
+  Math.min(Number(SCAN_TIMEOUT_PER_BATCH_MS || 8000), 8000)
+)
+
+const ELIGIBLE_SCORE_FLOOR_BY_CATEGORY = buildProfileThresholdMap("eligibleScoreFloor")
+const NEAR_ELIGIBLE_SCORE_FLOOR_BY_CATEGORY = buildProfileThresholdMap("nearEligibleScoreFloor")
+const CANDIDATE_SCORE_FLOOR_BY_CATEGORY = buildProfileThresholdMap("candidateScoreFloor")
+
+const SCANNER_V2_TUNING_SURFACE = Object.freeze({
+  freshnessThresholds: Object.freeze({
+    publishMaxSignalAgeMinutes: Math.round(PUBLISH_MAX_SIGNAL_AGE_MS / 60000),
+    repairMaxAgeMinutesByCategory: REPAIR_FRESHNESS_RULES_MINUTES
+  }),
+  retryBackoff: Object.freeze({
+    progressionRetryIntervalMultipliersByState: PROGRESSION_RETRY_INTERVAL_MULTIPLIERS,
+    repairBackoffMultipliers: REPAIR_BACKOFF_MULTIPLIERS,
+    repairMaxRejectAttempts: REPAIR_MAX_REJECT_ATTEMPTS
+  }),
+  nearEligibleThresholds: Object.freeze({
+    nearEligibleScoreFloorByCategory: NEAR_ELIGIBLE_SCORE_FLOOR_BY_CATEGORY,
+    eligibleScoreFloorByCategory: ELIGIBLE_SCORE_FLOOR_BY_CATEGORY,
+    candidateScoreFloorByCategory: CANDIDATE_SCORE_FLOOR_BY_CATEGORY
+  }),
+  hotUniverseQuotas: Object.freeze({
+    minSize: ALPHA_HOT_UNIVERSE_MIN_SIZE,
+    nearEligibleShare: ALPHA_HOT_UNIVERSE_NEAR_ELIGIBLE_SHARE,
+    nearEligibleMax: ALPHA_HOT_UNIVERSE_NEAR_ELIGIBLE_MAX,
+    shareByCategory: Object.freeze({
+      weapon_skin: ALPHA_HOT_UNIVERSE_WEAPON_SKIN_SHARE,
+      case: ALPHA_HOT_UNIVERSE_CASE_SHARE,
+      sticker_capsule: ALPHA_HOT_UNIVERSE_STICKER_CAPSULE_SHARE
+    }),
+    maxByCategory: Object.freeze({
+      weapon_skin: null,
+      case: ALPHA_HOT_UNIVERSE_CASE_MAX,
+      sticker_capsule: ALPHA_HOT_UNIVERSE_STICKER_CAPSULE_MAX
+    }),
+    minPerAvailableCategory: ALPHA_HOT_UNIVERSE_MIN_PER_AVAILABLE_CATEGORY
+  }),
+  categoryCaps: Object.freeze({
+    weaponSegmentShareCap: ALPHA_HOT_UNIVERSE_WEAPON_SEGMENT_SHARE_CAP,
+    weaponSegmentMin: ALPHA_HOT_UNIVERSE_WEAPON_SEGMENT_MIN,
+    weaponFamilyShareCap: ALPHA_HOT_UNIVERSE_WEAPON_FAMILY_SHARE_CAP,
+    weaponFamilyMin: ALPHA_HOT_UNIVERSE_WEAPON_FAMILY_MIN,
+    premiumSegmentShareCap: ALPHA_HOT_UNIVERSE_PREMIUM_SEGMENT_SHARE_CAP,
+    premiumSegmentMin: ALPHA_HOT_UNIVERSE_PREMIUM_SEGMENT_MIN,
+    maxConsecutiveCategory: ALPHA_HOT_UNIVERSE_MAX_CONSECUTIVE_CATEGORY,
+    maxConsecutiveSubtype: ALPHA_HOT_UNIVERSE_MAX_CONSECUTIVE_SUBTYPE,
+    maxConsecutiveFamily: ALPHA_HOT_UNIVERSE_MAX_CONSECUTIVE_FAMILY
+  }),
+  emitStrictness: Object.freeze({
+    routeAvailabilityRequired: true,
+    listingAvailabilityRequiredWhenSkinport: true,
+    marketIntegrityRequired: true,
+    emitRevalidationChunkSize: EMIT_REVALIDATION_CHUNK_SIZE,
+    emitRevalidationTimeoutMs: EMIT_REVALIDATION_TIMEOUT_MS
+  })
+})
 
 module.exports = Object.freeze({
   SCANNER_TYPES,
@@ -377,7 +460,11 @@ module.exports = Object.freeze({
   MIN_SPREAD_CHANGE_PCT,
   MIN_LIQUIDITY_CHANGE_PCT,
   MIN_CONFIDENCE_CHANGE_LEVELS,
+  PUBLISH_MAX_SIGNAL_AGE_MS,
   PROGRESSION_RETRY_INTERVAL_MULTIPLIERS,
+  REPAIR_FRESHNESS_RULES_MINUTES,
+  REPAIR_MAX_REJECT_ATTEMPTS,
+  REPAIR_BACKOFF_MULTIPLIERS,
   SCAN_COHORT_PRIMARY_POOL_MULTIPLIER,
   SCAN_COHORT_HOT_SHARE,
   SCAN_COHORT_WARM_SHARE,
@@ -412,5 +499,8 @@ module.exports = Object.freeze({
   SCAN_COHORT_FALLBACK_COMBINED_SHARE,
   SCAN_COHORT_FALLBACK_COMBINED_MAX,
   SCAN_COHORT_DEGRADED_FALLBACK_SHARE,
-  SCAN_COHORT_DEGRADED_PRIMARY_SHARE
+  SCAN_COHORT_DEGRADED_PRIMARY_SHARE,
+  EMIT_REVALIDATION_CHUNK_SIZE,
+  EMIT_REVALIDATION_TIMEOUT_MS,
+  SCANNER_V2_TUNING_SURFACE
 })

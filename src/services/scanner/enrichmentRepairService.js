@@ -1,4 +1,9 @@
-const { ENRICHMENT_INTERVAL_MS } = require("./config")
+const {
+  ENRICHMENT_INTERVAL_MS,
+  REPAIR_FRESHNESS_RULES_MINUTES,
+  REPAIR_MAX_REJECT_ATTEMPTS,
+  REPAIR_BACKOFF_MULTIPLIERS
+} = require("./config")
 
 const CANDIDATE_STATUS = Object.freeze({
   CANDIDATE: "candidate",
@@ -8,13 +13,7 @@ const CANDIDATE_STATUS = Object.freeze({
   REJECTED: "rejected"
 })
 
-const FRESHNESS_RULES_MINUTES = Object.freeze({
-  weapon_skin: 120,
-  case: 180,
-  sticker_capsule: 240,
-  knife: 240,
-  glove: 240
-})
+const FRESHNESS_RULES_MINUTES = REPAIR_FRESHNESS_RULES_MINUTES
 
 const REPAIR_REASON = Object.freeze({
   REPAIRED_MARKET_COVERAGE: "repaired_market_coverage",
@@ -27,8 +26,7 @@ const REPAIR_REASON = Object.freeze({
   REJECTED_AFTER_FAILED_REPAIR: "rejected_after_failed_repair"
 })
 
-const MAX_REPAIR_REJECT_ATTEMPTS = 3
-const REPAIR_BACKOFF_MULTIPLIERS = Object.freeze([1, 2, 4, 8])
+const MAX_REPAIR_REJECT_ATTEMPTS = REPAIR_MAX_REJECT_ATTEMPTS
 const REPAIR_ATTEMPTS_PREFIX = "repair_attempts:"
 const REPAIR_COOLDOWN_UNTIL_PREFIX = "repair_cooldown_until:"
 

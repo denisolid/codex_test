@@ -672,7 +672,7 @@ function buildAlphaHotUniverse(options = {}) {
       ...row
     })
 
-    if (classification.state === "hard_reject") {
+    if (classification.state === "rejected") {
       diagnostics.rows_excluded_for_low_maturity += 1
       continue
     }
