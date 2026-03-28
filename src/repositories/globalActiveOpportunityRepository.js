@@ -3,6 +3,8 @@ const AppError = require("../utils/AppError")
 
 const TABLE = "global_active_opportunities"
 const INSERT_BATCH_SIZE = 200
+const MAX_LIMIT = 1000
+const FEED_TIME_COLUMN = "last_published_at"
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -53,6 +55,42 @@ function normalizeStatus(value, fallback) {
   const raw = normalizeText(value).toLowerCase()
   if (!raw) return fallback
   return raw
+}
+
+function normalizeLimit(value, fallback = 100) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(Math.max(Math.round(parsed), 1), MAX_LIMIT)
+}
+
+function applyFeedFilters(query, options = {}) {
+  const includeInactive = Boolean(options.includeInactive)
+  const sinceIso = toIsoOrNull(options.sinceIso)
+  const category = normalizeCategory(options.category)
+  const minScore = toFiniteOrNull(options.minScore)
+  const excludeLowConfidence = Boolean(options.excludeLowConfidence)
+  const highConfidenceOnly = Boolean(options.highConfidenceOnly)
+
+  let scoped = query
+  if (!includeInactive) {
+    scoped = scoped.eq("live_status", "live")
+  }
+  if (sinceIso) {
+    scoped = scoped.gte(FEED_TIME_COLUMN, sinceIso)
+  }
+  if (category) {
+    scoped = scoped.eq("category", category)
+  }
+  if (minScore != null) {
+    scoped = scoped.gte("opportunity_score", minScore)
+  }
+  if (excludeLowConfidence) {
+    scoped = scoped.neq("execution_confidence", "Low")
+  }
+  if (highConfidenceOnly) {
+    scoped = scoped.contains("metadata", { is_high_confidence_eligible: true })
+  }
+  return scoped
 }
 
 function normalizeRows(rows = []) {
@@ -154,6 +192,91 @@ exports.upsertRows = async (rows = []) => {
   }
 
   return insertedRows
+}
+
+exports.listFeedByCursor = async (options = {}) => {
+  const limit = normalizeLimit(options.limit, 100)
+  const cursorCreatedAt = toIsoOrNull(options.cursorCreatedAt)
+  const cursorId = normalizeText(options.cursorId)
+  const useCursor = Boolean(cursorCreatedAt && cursorId)
+
+  const buildBaseQuery = () =>
+    applyFeedFilters(supabaseAdmin.from(TABLE).select("*"), options)
+
+  if (!useCursor) {
+    const { data, error } = await buildBaseQuery()
+      .order(FEED_TIME_COLUMN, { ascending: false })
+      .order("id", { ascending: false })
+      .limit(limit)
+
+    if (error) {
+      throw new AppError(error.message, 500)
+    }
+
+    return Array.isArray(data) ? data : []
+  }
+
+  const sameTimestamp = await buildBaseQuery()
+    .eq(FEED_TIME_COLUMN, cursorCreatedAt)
+    .lt("id", cursorId)
+    .order("id", { ascending: false })
+    .limit(limit)
+
+  if (sameTimestamp.error) {
+    throw new AppError(sameTimestamp.error.message, 500)
+  }
+
+  const sameRows = Array.isArray(sameTimestamp.data) ? sameTimestamp.data : []
+  if (sameRows.length >= limit) {
+    return sameRows.slice(0, limit)
+  }
+
+  const remaining = Math.max(limit - sameRows.length, 0)
+  if (remaining <= 0) {
+    return sameRows
+  }
+
+  const olderRows = await buildBaseQuery()
+    .lt(FEED_TIME_COLUMN, cursorCreatedAt)
+    .order(FEED_TIME_COLUMN, { ascending: false })
+    .order("id", { ascending: false })
+    .limit(remaining)
+
+  if (olderRows.error) {
+    throw new AppError(olderRows.error.message, 500)
+  }
+
+  return [...sameRows, ...(Array.isArray(olderRows.data) ? olderRows.data : [])]
+}
+
+exports.countFeed = async (options = {}) => {
+  const { count, error } = await applyFeedFilters(
+    supabaseAdmin.from(TABLE).select("id", { count: "exact", head: true }),
+    options
+  )
+
+  if (error) {
+    throw new AppError(error.message, 500)
+  }
+
+  return Number(count || 0)
+}
+
+exports.getById = async (id) => {
+  const safeId = normalizeText(id)
+  if (!safeId) return null
+
+  const { data, error } = await supabaseAdmin
+    .from(TABLE)
+    .select("*")
+    .eq("id", safeId)
+    .maybeSingle()
+
+  if (error) {
+    throw new AppError(error.message, 500)
+  }
+
+  return data || null
 }
 
 exports.updateRowsById = async (rows = []) => {

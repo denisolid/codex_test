@@ -138,6 +138,35 @@ function normalizeCategory(value) {
   return "weapon_skin"
 }
 
+function normalizeOpportunityTier(value) {
+  const raw = normalizeText(value).toLowerCase()
+  if (!raw) return "candidate"
+  if (raw === "eligible" || raw === "near_eligible" || raw === "candidate" || raw === "rejected") {
+    return raw
+  }
+  if (raw === "strong") return "eligible"
+  if (raw === "risky") return "near_eligible"
+  if (raw === "speculative") return "candidate"
+  return "candidate"
+}
+
+function normalizeQualityGrade(value) {
+  const raw = normalizeText(value).toUpperCase()
+  if (!raw) return "CANDIDATE"
+  if (
+    raw === "ELIGIBLE" ||
+    raw === "NEAR_ELIGIBLE" ||
+    raw === "CANDIDATE" ||
+    raw === "REJECTED"
+  ) {
+    return raw
+  }
+  if (raw === "STRONG") return "ELIGIBLE"
+  if (raw === "RISKY") return "NEAR_ELIGIBLE"
+  if (raw === "SPECULATIVE") return "CANDIDATE"
+  return raw
+}
+
 function confidenceLevel(value) {
   const normalized = normalizeText(value).toLowerCase()
   if (normalized === "high") return 3
@@ -322,9 +351,7 @@ function buildMaterialChangeHash(row = {}) {
   const metadata = toJsonObject(row?.metadata)
   const buyMarket = normalizeText(row?.buy_market || row?.buyMarket).toLowerCase() || "na"
   const sellMarket = normalizeText(row?.sell_market || row?.sellMarket).toLowerCase() || "na"
-  const qualityGrade =
-    normalizeText(row?.quality_grade || row?.qualityGrade || "SPECULATIVE").toUpperCase() ||
-    "SPECULATIVE"
+  const qualityGrade = normalizeQualityGrade(row?.quality_grade || row?.qualityGrade)
   const executionConfidence =
     normalizeText(row?.execution_confidence || row?.executionConfidence || "low").toLowerCase() ||
     "low"
@@ -614,7 +641,7 @@ function buildFeedInsertRow(opportunity = {}, options = {}) {
     spread_pct: Number(Number(opportunity.spread || 0).toFixed(4)),
     opportunity_score: rawQualityScore,
     execution_confidence: normalizeText(opportunity.executionConfidence || "Low") || "Low",
-    quality_grade: normalizeText(opportunity.qualityGrade || "SPECULATIVE") || "SPECULATIVE",
+    quality_grade: normalizeQualityGrade(opportunity.qualityGrade || opportunity.quality_grade),
     liquidity_label: normalizeText(opportunity.liquidityBand || "Low") || "Low",
     detected_at: detectedAt,
     first_seen_at: firstSeenAt,
@@ -717,9 +744,11 @@ function buildFeedInsertRow(opportunity = {}, options = {}) {
         ) || null,
       buy_url: opportunity.buyUrl || null,
       sell_url: opportunity.sellUrl || null,
-      opportunity_tier: normalizeText(opportunity.tier || "").toLowerCase() || "speculative",
+      opportunity_tier: normalizeOpportunityTier(opportunity.tier),
       is_high_confidence_eligible: Boolean(opportunity.isHighConfidenceEligible),
       is_risky_eligible: Boolean(opportunity.isRiskyEligible),
+      is_eligible: normalizeOpportunityTier(opportunity.tier) === "eligible",
+      is_near_eligible: normalizeOpportunityTier(opportunity.tier) === "near_eligible",
       score_category: opportunity.scoreCategory || null,
       ...eventMeta,
       ...(opportunity.metadata && typeof opportunity.metadata === "object" ? opportunity.metadata : {}),
@@ -738,7 +767,7 @@ function mapFeedRowToApiRow(row = {}) {
   const metadata = row?.metadata && typeof row.metadata === "object" ? row.metadata : {}
   const detectedAt = row?.detected_at || null
   const discoveredAt = row?.discovered_at || detectedAt || null
-  const tier = normalizeText(metadata?.opportunity_tier).toLowerCase()
+  const tier = normalizeOpportunityTier(metadata?.opportunity_tier)
   const rawScore = toFiniteOrNull(row?.opportunity_score)
   const qualityScoreDisplay =
     toFiniteOrNull(metadata?.quality_score_display ?? metadata?.qualityScoreDisplay) ??
@@ -974,15 +1003,15 @@ function mapFeedRowToApiRow(row = {}) {
     quality_score_display: qualityScoreDisplay,
     scoreCategory:
       metadata?.score_category ||
-      (tier === "strong"
-        ? "Strong"
-        : tier === "risky"
-          ? "Risky"
-          : tier === "speculative"
-            ? "Speculative"
+      (tier === "eligible"
+        ? "Eligible"
+        : tier === "near_eligible"
+          ? "Near eligible"
+          : tier === "candidate"
+            ? "Candidate"
             : "Rejected"),
     executionConfidence: normalizeText(row?.execution_confidence || "Low") || "Low",
-    qualityGrade: normalizeText(row?.quality_grade || "").toUpperCase() || "SPECULATIVE",
+    qualityGrade: normalizeQualityGrade(row?.quality_grade || row?.qualityGrade),
     liquidity: resolvedVolume7d,
     liquidityBand: normalizeText(row?.liquidity_label || "Low") || "Low",
     liquidityLabel: normalizeText(row?.liquidity_label || "Low") || "Low",
@@ -1153,8 +1182,10 @@ function mapFeedRowToApiRow(row = {}) {
       metadata?.diagnostics_debug && typeof metadata.diagnostics_debug === "object"
         ? metadata.diagnostics_debug
         : null,
-    isHighConfidenceEligible: Boolean(metadata?.is_high_confidence_eligible),
-    isRiskyEligible: Boolean(metadata?.is_risky_eligible),
+    isHighConfidenceEligible:
+      Boolean(metadata?.is_high_confidence_eligible) || Boolean(metadata?.is_eligible),
+    isRiskyEligible:
+      Boolean(metadata?.is_risky_eligible) || Boolean(metadata?.is_near_eligible),
     buyUrl: normalizeText(row?.buy_url || row?.buyUrl || metadata?.buy_url) || null,
     sellUrl: normalizeText(row?.sell_url || row?.sellUrl || metadata?.sell_url) || null
   }

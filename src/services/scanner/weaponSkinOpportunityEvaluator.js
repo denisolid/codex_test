@@ -51,13 +51,12 @@ function computeAgeMinutes(value) {
 }
 
 function buildEvaluationDisposition({ tier, hardRejectReasons = [], softRejectReasons = [] } = {}) {
-  if (Array.isArray(hardRejectReasons) && hardRejectReasons.length) return "hard_reject"
-  if (Array.isArray(softRejectReasons) && softRejectReasons.length) return "soft_skip"
-  if (tier === OPPORTUNITY_TIERS.STRONG) return "strong_eligible"
-  if (tier === OPPORTUNITY_TIERS.RISKY || tier === OPPORTUNITY_TIERS.SPECULATIVE) {
-    return "risky_eligible"
-  }
-  return "soft_skip"
+  if (Array.isArray(hardRejectReasons) && hardRejectReasons.length) return OPPORTUNITY_TIERS.REJECTED
+  if (Array.isArray(softRejectReasons) && softRejectReasons.length) return OPPORTUNITY_TIERS.REJECTED
+  if (tier === OPPORTUNITY_TIERS.ELIGIBLE) return OPPORTUNITY_TIERS.ELIGIBLE
+  if (tier === OPPORTUNITY_TIERS.NEAR_ELIGIBLE) return OPPORTUNITY_TIERS.NEAR_ELIGIBLE
+  if (tier === OPPORTUNITY_TIERS.CANDIDATE) return OPPORTUNITY_TIERS.CANDIDATE
+  return OPPORTUNITY_TIERS.REJECTED
 }
 
 function pushReason(target, value) {
@@ -106,18 +105,18 @@ function resolveWeaponSkinTier({
     (Array.isArray(penaltyFlags) && penaltyFlags.length > 0)
 
   if (
-    finalScore >= Number(profile.strongScoreFloor || 0) &&
+    finalScore >= Number(profile.eligibleScoreFloor || 0) &&
     confidenceLevel >= 2 &&
     safeProfit >= Number(profile.minProfitUsd || 0) &&
     !hasRiskSurface
   ) {
-    return OPPORTUNITY_TIERS.STRONG
+    return OPPORTUNITY_TIERS.ELIGIBLE
   }
-  if (finalScore >= Number(profile.riskyScoreFloor || 0)) {
-    return OPPORTUNITY_TIERS.RISKY
+  if (finalScore >= Number(profile.nearEligibleScoreFloor || 0)) {
+    return OPPORTUNITY_TIERS.NEAR_ELIGIBLE
   }
-  if (finalScore >= Number(profile.speculativeScoreFloor || 0)) {
-    return OPPORTUNITY_TIERS.SPECULATIVE
+  if (finalScore >= Number(profile.candidateScoreFloor || 0)) {
+    return OPPORTUNITY_TIERS.CANDIDATE
   }
   return OPPORTUNITY_TIERS.REJECTED
 }
@@ -348,7 +347,7 @@ function evaluateWeaponSkinOpportunity(options = {}) {
       riskLabels.has("derived_liquidity_support") ||
       riskLabels.has("stale_supporting_signal") ||
       riskLabels.has("missing_executable_depth")) &&
-    finalScore < Math.max(Number(profile?.riskyScoreFloor || 0), 50)
+    finalScore < Math.max(Number(profile?.nearEligibleScoreFloor || 0), 50)
   ) {
     pushReason(softRejectReasons, "low_value_low_support_weapon_skin")
   }
@@ -356,7 +355,7 @@ function evaluateWeaponSkinOpportunity(options = {}) {
     !hardRejectReasons.length &&
     !hasAnyLiquiditySupport &&
     marketCoverage <= 1 &&
-    finalScore < Math.max(Number(profile?.speculativeScoreFloor || 0), 32)
+    finalScore < Math.max(Number(profile?.candidateScoreFloor || 0), 32)
   ) {
     pushReason(softRejectReasons, "missing_liquidity_low_support_weapon_skin")
   }
@@ -364,7 +363,7 @@ function evaluateWeaponSkinOpportunity(options = {}) {
     !hardRejectReasons.length &&
     !softRejectReasons.length &&
     Number(base?.profit || 0) > 0 &&
-    finalScore < Number(profile?.speculativeScoreFloor || 0)
+    finalScore < Number(profile?.candidateScoreFloor || 0)
   ) {
     pushReason(softRejectReasons, "below_weapon_skin_quality_floor")
   }
@@ -404,14 +403,13 @@ function evaluateWeaponSkinOpportunity(options = {}) {
       penaltyFlagsArray.includes(DIAGNOSTIC_FLAGS.EXECUTABLE_DEPTH) ||
       riskLabels.has("missing_executable_depth"),
     low_value_contextual_penalty: riskLabels.has("low_value_context"),
-    soft_skip_reason: softRejectReasons[0] || null,
-    hard_reject_reason: hardRejectReasons[0] || null,
+    rejected_reason: softRejectReasons[0] || hardRejectReasons[0] || null,
     publish_preview_result: publishValidationPreview.result_label,
     final_tier: tier
   }
 
-  if (tier === OPPORTUNITY_TIERS.RISKY) {
-    additionalBadges.add("Weapon-skin risk adjusted")
+  if (tier === OPPORTUNITY_TIERS.NEAR_ELIGIBLE) {
+    additionalBadges.add("Weapon-skin near-eligible")
   }
   if (riskLabels.has("derived_liquidity_support")) {
     additionalBadges.add("Derived liquidity support")

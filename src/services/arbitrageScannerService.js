@@ -1,10 +1,8 @@
 const AppError = require("../utils/AppError")
 const skinRepo = require("../repositories/skinRepository")
 const marketSourceCatalogRepo = require("../repositories/marketSourceCatalogRepository")
-const arbitrageFeedRepo = require("../repositories/arbitrageFeedRepository")
 const scannerRunRepo = require("../repositories/scannerRunRepository")
 const globalOpportunityLifecycleLogRepo = require("../repositories/globalOpportunityLifecycleLogRepository")
-const env = require("../config/env")
 const marketComparisonService = require("./marketComparisonService")
 const marketSourceCatalogService = require("./marketSourceCatalogService")
 const marketImageService = require("./marketImageService")
@@ -49,7 +47,8 @@ const {
   OPPORTUNITY_HARD_TIMEOUT_MS,
   SCAN_TIMEOUT_PER_BATCH_MS,
   DUPLICATE_WINDOW_HOURS,
-  RECORD_SKIPPED_ALREADY_RUNNING
+  RECORD_SKIPPED_ALREADY_RUNNING,
+  SCANNER_V2_TUNING_SURFACE
 } = require("./scanner/config")
 const { classifyCatalogState } = require("./scanner/stateModel")
 const { selectScanCandidates, buildRoundRobinPool } = require("./scanner/candidateSelector")
@@ -80,7 +79,7 @@ const FEED_WINDOW_HOURS = 24
 const DEFAULT_HISTORY_WINDOW_HOURS = 24
 const MAX_HISTORY_WINDOW_HOURS = 168
 const MANUAL_REFRESH_TRACKER_MAX = 4000
-const LEGACY_SCANNER_TYPE = "global_arbitrage"
+const DEFAULT_RUNTIME_SCANNER_TYPE = SCANNER_TYPES.OPPORTUNITY_SCAN
 const SCANNER_RUN_RETENTION_HOURS = 24
 const CATALOG_SCAN_CATEGORIES = Object.freeze([
   ...SCAN_COHORT_CATEGORIES
@@ -255,23 +254,6 @@ function normalizeHistoryHours(value, fallback = DEFAULT_HISTORY_WINDOW_HOURS) {
 function buildSinceIso(hours, nowMs = Date.now()) {
   const safeHours = normalizeHistoryHours(hours, DEFAULT_HISTORY_WINDOW_HOURS)
   return new Date(nowMs - safeHours * 60 * 60 * 1000).toISOString()
-}
-
-async function countFeedSafely(options = {}) {
-  try {
-    return {
-      count: await arbitrageFeedRepo.countFeed(options),
-      timedOut: false
-    }
-  } catch (err) {
-    if (isStatementTimeoutError(err)) {
-      return {
-        count: null,
-        timedOut: true
-      }
-    }
-    throw err
-  }
 }
 
 function toFiniteOrNull(value) {
@@ -481,7 +463,7 @@ function countScannableRowsByScannerCategory(rows = []) {
     } catch (_err) {
       classification = null
     }
-    if (!classification || classification.state === SCAN_STATE.HARD_REJECT) {
+    if (!classification || classification.state === SCAN_STATE.REJECTED) {
       continue
     }
     const category = mapScannerCategory(
@@ -1063,7 +1045,7 @@ function buildJobExecutionDiagnostics({
   emittedRows = 0,
   blockedRows = 0
 } = {}) {
-  const normalizedJobType = normalizeText(jobType) || LEGACY_SCANNER_TYPE
+  const normalizedJobType = normalizeText(jobType) || DEFAULT_RUNTIME_SCANNER_TYPE
   return {
     job_type: normalizedJobType,
     selected_rows: Math.max(Math.round(Number(selectedRows || 0)), 0),
@@ -1151,7 +1133,12 @@ function buildOpportunityJobExecutionDiagnostics({
     skippedRows: Math.max(selectedRows - effectiveEligibleRows, 0),
     enrichedRows: 0,
     eligibleRows: effectiveEligibleRows,
-    emittedRows: Number(persisted?.activeRowsWritten || 0),
+    emittedRows: Number(
+      persisted?.emittedCount ||
+        persisted?.activeRowsWritten ||
+        persisted?.insertedCount ||
+        0
+    ),
     blockedRows: Number(
       persisted?.emitRevalidation?.blocked_on_emit_total ||
         persisted?.publishValidation?.blocked ||
@@ -1495,27 +1482,26 @@ async function compareCandidates(candidates = []) {
 function summarizeEvaluations(rows = []) {
   const summary = {
     scannedItems: rows.length,
-    strongFound: 0,
-    riskyFound: 0,
-    speculativeFound: 0,
+    eligibleFound: 0,
+    nearEligibleFound: 0,
+    candidateFound: 0,
     rejectedFound: 0,
     opportunitiesByCategory: emptyCategoryMap(),
     rejectedByCategory: emptyCategoryMap(),
     rejectedByReason: {},
     weaponSkinEvaluator: {
       outcome: {
-        hard_reject: 0,
-        soft_skip: 0,
-        risky_eligible: 0,
-        strong_eligible: 0
+        rejected: 0,
+        candidate: 0,
+        near_eligible: 0,
+        eligible: 0
       },
       missing_liquidity_penalty: 0,
       partial_market_coverage_penalty: 0,
       stale_supporting_input_penalty: 0,
       thin_executable_depth_penalty: 0,
       low_value_contextual_penalty: 0,
-      soft_skip_reason: {},
-      hard_reject_reason: {},
+      rejected_reason: {},
       publish_preview_result: {},
       freshness_contract: {
         missing_buy_route_timestamp: 0,
@@ -1529,23 +1515,23 @@ function summarizeEvaluations(rows = []) {
         freshness_contract_incomplete: 0
       },
       final_tier: {
-        strong: 0,
-        risky: 0,
-        speculative: 0,
+        eligible: 0,
+        near_eligible: 0,
+        candidate: 0,
         rejected: 0
       }
     }
   }
   for (const row of rows) {
     const category = mapScannerCategory(row.itemCategory)
-    if (row.tier === OPPORTUNITY_TIERS.STRONG) {
-      summary.strongFound += 1
+    if (row.tier === OPPORTUNITY_TIERS.ELIGIBLE) {
+      summary.eligibleFound += 1
       summary.opportunitiesByCategory[category] += 1
-    } else if (row.tier === OPPORTUNITY_TIERS.RISKY) {
-      summary.riskyFound += 1
+    } else if (row.tier === OPPORTUNITY_TIERS.NEAR_ELIGIBLE) {
+      summary.nearEligibleFound += 1
       summary.opportunitiesByCategory[category] += 1
-    } else if (row.tier === OPPORTUNITY_TIERS.SPECULATIVE) {
-      summary.speculativeFound += 1
+    } else if (row.tier === OPPORTUNITY_TIERS.CANDIDATE) {
+      summary.candidateFound += 1
       summary.opportunitiesByCategory[category] += 1
     } else {
       summary.rejectedFound += 1
@@ -1609,14 +1595,7 @@ function summarizeEvaluations(rows = []) {
       summary.weaponSkinEvaluator.low_value_contextual_penalty += 1
     }
 
-    incrementCounter(
-      summary.weaponSkinEvaluator.soft_skip_reason,
-      weaponSkinDiagnostics?.soft_skip_reason
-    )
-    incrementCounter(
-      summary.weaponSkinEvaluator.hard_reject_reason,
-      weaponSkinDiagnostics?.hard_reject_reason
-    )
+    incrementCounter(summary.weaponSkinEvaluator.rejected_reason, weaponSkinDiagnostics?.rejected_reason)
     incrementCounter(
       summary.weaponSkinEvaluator.publish_preview_result,
       weaponSkinDiagnostics?.publish_preview_result || metadata?.publish_preview_result
@@ -2059,520 +2038,14 @@ function attachEventMetaToInsertRow(insertRow = {}, event = {}) {
   }
 }
 
-async function persistFeedRowsLegacy(opportunities = [], scanRunId = null) {
-  const counters = {
-    insertedCount: 0,
-    newCount: 0,
-    updatedCount: 0,
-    reactivatedCount: 0,
-    duplicateCount: 0,
-    skippedUnchanged: 0,
-    publishValidation: {
-      blocked: 0,
-      deactivated: 0,
-      reasons: {},
-      freshnessContract: {
-        missing_buy_route_timestamp: 0,
-        missing_sell_route_timestamp: 0,
-        buy_route_stale: 0,
-        sell_route_stale: 0,
-        buy_and_sell_route_stale: 0,
-        buy_route_unavailable: 0,
-        sell_route_unavailable: 0,
-        missing_listing_availability: 0,
-        freshness_contract_incomplete: 0
-      }
-    },
-    emitRevalidation: {
-      emit_revalidation_checked: 0,
-      emitted_after_revalidation: 0,
-      blocked_on_emit_total: 0,
-      blocked_on_emit_by_reason: {},
-      stale_on_emit_count: 0,
-      unavailable_on_emit_count: 0,
-      non_executable_on_emit_count: 0,
-      invalid_market_integrity_on_emit_count: 0
-    },
-    lifecycle: {
-      detected_total: 0,
-      published_total: 0,
-      expired_total: 0,
-      invalidated_total: 0,
-      blocked_on_emit_total: 0
-    },
-    cleanup: {
-      olderMarkedInactive: 0,
-      beyondLimitMarkedInactive: 0,
-      duplicateActivesMarkedInactive: 0,
-      hadTimeout: false,
-      errors: []
-    }
-  }
-  const rows = (Array.isArray(opportunities) ? opportunities : []).filter((row) => row.rejected !== true)
-  if (!rows.length) return counters
-  const sinceIso = new Date(Date.now() - DUPLICATE_WINDOW_HOURS * 60 * 60 * 1000).toISOString()
-  const names = Array.from(new Set(rows.map((row) => normalizeText(row.marketHashName || row.itemName)).filter(Boolean)))
-  const nowIso = new Date().toISOString()
-  const preparedRows = rows.map((opportunity) => {
-    const insertRow = buildFeedInsertRow(opportunity, {
-      scanRunId,
-      detectedAt: nowIso,
-      firstSeenAt: nowIso,
-      lastSeenAt: nowIso,
-      lastPublishedAt: nowIso,
-      timesSeen: 1
-    })
-    const fingerprint =
-      normalizeText(insertRow?.opportunity_fingerprint) ||
-      buildOpportunityFingerprint(opportunity)
-    const materialChangeHash =
-      normalizeText(insertRow?.material_change_hash) ||
-      buildMaterialChangeHash(opportunity)
-    insertRow.opportunity_fingerprint = fingerprint
-    insertRow.material_change_hash = materialChangeHash
-    insertRow.metadata = {
-      ...toJsonObject(insertRow.metadata),
-      opportunity_fingerprint: fingerprint || null,
-      material_change_hash: materialChangeHash || null
-    }
-    return {
-      opportunity,
-      insertRow,
-      key: buildFeedKey(insertRow) || buildFeedKey(opportunity),
-      fingerprint
-    }
-  })
-  const emitRevalidation = await revalidateOpportunitiesForEmit(rows, {
-    nowIso
-  })
-  counters.emitRevalidation = {
-    ...counters.emitRevalidation,
-    ...(emitRevalidation?.diagnostics || {})
-  }
-  let previousRows = []
-  try {
-    previousRows = await arbitrageFeedRepo.getRecentRowsByItems({
-      itemNames: names,
-      sinceIso,
-      includeInactive: false,
-      limit: 1200
-    })
-  } catch (err) {
-    if (isStatementTimeoutError(err)) {
-      counters.cleanup.hadTimeout = true
-      counters.cleanup.errors.push("recent_feed_lookup_timeout")
-      previousRows = []
-    } else {
-      throw err
-    }
-  }
-  let activeFingerprintRows = []
-  const fingerprints = Array.from(
-    new Set(preparedRows.map((row) => normalizeText(row.fingerprint)).filter(Boolean))
-  )
-  if (fingerprints.length) {
-    try {
-      activeFingerprintRows = await arbitrageFeedRepo.getActiveRowsByFingerprints({
-        fingerprints,
-        sinceIso,
-        limit: Math.max(1200, fingerprints.length * 2)
-      })
-    } catch (err) {
-      if (isStatementTimeoutError(err)) {
-        counters.cleanup.hadTimeout = true
-        counters.cleanup.errors.push("active_fingerprint_lookup_timeout")
-        activeFingerprintRows = []
-      } else {
-        throw err
-      }
-    }
-  }
-
-  const duplicateActiveIds = collectOlderActiveDuplicateIds([
-    ...(previousRows || []),
-    ...(activeFingerprintRows || [])
-  ])
-  if (duplicateActiveIds.length) {
-    try {
-      counters.cleanup.duplicateActivesMarkedInactive = await arbitrageFeedRepo.markRowsInactiveByIds(
-        duplicateActiveIds
-      )
-    } catch (err) {
-      if (isStatementTimeoutError(err)) {
-        counters.cleanup.hadTimeout = true
-        counters.cleanup.errors.push("active_duplicate_cleanup_timeout")
-      } else {
-        counters.cleanup.errors.push(normalizeText(err?.message) || "active_duplicate_cleanup_failed")
-      }
-    }
-    const deactivatedIds = new Set(duplicateActiveIds.map((value) => normalizeText(value)))
-    previousRows = (previousRows || []).filter((row) => !deactivatedIds.has(normalizeText(row?.id)))
-    activeFingerprintRows = (activeFingerprintRows || []).filter(
-      (row) => !deactivatedIds.has(normalizeText(row?.id))
-    )
-  }
-
-  const latestByKey = {}
-  for (const previous of previousRows || []) {
-    const key = buildFeedKey(previous)
-    if (key && !latestByKey[key]) latestByKey[key] = previous
-  }
-  const activeByFingerprint = {}
-  for (const previous of activeFingerprintRows || []) {
-    const fingerprint = normalizeText(
-      previous?.opportunity_fingerprint ||
-        previous?.opportunityFingerprint ||
-        previous?.metadata?.opportunity_fingerprint
-    )
-    if (fingerprint && !activeByFingerprint[fingerprint]) {
-      activeByFingerprint[fingerprint] = previous
-    }
-  }
-
-  const insertRows = []
-  const updateRows = []
-  const deactivateRowsById = new Map()
-  const lifecycleRows = []
-  const pendingInsertFingerprints = new Set()
-
-  for (const [index, prepared] of preparedRows.entries()) {
-    const opportunity = prepared.opportunity
-    const key = prepared.key
-    const fingerprint = normalizeText(prepared.fingerprint)
-    let previous = fingerprint ? activeByFingerprint[fingerprint] || null : null
-    let matchedBy = previous ? "fingerprint" : null
-    if (!previous && key) {
-      previous = latestByKey[key] || null
-      matchedBy = previous ? "signature" : null
-    }
-
-    const emitRevalidationResult =
-      Array.isArray(emitRevalidation?.results) && emitRevalidation.results[index]
-        ? emitRevalidation.results[index]
-        : null
-    const publishValidation =
-      emitRevalidationResult?.publishValidation ||
-      resolvePublishValidationContextForOpportunity(opportunity, Date.now(), nowIso)
-    const publishValidationMetadata = buildPublishValidationMetadata(publishValidation)
-    const emitRevalidationMetadata = buildEmitRevalidationMetadata(emitRevalidationResult)
-    const routeSignalObservedAt =
-      toIsoOrNull(publishValidation?.routeSignalObservedAt) ||
-      toIsoOrNull(prepared.insertRow?.market_signal_observed_at) ||
-      null
-    if (
-      normalizeText(opportunity?.itemCategory || opportunity?.category).toLowerCase() ===
-      ITEM_CATEGORIES.WEAPON_SKIN
-    ) {
-      const freshnessContractDiagnostics = toJsonObject(
-        publishValidation?.freshnessContractDiagnostics
-      )
-      for (const key of Object.keys(counters.publishValidation.freshnessContract)) {
-        if (Boolean(freshnessContractDiagnostics?.[key])) {
-          counters.publishValidation.freshnessContract[key] += 1
-        }
-      }
-    }
-    const opportunityWithValidation = {
-      ...opportunity,
-      metadata: {
-        ...toJsonObject(opportunity?.metadata),
-        latest_market_signal_at:
-          routeSignalObservedAt ||
-          toIsoOrNull(opportunity?.metadata?.latest_market_signal_at) ||
-          toIsoOrNull(opportunity?.latestMarketSignalAt) ||
-          null,
-        ...publishValidationMetadata,
-        ...emitRevalidationMetadata
-      }
-    }
-    const insertRowForPublish = {
-      ...prepared.insertRow,
-      market_signal_observed_at: routeSignalObservedAt,
-      metadata: {
-        ...toJsonObject(prepared.insertRow?.metadata),
-        latest_market_signal_at:
-          routeSignalObservedAt ||
-          toIsoOrNull(prepared.insertRow?.metadata?.latest_market_signal_at) ||
-          null,
-        ...publishValidationMetadata,
-        ...emitRevalidationMetadata
-      }
-    }
-    const lifecycleSourceRow = {
-      ...insertRowForPublish,
-      ...opportunityWithValidation,
-      metadata: {
-        ...toJsonObject(insertRowForPublish.metadata),
-        ...toJsonObject(opportunityWithValidation.metadata)
-      }
-    }
-    const detectedLifecycleRow = buildLifecycleRow({
-      writerStage: "publish",
-      scanRunId,
-      lifecycleStatus: LIFECYCLE_STATUS.DETECTED,
-      sourceRow: lifecycleSourceRow,
-      eventAt: nowIso,
-      publishTimestamp: nowIso
-    })
-    if (detectedLifecycleRow) {
-      lifecycleRows.push(detectedLifecycleRow)
-      counters.lifecycle.detected_total += 1
-    }
-
-    if (!emitRevalidationResult?.passed) {
-      counters.publishValidation.blocked += 1
-      counters.lifecycle.blocked_on_emit_total += 1
-      incrementCounterBy(
-        counters.publishValidation.reasons,
-        normalizeText(emitRevalidationResult?.detailReason) ||
-          normalizeText(publishValidation.staleReason) ||
-          normalizeText(emitRevalidationResult?.blockReason) ||
-          "emit_revalidation_failed",
-        1
-      )
-      const blockedLifecycleRow = buildLifecycleRow({
-        writerStage: "publish",
-        scanRunId,
-        lifecycleStatus: LIFECYCLE_STATUS.BLOCKED_ON_EMIT,
-        sourceRow: lifecycleSourceRow,
-        eventAt: nowIso,
-        reason:
-          normalizeText(emitRevalidationResult?.blockReason) ||
-          normalizeText(publishValidation.staleReason) ||
-          "emit_revalidation_failed",
-        publishTimestamp: nowIso
-      })
-      if (blockedLifecycleRow) {
-        lifecycleRows.push(blockedLifecycleRow)
-      }
-      if (previous && Boolean(previous?.is_active) && normalizeText(previous?.id)) {
-        const existingMetadata = toJsonObject(previous?.metadata)
-        const refreshStatus = publishValidation.publishFreshnessState === "stale" ? "stale" : "degraded"
-        const liveStatus = publishValidation.publishFreshnessState === "stale" ? "stale" : "degraded"
-        const latestSignalAgeHours =
-          publishValidation.signalAgeMs == null
-            ? null
-            : Number((Number(publishValidation.signalAgeMs) / (60 * 60 * 1000)).toFixed(3))
-        deactivateRowsById.set(previous.id, {
-          id: previous.id,
-          patch: {
-            is_active: false,
-            last_seen_at: nowIso,
-            last_published_at: nowIso,
-            feed_published_at: nowIso,
-            refresh_status: refreshStatus,
-            live_status: liveStatus,
-            latest_signal_age_hours: latestSignalAgeHours,
-            metadata: {
-              ...existingMetadata,
-              ...publishValidationMetadata,
-              ...emitRevalidationMetadata,
-              publish_validation: {
-                ...(toJsonObject(existingMetadata?.publish_validation)),
-                ...(toJsonObject(publishValidationMetadata?.publish_validation)),
-                is_publishable: false
-              },
-              feed_event: "expired",
-              feed_event_reasons: [
-                normalizeText(emitRevalidationResult?.blockReason) ||
-                  normalizeText(publishValidation.staleReason) ||
-                  "emit_revalidation_failed"
-              ],
-              feed_event_materially_changed: true
-            }
-          }
-        })
-        const lifecycleStatus = resolveLifecycleStatusFromState({
-          liveStatus,
-          refreshStatus
-        })
-        const previousLifecycleRow = buildLifecycleRow({
-          writerStage: "publish",
-          scanRunId,
-          lifecycleStatus,
-          sourceRow: {
-            ...previous,
-            ...deactivateRowsById.get(previous.id)?.patch
-          },
-          eventAt: nowIso,
-          reason:
-            normalizeText(emitRevalidationResult?.blockReason) ||
-            normalizeText(publishValidation.staleReason) ||
-            "emit_revalidation_failed",
-          publishTimestamp:
-            toIsoOrNull(previous?.last_published_at || previous?.lastPublishedAt) || nowIso
-        })
-        if (previousLifecycleRow) {
-          lifecycleRows.push(previousLifecycleRow)
-          if (lifecycleStatus === LIFECYCLE_STATUS.EXPIRED) {
-            counters.lifecycle.expired_total += 1
-          } else if (lifecycleStatus === LIFECYCLE_STATUS.INVALIDATED) {
-            counters.lifecycle.invalidated_total += 1
-          }
-        }
-      }
-      continue
-    }
-
-    const baseEvent = classifyOpportunityFeedEvent(opportunityWithValidation, previous)
-    const previousMaterialHash = normalizeText(
-      previous?.material_change_hash ||
-        previous?.materialChangeHash ||
-        previous?.metadata?.material_change_hash
-    )
-    const nextMaterialHash = normalizeText(prepared.insertRow?.material_change_hash)
-    const fingerprintShifted =
-      Boolean(previous) &&
-      Boolean(fingerprint) &&
-      normalizeText(previous?.opportunity_fingerprint) &&
-      normalizeText(previous?.opportunity_fingerprint) !== fingerprint
-    const materialHashShifted =
-      Boolean(previous) &&
-      Boolean(previousMaterialHash) &&
-      Boolean(nextMaterialHash) &&
-      previousMaterialHash !== nextMaterialHash
-    const materiallyChanged =
-      Boolean(baseEvent?.materiallyChanged) ||
-      fingerprintShifted ||
-      materialHashShifted
-    const extraReasons = []
-    if (fingerprintShifted) extraReasons.push("quote_identity")
-    if (materialHashShifted) extraReasons.push("material_hash")
-    if (matchedBy === "signature" && fingerprintShifted) extraReasons.push("fingerprint_shift")
-    const normalizedEventType = !previous
-      ? "new"
-      : !Boolean(previous?.is_active)
-        ? "reactivated"
-        : materiallyChanged
-          ? "updated"
-          : "duplicate"
-    const normalizedEvent = {
-      eventType: normalizedEventType,
-      materiallyChanged,
-      changeReasons: Array.from(
-        new Set([...(Array.isArray(baseEvent?.changeReasons) ? baseEvent.changeReasons : []), ...extraReasons])
-      )
-    }
-    const insertRowWithEvent = attachEventMetaToInsertRow(insertRowForPublish, normalizedEvent)
-    insertRowWithEvent.metadata = {
-      ...toJsonObject(insertRowWithEvent.metadata),
-      ...publishValidationMetadata,
-      ...emitRevalidationMetadata
-    }
-
-    if (!previous) {
-      if (fingerprint && pendingInsertFingerprints.has(fingerprint)) {
-        counters.duplicateCount += 1
-        counters.skippedUnchanged += 1
-        continue
-      }
-      counters.newCount += 1
-      if (fingerprint) pendingInsertFingerprints.add(fingerprint)
-      insertRows.push(insertRowWithEvent)
-      continue
-    }
-
-    if (normalizedEvent.eventType === "updated") {
-      counters.updatedCount += 1
-    } else if (normalizedEvent.eventType === "reactivated") {
-      counters.reactivatedCount += 1
-    } else {
-      counters.duplicateCount += 1
-    }
-
-    const patch = buildFeedUpdatePatch({
-      previousRow: previous,
-      insertRow: insertRowWithEvent,
-      nowIso,
-      scanRunId,
-      event: normalizedEvent
-    })
-    updateRows.push({
-      id: previous.id,
-      patch
-    })
-
-    const cachedUpdatedRow = {
-      ...previous,
-      ...patch,
-      metadata: toJsonObject(patch.metadata),
-      is_active: true,
-      id: previous.id
-    }
-    if (key) latestByKey[key] = cachedUpdatedRow
-    if (fingerprint) activeByFingerprint[fingerprint] = cachedUpdatedRow
-  }
-
-  if (deactivateRowsById.size) {
-    await arbitrageFeedRepo.updateRowsById(Array.from(deactivateRowsById.values()))
-    counters.publishValidation.deactivated = deactivateRowsById.size
-  }
-  if (updateRows.length) {
-    await arbitrageFeedRepo.updateRowsById(updateRows)
-    for (const entry of updateRows) {
-      const publishedLifecycleRow = buildLifecycleRow({
-        writerStage: "publish",
-        scanRunId,
-        lifecycleStatus: LIFECYCLE_STATUS.PUBLISHED,
-        sourceRow: entry?.patch || {},
-        eventAt: nowIso,
-        publishTimestamp: nowIso
-      })
-      if (publishedLifecycleRow) {
-        lifecycleRows.push(publishedLifecycleRow)
-        counters.lifecycle.published_total += 1
-      }
-    }
-  }
-  if (insertRows.length) {
-    const inserted = await arbitrageFeedRepo.insertRows(insertRows)
-    counters.insertedCount = Array.isArray(inserted) ? inserted.length : 0
-    for (let index = 0; index < insertRows.length; index += 1) {
-      const publishedLifecycleRow = buildLifecycleRow({
-        writerStage: "publish",
-        scanRunId,
-        lifecycleStatus: LIFECYCLE_STATUS.PUBLISHED,
-        sourceRow: insertRows[index],
-        eventAt: nowIso,
-        publishTimestamp: nowIso
-      })
-      if (publishedLifecycleRow) {
-        lifecycleRows.push(publishedLifecycleRow)
-        counters.lifecycle.published_total += 1
-      }
-    }
-  }
-  if (lifecycleRows.length) {
-    await globalOpportunityLifecycleLogRepo.insertRows(lifecycleRows)
-  }
-  const cutoffIso = new Date(Date.now() - FEED_WINDOW_HOURS * 60 * 60 * 1000).toISOString()
-  const cleanupResults = await Promise.allSettled([
-    arbitrageFeedRepo.markInactiveOlderThan(cutoffIso, { batchSize: 120, maxRows: 600 })
-  ])
-  const olderResult = cleanupResults[0]
-  if (olderResult?.status === "fulfilled") {
-    counters.cleanup.olderMarkedInactive = Number(olderResult.value || 0)
-  } else if (olderResult?.status === "rejected") {
-    const reason = olderResult.reason
-    counters.cleanup.hadTimeout ||= isStatementTimeoutError(reason)
-    counters.cleanup.errors.push(normalizeText(reason?.message) || "older_cleanup_failed")
-  }
-  counters.emitRevalidation.emitted_after_revalidation = Number(
-    counters.insertedCount + counters.updatedCount + counters.reactivatedCount
-  )
-  return counters
-}
-
-async function persistFeedRows(opportunities = [], scanRunId = null) {
-  if (!env.globalFeedV2Enabled) {
-    return persistFeedRowsLegacy(opportunities, scanRunId)
-  }
-
+async function persistFeedRows(opportunities = [], scanRunId = null, options = {}) {
+  const scannedCount = Math.max(Math.round(Number(options?.scannedCount || 0)), 0)
   const result = await globalFeedPublisher.publishBatch({
     scanRunId,
     opportunities,
     nowIso: new Date().toISOString(),
-    trigger: "opportunity_scan"
+    trigger: "opportunity_scan",
+    scannedCount
   })
 
   return {
@@ -2605,6 +2078,8 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
       invalidated_total: 0,
       blocked_on_emit_total: Number(result?.blockedCount || 0)
     },
+    emittedCount: Number(result?.emittedCount ?? result?.publishedCount ?? 0),
+    publisherMetrics: result?.publisherMetrics || null,
     cleanup: {
       olderMarkedInactive: 0,
       beyondLimitMarkedInactive: 0,
@@ -2613,8 +2088,156 @@ async function persistFeedRows(opportunities = [], scanRunId = null) {
       errors: []
     },
     activeRowsWritten: Number(result?.activeRowsWritten || 0),
-    historyRowsWritten: Number(result?.historyRowsWritten || 0),
-    compatibilityRowsWritten: Number(result?.compatibilityRowsWritten || 0)
+    historyRowsWritten: Number(result?.historyRowsWritten || 0)
+  }
+}
+
+function roundDiagnosticRatio(numerator, denominator, digits = 4) {
+  const safeNumerator = Number(numerator || 0)
+  const safeDenominator = Number(denominator || 0)
+  if (!Number.isFinite(safeNumerator) || !Number.isFinite(safeDenominator) || safeDenominator <= 0) {
+    return 0
+  }
+  return Number((safeNumerator / safeDenominator).toFixed(digits))
+}
+
+function buildTopCountList(counter = {}, options = {}) {
+  const safeCounter = toJsonObject(counter)
+  const limit = Math.max(Math.round(Number(options.limit || 0)), 1)
+  const labelKey = normalizeText(options.labelKey || "reason") || "reason"
+  return Object.entries(safeCounter)
+    .map(([key, value]) => ({
+      [labelKey]: normalizeText(key),
+      count: Number(value || 0)
+    }))
+    .filter((entry) => entry[labelKey] && entry.count > 0)
+    .sort((left, right) => {
+      if (right.count !== left.count) return right.count - left.count
+      return String(left[labelKey]).localeCompare(String(right[labelKey]))
+    })
+    .slice(0, limit)
+}
+
+function buildTopCountListByCategory(counterByCategory = {}, options = {}) {
+  const safeCounterByCategory = toJsonObject(counterByCategory)
+  const limit = Math.max(Math.round(Number(options.limit || 0)), 1)
+  const summary = {}
+  for (const [category, reasons] of Object.entries(safeCounterByCategory)) {
+    const safeCategory = normalizeText(category).toLowerCase()
+    const topReasons = buildTopCountList(reasons, {
+      limit,
+      labelKey: options.labelKey || "reason"
+    })
+    if (!safeCategory || !topReasons.length) continue
+    summary[safeCategory] = topReasons
+  }
+  return summary
+}
+
+function buildConsolidatedDiagnosticsSummary({
+  evaluations = {},
+  persisted = {},
+  sourceCatalog = {}
+} = {}) {
+  const catalogLoad = toJsonObject(sourceCatalog?.catalogLoad)
+  const publisherMetrics = toJsonObject(persisted?.publisherMetrics)
+  const lifecycle = toJsonObject(persisted?.lifecycle)
+  const emitRevalidation = toJsonObject(persisted?.emitRevalidation)
+  const detailedEmitBlockReasons = toJsonObject(persisted?.publishValidation?.reasons)
+  const topRejectReasonsByCategory = buildTopCountListByCategory(
+    catalogLoad?.top_reject_reasons_by_category || catalogLoad?.topRejectReasonsByCategory || {},
+    {
+      limit: 3,
+      labelKey: "reason"
+    }
+  )
+  if (
+    !Object.keys(topRejectReasonsByCategory).length &&
+    Object.keys(toJsonObject(evaluations?.rejectedByReason)).length
+  ) {
+    topRejectReasonsByCategory.all = buildTopCountList(evaluations.rejectedByReason, {
+      limit: 5,
+      labelKey: "reason"
+    })
+  }
+
+  const scannedCount = Number(publisherMetrics?.scannedCount || evaluations?.scannedItems || 0)
+  const eligibleCount = Number(
+    publisherMetrics?.eligibleCount ||
+      Number(evaluations?.eligibleFound || 0) +
+        Number(evaluations?.nearEligibleFound || 0) +
+        Number(evaluations?.candidateFound || 0)
+  )
+  const emittedCount = Number(
+    publisherMetrics?.emittedCount ||
+      persisted?.emittedCount ||
+      persisted?.activeRowsWritten ||
+      persisted?.insertedCount ||
+      0
+  )
+  const blockedOnEmitCount = Number(
+    publisherMetrics?.blockedOnEmitCount ||
+      emitRevalidation?.blocked_on_emit_total ||
+      persisted?.publishValidation?.blocked ||
+      0
+  )
+
+  return {
+    lifecycleDistribution: {
+      detected: Number(lifecycle?.detected_total || 0),
+      published: Number(lifecycle?.published_total || 0),
+      expired: Number(lifecycle?.expired_total || 0),
+      invalidated: Number(lifecycle?.invalidated_total || 0),
+      blockedOnEmit: Number(lifecycle?.blocked_on_emit_total || 0)
+    },
+    repairOutcomes: {
+      repairCandidatesSelected: Number(catalogLoad?.repair_candidates_selected || 0),
+      repairedRows: Number(catalogLoad?.repaired_rows || 0),
+      repairedToNearEligible: Number(catalogLoad?.repaired_to_near_eligible || 0),
+      repairedToEligible: Number(catalogLoad?.repaired_to_eligible || 0),
+      cooldown: Number(catalogLoad?.cooldown_after_failed_repair || 0),
+      rejected: Number(catalogLoad?.rejected_after_failed_repair || 0),
+      topFailedRepairReasons: buildTopCountList(catalogLoad?.top_failed_repair_reasons || {}, {
+        limit: 5,
+        labelKey: "reason"
+      })
+    },
+    hotUniverseComposition: {
+      sourceMode: normalizeText(sourceCatalog?.mode || catalogLoad?.sourceMode) || null,
+      selectionLayer: normalizeText(catalogLoad?.selection_layer) || "alpha_hot_universe",
+      hotUniverseSize: Number(catalogLoad?.hot_universe_size || 0),
+      byCategory: toJsonObject(catalogLoad?.hot_universe_by_category),
+      byState: toJsonObject(catalogLoad?.hot_universe_by_state),
+      intakeByCategory: toJsonObject(catalogLoad?.intake_by_category),
+      nearEligibleAllowed: Boolean(catalogLoad?.near_eligible_allowed),
+      nearEligibleCap: Number(catalogLoad?.near_eligible_cap || 0),
+      categoryQuotas: toJsonObject(catalogLoad?.category_quotas),
+      quotaHitsByCategory: toJsonObject(catalogLoad?.quota_hits_by_category),
+      quotaSkipsByCategory: toJsonObject(catalogLoad?.quota_skips_by_category)
+    },
+    emittedVsBlockedOnEmit: {
+      scannedCount,
+      eligibleCount,
+      emittedCount,
+      blockedOnEmitCount,
+      staleOnEmitCount: Number(
+        publisherMetrics?.staleOnEmitCount || emitRevalidation?.stale_on_emit_count || 0
+      ),
+      emittedScannedRatio: Number(
+        publisherMetrics?.emittedScannedRatio ??
+          roundDiagnosticRatio(emittedCount, scannedCount)
+      )
+    },
+    topRejectReasonsByCategory,
+    topBlockReasonsOnEmit: buildTopCountList(
+      Object.keys(detailedEmitBlockReasons).length
+        ? detailedEmitBlockReasons
+        : emitRevalidation?.blocked_on_emit_by_reason || {},
+      {
+        limit: 5,
+        labelKey: "reason"
+      }
+    )
   }
 }
 
@@ -2632,23 +2255,29 @@ function mergeDiagnostics({
   return {
     ...job,
     scanStateCounts: {
-      scanable: Number(selectionDiag.scanable || 0),
-      scanableWithPenalties: Number(selectionDiag.scanableWithPenalties || 0),
-      hardReject: Number(selectionDiag.hardReject || 0)
+      eligible: Number(selectionDiag.eligible || 0),
+      nearEligible: Number(selectionDiag.nearEligible || 0),
+      rejected: Number(selectionDiag.rejected || 0)
     },
     scanStateByCategory: selectionDiag.stateByCategory || {},
     candidatePoolSize: Number(selection.poolSize || 0),
     requestedBatchSize: Number(selection.attemptedBatchSize || 0),
     selectedBatchSize: Number(selection.selected?.length || 0),
     scannedItems: Number(evaluations.scannedItems || 0),
-    strongFound: Number(evaluations.strongFound || 0),
-    riskyFound: Number(evaluations.riskyFound || 0),
-    speculativeFound: Number(evaluations.speculativeFound || 0),
+    eligibleFound: Number(evaluations.eligibleFound || 0),
+    nearEligibleFound: Number(evaluations.nearEligibleFound || 0),
+    candidateFound: Number(evaluations.candidateFound || 0),
     rejectedFound: Number(evaluations.rejectedFound || 0),
     opportunitiesByCategory: evaluations.opportunitiesByCategory || {},
     rejectedByCategory: evaluations.rejectedByCategory || {},
     rejectedByReason: evaluations.rejectedByReason || {},
     weaponSkinEvaluator: evaluations.weaponSkinEvaluator || {},
+    consolidatedSummary: buildConsolidatedDiagnosticsSummary({
+      evaluations,
+      persisted,
+      sourceCatalog
+    }),
+    tuningSurface: SCANNER_V2_TUNING_SURFACE,
     persisted: {
       insertedCount: Number(persisted.insertedCount || 0),
       newCount: Number(persisted.newCount || 0),
@@ -2674,7 +2303,13 @@ function mergeDiagnostics({
         !Array.isArray(persisted.lifecycle)
           ? persisted.lifecycle
           : {},
-      cleanup: persisted.cleanup || {}
+      cleanup: persisted.cleanup || {},
+      emittedCount: Number(
+        persisted?.emittedCount ||
+          persisted?.activeRowsWritten ||
+          persisted?.insertedCount ||
+          0
+      )
     },
     sourceCatalog,
     batchScan: compare,
@@ -2901,7 +2536,9 @@ async function runOpportunityJob({ scanRunId = null } = {}) {
   const computeMs = Date.now() - computeStartedAtMs
 
   const writeStartedAtMs = Date.now()
-  const persisted = await persistFeedRows(opportunities, scanRunId)
+  const persisted = await persistFeedRows(opportunities, scanRunId, {
+    scannedCount: Number(selection.selected?.length || 0)
+  })
   const writeMs = Date.now() - writeStartedAtMs
   const totalRunMs = Date.now() - runStartedAtMs
 
@@ -2976,7 +2613,7 @@ async function runJobWithLock({
   forceRefresh,
   worker
 }) {
-  const safeScannerType = normalizeText(scannerType) || LEGACY_SCANNER_TYPE
+  const safeScannerType = normalizeText(scannerType) || DEFAULT_RUNTIME_SCANNER_TYPE
   const safeTimeoutMs = Math.max(Math.round(Number(timeoutMs || 0)), 1000)
   const safeHardTimeoutMs = Math.max(Math.round(Number(hardTimeoutMs || 0)), 0)
   if (state.inFlight) {
@@ -3170,345 +2807,10 @@ async function enqueueEnrichment(options = {}) {
   })
 }
 
-async function getScannerStatusInternal(options = {}) {
-  const includeActiveCount = options.includeActiveCount !== false
-  const [latestRun, latestCompletedRun, latestEnrichmentRun, latestEnrichmentCompletedRun, activeOpportunities] =
-    await Promise.all([
-      scannerRunRepo.getLatestRun(SCANNER_TYPES.OPPORTUNITY_SCAN),
-      scannerRunRepo.getLatestCompletedRun(SCANNER_TYPES.OPPORTUNITY_SCAN),
-      scannerRunRepo.getLatestRun(SCANNER_TYPES.ENRICHMENT),
-      scannerRunRepo.getLatestCompletedRun(SCANNER_TYPES.ENRICHMENT),
-      includeActiveCount
-        ? arbitrageFeedRepo.countFeed({ includeInactive: false }).catch(() => 0)
-        : Promise.resolve(null)
-    ])
-
-  const currentStatus =
-    scannerState.inFlight || normalizeText(latestRun?.status).toLowerCase() === "running"
-      ? "running"
-      : "idle"
-
-  return {
-    schedulerRunning: Boolean(scannerState.timer || enrichmentState.timer),
-    currentStatus,
-    currentRunId: scannerState.currentRunId || null,
-    currentRunStartedAt: scannerState.currentRunStartedAt || null,
-    currentRunElapsedMs:
-      scannerState.currentRunStartedAt && toIsoOrNull(scannerState.currentRunStartedAt)
-        ? Date.now() - new Date(scannerState.currentRunStartedAt).getTime()
-        : null,
-    nextScheduledAt: scannerState.nextScheduledAt,
-    activeOpportunities:
-      activeOpportunities == null ? null : Number(activeOpportunities || 0),
-    latestRun: latestRun || null,
-    latestCompletedRun: latestCompletedRun || null,
-    coordination: {
-      allowCrossJobParallelism: true,
-      singleActiveRunPerJobType: true,
-      overdue: isScannerRunOverdue({ latestRun, latestCompletedRun })
-    },
-    jobs: {
-      [SCANNER_TYPES.OPPORTUNITY_SCAN]: {
-        scannerType: SCANNER_TYPES.OPPORTUNITY_SCAN,
-        intervalMinutes: OPPORTUNITY_SCAN_INTERVAL_MINUTES,
-        nextScheduledAt: scannerState.nextScheduledAt,
-        status: currentStatus,
-        latestRun: latestRun || null,
-        latestCompletedRun: latestCompletedRun || null
-      },
-      [SCANNER_TYPES.ENRICHMENT]: {
-        scannerType: SCANNER_TYPES.ENRICHMENT,
-        intervalMinutes: ENRICHMENT_INTERVAL_MINUTES,
-        nextScheduledAt: enrichmentState.nextScheduledAt,
-        status:
-          enrichmentState.inFlight || normalizeText(latestEnrichmentRun?.status).toLowerCase() === "running"
-            ? "running"
-            : "idle",
-        latestRun: latestEnrichmentRun || null,
-        latestCompletedRun: latestEnrichmentCompletedRun || null
-      }
-    }
-  }
+exports.__runtime = {
+  enqueueScan,
+  enqueueEnrichment
 }
-
-exports.getFeed = async (options = {}) => {
-  const planContext = await resolvePlanContext(options)
-  const entitlements = planContext?.entitlements || planService.getEntitlements(planContext?.planTier)
-  const advancedFiltersEnabled = planService.canUseAdvancedFilters(entitlements)
-
-  const requestedLimit = normalizeLimit(options.limit, DEFAULT_API_LIMIT, MAX_API_LIMIT)
-  const limit = FEED_PAGE_SIZE
-  const requestedHistoryHours = normalizeHistoryHours(options.historyHours, FEED_WINDOW_HOURS)
-  const historyWindowHours = FEED_WINDOW_HOURS
-  const historySinceIso = buildSinceIso(historyWindowHours)
-  const requestedCursor = normalizeCursorPayload(options.cursor)
-  const includeCount = normalizeBoolean(options.includeCount, false)
-
-  const requestedShowRisky =
-    options.showRisky == null ? true : normalizeBoolean(options.showRisky)
-  const requestedIncludeOlder = normalizeBoolean(options.includeOlder || options.showOlder)
-  const requestedCategory = normalizeCategoryFilter(options.category)
-  const showRisky = advancedFiltersEnabled ? requestedShowRisky : true
-  const includeOlder = advancedFiltersEnabled ? requestedIncludeOlder : false
-  const categoryFilter = advancedFiltersEnabled ? requestedCategory : "all"
-  const canonicalCategory = categoryFilter === "all" ? "" : categoryFilter
-
-  const statusPromise = getScannerStatusInternal({ includeActiveCount: false })
-  const countPromise = includeCount
-    ? countFeedSafely({
-        includeInactive: includeOlder,
-        category: canonicalCategory,
-        minScore: 0,
-        excludeLowConfidence: false,
-        highConfidenceOnly: !showRisky,
-        sinceIso: historySinceIso
-      })
-    : Promise.resolve({
-        count: null,
-        timedOut: false,
-        skipped: true
-      })
-
-  const feedQuery = {
-    limit: limit + 1,
-    cursorCreatedAt: requestedCursor?.createdAt || "",
-    cursorId: requestedCursor?.id || "",
-    includeInactive: includeOlder,
-    category: canonicalCategory,
-    minScore: 0,
-    excludeLowConfidence: false,
-    highConfidenceOnly: !showRisky,
-    sinceIso: historySinceIso
-  }
-
-  let pagePayload = getFeedFirstPageCache(feedQuery)
-  if (!pagePayload) {
-    const rawRows = await arbitrageFeedRepo.listFeedByCursor(feedQuery)
-    const hasExtraRow = rawRows.length > limit
-    const rows = hasExtraRow ? rawRows.slice(0, limit) : rawRows
-    const lastRow = rows.length ? rows[rows.length - 1] : null
-    pagePayload = {
-      rows,
-      hasNextPage: hasExtraRow,
-      nextCursor: hasExtraRow
-        ? encodeCursorPayload(lastRow?.created_at || lastRow?.detected_at, lastRow?.id)
-        : null
-    }
-    setFeedFirstPageCache(feedQuery, pagePayload)
-  }
-
-  const [status, countResult] = await Promise.all([statusPromise, countPromise])
-
-  let mappedRows = (Array.isArray(pagePayload?.rows) ? pagePayload.rows : []).map((row) =>
-    mapFeedRowToCard(row)
-  )
-  mappedRows = await enrichRowsWithSkinMetadata(mappedRows)
-  mappedRows = dedupeFeedCards(mappedRows)
-  const restricted = applyFeedPlanRestrictions(mappedRows, entitlements)
-  mappedRows = restricted.rows
-
-  const latestCompleted = status?.latestCompletedRun || null
-  const totalCount =
-    includeCount && Number.isFinite(Number(countResult?.count))
-      ? Math.max(Number(countResult.count), 0)
-      : null
-  const requestedPage = normalizePage(options.page, requestedCursor ? 2 : 1)
-  const currentCursor = requestedCursor
-    ? encodeCursorPayload(requestedCursor.createdAt, requestedCursor.id)
-    : null
-
-  const pagination = {
-    page: requestedPage,
-    pageSize: limit,
-    cursor: currentCursor,
-    nextCursor: normalizeText(pagePayload?.nextCursor) || null,
-    hasPrevPage: Boolean(currentCursor),
-    hasNextPage: Boolean(pagePayload?.hasNextPage),
-    historyHours: historyWindowHours,
-    returnedCount: mappedRows.length,
-    totalCount,
-    countMode: includeCount ? "exact" : "skipped",
-    totalCountTimedOut: Boolean(includeCount && countResult?.timedOut)
-  }
-
-  const noRowsReason = noOpportunitiesReason(
-    {
-      scannedItems: Number(latestCompleted?.items_scanned || 0),
-      discardedReasons: {}
-    },
-    status,
-    mappedRows
-  )
-
-  const summary = {
-    scannedItems: Number(latestCompleted?.items_scanned || 0),
-    opportunities: mappedRows.length,
-    totalDetected: totalCount,
-    activeOpportunities: Number(
-      status?.activeOpportunities ?? totalCount ?? mappedRows.length
-    ),
-    feedRetentionHours: FEED_WINDOW_HOURS,
-    historyWindowHours,
-    noOpportunitiesReason: noRowsReason,
-    countDiagnostics: {
-      totalCountTimedOut: Boolean(includeCount && countResult?.timedOut),
-      totalCountSkipped: !includeCount
-    },
-    plan: {
-      planTier: planContext?.planTier || "free",
-      requestedLimit,
-      appliedLimit: limit,
-      requestedHistoryHours,
-      appliedHistoryHours: historyWindowHours,
-      requestedShowRisky,
-      appliedShowRisky: showRisky,
-      requestedIncludeOlder,
-      appliedIncludeOlder: includeOlder,
-      requestedCategory,
-      appliedCategory: categoryFilter,
-      requestedCursor: normalizeText(options.cursor) || null,
-      appliedCursor: currentCursor,
-      ...restricted.planLimits
-    }
-  }
-
-  return {
-    generatedAt:
-      latestCompleted?.completed_at ||
-      latestCompleted?.started_at ||
-      status?.latestRun?.started_at ||
-      null,
-    ttlSeconds: Math.round(OPPORTUNITY_SCAN_INTERVAL_MS / 1000),
-    currency: "USD",
-    summary,
-    pagination,
-    opportunities: mappedRows,
-    plan: summary.plan,
-    status: {
-      scannerType: SCANNER_TYPES.OPPORTUNITY_SCAN,
-      intervalMinutes: OPPORTUNITY_SCAN_INTERVAL_MINUTES,
-      schedulerRunning: Boolean(status?.schedulerRunning),
-      currentStatus: status?.currentStatus || "idle",
-      currentRunId: status?.currentRunId || null,
-      nextScheduledAt: status?.nextScheduledAt || null,
-      activeOpportunities: Number(
-        status?.activeOpportunities ?? totalCount ?? mappedRows.length
-      ),
-      latestRun: toStatusRunSnapshot(status?.latestRun),
-      latestCompletedRun: toStatusRunSnapshot(latestCompleted)
-    }
-  }
-}
-
-exports.getTopOpportunities = async (options = {}) => exports.getFeed(options)
-
-exports.triggerRefresh = async (options = {}) => {
-  const planContext = await resolvePlanContext(options)
-  enforceManualRefreshCooldown(planContext?.userId, planContext?.entitlements, Date.now())
-  const forceRefresh = options.forceRefresh == null ? true : normalizeBoolean(options.forceRefresh)
-  const requestedJobType = normalizeText(options.jobType).toLowerCase()
-  const trigger = normalizeText(options.trigger || "manual")
-  const runOpportunity = !requestedJobType || requestedJobType === SCANNER_TYPES.OPPORTUNITY_SCAN
-  const runEnrichment = !requestedJobType || requestedJobType === SCANNER_TYPES.ENRICHMENT
-
-  const [opportunity, enrichment] = await Promise.all([
-    runOpportunity ? enqueueScan({ trigger }) : Promise.resolve(null),
-    runEnrichment ? enqueueEnrichment({ forceRefresh, trigger }) : Promise.resolve(null)
-  ])
-
-  clearFeedFirstPageCache()
-
-  return {
-    scanRunId: opportunity?.scanRunId || enrichment?.scanRunId || null,
-    alreadyRunning: Boolean(
-      (runOpportunity ? opportunity?.alreadyRunning : true) &&
-        (runEnrichment ? enrichment?.alreadyRunning : true)
-    ),
-    startedAt: new Date().toISOString(),
-    jobs: {
-      [SCANNER_TYPES.OPPORTUNITY_SCAN]: runOpportunity ? opportunity : null,
-      [SCANNER_TYPES.ENRICHMENT]: runEnrichment ? enrichment : null
-    },
-    plan: {
-      planTier: planContext?.planTier || "free",
-      scannerRefreshIntervalMinutes: Number(
-        planService.getPlanConfig(planContext?.entitlements || planContext?.planTier)
-          .scannerRefreshIntervalMinutes || OPPORTUNITY_SCAN_INTERVAL_MINUTES
-      ),
-      allowCrossJobParallelism: true,
-      singleActiveRunPerJobType: true
-    }
-  }
-}
-
-exports.getStatus = async () => {
-  const status = await getScannerStatusInternal()
-  return {
-    scannerType: SCANNER_TYPES.OPPORTUNITY_SCAN,
-    intervalMinutes: OPPORTUNITY_SCAN_INTERVAL_MINUTES,
-    schedulerRunning: Boolean(status?.schedulerRunning),
-    currentStatus: status?.currentStatus || "idle",
-    currentRunId: status?.currentRunId || null,
-    currentRunStartedAt: status?.currentRunStartedAt || null,
-    currentRunElapsedMs: status?.currentRunElapsedMs ?? null,
-    nextScheduledAt: status?.nextScheduledAt || null,
-    activeOpportunities: Number(status?.activeOpportunities || 0),
-    latestRun: status?.latestRun || null,
-    latestCompletedRun: status?.latestCompletedRun || null,
-    coordination: status?.coordination || {},
-    jobs: status?.jobs || {}
-  }
-}
-
-exports.startScheduler = () => {
-  if (!enrichmentState.timer) {
-    enqueueEnrichment({ forceRefresh: false, trigger: "startup_enrichment" }).catch((err) => {
-      console.error("[arbitrage-scanner] Initial enrichment enqueue failed", err.message)
-    })
-    updateNextScheduledAt(SCANNER_TYPES.ENRICHMENT)
-    enrichmentState.timer = setInterval(() => {
-      enqueueEnrichment({ forceRefresh: false, trigger: "scheduled_enrichment" }).catch((err) => {
-        console.error("[arbitrage-scanner] Scheduled enrichment enqueue failed", err.message)
-      })
-      updateNextScheduledAt(SCANNER_TYPES.ENRICHMENT)
-    }, ENRICHMENT_INTERVAL_MS)
-    enrichmentState.timer.unref?.()
-  }
-
-  if (!scannerState.timer) {
-    enqueueScan({ forceRefresh: false, trigger: "startup_opportunity_scan" }).catch((err) => {
-      console.error("[arbitrage-scanner] Initial opportunity scan enqueue failed", err.message)
-    })
-    updateNextScheduledAt(SCANNER_TYPES.OPPORTUNITY_SCAN)
-    scannerState.timer = setInterval(() => {
-      enqueueScan({ forceRefresh: false, trigger: "scheduled_opportunity_scan" }).catch((err) => {
-        console.error("[arbitrage-scanner] Scheduled opportunity scan enqueue failed", err.message)
-      })
-      updateNextScheduledAt(SCANNER_TYPES.OPPORTUNITY_SCAN)
-    }, OPPORTUNITY_SCAN_INTERVAL_MS)
-    scannerState.timer.unref?.()
-  }
-
-  console.log(
-    `[arbitrage-scanner] Scheduler started (enrichment=${ENRICHMENT_INTERVAL_MINUTES}m, opportunity_scan=${OPPORTUNITY_SCAN_INTERVAL_MINUTES}m)`
-  )
-}
-
-exports.stopScheduler = () => {
-  if (scannerState.timer) {
-    clearInterval(scannerState.timer)
-    scannerState.timer = null
-    scannerState.nextScheduledAt = null
-  }
-  if (enrichmentState.timer) {
-    clearInterval(enrichmentState.timer)
-    enrichmentState.timer = null
-    enrichmentState.nextScheduledAt = null
-  }
-}
-
-exports.forceRefresh = async () =>
-  enqueueEnrichment({ forceRefresh: true, trigger: "manual" })
 
 exports.__testables = {
   normalizeCategoryFilter,
@@ -3535,6 +2837,8 @@ exports.__testables = {
   rebalanceSelectionForFeedDiversity,
   loadScannerSourceRows,
   persistFeedRows,
+  mergeDiagnostics,
+  buildConsolidatedDiagnosticsSummary,
   buildFeedUpdatePatch,
   normalizeCursorPayload,
   encodeCursorPayload,

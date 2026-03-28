@@ -230,9 +230,9 @@ function buildCategoryStateCounter() {
       category,
       {
         total: 0,
-        scanable: 0,
-        scanableWithPenalties: 0,
-        hardReject: 0
+        eligible: 0,
+        nearEligible: 0,
+        rejected: 0
       }
     ])
   )
@@ -312,7 +312,7 @@ const PREMIUM_RESERVE_MIN_REFERENCE_PRICE = 20
 function hasPremiumReserveQuality(row = {}) {
   const category = normalizeCategory(row.category || row.itemCategory, row.itemName)
   if (!PREMIUM_RESERVE_CATEGORY_ORDER.includes(category)) return false
-  if (row.scanState !== SCAN_STATE.SCANABLE) return false
+  if (row.scanState !== SCAN_STATE.ELIGIBLE) return false
 
   const referencePrice = toFiniteOrNull(row.referencePrice)
   const marketCoverageCount = Math.max(Number(toFiniteOrNull(row.marketCoverageCount) || 0), 0)
@@ -410,9 +410,9 @@ function selectScanCandidates(options = {}) {
 
   const diagnostics = {
     totalCatalogRows: rawRows.length,
-    scanable: 0,
-    scanableWithPenalties: 0,
-    hardReject: 0,
+    eligible: 0,
+    nearEligible: 0,
+    rejected: 0,
     poolByPriorityTier: {
       tier_a: 0,
       tier_b: 0,
@@ -430,7 +430,7 @@ function selectScanCandidates(options = {}) {
         activeTradable: 0
       },
       stateByCategory: buildCategoryStateCounter(),
-      hardRejectReasons: {},
+      rejectedReasons: {},
       selectedByCategory: Object.fromEntries(
         ROUND_ROBIN_CATEGORY_ORDER.map((category) => [category, 0])
       )
@@ -443,17 +443,17 @@ function selectScanCandidates(options = {}) {
     const categoryCounter = diagnostics.stateByCategory[category] || diagnostics.stateByCategory.weapon_skin
     categoryCounter.total += 1
 
-    if (classification.state === SCAN_STATE.SCANABLE) {
-      diagnostics.scanable += 1
-      categoryCounter.scanable += 1
-    } else if (classification.state === SCAN_STATE.SCANABLE_WITH_PENALTIES) {
-      diagnostics.scanableWithPenalties += 1
-      categoryCounter.scanableWithPenalties += 1
+    if (classification.state === SCAN_STATE.ELIGIBLE) {
+      diagnostics.eligible += 1
+      categoryCounter.eligible += 1
+    } else if (classification.state === SCAN_STATE.NEAR_ELIGIBLE) {
+      diagnostics.nearEligible += 1
+      categoryCounter.nearEligible += 1
     } else {
-      diagnostics.hardReject += 1
-      categoryCounter.hardReject += 1
+      diagnostics.rejected += 1
+      categoryCounter.rejected += 1
       for (const reason of classification.hardRejectReasons) {
-        incrementCounter(diagnostics.hardRejectReasons, reason, 1)
+        incrementCounter(diagnostics.rejectedReasons, reason, 1)
       }
     }
 
@@ -593,7 +593,7 @@ function selectScanCandidates(options = {}) {
       if (selected.length >= maxSelection) break
       if (!selectedRow) continue
       if (selectedNames.has(selectedRow.marketHashName)) continue
-      if (selectedRow.scanState === SCAN_STATE.HARD_REJECT) continue
+      if (selectedRow.scanState === SCAN_STATE.REJECTED) continue
       if (cohort === "hot" && hotSelected >= cohortCaps.hotCap) break
       if (cohort === "warm" && warmSelected >= cohortCaps.warmCap) break
       if (cohort === "cold" && coldSelected >= cohortCaps.coldCap) break

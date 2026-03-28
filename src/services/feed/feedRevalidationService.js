@@ -1,11 +1,9 @@
-const env = require("../../config/env")
 const globalActiveOpportunityRepo = require("../../repositories/globalActiveOpportunityRepository")
 const globalOpportunityHistoryRepo = require("../../repositories/globalOpportunityHistoryRepository")
 const globalOpportunityLifecycleLogRepo = require("../../repositories/globalOpportunityLifecycleLogRepository")
 const diagnosticsWriter = require("../diagnosticsWriter")
 const marketStateReadService = require("../marketStateReadService")
 const scannerRunLeaseService = require("../scannerRunLeaseService")
-const feedCompatibilityProjector = require("./feedCompatibilityProjector")
 const { buildHistoryRow, resolveExitEventType } = require("./feedHistoryPolicy")
 const {
   LIFECYCLE_STATUS,
@@ -114,7 +112,6 @@ async function runSweepForRows(rows = [], { nowIso, trigger, runId, heartbeat } 
       degradedCount: 0,
       unchangedCount: 0,
       historyRowsWritten: 0,
-      compatibilityRowsWritten: 0,
       lifecycle: {
         detected_total: 0,
         published_total: 0,
@@ -223,15 +220,6 @@ async function runSweepForRows(rows = [], { nowIso, trigger, runId, heartbeat } 
     : []
   const persistedActiveByFingerprint = buildRowsByFingerprint(persistedActiveRows)
 
-  const compatibilityResult = persistedActiveRows.length
-    ? await feedCompatibilityProjector.syncRows({
-        activeRows: Object.values(persistedActiveByFingerprint),
-        stage: "revalidate",
-        nowIso: safeNowIso,
-        projectionContextByFingerprint
-      })
-    : { rowsWritten: 0 }
-
   const historyRows = historyPlans
     .map((plan) =>
       buildHistoryRow({
@@ -286,7 +274,6 @@ async function runSweepForRows(rows = [], { nowIso, trigger, runId, heartbeat } 
     degradedCount,
     unchangedCount,
     historyRowsWritten: Array.isArray(insertedHistory) ? insertedHistory.length : 0,
-    compatibilityRowsWritten: Number(compatibilityResult?.rowsWritten || 0),
     lifecycle
   }
 
@@ -324,8 +311,7 @@ async function withLease(rowLoader, { nowIso, limit, trigger } = {}) {
       staleExpiredCount: 0,
       degradedCount: 0,
       unchangedCount: 0,
-      historyRowsWritten: 0,
-      compatibilityRowsWritten: 0
+      historyRowsWritten: 0
     }
   }
 
@@ -408,7 +394,6 @@ async function revalidateByItemNames({
 
 function startScheduler() {
   if (schedulerState.timer) return
-  if (!env.globalFeedV2Enabled) return
   if (FEED_REVALIDATION_INTERVAL_MINUTES <= 0 || FEED_REVALIDATION_INTERVAL_MS <= 0) return
 
   schedulerState.timer = setInterval(() => {

@@ -1,6 +1,5 @@
 const asyncHandler = require("../utils/asyncHandler")
-const scannerService = require("../services/arbitrageScannerService")
-const opportunityInsightService = require("../services/opportunityInsightService")
+const scannerService = require("../services/scannerV2Service")
 
 function toFiniteOrNull(value) {
   if (value == null || value === "") return null
@@ -182,7 +181,7 @@ exports.getScannerStatus = asyncHandler(async (_req, res) => {
 
 exports.getOpportunityInsight = asyncHandler(async (req, res) => {
   const opportunityId = String(req.params?.opportunityId || "").trim()
-  const insight = await opportunityInsightService.getOpportunityInsight(opportunityId, {
+  const insight = await scannerService.getOpportunityInsight(opportunityId, {
     forceRefresh: req.query?.force
   })
   res.json(insight)

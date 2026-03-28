@@ -2,7 +2,7 @@
 
 require("dotenv").config()
 
-const scannerService = require("../src/services/arbitrageScannerService")
+const scannerService = require("../src/services/scannerV2Service")
 const upstreamMarketFreshnessRecoveryService = require("../src/services/upstreamMarketFreshnessRecoveryService")
 const scannerRunRepo = require("../src/repositories/scannerRunRepository")
 const { SCANNER_TYPES } = require("../src/services/scanner/config")
@@ -99,9 +99,9 @@ function summarizeRun(run = {}) {
     newOpportunitiesAdded: Number(run?.new_opportunities_added || 0),
     failureReason: run?.failure_reason || null,
     scannedItems: Number(diag?.scannedItems || 0),
-    strongFound: Number(diag?.strongFound || 0),
-    riskyFound: Number(diag?.riskyFound || 0),
-    speculativeFound: Number(diag?.speculativeFound || 0),
+    eligibleFound: Number(diag?.eligibleFound || 0),
+    nearEligibleFound: Number(diag?.nearEligibleFound || 0),
+    candidateFound: Number(diag?.candidateFound || 0),
     rejectedFound: Number(diag?.rejectedFound || 0),
     batchScan: diag?.batchScan || {},
     rejectedByReason: diag?.rejectedByReason || {}

@@ -2,8 +2,8 @@ const planService = require("../planService")
 const marketComparisonService = require("../marketComparisonService")
 const arbitrageEngineService = require("../arbitrageEngineService")
 const {
-  SCAN_CHUNK_SIZE,
-  SCAN_TIMEOUT_PER_BATCH_MS
+  EMIT_REVALIDATION_CHUNK_SIZE,
+  EMIT_REVALIDATION_TIMEOUT_MS
 } = require("./config")
 const {
   buildRouteFreshnessContractFromCompareResult,
@@ -12,15 +12,6 @@ const {
 } = require("./publishValidation")
 
 const emitRevalidationEntitlements = planService.getEntitlements("full_access")
-const EMIT_REVALIDATION_CHUNK_SIZE = Math.max(
-  1,
-  Math.min(Number(SCAN_CHUNK_SIZE || 20), 20)
-)
-const EMIT_REVALIDATION_TIMEOUT_MS = Math.max(
-  1000,
-  Math.min(Number(SCAN_TIMEOUT_PER_BATCH_MS || 8000), 8000)
-)
-
 const EMIT_BLOCK_REASONS = Object.freeze({
   STALE: "stale_on_emit",
   UNAVAILABLE: "unavailable_on_emit",

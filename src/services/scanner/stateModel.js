@@ -289,10 +289,10 @@ function classifyCatalogState(seed = {}) {
 
   const penaltyFlags = buildPenaltyFlags(seed, category)
   const state = hardRejectReasons.length
-    ? SCAN_STATE.HARD_REJECT
+    ? SCAN_STATE.REJECTED
     : penaltyFlags.length
-      ? SCAN_STATE.SCANABLE_WITH_PENALTIES
-      : SCAN_STATE.SCANABLE
+      ? SCAN_STATE.NEAR_ELIGIBLE
+      : SCAN_STATE.ELIGIBLE
 
   return {
     state,

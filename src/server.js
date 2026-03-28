@@ -1,12 +1,8 @@
 const app = require("./app");
 const env = require("./config/env");
-const arbitrageScannerService = require("./services/arbitrageScannerService");
-const feedRevalidationService = require("./services/feed/feedRevalidationService");
+const scannerService = require("./services/scannerV2Service");
 
-arbitrageScannerService.startScheduler();
-if (env.globalFeedV2Enabled) {
-  feedRevalidationService.startScheduler();
-}
+scannerService.startScheduler();
 
 const server = app.listen(env.port, () => {
   console.log(`API running on port ${env.port}`);
@@ -20,8 +16,7 @@ function shutdown(signal) {
 
   console.log(`Received ${signal}. Closing HTTP server...`);
 
-  feedRevalidationService.stopScheduler();
-  arbitrageScannerService.stopScheduler();
+  scannerService.stopScheduler();
 
   server.close(() => {
     console.log("HTTP server closed.");
