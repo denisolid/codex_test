@@ -16,9 +16,12 @@ test("normalizeRows defaults market_coverage_count to zero when missing", () => 
       marketHashName: "AWP | Neo-Noir (Field-Tested)",
       category: "weapon_skin"
     }
-  ]);
+  ], {
+    generationId: "generation-1"
+  });
 
   assert.equal(row.market_hash_name, "AWP | Neo-Noir (Field-Tested)");
+  assert.equal(row.catalog_generation_id, "generation-1");
   assert.equal(row.market_coverage_count, 0);
   assert.equal(row.enrichment_priority, 0);
   assert.equal(row.catalog_status, "shadow");
@@ -31,7 +34,9 @@ test("normalizeRows preserves explicit non-negative market_coverage_count", () =
       category: "case",
       marketCoverageCount: 4
     }
-  ]);
+  ], {
+    generationId: "generation-1"
+  });
 
   assert.equal(row.market_hash_name, "Chroma 3 Case");
   assert.equal(row.market_coverage_count, 4);
@@ -47,7 +52,9 @@ test("normalizeRows preserves knife and glove categories", () => {
       marketHashName: "★ Sport Gloves | Vice (Field-Tested)",
       category: "glove"
     }
-  ]);
+  ], {
+    generationId: "generation-1"
+  });
 
   assert.equal(knifeRow.category, "knife");
   assert.equal(gloveRow.category, "glove");
@@ -68,7 +75,9 @@ test("normalizeRows assigns candidate status defaults and enrichment flags", () 
       missingMarketCoverage: true,
       enrichmentPriority: 27.5
     }
-  ]);
+  ], {
+    generationId: "generation-1"
+  });
 
   assert.equal(eligibleRow.candidate_status, "eligible");
   assert.equal(eligibleRow.catalog_status, "scannable");

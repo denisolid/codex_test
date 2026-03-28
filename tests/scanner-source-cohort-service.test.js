@@ -7,204 +7,185 @@ process.env.SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY || "service-role"
 
 const marketSourceCatalogRepo = require("../src/repositories/marketSourceCatalogRepository")
+const marketUniverseRepo = require("../src/repositories/marketUniverseRepository")
 const scanSourceCohortService = require("../src/services/scanner/scanSourceCohortService")
-const {
-  SCAN_COHORT_PRIMARY_POOL_MULTIPLIER
-} = require("../src/services/scanner/config")
 
-test("scan source cohort loader stays on persisted hot/warm/cold path when primary cohorts are healthy", async () => {
+function buildUniverseRows(names = [], category = "weapon_skin", startRank = 1) {
+  return names.map((marketHashName, index) => ({
+    catalog_generation_id: "generation-active",
+    market_hash_name: marketHashName,
+    item_name: marketHashName,
+    category,
+    liquidity_rank: startRank + index,
+    is_active: true
+  }))
+}
+
+function buildCatalogRows(names = [], patch = {}) {
+  const nowIso = new Date().toISOString()
+  return names.map((marketHashName, index) => ({
+    market_hash_name: marketHashName,
+    item_name: marketHashName,
+    category: patch.category || "weapon_skin",
+    tradable: true,
+    is_active: true,
+    candidate_status: patch.candidate_status || "eligible",
+    scan_eligible: patch.scan_eligible == null ? true : patch.scan_eligible,
+    catalog_status: patch.catalog_status,
+    reference_price: 5 + index,
+    market_coverage_count: 3,
+    liquidity_rank: 200 - index,
+    volume_7d: 100,
+    maturity_score: 80,
+    snapshot_captured_at: nowIso,
+    quote_fetched_at: nowIso,
+    last_market_signal_at: nowIso
+  }))
+}
+
+test("scan source cohort loader reads the active generation universe and hydrates rows from catalog", async () => {
   const originals = {
-    listHotScanCohort: marketSourceCatalogRepo.listHotScanCohort,
-    listWarmScanCohort: marketSourceCatalogRepo.listWarmScanCohort,
-    listColdScanCohort: marketSourceCatalogRepo.listColdScanCohort,
-    listCandidatePool: marketSourceCatalogRepo.listCandidatePool,
-    listActiveTradable: marketSourceCatalogRepo.listActiveTradable
+    listActiveByLiquidityRank: marketUniverseRepo.listActiveByLiquidityRank,
+    listByMarketHashNames: marketSourceCatalogRepo.listByMarketHashNames
   }
 
   const batchSize = 8
-  marketSourceCatalogRepo.listHotScanCohort = async () =>
-    Array.from({ length: 8 }, (_, index) => ({
-      market_hash_name: `AK-47 | Redline (Field-Tested) #${index + 1}`,
-      category: "weapon_skin",
-      tradable: true,
-      is_active: true,
-      candidate_status: "eligible",
-      scan_eligible: true,
-      catalog_status: "scannable"
-    }))
-  marketSourceCatalogRepo.listWarmScanCohort = async () => [
-    ...Array.from({ length: 6 }, (_, index) => ({
-      market_hash_name: `Revolution Case #${index + 1}`,
-      category: "case",
-      tradable: true,
-      is_active: true,
-      candidate_status: "near_eligible",
-      scan_eligible: false,
-      catalog_status: "scannable"
-    })),
-    ...Array.from({ length: 6 }, (_, index) => ({
-      market_hash_name: `Stockholm 2021 Contenders Sticker Capsule #${index + 1}`,
-      category: "sticker_capsule",
-      tradable: true,
-      is_active: true,
-      candidate_status: "near_eligible",
-      scan_eligible: false,
-      catalog_status: "scannable"
-    }))
+  const weaponSkinNames = Array.from({ length: 8 }, (_, index) => `AK-47 | Redline #${index + 1}`)
+  const caseNames = Array.from({ length: 4 }, (_, index) => `Revolution Case #${index + 1}`)
+  const capsuleNames = Array.from(
+    { length: 4 },
+    (_, index) => `Stockholm 2021 Contenders Sticker Capsule #${index + 1}`
+  )
+  const universeRows = [
+    ...buildUniverseRows(weaponSkinNames, "weapon_skin", 1),
+    ...buildUniverseRows(caseNames, "case", 20),
+    ...buildUniverseRows(capsuleNames, "sticker_capsule", 40)
   ]
-  marketSourceCatalogRepo.listColdScanCohort = async () => []
-  marketSourceCatalogRepo.listCandidatePool = async () => []
-  marketSourceCatalogRepo.listActiveTradable = async () => []
+
+  marketUniverseRepo.listActiveByLiquidityRank = async () => universeRows
+  marketSourceCatalogRepo.listByMarketHashNames = async (marketHashNames = []) => {
+    const requested = new Set(marketHashNames)
+    return [
+      ...buildCatalogRows(
+        weaponSkinNames.filter((name) => requested.has(name)),
+        { category: "weapon_skin", candidate_status: "eligible", scan_eligible: true, catalog_status: "scannable" }
+      ),
+      ...buildCatalogRows(
+        caseNames.filter((name) => requested.has(name)),
+        { category: "case", candidate_status: "near_eligible", scan_eligible: false, catalog_status: "scannable" }
+      ),
+      ...buildCatalogRows(
+        capsuleNames.filter((name) => requested.has(name)),
+        { category: "sticker_capsule", candidate_status: "near_eligible", scan_eligible: false, catalog_status: "scannable" }
+      )
+    ]
+  }
 
   try {
     const result = await scanSourceCohortService.loadScanSource({ batchSize })
-    assert.equal(result.diagnostics.sourceMode, "persisted_cohorts")
+    assert.equal(result.diagnostics.sourceMode, "active_generation_universe")
     assert.equal(result.diagnostics.fallbackUsed, false)
+    assert.equal(result.diagnostics.universeRowsLoaded, universeRows.length)
+    assert.equal(result.diagnostics.catalogRowsResolved, universeRows.length)
     assert.deepEqual(result.diagnostics.missingCategoriesAfterPrimary, [])
-    assert.equal(
-      result.rows.length >= batchSize * SCAN_COHORT_PRIMARY_POOL_MULTIPLIER,
-      true
-    )
+    assert.equal(result.rows.length >= batchSize, true)
   } finally {
-    marketSourceCatalogRepo.listHotScanCohort = originals.listHotScanCohort
-    marketSourceCatalogRepo.listWarmScanCohort = originals.listWarmScanCohort
-    marketSourceCatalogRepo.listColdScanCohort = originals.listColdScanCohort
-    marketSourceCatalogRepo.listCandidatePool = originals.listCandidatePool
-    marketSourceCatalogRepo.listActiveTradable = originals.listActiveTradable
+    marketUniverseRepo.listActiveByLiquidityRank = originals.listActiveByLiquidityRank
+    marketSourceCatalogRepo.listByMarketHashNames = originals.listByMarketHashNames
   }
 })
 
-test("scan source cohort loader escalates to active tradable fallback only after candidate pool fallback fails", async () => {
+test("scan source cohort loader does not bypass the active universe when rows are missing or blocked", async () => {
   const originals = {
-    listHotScanCohort: marketSourceCatalogRepo.listHotScanCohort,
-    listWarmScanCohort: marketSourceCatalogRepo.listWarmScanCohort,
-    listColdScanCohort: marketSourceCatalogRepo.listColdScanCohort,
-    listCandidatePool: marketSourceCatalogRepo.listCandidatePool,
-    listActiveTradable: marketSourceCatalogRepo.listActiveTradable
+    listActiveByLiquidityRank: marketUniverseRepo.listActiveByLiquidityRank,
+    listByMarketHashNames: marketSourceCatalogRepo.listByMarketHashNames
   }
 
-  marketSourceCatalogRepo.listHotScanCohort = async () => [
-    {
-      market_hash_name: "AK-47 | Redline (Field-Tested)",
+  const universeRows = [
+    ...buildUniverseRows(["AK-47 | Slate"], "weapon_skin", 1),
+    ...buildUniverseRows(["Recoil Case"], "case", 2)
+  ]
+
+  marketUniverseRepo.listActiveByLiquidityRank = async () => universeRows
+  marketSourceCatalogRepo.listByMarketHashNames = async () => [
+    ...buildCatalogRows(["AK-47 | Slate"], {
       category: "weapon_skin",
-      tradable: true,
-      is_active: true,
       candidate_status: "eligible",
       scan_eligible: true,
       catalog_status: "scannable"
-    }
-  ]
-  marketSourceCatalogRepo.listWarmScanCohort = async () => []
-  marketSourceCatalogRepo.listColdScanCohort = async () => []
-  marketSourceCatalogRepo.listCandidatePool = async () => {
-    throw new Error("candidate_pool_failed")
-  }
-  marketSourceCatalogRepo.listActiveTradable = async () => [
-    {
-      market_hash_name: "Recoil Case",
-      category: "case",
-      tradable: true,
-      is_active: true,
-      candidate_status: "candidate",
+    }),
+    ...buildCatalogRows(["Shadow Extra Row"], {
+      category: "sticker_capsule",
+      candidate_status: "near_eligible",
       scan_eligible: false,
       catalog_status: "scannable"
-    }
+    })
   ]
 
   try {
     const result = await scanSourceCohortService.loadScanSource({ batchSize: 4 })
-    const fallbackCase = result.rows.find(
-      (row) =>
-        row.market_hash_name === "Recoil Case" &&
-        String(row.fallbackSource || "").toLowerCase() === "activetradable"
+    const names = result.rows.map((row) => row.market_hash_name)
+    assert.deepEqual(names, ["AK-47 | Slate"])
+    assert.equal(result.diagnostics.fallbackUsed, false)
+    assert.equal(result.diagnostics.universeRowsLoaded, 2)
+    assert.equal(result.diagnostics.catalogRowsResolved, 1)
+    assert.equal(result.diagnostics.universeRowsMissingCatalog, 1)
+    assert.equal(
+      result.diagnostics.fallbackReasons.includes("active_generation_universe_under_target"),
+      true
     )
-    assert.equal(Boolean(fallbackCase), true)
-    assert.equal(result.diagnostics.fallbackUsed, true)
-    assert.equal(result.diagnostics.cohortQueryFailures.candidatePool, true)
-    assert.equal(Number(result.diagnostics.fallbackRowsLoadedBySource.activeTradable || 0) >= 1, true)
   } finally {
-    marketSourceCatalogRepo.listHotScanCohort = originals.listHotScanCohort
-    marketSourceCatalogRepo.listWarmScanCohort = originals.listWarmScanCohort
-    marketSourceCatalogRepo.listColdScanCohort = originals.listColdScanCohort
-    marketSourceCatalogRepo.listCandidatePool = originals.listCandidatePool
-    marketSourceCatalogRepo.listActiveTradable = originals.listActiveTradable
+    marketUniverseRepo.listActiveByLiquidityRank = originals.listActiveByLiquidityRank
+    marketSourceCatalogRepo.listByMarketHashNames = originals.listByMarketHashNames
   }
 })
 
-test("scan source cohort loader still returns rows when catalog_status is missing or null", async () => {
+test("scan source cohort loader still normalizes null catalog status rows from the active universe hydration path", async () => {
   const originals = {
-    listHotScanCohort: marketSourceCatalogRepo.listHotScanCohort,
-    listWarmScanCohort: marketSourceCatalogRepo.listWarmScanCohort,
-    listColdScanCohort: marketSourceCatalogRepo.listColdScanCohort,
-    listCandidatePool: marketSourceCatalogRepo.listCandidatePool,
-    listActiveTradable: marketSourceCatalogRepo.listActiveTradable
+    listActiveByLiquidityRank: marketUniverseRepo.listActiveByLiquidityRank,
+    listByMarketHashNames: marketSourceCatalogRepo.listByMarketHashNames
   }
 
   const batchSize = 6
-  const requiredPrimaryPoolSize = batchSize * SCAN_COHORT_PRIMARY_POOL_MULTIPLIER
-  const warmCount = Math.max(requiredPrimaryPoolSize - batchSize, 2)
-  const caseWarmCount = Math.max(Math.ceil(warmCount / 2), 1)
-  const capsuleWarmCount = Math.max(warmCount - caseWarmCount, 1)
-  const nowIso = new Date().toISOString()
-  marketSourceCatalogRepo.listHotScanCohort = async () =>
-    Array.from({ length: 6 }, (_, index) => ({
-      market_hash_name: `AK-47 | Slate (Field-Tested) #${index + 1}`,
-      category: "weapon_skin",
-      tradable: true,
-      is_active: true,
-      candidate_status: "eligible",
-      scan_eligible: true,
-      catalog_status: index % 2 === 0 ? null : undefined,
-      reference_price: 8 + index,
-      market_coverage_count: 3,
-      snapshot_captured_at: nowIso,
-      quote_fetched_at: nowIso
-    }))
-  marketSourceCatalogRepo.listWarmScanCohort = async () => [
-    ...Array.from({ length: caseWarmCount }, (_, index) => ({
-      market_hash_name: `Revolution Case #${index + 1}`,
-      item_name: `Revolution Case #${index + 1}`,
-      category: "case",
-      tradable: true,
-      is_active: true,
-      candidate_status: "near_eligible",
-      scan_eligible: false,
-      catalog_status: null,
-      reference_price: 2.6,
-      market_coverage_count: 3,
-      snapshot_captured_at: nowIso,
-      quote_fetched_at: nowIso
-    })),
-    ...Array.from({ length: capsuleWarmCount }, (_, index) => ({
-      market_hash_name: `Stockholm 2021 Contenders Sticker Capsule #${index + 1}`,
-      category: "sticker_capsule",
-      tradable: true,
-      is_active: true,
-      candidate_status: "near_eligible",
-      scan_eligible: false,
-      reference_price: 3.1,
-      market_coverage_count: 3,
-      snapshot_captured_at: nowIso,
-      quote_fetched_at: nowIso
-    }))
+  const weaponSkinNames = Array.from({ length: 6 }, (_, index) => `AK-47 | Slate #${index + 1}`)
+  const caseNames = Array.from({ length: 4 }, (_, index) => `Fracture Case #${index + 1}`)
+  const capsuleNames = Array.from(
+    { length: 4 },
+    (_, index) => `Copenhagen 2024 Legends Sticker Capsule #${index + 1}`
+  )
+  marketUniverseRepo.listActiveByLiquidityRank = async () => [
+    ...buildUniverseRows(weaponSkinNames, "weapon_skin", 1),
+    ...buildUniverseRows(caseNames, "case", 20),
+    ...buildUniverseRows(capsuleNames, "sticker_capsule", 40)
   ]
-  marketSourceCatalogRepo.listColdScanCohort = async () => []
-  marketSourceCatalogRepo.listCandidatePool = async () => []
-  marketSourceCatalogRepo.listActiveTradable = async () => []
+  marketSourceCatalogRepo.listByMarketHashNames = async (marketHashNames = []) => {
+    const requested = new Set(marketHashNames)
+    return [
+      ...buildCatalogRows(
+        weaponSkinNames.filter((name) => requested.has(name)),
+        { category: "weapon_skin", candidate_status: "eligible", scan_eligible: true, catalog_status: null }
+      ),
+      ...buildCatalogRows(
+        caseNames.filter((name) => requested.has(name)),
+        { category: "case", candidate_status: "near_eligible", scan_eligible: false, catalog_status: null }
+      ),
+      ...buildCatalogRows(
+        capsuleNames.filter((name) => requested.has(name)),
+        { category: "sticker_capsule", candidate_status: "near_eligible", scan_eligible: false, catalog_status: undefined }
+      )
+    ]
+  }
 
   try {
     const result = await scanSourceCohortService.loadScanSource({ batchSize })
-    assert.equal(result.rows.length >= batchSize, true)
+    assert.equal(result.rows.length > 0, true)
     assert.equal(result.diagnostics.fallbackUsed, false)
     assert.equal(
       result.rows.every((row) => String(row?.catalog_status || "").toLowerCase() === "scannable"),
       true
     )
   } finally {
-    marketSourceCatalogRepo.listHotScanCohort = originals.listHotScanCohort
-    marketSourceCatalogRepo.listWarmScanCohort = originals.listWarmScanCohort
-    marketSourceCatalogRepo.listColdScanCohort = originals.listColdScanCohort
-    marketSourceCatalogRepo.listCandidatePool = originals.listCandidatePool
-    marketSourceCatalogRepo.listActiveTradable = originals.listActiveTradable
+    marketUniverseRepo.listActiveByLiquidityRank = originals.listActiveByLiquidityRank
+    marketSourceCatalogRepo.listByMarketHashNames = originals.listByMarketHashNames
   }
 })

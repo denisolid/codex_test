@@ -1,4 +1,5 @@
 const { supabaseAdmin } = require("../config/supabase")
+const catalogGenerationRepo = require("./catalogGenerationRepository")
 const AppError = require("../utils/AppError")
 
 const TABLE = "market_universe"
@@ -6,6 +7,10 @@ const MAX_LIMIT = 10000
 const SELECT_PAGE_SIZE = 1000
 const INSERT_BATCH_SIZE = 400
 const CATEGORY_SET = new Set(["weapon_skin", "case", "sticker_capsule", "knife", "glove"])
+
+function normalizeText(value) {
+  return String(value || "").trim()
+}
 
 function normalizeLimit(value, fallback = 300) {
   const parsed = Number(value)
@@ -28,6 +33,43 @@ function normalizeCategories(values = []) {
         .filter((value) => CATEGORY_SET.has(value))
     )
   )
+}
+
+function normalizeGenerationId(value) {
+  return normalizeText(value) || null
+}
+
+async function resolveGenerationSelection(options = {}) {
+  const explicitGenerationId = normalizeGenerationId(
+    options.generationId ?? options.catalogGenerationId
+  )
+  if (explicitGenerationId) {
+    return {
+      generationId: explicitGenerationId,
+      generation: null,
+      selectionBlocked: false
+    }
+  }
+
+  if (options.useActiveGeneration === false || options.includeAllGenerations === true) {
+    return {
+      generationId: null,
+      generation: null,
+      selectionBlocked: false
+    }
+  }
+
+  const requireOpportunityScanEnabled = options.requireOpportunityScanEnabled === true
+  const generation = await (requireOpportunityScanEnabled
+    ? catalogGenerationRepo.getActiveGeneration({ requireOpportunityScanEnabled: true })
+    : catalogGenerationRepo.getCurrentGeneration()
+  ).catch(() => null)
+  const generationId = normalizeGenerationId(generation?.id)
+  return {
+    generationId,
+    generation,
+    selectionBlocked: Boolean(requireOpportunityScanEnabled && !generationId)
+  }
 }
 
 async function selectWithPagination(buildQuery, limit, errorMessage = "market_universe_list_failed") {
@@ -60,14 +102,21 @@ async function selectWithPagination(buildQuery, limit, errorMessage = "market_un
 exports.listActiveByLiquidityRank = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 300)
   const categories = normalizeCategories(options.categories)
+  const { generationId, selectionBlocked } = await resolveGenerationSelection(options)
+  if (selectionBlocked || (options.useActiveGeneration !== false && !generationId)) return []
   return selectWithPagination(
     () => {
       let query = supabaseAdmin
         .from(TABLE)
-        .select("market_hash_name, item_name, category, subcategory, liquidity_rank, is_active, updated_at")
+        .select(
+          "catalog_generation_id, market_hash_name, item_name, category, subcategory, liquidity_rank, is_active, updated_at"
+        )
         .eq("is_active", true)
         .order("liquidity_rank", { ascending: true })
 
+      if (generationId) {
+        query = query.eq("catalog_generation_id", generationId)
+      }
       if (categories.length) {
         query = query.in("category", categories)
       }
@@ -78,7 +127,11 @@ exports.listActiveByLiquidityRank = async (options = {}) => {
   )
 }
 
-exports.replaceActiveUniverse = async (rows = []) => {
+exports.replaceActiveUniverse = async (rows = [], options = {}) => {
+  const { generationId } = await resolveGenerationSelection(options)
+  if (!generationId) {
+    throw new AppError("market_universe_generation_missing", 500)
+  }
   const payload = Array.isArray(rows)
     ? rows
         .map((row, index) => {
@@ -88,6 +141,7 @@ exports.replaceActiveUniverse = async (rows = []) => {
             String(row?.item_name || row?.itemName || marketHashName).trim() || marketHashName
           const liquidityRank = Number(row?.liquidity_rank || row?.liquidityRank || index + 1)
           return {
+            catalog_generation_id: generationId,
             market_hash_name: marketHashName,
             item_name: itemName,
             category: normalizeCategory(row?.category),
@@ -99,7 +153,11 @@ exports.replaceActiveUniverse = async (rows = []) => {
         .filter(Boolean)
     : []
 
-  const deactivateRes = await supabaseAdmin.from(TABLE).update({ is_active: false }).eq("is_active", true)
+  const deactivateRes = await supabaseAdmin
+    .from(TABLE)
+    .update({ is_active: false })
+    .eq("catalog_generation_id", generationId)
+    .eq("is_active", true)
   if (deactivateRes.error) {
     throw new AppError(deactivateRes.error.message, 500)
   }
@@ -116,7 +174,7 @@ exports.replaceActiveUniverse = async (rows = []) => {
     const chunk = payload.slice(index, index + INSERT_BATCH_SIZE)
     const { error } = await supabaseAdmin
       .from(TABLE)
-      .upsert(chunk, { onConflict: "market_hash_name" })
+      .upsert(chunk, { onConflict: "catalog_generation_id,market_hash_name" })
     if (error) {
       throw new AppError(error.message, 500)
     }
@@ -124,6 +182,7 @@ exports.replaceActiveUniverse = async (rows = []) => {
   }
 
   return {
+    generationId,
     deactivated: Number(deactivateRes.count || 0),
     upserted
   }

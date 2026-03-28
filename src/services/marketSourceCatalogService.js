@@ -6,6 +6,7 @@ const {
   marketSnapshotTtlMinutes
 } = require("../config/env")
 const sourceCatalogSeed = require("../config/marketSourceCatalogSeed")
+const catalogGenerationRepo = require("../repositories/catalogGenerationRepository")
 const marketSourceCatalogRepo = require("../repositories/marketSourceCatalogRepository")
 const marketUniverseRepo = require("../repositories/marketUniverseRepository")
 const marketSnapshotRepo = require("../repositories/marketSnapshotRepository")
@@ -419,6 +420,25 @@ const sourceCatalogState = {
   lastPreparedAt: 0,
   lastDiagnostics: null,
   lastSuccessfulDiagnostics: null
+}
+
+function buildCatalogGenerationSnapshot(generation = {}) {
+  if (!generation || typeof generation !== "object") return null
+  const id = normalizeText(generation?.id)
+  if (!id) return null
+  return {
+    id,
+    generationKey: normalizeText(generation?.generation_key || generation?.generationKey) || null,
+    status: normalizeText(generation?.status).toLowerCase() || null,
+    isActive: Boolean(generation?.is_active ?? generation?.isActive),
+    opportunityScanEnabled: Boolean(
+      generation?.opportunity_scan_enabled ?? generation?.opportunityScanEnabled
+    ),
+    activatedAt: toIsoStringOrNull(generation?.activated_at || generation?.activatedAt),
+    archivedAt: toIsoStringOrNull(generation?.archived_at || generation?.archivedAt),
+    sourceGenerationId:
+      normalizeText(generation?.source_generation_id || generation?.sourceGenerationId) || null
+  }
 }
 
 function isScannerScopeCategory(category = "") {
@@ -1733,6 +1753,7 @@ function buildSourceCatalogQuotasForCategories(targetSize, categories = CATEGORY
 function buildBaseDiagnostics() {
   return {
     generatedAt: new Date().toISOString(),
+    catalogGeneration: null,
     targetUniverseSize: DEFAULT_UNIVERSE_TARGET,
     sourceCatalog: {
       targetRows: SOURCE_CATALOG_LIMIT,
@@ -2162,6 +2183,9 @@ function resolveSeedBuilder(limit = SOURCE_CATALOG_LIMIT) {
 }
 
 async function ingestSourceCatalogSeeds(options = {}) {
+  const generationId = normalizeText(
+    options.generationId || options?.catalogGeneration?.id
+  )
   const scopedCategories = normalizeCatalogScopeCategories(options.categories)
   const scopedCategorySet = new Set(scopedCategories)
   const ingestExclusions = { ...BASE_INGEST_EXCLUDED_REASON_COUNTER }
@@ -2197,7 +2221,9 @@ async function ingestSourceCatalogSeeds(options = {}) {
     ingestExclusions[reason] += Number(count || 0)
   }
 
-  const seededRows = await marketSourceCatalogRepo.upsertRows(selection.rows)
+  const seededRows = await marketSourceCatalogRepo.upsertRows(selection.rows, {
+    generationId: generationId || null
+  })
   const skins = await ensureSkinsForCatalogNames(selection.rows.map((row) => row.marketHashName))
 
   return {
@@ -3029,6 +3055,9 @@ function resolvePriorityEntryForCatalogRow(row = {}, priorityByKey = new Map()) 
 }
 
 async function enrichSourceCatalog(options = {}) {
+  const generationId = normalizeText(
+    options.generationId || options?.catalogGeneration?.id
+  )
   const scopedCategories = normalizeCatalogScopeCategories(options?.categories)
   const priorityCoverage =
     options?.priorityCoverage && typeof options.priorityCoverage === "object"
@@ -3039,7 +3068,8 @@ async function enrichSourceCatalog(options = {}) {
     ? options.rows
     : await marketSourceCatalogRepo.listActiveTradable({
         limit: 12000,
-        categories: scopedCategories
+        categories: scopedCategories,
+        generationId: generationId || null
       })
   if (!rows.length) {
     return {
@@ -3585,7 +3615,9 @@ async function enrichSourceCatalog(options = {}) {
   }
 
   if (updates.length) {
-    await marketSourceCatalogRepo.upsertRows(updates)
+    await marketSourceCatalogRepo.upsertRows(updates, {
+      generationId: generationId || null
+    })
   }
 
   const excludedRowsByReason = {
@@ -3848,10 +3880,17 @@ function countCatalogRowsByCategory(rows = []) {
 async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, options = {}) {
   const safeTarget = Math.max(Math.round(Number(targetSize || DEFAULT_UNIVERSE_TARGET)), 1)
   const scopedCategories = normalizeCatalogScopeCategories(options.categories)
+  const catalogGeneration =
+    options.catalogGeneration && typeof options.catalogGeneration === "object"
+      ? options.catalogGeneration
+      : await catalogGenerationRepo.getCurrentGeneration().catch(() => null)
+  const catalogGenerationSnapshot = buildCatalogGenerationSnapshot(catalogGeneration)
+  const generationId = normalizeText(options.generationId || catalogGenerationSnapshot?.id)
   const strictEligibleRows = normalizeCatalogCandidateRows(
     await marketSourceCatalogRepo.listScanEligible({
       limit: Math.max(SOURCE_CATALOG_LIMIT, safeTarget * 3),
-      categories: scopedCategories
+      categories: scopedCategories,
+      generationId: generationId || null
     }),
     "strict_eligible"
   )
@@ -3859,6 +3898,7 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, 
     await marketSourceCatalogRepo.listCandidatePool({
       limit: Math.max(SOURCE_CATALOG_LIMIT, safeTarget * 3),
       categories: scopedCategories,
+      generationId: generationId || null,
       candidateStatuses: [
         CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE,
         CATALOG_CANDIDATE_STATUS.ENRICHING,
@@ -3936,7 +3976,9 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, 
   let existingUniverseRows = []
   try {
     existingUniverseRows = await marketUniverseRepo.listActiveByLiquidityRank({
-      limit: universeComparisonLimit
+      limit: universeComparisonLimit,
+      categories: scopedCategories,
+      generationId: generationId || null
     })
   } catch (_err) {
     existingUniverseRows = []
@@ -3945,9 +3987,11 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, 
   const unchangedUniverse =
     existingUniverseRows.length > 0 && isSameUniverseRows(existingUniverseRows, normalizedUniverseRows)
   const persist = unchangedUniverse
-    ? { deactivated: 0, upserted: 0, skipped: true }
+    ? { generationId: generationId || null, deactivated: 0, upserted: 0, skipped: true }
     : {
-        ...(await marketUniverseRepo.replaceActiveUniverse(normalizedUniverseRows)),
+        ...(await marketUniverseRepo.replaceActiveUniverse(normalizedUniverseRows, {
+          generationId: generationId || null
+        })),
         skipped: false
       }
   const quotaShortfallByCategory = buildCategoryNumberMap()
@@ -3965,6 +4009,8 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, 
   }
 
   return {
+    catalogGeneration: catalogGenerationSnapshot,
+    catalogGenerationId: generationId || null,
     targetUniverseSize: safeTarget,
     eligibleRows: strictEligibleRows.length,
     nearEligibleRows: nearEligibleRows.length,
@@ -4004,6 +4050,10 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, 
 
 async function runPipeline(options = {}) {
   const startedAt = Date.now()
+  const catalogGeneration =
+    options.catalogGeneration && typeof options.catalogGeneration === "object"
+      ? options.catalogGeneration
+      : await catalogGenerationRepo.getCurrentGeneration().catch(() => null)
   const scopedCategories = normalizeCatalogScopeCategories(options.categories)
   const fullScope = isFullCatalogScope(scopedCategories)
   const targetUniverseSize = Math.max(
@@ -4011,6 +4061,7 @@ async function runPipeline(options = {}) {
     1
   )
   const base = buildBaseDiagnostics()
+  base.catalogGeneration = buildCatalogGenerationSnapshot(catalogGeneration)
   base.targetUniverseSize = targetUniverseSize
   base.scopeCategories = scopedCategories
   base.sourceCatalog.sourceCatalogQuotaTargetByCategory = buildSourceCatalogQuotasForCategories(
@@ -4023,7 +4074,11 @@ async function runPipeline(options = {}) {
     scopedCategories
   )
 
-  const ingest = await ingestSourceCatalogSeeds({ categories: scopedCategories })
+  const ingest = await ingestSourceCatalogSeeds({
+    categories: scopedCategories,
+    catalogGeneration,
+    generationId: catalogGeneration?.id || null
+  })
   const priorityCoverage = await catalogPriorityCoverageService
     .syncPriorityCoverageSet({
       allowCatalogInsert:
@@ -4045,10 +4100,14 @@ async function runPipeline(options = {}) {
     }))
   const sourceCoverage = await enrichSourceCatalog({
     priorityCoverage,
-    categories: scopedCategories
+    categories: scopedCategories,
+    catalogGeneration,
+    generationId: catalogGeneration?.id || null
   })
   const universeBuild = await rebuildUniverseFromCatalog(targetUniverseSize, {
-    categories: scopedCategories
+    categories: scopedCategories,
+    catalogGeneration,
+    generationId: catalogGeneration?.id || null
   })
 
   return {
@@ -4259,13 +4318,20 @@ async function prepareSourceCatalog(options = {}) {
   const targetUniverseSize = Number(options.targetUniverseSize || DEFAULT_UNIVERSE_TARGET)
   const scopedCategories = normalizeCatalogScopeCategories(options.categories)
   const fullScope = isFullCatalogScope(scopedCategories)
+  const currentGeneration = await catalogGenerationRepo.getCurrentGeneration().catch(() => null)
+  const currentGenerationSnapshot = buildCatalogGenerationSnapshot(currentGeneration)
+  const currentGenerationId = normalizeText(currentGenerationSnapshot?.id)
+  const cachedGenerationId = normalizeText(sourceCatalogState.lastDiagnostics?.catalogGeneration?.id)
+  const generationChanged =
+    Boolean(currentGenerationId || cachedGenerationId) && currentGenerationId !== cachedGenerationId
 
   if (!fullScope) {
     try {
       return await runPipeline({
         targetUniverseSize,
         categories: scopedCategories,
-        allowCatalogInsert: false
+        allowCatalogInsert: false,
+        catalogGeneration: currentGeneration
       })
     } catch (err) {
       const safeTarget = Math.max(
@@ -4279,7 +4345,8 @@ async function prepareSourceCatalog(options = {}) {
         refreshed: false,
         skipped: false,
         error: String(err?.message || "source_catalog_pipeline_failed"),
-        scopeCategories: scopedCategories
+        scopeCategories: scopedCategories,
+        catalogGeneration: currentGenerationSnapshot
       }
       fallback.sourceCatalog.sourceCatalogQuotaTargetByCategory =
         buildSourceCatalogQuotasForCategories(SOURCE_CATALOG_LIMIT, scopedCategories)
@@ -4295,6 +4362,7 @@ async function prepareSourceCatalog(options = {}) {
   if (
     !shouldRefresh(forceRefresh) &&
     sourceCatalogState.lastDiagnostics &&
+    !generationChanged &&
     !shouldBypassSkipForRecovery(sourceCatalogState.lastDiagnostics, targetUniverseSize)
   ) {
     return {
@@ -4308,7 +4376,10 @@ async function prepareSourceCatalog(options = {}) {
     return sourceCatalogState.inFlight
   }
 
-  sourceCatalogState.inFlight = runPipeline({ targetUniverseSize })
+  sourceCatalogState.inFlight = runPipeline({
+    targetUniverseSize,
+    catalogGeneration: currentGeneration
+  })
     .then((diagnostics) => {
       sourceCatalogState.lastPreparedAt = Date.now()
       sourceCatalogState.lastDiagnostics = diagnostics
@@ -4329,7 +4400,8 @@ async function prepareSourceCatalog(options = {}) {
           refreshed: false,
           skipped: true,
           error: errorMessage,
-          staleDiagnosticsRetained: true
+          staleDiagnosticsRetained: true,
+          catalogGeneration: currentGenerationSnapshot
         }
         sourceCatalogState.lastPreparedAt = Date.now()
         sourceCatalogState.lastDiagnostics = degraded
@@ -4342,7 +4414,8 @@ async function prepareSourceCatalog(options = {}) {
         targetUniverseSize: safeTarget,
         refreshed: false,
         skipped: false,
-        error: errorMessage
+        error: errorMessage,
+        catalogGeneration: currentGenerationSnapshot
       }
       fallback.universeBuild = {
         ...fallback.universeBuild,
@@ -4372,7 +4445,8 @@ async function getCatalogRowsByMarketHashNames(marketHashNames = [], options = {
   return marketSourceCatalogRepo.listByMarketHashNames(marketHashNames, {
     categories: Array.isArray(options.categories) ? options.categories : CATEGORY_PRIORITY,
     activeOnly: options.activeOnly !== false,
-    tradableOnly: options.tradableOnly !== false
+    tradableOnly: options.tradableOnly !== false,
+    generationId: normalizeText(options.generationId || options?.catalogGeneration?.id) || null
   })
 }
 

@@ -1,4 +1,5 @@
 const marketSourceCatalogRepo = require("../../repositories/marketSourceCatalogRepository")
+const marketUniverseRepo = require("../../repositories/marketUniverseRepository")
 const marketSourceCatalogService = require("../marketSourceCatalogService")
 const alphaHotUniverseService = require("./alphaHotUniverseService")
 const {
@@ -118,6 +119,35 @@ function dedupeRows(rows = []) {
   return deduped
 }
 
+function buildUniverseRowMap(rows = []) {
+  const map = new Map()
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
+    if (!marketHashName) continue
+    map.set(marketHashName, row)
+  }
+  return map
+}
+
+function sortRowsByUniverseRank(rows = [], universeRowsByName = new Map()) {
+  return [...(Array.isArray(rows) ? rows : [])].sort((left, right) => {
+    const leftUniverse = universeRowsByName.get(
+      normalizeText(left?.market_hash_name || left?.marketHashName)
+    )
+    const rightUniverse = universeRowsByName.get(
+      normalizeText(right?.market_hash_name || right?.marketHashName)
+    )
+    const leftRank = Number(leftUniverse?.liquidity_rank || leftUniverse?.liquidityRank || Infinity)
+    const rightRank = Number(
+      rightUniverse?.liquidity_rank || rightUniverse?.liquidityRank || Infinity
+    )
+    if (leftRank !== rightRank) return leftRank - rightRank
+    return normalizeText(left?.market_hash_name || left?.marketHashName).localeCompare(
+      normalizeText(right?.market_hash_name || right?.marketHashName)
+    )
+  })
+}
+
 function mergeRows(baseRows = [], nextRows = []) {
   return dedupeRows([...(Array.isArray(baseRows) ? baseRows : []), ...(Array.isArray(nextRows) ? nextRows : [])])
 }
@@ -139,7 +169,7 @@ async function loadScanSource(options = {}) {
   const categories = Array.isArray(options.categories) ? options.categories : SCAN_COHORT_CATEGORIES
   const cohortLimit = Math.max(batchSize * 4, batchSize * SCAN_COHORT_PRIMARY_POOL_MULTIPLIER, 24)
   const diagnostics = {
-    sourceMode: "persisted_cohorts",
+    sourceMode: "active_generation_universe",
     fallbackUsed: false,
     fallbackReasons: [],
     primaryCohortCounts: {
@@ -150,6 +180,8 @@ async function loadScanSource(options = {}) {
     primaryCategoryCounts: emptyCategoryMap(),
     missingCategoriesAfterPrimary: [],
     cohortQueryFailures: {
+      universe: false,
+      catalog: false,
       hot: false,
       warm: false,
       cold: false,
@@ -165,40 +197,92 @@ async function loadScanSource(options = {}) {
       activeTradable: 0
     },
     fallbackSelectedShare: 0,
-    degradedScannerHealth: false
+    degradedScannerHealth: false,
+    universeRowsLoaded: 0,
+    catalogRowsResolved: 0,
+    universeRowsMissingCatalog: 0,
+    universeRowsDroppedBeforeAlpha: 0
   }
 
-  const [hotResult, warmResult, coldResult] = await Promise.allSettled([
-    marketSourceCatalogRepo.listHotScanCohort({
+  let universeRows = []
+  try {
+    universeRows = await marketUniverseRepo.listActiveByLiquidityRank({
       limit: cohortLimit,
-      categories
-    }),
-    marketSourceCatalogRepo.listWarmScanCohort({
-      limit: cohortLimit,
-      categories
-    }),
-    marketSourceCatalogRepo.listColdScanCohort({
-      limit: cohortLimit,
-      categories
+      categories,
+      requireOpportunityScanEnabled: true
     })
-  ])
+  } catch (_err) {
+    diagnostics.cohortQueryFailures.universe = true
+    throw _err
+  }
 
-  if (hotResult.status === "rejected") diagnostics.cohortQueryFailures.hot = true
-  if (warmResult.status === "rejected") diagnostics.cohortQueryFailures.warm = true
-  if (coldResult.status === "rejected") diagnostics.cohortQueryFailures.cold = true
+  diagnostics.universeRowsLoaded = universeRows.length
+  if (!universeRows.length) {
+    diagnostics.fallbackReasons.push("active_generation_universe_empty")
+    diagnostics.missingCategoriesAfterPrimary = [...categories]
+    return {
+      rows: [],
+      diagnostics
+    }
+  }
 
-  const hotRows = decorateRows(
-    resolveSettledRows(hotResult).filter((row) => isHotCohortRow(row)),
-    { scanCohort: "hot", sourceOrigin: "hot" }
+  const universeRowsByName = buildUniverseRowMap(universeRows)
+  const universeMarketHashNames = universeRows
+    .map((row) => normalizeText(row?.market_hash_name || row?.marketHashName))
+    .filter(Boolean)
+
+  let catalogRows = []
+  try {
+    catalogRows = await marketSourceCatalogRepo.listByMarketHashNames(universeMarketHashNames, {
+      categories,
+      requireOpportunityScanEnabled: true
+    })
+  } catch (_err) {
+    diagnostics.cohortQueryFailures.catalog = true
+    throw _err
+  }
+
+  const matchedCatalogRows = catalogRows.filter((row) =>
+    universeRowsByName.has(normalizeText(row?.market_hash_name || row?.marketHashName))
   )
-  const warmRows = decorateRows(
-    resolveSettledRows(warmResult).filter((row) => isWarmCohortRow(row)),
-    { scanCohort: "warm", sourceOrigin: "warm" }
+  diagnostics.catalogRowsResolved = matchedCatalogRows.length
+  diagnostics.universeRowsMissingCatalog = Math.max(
+    universeMarketHashNames.length - matchedCatalogRows.length,
+    0
   )
-  const coldRows = decorateRows(
-    resolveSettledRows(coldResult).filter((row) => isColdProbeRow(row)),
-    { scanCohort: "cold", sourceOrigin: "cold" }
+
+  const hydratedRows = sortRowsByUniverseRank(
+    matchedCatalogRows.map((row) => {
+      const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
+      const universeRow = universeRowsByName.get(marketHashName)
+      return {
+        ...applyCatalogStatusCompatibility(row),
+        liquidity_rank:
+          universeRow?.liquidity_rank ??
+          universeRow?.liquidityRank ??
+          row?.liquidity_rank ??
+          row?.liquidityRank ??
+          null,
+        universe_liquidity_rank:
+          universeRow?.liquidity_rank ?? universeRow?.liquidityRank ?? null,
+        sourceOrigin: "active_universe"
+      }
+    }),
+    universeRowsByName
   )
+
+  const hotRows = decorateRows(hydratedRows.filter((row) => isHotCohortRow(row)), {
+    scanCohort: "hot",
+    sourceOrigin: "active_universe"
+  })
+  const warmRows = decorateRows(hydratedRows.filter((row) => isWarmCohortRow(row)), {
+    scanCohort: "warm",
+    sourceOrigin: "active_universe"
+  })
+  const coldRows = decorateRows(hydratedRows.filter((row) => isColdProbeRow(row)), {
+    scanCohort: "cold",
+    sourceOrigin: "active_universe"
+  })
 
   diagnostics.primaryCohortCounts.hot = hotRows.length
   diagnostics.primaryCohortCounts.warm = warmRows.length
@@ -207,92 +291,17 @@ async function loadScanSource(options = {}) {
   let rows = mergeRows(hotRows, warmRows)
   rows = mergeRows(rows, coldRows)
 
+  diagnostics.universeRowsDroppedBeforeAlpha = Math.max(hydratedRows.length - rows.length, 0)
   diagnostics.primaryCategoryCounts = countRowsByCategory(rows)
   diagnostics.missingCategoriesAfterPrimary = listMissingCategories(diagnostics.primaryCategoryCounts)
 
-  if (diagnostics.cohortQueryFailures.hot) diagnostics.fallbackReasons.push("hot_query_failed")
-  if (diagnostics.cohortQueryFailures.warm) diagnostics.fallbackReasons.push("warm_query_failed")
-  if (diagnostics.cohortQueryFailures.cold) diagnostics.fallbackReasons.push("cold_query_failed")
   if (rows.length < batchSize * SCAN_COHORT_PRIMARY_POOL_MULTIPLIER) {
-    diagnostics.fallbackReasons.push("primary_pool_under_target")
+    diagnostics.fallbackReasons.push("active_generation_universe_under_target")
   }
   if (diagnostics.missingCategoriesAfterPrimary.length) {
     diagnostics.fallbackReasons.push("missing_category_coverage")
   }
-
-  if (diagnostics.fallbackReasons.length) {
-    diagnostics.fallbackUsed = true
-    const fallbackCategories = diagnostics.missingCategoriesAfterPrimary.length
-      ? diagnostics.missingCategoriesAfterPrimary
-      : categories
-    try {
-      const candidatePoolRows = filterScannableFallbackRows(
-        await marketSourceCatalogRepo.listCandidatePool({
-          limit: Math.max(batchSize, 20),
-          categories: fallbackCategories,
-          candidateStatuses: ["near_eligible", "enriching", "candidate"],
-          catalogStatuses: ["scannable"]
-        })
-      )
-      const mergedRows = mergeRows(
-        rows,
-        decorateRows(candidatePoolRows, {
-          scanCohort: "fallback",
-          sourceOrigin: "fallback",
-          fallbackSource: "candidatePool"
-        })
-      )
-      diagnostics.fallbackRowsLoadedBySource.candidatePool = Math.max(
-        mergedRows.length - rows.length,
-        0
-      )
-      rows = mergedRows
-    } catch (_err) {
-      diagnostics.cohortQueryFailures.candidatePool = true
-      diagnostics.fallbackReasons.push("candidate_pool_query_failed")
-    }
-
-    const categoryCountsAfterCandidatePool = countRowsByCategory(rows)
-    const missingAfterCandidatePool = listMissingCategories(categoryCountsAfterCandidatePool)
-    const needsActiveTradableFallback =
-      diagnostics.cohortQueryFailures.candidatePool ||
-      rows.length < batchSize ||
-      missingAfterCandidatePool.length > 0
-
-    if (needsActiveTradableFallback) {
-      try {
-        const activeTradableRows = filterScannableFallbackRows(
-          await marketSourceCatalogRepo.listActiveTradable({
-            limit: Math.max(batchSize, 20),
-            categories: missingAfterCandidatePool.length ? missingAfterCandidatePool : fallbackCategories,
-            catalogStatuses: ["scannable"]
-          })
-        )
-        const mergedRows = mergeRows(
-          rows,
-          decorateRows(activeTradableRows, {
-            scanCohort: "fallback",
-            sourceOrigin: "fallback",
-            fallbackSource: "activeTradable"
-          })
-        )
-        diagnostics.fallbackRowsLoadedBySource.activeTradable = Math.max(
-          mergedRows.length - rows.length,
-          0
-        )
-        rows = mergedRows
-      } catch (_err) {
-        diagnostics.cohortQueryFailures.activeTradable = true
-        diagnostics.fallbackReasons.push("active_tradable_query_failed")
-      }
-    }
-  }
-
   diagnostics.fallbackReasons = Array.from(new Set(diagnostics.fallbackReasons))
-  diagnostics.degradedScannerHealth =
-    diagnostics.cohortQueryFailures.hot ||
-    diagnostics.cohortQueryFailures.warm ||
-    diagnostics.cohortQueryFailures.cold
 
   const alphaHotUniverse = alphaHotUniverseService.buildAlphaHotUniverse({
     rows,
