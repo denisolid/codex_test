@@ -6,6 +6,7 @@ process.env.SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "anon"
 process.env.SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY || "service-role"
 
+const catalogGenerationRepo = require("../src/repositories/catalogGenerationRepository")
 const globalActiveOpportunityRepo = require("../src/repositories/globalActiveOpportunityRepository")
 const scannerRunRepo = require("../src/repositories/scannerRunRepository")
 const planService = require("../src/services/planService")
@@ -15,6 +16,7 @@ const scannerV2Service = require("../src/services/scannerV2Service")
 
 test("scannerV2Service.getFeed reads active opportunities and preserves premium locks", async () => {
   const originals = {
+    getCurrentGeneration: catalogGenerationRepo.getCurrentGeneration,
     listFeedByCursor: globalActiveOpportunityRepo.listFeedByCursor,
     countFeed: globalActiveOpportunityRepo.countFeed,
     getLatestRun: scannerRunRepo.getLatestRun,
@@ -25,6 +27,14 @@ test("scannerV2Service.getFeed reads active opportunities and preserves premium 
 
   let feedQuery = null
 
+  catalogGenerationRepo.getCurrentGeneration = async () => ({
+    id: "generation-active",
+    generation_key: "catalog-reset-active",
+    status: "active",
+    is_active: true,
+    opportunity_scan_enabled: true,
+    activated_at: "2026-03-27T11:00:00.000Z"
+  })
   globalActiveOpportunityRepo.listFeedByCursor = async (query = {}) => {
     feedQuery = query
     return [
@@ -94,6 +104,7 @@ test("scannerV2Service.getFeed reads active opportunities and preserves premium 
     assert.equal(result.opportunities[0].previewBuyPrice, 1000)
     assert.equal(result.opportunities[0].buyMarket, null)
   } finally {
+    catalogGenerationRepo.getCurrentGeneration = originals.getCurrentGeneration
     globalActiveOpportunityRepo.listFeedByCursor = originals.listFeedByCursor
     globalActiveOpportunityRepo.countFeed = originals.countFeed
     scannerRunRepo.getLatestRun = originals.getLatestRun
@@ -103,8 +114,9 @@ test("scannerV2Service.getFeed reads active opportunities and preserves premium 
   }
 })
 
-test("scannerV2Service.startScheduler owns v2 timers and feed revalidation", () => {
+test("scannerV2Service.startScheduler owns v2 timers and feed revalidation", async () => {
   const originals = {
+    getCurrentGeneration: catalogGenerationRepo.getCurrentGeneration,
     startScheduler: feedRevalidationService.startScheduler,
     stopScheduler: feedRevalidationService.stopScheduler,
     runtime: legacyScannerService.__runtime
@@ -118,6 +130,14 @@ test("scannerV2Service.startScheduler owns v2 timers and feed revalidation", () 
     revalidationStarts += 1
   }
   feedRevalidationService.stopScheduler = () => null
+  catalogGenerationRepo.getCurrentGeneration = async () => ({
+    id: "generation-active",
+    generation_key: "catalog-reset-active",
+    status: "active",
+    is_active: true,
+    opportunity_scan_enabled: true,
+    activated_at: "2026-03-27T11:00:00.000Z"
+  })
   legacyScannerService.__runtime = {
     enqueueScan: async () => {
       scanEnqueueCalls += 1
@@ -131,6 +151,7 @@ test("scannerV2Service.startScheduler owns v2 timers and feed revalidation", () 
 
   try {
     const result = scannerV2Service.startScheduler()
+    await new Promise((resolve) => setTimeout(resolve, 0))
 
     assert.equal(result.engine, "scanner_v2")
     assert.equal(result.feedRevalidationStarted, true)
@@ -139,8 +160,56 @@ test("scannerV2Service.startScheduler owns v2 timers and feed revalidation", () 
     assert.equal(enrichmentEnqueueCalls, 1)
   } finally {
     scannerV2Service.stopScheduler()
+    catalogGenerationRepo.getCurrentGeneration = originals.getCurrentGeneration
     feedRevalidationService.startScheduler = originals.startScheduler
     feedRevalidationService.stopScheduler = originals.stopScheduler
+    legacyScannerService.__runtime = originals.runtime
+  }
+})
+
+test("scannerV2Service blocks manual opportunity scans while the active generation is enrichment-only", async () => {
+  const originals = {
+    getCurrentGeneration: catalogGenerationRepo.getCurrentGeneration,
+    runtime: legacyScannerService.__runtime
+  }
+
+  let scanEnqueueCalls = 0
+
+  catalogGenerationRepo.getCurrentGeneration = async () => ({
+    id: "generation-rebuild",
+    generation_key: "catalog-reset-rebuild",
+    status: "active",
+    is_active: true,
+    opportunity_scan_enabled: false,
+    activated_at: "2026-03-27T11:00:00.000Z"
+  })
+  legacyScannerService.__runtime = {
+    enqueueScan: async () => {
+      scanEnqueueCalls += 1
+      return { scanRunId: "scan-run-1", alreadyRunning: false }
+    },
+    enqueueEnrichment: async () => ({ scanRunId: "enrichment-run-1", alreadyRunning: false })
+  }
+
+  try {
+    const result = await scannerV2Service.triggerRefresh({
+      jobType: "opportunity_scan",
+      entitlements: {
+        planTier: "pro",
+        advancedFilters: true,
+        visibleFeedLimit: 200,
+        delayedSignals: false,
+        signalDelayMinutes: 0,
+        manualRefreshCooldownMs: 0
+      }
+    })
+
+    const opportunityJob = result.jobs?.opportunity_scan
+    assert.equal(scanEnqueueCalls, 0)
+    assert.equal(opportunityJob?.status, "blocked_generation_not_ready")
+    assert.equal(opportunityJob?.catalogGeneration?.id, "generation-rebuild")
+  } finally {
+    catalogGenerationRepo.getCurrentGeneration = originals.getCurrentGeneration
     legacyScannerService.__runtime = originals.runtime
   }
 })

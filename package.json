@@ -8,6 +8,7 @@
     "backend:start": "node src/server.js",
     "scanner:cron": "node scripts/trigger-arbitrage-refresh.js",
     "scanner:recover": "node scripts/scanner-recovery.js --wait",
+    "catalog:rebuild": "node scripts/catalog-generation-rebuild.js",
     "test": "node --test tests/*.test.js",
     "security:gitleaks": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-gitleaks.ps1",
     "security:gitleaks:staged": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-gitleaks.ps1 -Staged",

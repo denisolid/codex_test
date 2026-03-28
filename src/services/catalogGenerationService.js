@@ -1,0 +1,641 @@
+const AppError = require("../utils/AppError")
+const catalogGenerationRepo = require("../repositories/catalogGenerationRepository")
+const marketSourceCatalogRepo = require("../repositories/marketSourceCatalogRepository")
+const marketUniverseRepo = require("../repositories/marketUniverseRepository")
+const marketSourceCatalogService = require("./marketSourceCatalogService")
+const {
+  DEFAULT_UNIVERSE_LIMIT,
+  OPPORTUNITY_BATCH_RUNTIME_TARGET,
+  SCAN_COHORT_CATEGORIES
+} = require("./scanner/config")
+
+const CATALOG_SCOPE_CATEGORIES = Object.freeze([
+  "weapon_skin",
+  "case",
+  "sticker_capsule",
+  "knife",
+  "glove"
+])
+const CANDIDATE_STATUS_SET = new Set([
+  "candidate",
+  "enriching",
+  "near_eligible",
+  "eligible",
+  "rejected"
+])
+const CATALOG_STATUS_SET = new Set(["scannable", "shadow", "blocked"])
+
+function normalizeText(value) {
+  return String(value || "").trim()
+}
+
+function toIsoOrNull(value) {
+  const text = normalizeText(value)
+  if (!text) return null
+  const timestamp = new Date(text).getTime()
+  if (!Number.isFinite(timestamp)) return null
+  return new Date(timestamp).toISOString()
+}
+
+function normalizeBoolean(value, fallback = false) {
+  if (typeof value === "boolean") return value
+  const text = normalizeText(value).toLowerCase()
+  if (!text) return fallback
+  if (["1", "true", "yes", "on", "auto"].includes(text)) return true
+  if (["0", "false", "no", "off"].includes(text)) return false
+  return fallback
+}
+
+function normalizeInteger(value, fallback, min = 0) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(Math.round(parsed), min)
+}
+
+function normalizeCategories(values = []) {
+  const requested = Array.isArray(values) ? values : [values]
+  const normalized = Array.from(
+    new Set(
+      requested
+        .map((value) => normalizeText(value).toLowerCase())
+        .filter((value) => CATALOG_SCOPE_CATEGORIES.includes(value))
+    )
+  )
+  return normalized.length ? normalized : CATALOG_SCOPE_CATEGORIES.slice()
+}
+
+function normalizeCandidateStatus(value) {
+  const text = normalizeText(value).toLowerCase()
+  return CANDIDATE_STATUS_SET.has(text) ? text : "candidate"
+}
+
+function normalizeCatalogStatus(value) {
+  const text = normalizeText(value).toLowerCase()
+  return CATALOG_STATUS_SET.has(text) ? text : "shadow"
+}
+
+function buildGenerationSnapshot(generation = {}) {
+  if (!generation || typeof generation !== "object") return null
+  const id = normalizeText(generation?.id)
+  if (!id) return null
+  return {
+    id,
+    generationKey: normalizeText(generation?.generation_key || generation?.generationKey) || null,
+    status: normalizeText(generation?.status).toLowerCase() || null,
+    isActive: Boolean(generation?.is_active ?? generation?.isActive),
+    opportunityScanEnabled: Boolean(
+      generation?.opportunity_scan_enabled ?? generation?.opportunityScanEnabled
+    ),
+    activatedAt: toIsoOrNull(generation?.activated_at || generation?.activatedAt),
+    archivedAt: toIsoOrNull(generation?.archived_at || generation?.archivedAt),
+    sourceGenerationId:
+      normalizeText(generation?.source_generation_id || generation?.sourceGenerationId) || null,
+    diagnosticsSummary:
+      generation?.diagnostics_summary && typeof generation.diagnostics_summary === "object"
+        ? generation.diagnostics_summary
+        : generation?.diagnosticsSummary && typeof generation.diagnosticsSummary === "object"
+          ? generation.diagnosticsSummary
+          : {}
+  }
+}
+
+function buildCategorySummaryMap() {
+  return Object.fromEntries(
+    CATALOG_SCOPE_CATEGORIES.map((category) => [
+      category,
+      {
+        totalRows: 0,
+        tradableRows: 0,
+        scannerSourceSize: 0,
+        eligibleRows: 0,
+        nearEligibleRows: 0,
+        enrichingRows: 0,
+        candidateRows: 0,
+        rejectedRows: 0,
+        blockedRows: 0,
+        shadowRows: 0
+      }
+    ])
+  )
+}
+
+function buildStatusSummaryMap(keys = []) {
+  return Object.fromEntries((Array.isArray(keys) ? keys : []).map((key) => [key, 0]))
+}
+
+function buildTopCounts(counter = {}, limit = 5) {
+  return Object.entries(counter || {})
+    .filter(([, count]) => Number(count || 0) > 0)
+    .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+    .slice(0, Math.max(Number(limit || 0), 0))
+    .map(([key, count]) => ({
+      key,
+      count: Number(count || 0)
+    }))
+}
+
+function summarizeCoverageRows(rows = [], generation = null, options = {}) {
+  const scopedCategories = normalizeCategories(options.categories)
+  const byCategory = buildCategorySummaryMap()
+  const candidateStatusCounts = buildStatusSummaryMap([
+    "candidate",
+    "enriching",
+    "near_eligible",
+    "eligible",
+    "rejected"
+  ])
+  const catalogStatusCounts = buildStatusSummaryMap(["scannable", "shadow", "blocked"])
+  const blockReasonCounts = {}
+
+  let totalRows = 0
+  let tradableRows = 0
+  let scannerSourceSize = 0
+  let eligibleTradableRows = 0
+  let nearEligibleRows = 0
+
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const category = normalizeText(row?.category).toLowerCase()
+    if (!scopedCategories.includes(category)) continue
+
+    const candidateStatus = normalizeCandidateStatus(
+      row?.candidate_status ?? row?.candidateStatus
+    )
+    const catalogStatus = normalizeCatalogStatus(row?.catalog_status ?? row?.catalogStatus)
+    const tradable = row?.tradable == null ? true : Boolean(row?.tradable)
+    const scanEligible =
+      row?.scan_eligible == null ? Boolean(row?.scanEligible) : Boolean(row?.scan_eligible)
+
+    totalRows += 1
+    if (tradable) tradableRows += 1
+    if (candidateStatusCounts[candidateStatus] != null) {
+      candidateStatusCounts[candidateStatus] += 1
+    }
+    if (catalogStatusCounts[catalogStatus] != null) {
+      catalogStatusCounts[catalogStatus] += 1
+    }
+
+    const categorySummary = byCategory[category]
+    if (categorySummary) {
+      categorySummary.totalRows += 1
+      if (tradable) categorySummary.tradableRows += 1
+      if (catalogStatus === "scannable") categorySummary.scannerSourceSize += 1
+      if (candidateStatus === "eligible") categorySummary.eligibleRows += 1
+      if (candidateStatus === "near_eligible") categorySummary.nearEligibleRows += 1
+      if (candidateStatus === "enriching") categorySummary.enrichingRows += 1
+      if (candidateStatus === "candidate") categorySummary.candidateRows += 1
+      if (candidateStatus === "rejected") categorySummary.rejectedRows += 1
+      if (catalogStatus === "blocked") categorySummary.blockedRows += 1
+      if (catalogStatus === "shadow") categorySummary.shadowRows += 1
+    }
+
+    if (catalogStatus === "scannable") {
+      scannerSourceSize += 1
+    }
+    if (catalogStatus === "scannable" && tradable && scanEligible) {
+      eligibleTradableRows += 1
+    }
+    if (candidateStatus === "near_eligible" && catalogStatus === "scannable") {
+      nearEligibleRows += 1
+    }
+
+    if (catalogStatus !== "scannable") {
+      const reason =
+        normalizeText(row?.catalog_block_reason || row?.catalogBlockReason) || "unclassified"
+      blockReasonCounts[reason] = Number(blockReasonCounts[reason] || 0) + 1
+    }
+  }
+
+  const readyCategories = scopedCategories.filter(
+    (category) => Number(byCategory?.[category]?.scannerSourceSize || 0) > 0
+  )
+
+  return {
+    generation: buildGenerationSnapshot(generation),
+    categories: scopedCategories,
+    totalRows,
+    tradableRows,
+    scannerSourceSize,
+    eligibleTradableRows,
+    nearEligibleRows,
+    readyCategoryCount: readyCategories.length,
+    readyCategories,
+    candidateStatusCounts,
+    catalogStatusCounts,
+    byCategory,
+    topBlockReasons: buildTopCounts(blockReasonCounts)
+  }
+}
+
+function summarizeUniverseRows(rows = [], generation = null, options = {}) {
+  const scopedCategories = normalizeCategories(options.categories)
+  const byCategory = Object.fromEntries(
+    scopedCategories.map((category) => [
+      category,
+      {
+        totalRows: 0
+      }
+    ])
+  )
+
+  let totalRows = 0
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const category = normalizeText(row?.category).toLowerCase()
+    if (!scopedCategories.includes(category)) continue
+    totalRows += 1
+    if (byCategory[category]) {
+      byCategory[category].totalRows += 1
+    }
+  }
+
+  return {
+    generation: buildGenerationSnapshot(generation),
+    categories: scopedCategories,
+    totalRows,
+    byCategory
+  }
+}
+
+function buildReadinessSummary(summary = {}, options = {}) {
+  const universeSummary =
+    options?.universeSummary && typeof options.universeSummary === "object"
+      ? options.universeSummary
+      : {}
+  const thresholds = {
+    minScannerSourceSize: Math.max(
+      normalizeInteger(
+        options.minScannerSourceSize,
+        OPPORTUNITY_BATCH_RUNTIME_TARGET * 3,
+        OPPORTUNITY_BATCH_RUNTIME_TARGET
+      ),
+      OPPORTUNITY_BATCH_RUNTIME_TARGET
+    ),
+    minEligibleTradableRows: Math.max(
+      normalizeInteger(
+        options.minEligibleTradableRows,
+        Math.ceil(OPPORTUNITY_BATCH_RUNTIME_TARGET * 0.5),
+        4
+      ),
+      4
+    ),
+    minNearEligibleRows: Math.max(
+      normalizeInteger(
+        options.minNearEligibleRows,
+        Math.ceil(OPPORTUNITY_BATCH_RUNTIME_TARGET * 0.25),
+        2
+      ),
+      2
+    ),
+    minReadyCategories: Math.max(
+      normalizeInteger(
+        options.minReadyCategories,
+        Math.min(2, SCAN_COHORT_CATEGORIES.length),
+        1
+      ),
+      1
+    ),
+    minActiveUniverseRows: Math.max(
+      normalizeInteger(options.minActiveUniverseRows, 1, 1),
+      1
+    ),
+    minWeaponSkinEligibleRows: Math.max(
+      normalizeInteger(options.minWeaponSkinEligibleRows, 1, 1),
+      1
+    ),
+    minWeaponSkinNearEligibleRows: Math.max(
+      normalizeInteger(options.minWeaponSkinNearEligibleRows, 1, 1),
+      1
+    )
+  }
+
+  const weaponSkinSummary =
+    summary?.byCategory && typeof summary.byCategory === "object"
+      ? summary.byCategory.weapon_skin || {}
+      : {}
+  const actuals = {
+    scannerSourceSize: Number(summary?.scannerSourceSize || 0),
+    eligibleTradableRows: Number(summary?.eligibleTradableRows || 0),
+    nearEligibleRows: Number(summary?.nearEligibleRows || 0),
+    readyCategoryCount: Number(summary?.readyCategoryCount || 0),
+    activeUniverseRows: Number(universeSummary?.totalRows || 0),
+    weaponSkinEligibleRows: Number(weaponSkinSummary?.eligibleRows || 0),
+    weaponSkinNearEligibleRows: Number(weaponSkinSummary?.nearEligibleRows || 0)
+  }
+
+  const signals = {
+    scannerSourceNonZero: actuals.scannerSourceSize > 0,
+    scannerSourceSizeReady: actuals.scannerSourceSize >= thresholds.minScannerSourceSize,
+    eligibleTradableReady:
+      actuals.eligibleTradableRows >= thresholds.minEligibleTradableRows,
+    nearEligibleReady: actuals.nearEligibleRows >= thresholds.minNearEligibleRows,
+    categoryCoverageReady: actuals.readyCategoryCount >= thresholds.minReadyCategories,
+    activeUniverseReady: actuals.activeUniverseRows >= thresholds.minActiveUniverseRows,
+    weaponSkinEligibleReady:
+      actuals.weaponSkinEligibleRows >= thresholds.minWeaponSkinEligibleRows,
+    weaponSkinNearEligibleReady:
+      actuals.weaponSkinNearEligibleRows >= thresholds.minWeaponSkinNearEligibleRows
+  }
+
+  return {
+    thresholds,
+    actuals,
+    signals,
+    readyForOpportunityScan: Object.values(signals).every(Boolean)
+  }
+}
+
+function compareGenerationSummaries(previousSummary = null, nextSummary = null) {
+  const previous = previousSummary && typeof previousSummary === "object" ? previousSummary : null
+  const next = nextSummary && typeof nextSummary === "object" ? nextSummary : null
+  if (!next) {
+    return {
+      previousGeneration: previous?.generation || null,
+      nextGeneration: null,
+      delta: {}
+    }
+  }
+
+  const deltaByCategory = Object.fromEntries(
+    next.categories.map((category) => {
+      const previousCategory = previous?.byCategory?.[category] || {}
+      const nextCategory = next?.byCategory?.[category] || {}
+      return [
+        category,
+        {
+          totalRows: Number(nextCategory.totalRows || 0) - Number(previousCategory.totalRows || 0),
+          scannerSourceSize:
+            Number(nextCategory.scannerSourceSize || 0) -
+            Number(previousCategory.scannerSourceSize || 0),
+          eligibleRows:
+            Number(nextCategory.eligibleRows || 0) - Number(previousCategory.eligibleRows || 0),
+          nearEligibleRows:
+            Number(nextCategory.nearEligibleRows || 0) -
+            Number(previousCategory.nearEligibleRows || 0),
+          rejectedRows:
+            Number(nextCategory.rejectedRows || 0) - Number(previousCategory.rejectedRows || 0),
+          blockedRows:
+            Number(nextCategory.blockedRows || 0) - Number(previousCategory.blockedRows || 0)
+        }
+      ]
+    })
+  )
+
+  return {
+    previousGeneration: previous?.generation || null,
+    nextGeneration: next?.generation || null,
+    delta: {
+      totalRows: Number(next.totalRows || 0) - Number(previous?.totalRows || 0),
+      tradableRows: Number(next.tradableRows || 0) - Number(previous?.tradableRows || 0),
+      scannerSourceSize:
+        Number(next.scannerSourceSize || 0) - Number(previous?.scannerSourceSize || 0),
+      eligibleTradableRows:
+        Number(next.eligibleTradableRows || 0) -
+        Number(previous?.eligibleTradableRows || 0),
+      nearEligibleRows:
+        Number(next.nearEligibleRows || 0) - Number(previous?.nearEligibleRows || 0),
+      readyCategoryCount:
+        Number(next.readyCategoryCount || 0) - Number(previous?.readyCategoryCount || 0),
+      byCategory: deltaByCategory
+    }
+  }
+}
+
+function compareUniverseSummaries(previousSummary = null, nextSummary = null) {
+  const previous = previousSummary && typeof previousSummary === "object" ? previousSummary : null
+  const next = nextSummary && typeof nextSummary === "object" ? nextSummary : null
+  if (!next) {
+    return {
+      previousGeneration: previous?.generation || null,
+      nextGeneration: null,
+      delta: {}
+    }
+  }
+
+  const categories = Array.isArray(next.categories) ? next.categories : CATALOG_SCOPE_CATEGORIES
+  const deltaByCategory = Object.fromEntries(
+    categories.map((category) => {
+      const previousCategory = previous?.byCategory?.[category] || {}
+      const nextCategory = next?.byCategory?.[category] || {}
+      return [
+        category,
+        {
+          totalRows: Number(nextCategory.totalRows || 0) - Number(previousCategory.totalRows || 0)
+        }
+      ]
+    })
+  )
+
+  return {
+    previousGeneration: previous?.generation || null,
+    nextGeneration: next?.generation || null,
+    delta: {
+      totalRows: Number(next.totalRows || 0) - Number(previous?.totalRows || 0),
+      byCategory: deltaByCategory
+    }
+  }
+}
+
+function buildGenerationKey() {
+  return `catalog-reset-${new Date().toISOString().replace(/[:.]/g, "-")}`
+}
+
+async function summarizeGeneration(generationOrId, options = {}) {
+  const generation =
+    typeof generationOrId === "string"
+      ? await catalogGenerationRepo.getById(generationOrId)
+      : generationOrId
+  const snapshot = buildGenerationSnapshot(generation)
+  if (!snapshot?.id) return null
+
+  const rows = await marketSourceCatalogRepo.listCoverageSummary({
+    generationId: snapshot.id,
+    categories: normalizeCategories(options.categories),
+    limit: normalizeInteger(options.limit, 12000, 1)
+  })
+
+  return summarizeCoverageRows(rows, generation, options)
+}
+
+async function summarizeUniverseGeneration(generationOrId, options = {}) {
+  const generation =
+    typeof generationOrId === "string"
+      ? await catalogGenerationRepo.getById(generationOrId)
+      : generationOrId
+  const snapshot = buildGenerationSnapshot(generation)
+  if (!snapshot?.id) return null
+
+  const rows = await marketUniverseRepo.listActiveByLiquidityRank({
+    generationId: snapshot.id,
+    categories: normalizeCategories(options.categories),
+    limit: normalizeInteger(options.limit, 5000, 1)
+  })
+
+  return summarizeUniverseRows(rows, generation, options)
+}
+
+async function runCatalogGenerationReset(options = {}) {
+  const targetUniverseSize = Math.max(
+    normalizeInteger(options.targetUniverseSize, DEFAULT_UNIVERSE_LIMIT, 1),
+    1
+  )
+  const categories = normalizeCategories(options.categories)
+  const autoEnableOpportunityScan = options.autoEnableOpportunityScan == null
+    ? true
+    : normalizeBoolean(options.autoEnableOpportunityScan, true)
+  const forceEnableOpportunityScan = normalizeBoolean(options.forceEnableOpportunityScan, false)
+  const startedAt = new Date().toISOString()
+
+  const previousGeneration = await catalogGenerationRepo.getCurrentGeneration()
+  const previousSummary = previousGeneration
+    ? await summarizeGeneration(previousGeneration, { categories }).catch(() => null)
+    : null
+  const previousUniverseSummary = previousGeneration
+    ? await summarizeUniverseGeneration(previousGeneration, { categories }).catch(() => null)
+    : null
+
+  const stagedGeneration = await catalogGenerationRepo.createGeneration({
+    generationKey: normalizeText(options.generationKey) || buildGenerationKey(),
+    status: "archived",
+    isActive: false,
+    opportunityScanEnabled: false,
+    sourceGenerationId: previousGeneration?.id || null,
+    diagnosticsSummary: {
+      phase: "created",
+      startedAt,
+      categories,
+      targetUniverseSize
+    }
+  })
+
+  if (!stagedGeneration?.id) {
+    throw new AppError("catalog_generation_create_failed", 500)
+  }
+
+  if (previousGeneration?.id) {
+    await catalogGenerationRepo.archiveGeneration(previousGeneration.id, {
+      archivedAt: startedAt,
+      diagnosticsSummary: {
+        ...(previousGeneration?.diagnostics_summary || {}),
+        archivedForCatalogReset: true,
+        archivedForCatalogResetAt: startedAt,
+        replacedByGenerationId: stagedGeneration.id
+      }
+    })
+  }
+
+  await catalogGenerationRepo.activateGeneration(stagedGeneration.id, {
+    activatedAt: startedAt,
+    opportunityScanEnabled: false,
+    diagnosticsSummary: {
+      phase: "enrichment_only",
+      startedAt,
+      categories,
+      targetUniverseSize,
+      sourceGenerationId: previousGeneration?.id || null
+    }
+  })
+
+  try {
+    const pipelineDiagnostics = await marketSourceCatalogService.prepareSourceCatalog({
+      forceRefresh: true,
+      targetUniverseSize,
+      categories,
+      catalogGeneration: stagedGeneration,
+      generationId: stagedGeneration.id
+    })
+    const nextSummary = await summarizeGeneration(stagedGeneration.id, { categories })
+    const nextUniverseSummary = await summarizeUniverseGeneration(stagedGeneration.id, {
+      categories
+    })
+    const catalogComparison = compareGenerationSummaries(previousSummary, nextSummary)
+    const universeComparison = compareUniverseSummaries(
+      previousUniverseSummary,
+      nextUniverseSummary
+    )
+    const comparison = {
+      ...catalogComparison,
+      catalog: catalogComparison,
+      universe: universeComparison
+    }
+    const readiness = buildReadinessSummary(nextSummary, {
+      ...options,
+      universeSummary: nextUniverseSummary
+    })
+    const shouldEnableOpportunityScan =
+      forceEnableOpportunityScan || (autoEnableOpportunityScan && readiness.readyForOpportunityScan)
+    const completedAt = new Date().toISOString()
+    const diagnosticsSummary = {
+      phase: shouldEnableOpportunityScan ? "opportunity_scan_enabled" : "enrichment_only",
+      startedAt,
+      completedAt,
+      categories,
+      targetUniverseSize,
+      rebuildFlow: {
+        archivedPreviousGeneration: Boolean(previousGeneration?.id),
+        createdGenerationId: stagedGeneration.id,
+        activatedGenerationId: stagedGeneration.id,
+        opportunityScanEnabled: shouldEnableOpportunityScan
+      },
+      previousUniverseSummary,
+      nextUniverseSummary,
+      comparison,
+      readiness,
+      sourceCatalogDiagnostics:
+        pipelineDiagnostics && typeof pipelineDiagnostics === "object"
+          ? pipelineDiagnostics
+          : {}
+    }
+
+    const updatedGeneration = shouldEnableOpportunityScan
+      ? await catalogGenerationRepo.enableOpportunityScan(stagedGeneration.id, {
+          opportunityScanEnabledAt: completedAt,
+          diagnosticsSummary
+        })
+      : await catalogGenerationRepo.updateGeneration(stagedGeneration.id, {
+          diagnosticsSummary
+        })
+
+    return {
+      startedAt,
+      completedAt,
+      targetUniverseSize,
+      categories,
+      previousGeneration: buildGenerationSnapshot(previousGeneration),
+      activeGeneration: buildGenerationSnapshot(updatedGeneration),
+      diagnostics: {
+        previousSummary,
+        nextSummary,
+        previousUniverseSummary,
+        nextUniverseSummary,
+        comparison,
+        readiness
+      }
+    }
+  } catch (error) {
+    const failedAt = new Date().toISOString()
+    await catalogGenerationRepo.updateGeneration(stagedGeneration.id, {
+      diagnosticsSummary: {
+        phase: "rebuild_failed",
+        startedAt,
+        failedAt,
+        categories,
+        targetUniverseSize,
+        error: normalizeText(error?.message) || "catalog_generation_rebuild_failed"
+      }
+    }).catch(() => null)
+    throw error
+  }
+}
+
+module.exports = {
+  runCatalogGenerationReset,
+  summarizeGeneration,
+  buildGenerationSnapshot,
+  __testables: {
+    summarizeCoverageRows,
+    summarizeUniverseRows,
+    buildReadinessSummary,
+    compareGenerationSummaries,
+    compareUniverseSummaries,
+    normalizeCategories
+  }
+}

@@ -1,11 +1,13 @@
 const { supabaseAdmin } = require("../config/supabase")
 const AppError = require("../utils/AppError")
+const catalogGenerationRepo = require("./catalogGenerationRepository")
 
 const TABLE = "market_source_catalog"
 const INSERT_BATCH_SIZE = 200
 const MAX_LIMIT = 12000
 const SELECT_PAGE_SIZE = 1000
 const QUERY_BATCH_SIZE = 120
+const UPSERT_ON_CONFLICT = "catalog_generation_id,market_hash_name"
 const CATEGORY_SET = new Set(["weapon_skin", "case", "sticker_capsule", "knife", "glove"])
 const CANDIDATE_STATUS_SET = new Set([
   "candidate",
@@ -46,17 +48,17 @@ const CANDIDATE_STATE_COLUMNS = Object.freeze([
   "is_priority_item"
 ])
 const PRIMARY_SELECT_COLUMNS =
-  "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item,invalid_reason,source_tag,is_active,last_enriched_at"
+  "catalog_generation_id,market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item,invalid_reason,source_tag,is_active,last_enriched_at"
 const COMPATIBILITY_SELECT_COLUMNS =
-  "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,invalid_reason,source_tag,is_active,last_enriched_at"
+  "catalog_generation_id,market_hash_name,item_name,category,subcategory,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,enrichment_priority,eligibility_reason,maturity_state,maturity_score,scan_layer,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,quote_fetched_at,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,invalid_reason,source_tag,is_active,last_enriched_at"
 const LEGACY_FALLBACK_SELECT_COLUMNS =
-  "market_hash_name,item_name,category,subcategory,tradable,scan_eligible,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,invalid_reason,source_tag,is_active,last_enriched_at"
+  "catalog_generation_id,market_hash_name,item_name,category,subcategory,tradable,scan_eligible,reference_price,market_coverage_count,liquidity_rank,volume_7d,snapshot_stale,snapshot_captured_at,invalid_reason,source_tag,is_active,last_enriched_at"
 const COVERAGE_SUMMARY_PRIMARY_SELECT_COLUMNS =
-  "category,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,maturity_state,is_active,reference_price,volume_7d,market_coverage_count,liquidity_rank,snapshot_stale,quote_fetched_at,snapshot_captured_at,invalid_reason,eligibility_reason,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item"
+  "catalog_generation_id,category,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,maturity_state,is_active,reference_price,volume_7d,market_coverage_count,liquidity_rank,snapshot_stale,quote_fetched_at,snapshot_captured_at,invalid_reason,eligibility_reason,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers,catalog_status,catalog_block_reason,catalog_quality_score,last_market_signal_at,priority_set_name,priority_tier,priority_rank,priority_boost,is_priority_item"
 const COVERAGE_SUMMARY_COMPATIBILITY_SELECT_COLUMNS =
-  "category,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,maturity_state,is_active,reference_price,volume_7d,market_coverage_count,liquidity_rank,snapshot_stale,quote_fetched_at,snapshot_captured_at,invalid_reason,eligibility_reason,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers"
+  "catalog_generation_id,category,tradable,scan_eligible,candidate_status,missing_snapshot,missing_reference,missing_market_coverage,maturity_state,is_active,reference_price,volume_7d,market_coverage_count,liquidity_rank,snapshot_stale,quote_fetched_at,snapshot_captured_at,invalid_reason,eligibility_reason,snapshot_state,reference_state,liquidity_state,coverage_state,progression_status,progression_blockers"
 const COVERAGE_SUMMARY_LEGACY_FALLBACK_SELECT_COLUMNS =
-  "category,tradable,scan_eligible,is_active,reference_price,volume_7d,market_coverage_count,snapshot_stale,invalid_reason"
+  "catalog_generation_id,category,tradable,scan_eligible,is_active,reference_price,volume_7d,market_coverage_count,snapshot_stale,invalid_reason"
 
 function normalizeText(value) {
   return String(value || "").trim()
@@ -121,6 +123,11 @@ function normalizePriorityTier(value, fallback = null) {
   if (PRIORITY_TIER_SET.has(text)) return text
   const fallbackValue = normalizeText(fallback).toLowerCase()
   return PRIORITY_TIER_SET.has(fallbackValue) ? fallbackValue : null
+}
+
+function normalizeGenerationId(value) {
+  const text = normalizeText(value)
+  return text || null
 }
 
 function deriveScanLayerFromMaturityState(state = "cold") {
@@ -289,14 +296,14 @@ async function upsertChunkWithRetry(chunk = [], maxAttempts = 2) {
   for (let attempt = 1; attempt <= Math.max(Number(maxAttempts || 0), 1); attempt += 1) {
     const { error } = await supabaseAdmin
       .from(TABLE)
-      .upsert(chunk, { onConflict: "market_hash_name" })
+      .upsert(chunk, { onConflict: UPSERT_ON_CONFLICT })
     if (!error) {
       return
     }
     if (isMissingCandidateColumnError(error)) {
       const { error: compatibilityError } = await supabaseAdmin
         .from(TABLE)
-        .upsert(stripCandidateStateColumns(chunk), { onConflict: "market_hash_name" })
+        .upsert(stripCandidateStateColumns(chunk), { onConflict: UPSERT_ON_CONFLICT })
       if (!compatibilityError) {
         return
       }
@@ -315,11 +322,15 @@ async function upsertChunkWithRetry(chunk = [], maxAttempts = 2) {
   )
 }
 
-function normalizeRows(rows = []) {
+function normalizeRows(rows = [], options = {}) {
+  const defaultGenerationId = normalizeGenerationId(options.generationId)
   return (Array.isArray(rows) ? rows : [])
     .map((row) => {
+      const generationId = normalizeGenerationId(
+        row?.catalog_generation_id ?? row?.catalogGenerationId ?? defaultGenerationId
+      )
       const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
-      if (!marketHashName) return null
+      if (!marketHashName || !generationId) return null
 
       const itemName =
         normalizeText(row?.item_name || row?.itemName || marketHashName) || marketHashName
@@ -346,6 +357,7 @@ function normalizeRows(rows = []) {
       )
 
       return {
+        catalog_generation_id: generationId,
         market_hash_name: marketHashName,
         item_name: itemName,
         category,
@@ -419,8 +431,8 @@ function normalizeRows(rows = []) {
     .filter(Boolean)
 }
 
-async function upsertInChunks(rows = []) {
-  const payload = normalizeRows(rows)
+async function upsertInChunks(rows = [], options = {}) {
+  const payload = normalizeRows(rows, options)
   if (!payload.length) return 0
 
   let total = 0
@@ -517,12 +529,83 @@ function filterRowsByCatalogStatuses(rows = [], catalogStatuses = []) {
   )
 }
 
+function applyGenerationFilter(query, generationId = null) {
+  const safeGenerationId = normalizeGenerationId(generationId)
+  if (!safeGenerationId) return query
+  return query.eq("catalog_generation_id", safeGenerationId)
+}
+
+async function resolveGenerationSelection(options = {}) {
+  const explicitGenerationId = normalizeGenerationId(
+    options.generationId ?? options.catalogGenerationId
+  )
+  if (explicitGenerationId) {
+    return {
+      generationId: explicitGenerationId,
+      generation: null,
+      selectionBlocked: false
+    }
+  }
+  if (options.useActiveGeneration === false || options.includeAllGenerations === true) {
+    return {
+      generationId: null,
+      generation: null,
+      selectionBlocked: false
+    }
+  }
+
+  const requireOpportunityScanEnabled = options.requireOpportunityScanEnabled === true
+  const generation = await (requireOpportunityScanEnabled
+    ? catalogGenerationRepo.getActiveGeneration({ requireOpportunityScanEnabled: true })
+    : catalogGenerationRepo.getCurrentGeneration()
+  ).catch(() => null)
+  const generationId = normalizeGenerationId(generation?.id)
+  return {
+    generationId,
+    generation,
+    selectionBlocked: Boolean(requireOpportunityScanEnabled && !generationId)
+  }
+}
+
+async function resolveUpsertOptions(rows = [], options = {}) {
+  const explicitGenerationId = normalizeGenerationId(
+    options.generationId ?? options.catalogGenerationId
+  )
+  if (explicitGenerationId) {
+    return {
+      ...options,
+      generationId: explicitGenerationId
+    }
+  }
+
+  const rowsHaveGenerationIds = (Array.isArray(rows) ? rows : []).every((row) =>
+    normalizeGenerationId(row?.catalog_generation_id ?? row?.catalogGenerationId)
+  )
+  if (rowsHaveGenerationIds) {
+    return {
+      ...options,
+      generationId: null
+    }
+  }
+
+  const { generationId } = await resolveGenerationSelection(options)
+  if (!generationId) {
+    throw new AppError("market_source_catalog_active_generation_missing", 500)
+  }
+
+  return {
+    ...options,
+    generationId
+  }
+}
+
 async function selectDueProgressionSegment({
   categories = [],
   candidateStatuses = [],
   dueBeforeIso = null,
   limit = 1000,
-  nullOnly = false
+  nullOnly = false,
+  generationId = null
 } = {}) {
   const applyDueFilter = (query) =>
     nullOnly ? query.is("last_enriched_at", null) : query.lte("last_enriched_at", dueBeforeIso)
@@ -532,20 +615,23 @@ async function selectDueProgressionSegment({
       applyDueFilter(
         buildPrimaryProgressionQuery({
           categories,
-          candidateStatuses
+          candidateStatuses,
+          generationId
         })
       ),
     buildCompatibilityQuery: () =>
       applyDueFilter(
         buildCompatibilityProgressionQuery({
           categories,
-          candidateStatuses
+          candidateStatuses,
+          generationId
         })
       ),
     buildFallbackQuery: () =>
       applyDueFilter(
         buildFallbackProgressionQuery({
-          categories
+          categories,
+          generationId
         })
       ),
     limit,
@@ -575,7 +661,8 @@ function dedupeByMarketHashName(rows = []) {
 
 function buildPrimaryProgressionQuery({
   categories = [],
-  candidateStatuses = []
+  candidateStatuses = [],
+  generationId = null
 } = {}) {
   let query = supabaseAdmin
     .from(TABLE)
@@ -590,12 +677,13 @@ function buildPrimaryProgressionQuery({
   if (categories.length) {
     query = query.in("category", categories)
   }
-  return query
+  return applyGenerationFilter(query, generationId)
 }
 
 function buildCompatibilityProgressionQuery({
   categories = [],
-  candidateStatuses = []
+  candidateStatuses = [],
+  generationId = null
 } = {}) {
   let query = supabaseAdmin
     .from(TABLE)
@@ -609,11 +697,12 @@ function buildCompatibilityProgressionQuery({
   if (categories.length) {
     query = query.in("category", categories)
   }
-  return query
+  return applyGenerationFilter(query, generationId)
 }
 
 function buildFallbackProgressionQuery({
-  categories = []
+  categories = [],
+  generationId = null
 } = {}) {
   let query = supabaseAdmin
     .from(TABLE)
@@ -626,16 +715,21 @@ function buildFallbackProgressionQuery({
   if (categories.length) {
     query = query.in("category", categories)
   }
-  return query
+  return applyGenerationFilter(query, generationId)
 }
 
-exports.upsertRows = async (rows = []) => upsertInChunks(rows)
+exports.upsertRows = async (rows = [], options = {}) => {
+  const resolvedOptions = await resolveUpsertOptions(rows, options)
+  return upsertInChunks(rows, resolvedOptions)
+}
 
 exports.listActiveTradable = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 1500)
   const offset = normalizeOffset(options.offset, 0)
   const categories = normalizeCategories(options.categories)
   const catalogStatuses = normalizeCatalogStatuses(options.catalogStatuses)
+  const { generationId, selectionBlocked } = await resolveGenerationSelection(options)
+  if (selectionBlocked) return []
   const rows = await selectCatalogRowsWithCompatibility({
     buildPrimaryQuery: () => {
       let query = supabaseAdmin
@@ -650,7 +744,7 @@ exports.listActiveTradable = async (options = {}) => {
         query = query.in("category", categories)
       }
       query = applyCatalogStatusFilter(query, catalogStatuses)
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     buildCompatibilityQuery: () => {
       let query = supabaseAdmin
@@ -663,7 +757,7 @@ exports.listActiveTradable = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     buildFallbackQuery: () => {
       let query = supabaseAdmin
@@ -676,7 +770,7 @@ exports.listActiveTradable = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     limit,
     offset,
@@ -688,6 +782,11 @@ exports.listActiveTradable = async (options = {}) => {
 exports.listScannerSource = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 1500)
   const categories = normalizeCategories(options.categories)
+  const { generationId, selectionBlocked } = await resolveGenerationSelection({
+    ...options,
+    requireOpportunityScanEnabled: options.requireOpportunityScanEnabled !== false
+  })
+  if (selectionBlocked || !generationId) return []
   const rows = await selectCatalogRowsWithCompatibility({
     buildPrimaryQuery: () => {
       let query = supabaseAdmin
@@ -695,7 +794,7 @@ exports.listScannerSource = async (options = {}) => {
         .select(PRIMARY_SELECT_COLUMNS)
         .eq("is_active", true)
         .eq("tradable", true)
-        .or("catalog_status.eq.scannable,catalog_status.is.null")
+        .eq("catalog_status", "scannable")
         .order("priority_tier", { ascending: true, nullsFirst: false })
         .order("catalog_quality_score", { ascending: false, nullsFirst: false })
         .order("last_market_signal_at", { ascending: false, nullsFirst: false })
@@ -705,7 +804,7 @@ exports.listScannerSource = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     buildCompatibilityQuery: () => {
       let query = supabaseAdmin
@@ -718,7 +817,7 @@ exports.listScannerSource = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     buildFallbackQuery: () => {
       let query = supabaseAdmin
@@ -731,7 +830,7 @@ exports.listScannerSource = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     limit,
     fallbackMessage: "market_source_catalog_list_scanner_source_failed"
@@ -742,6 +841,8 @@ exports.listScannerSource = async (options = {}) => {
 exports.listScanEligible = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 2000)
   const categories = normalizeCategories(options.categories)
+  const { generationId, selectionBlocked } = await resolveGenerationSelection(options)
+  if (selectionBlocked) return []
   const rows = await selectCatalogRowsWithCompatibility({
     buildPrimaryQuery: () => {
       let query = supabaseAdmin
@@ -749,13 +850,15 @@ exports.listScanEligible = async (options = {}) => {
         .select(PRIMARY_SELECT_COLUMNS)
         .eq("is_active", true)
         .eq("tradable", true)
+        .eq("candidate_status", "eligible")
+        .eq("catalog_status", "scannable")
         .eq("scan_eligible", true)
         .order("liquidity_rank", { ascending: false, nullsFirst: false })
 
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     buildCompatibilityQuery: () => {
       let query = supabaseAdmin
@@ -763,13 +866,14 @@ exports.listScanEligible = async (options = {}) => {
         .select(COMPATIBILITY_SELECT_COLUMNS)
         .eq("is_active", true)
         .eq("tradable", true)
+        .eq("candidate_status", "eligible")
         .eq("scan_eligible", true)
         .order("liquidity_rank", { ascending: false, nullsFirst: false })
 
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     buildFallbackQuery: () => {
       let query = supabaseAdmin
@@ -785,7 +889,7 @@ exports.listScanEligible = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     limit,
     fallbackMessage: "market_source_catalog_list_eligible_failed"
@@ -796,6 +900,8 @@ exports.listScanEligible = async (options = {}) => {
 exports.listCoverageSummary = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 3000)
   const categories = normalizeCategories(options.categories)
+  const { generationId, selectionBlocked } = await resolveGenerationSelection(options)
+  if (selectionBlocked) return []
   const rows = await selectCatalogRowsWithCompatibility({
     buildPrimaryQuery: () => {
       let query = supabaseAdmin
@@ -806,7 +912,7 @@ exports.listCoverageSummary = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     buildCompatibilityQuery: () => {
       let query = supabaseAdmin
@@ -817,7 +923,7 @@ exports.listCoverageSummary = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     buildFallbackQuery: () => {
       let query = supabaseAdmin
@@ -828,11 +934,12 @@ exports.listCoverageSummary = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     limit,
     fallbackMessage: "market_source_catalog_coverage_failed"
   })
+  return rows
 }
 
 exports.listCandidatePool = async (options = {}) => {
@@ -840,8 +947,10 @@ exports.listCandidatePool = async (options = {}) => {
   const categories = normalizeCategories(options.categories)
   const candidateStatuses = normalizeCandidateStatuses(options.candidateStatuses)
   const catalogStatuses = normalizeCatalogStatuses(options.catalogStatuses)
+  const { generationId, selectionBlocked } = await resolveGenerationSelection(options)
+  if (selectionBlocked) return []
 
-  return selectCatalogRowsWithCompatibility({
+  const rows = await selectCatalogRowsWithCompatibility({
     buildPrimaryQuery: () => {
       let query = supabaseAdmin
         .from(TABLE)
@@ -856,7 +965,7 @@ exports.listCandidatePool = async (options = {}) => {
         query = query.in("category", categories)
       }
       query = applyCatalogStatusFilter(query, catalogStatuses)
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     buildCompatibilityQuery: () => {
       let query = supabaseAdmin
@@ -871,7 +980,7 @@ exports.listCandidatePool = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     buildFallbackQuery: () => {
       let query = supabaseAdmin
@@ -885,7 +994,7 @@ exports.listCandidatePool = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     limit,
     fallbackMessage: "market_source_catalog_list_candidate_pool_failed"
@@ -902,22 +1011,27 @@ exports.listProgressionRows = async (options = {}) => {
     "enriching",
     "candidate"
   ])
+  const { generationId, selectionBlocked } = await resolveGenerationSelection(options)
+  if (selectionBlocked) return []
   return selectCatalogRowsWithCompatibility({
     buildPrimaryQuery: () => {
       return buildPrimaryProgressionQuery({
         categories,
-        candidateStatuses
+        candidateStatuses,
+        generationId
       })
     },
     buildCompatibilityQuery: () => {
       return buildCompatibilityProgressionQuery({
         categories,
-        candidateStatuses
+        candidateStatuses,
+        generationId
       })
     },
     buildFallbackQuery: () => {
       return buildFallbackProgressionQuery({
-        categories
+        categories,
+        generationId
       })
     },
     limit,
@@ -940,12 +1054,16 @@ exports.listDueProgressionRows = async (options = {}) => {
     throw new AppError("market_source_catalog_due_progression_requires_due_before_iso", 500)
   }
 
+  const { generationId, selectionBlocked } = await resolveGenerationSelection(options)
+  if (selectionBlocked) return []
+
   const nullDueRows = await selectDueProgressionSegment({
     categories,
     candidateStatuses,
     dueBeforeIso,
     limit,
-    nullOnly: true
+    nullOnly: true,
+    generationId
   })
 
   const remaining = Math.max(limit - nullDueRows.length, 0)
@@ -958,7 +1076,8 @@ exports.listDueProgressionRows = async (options = {}) => {
     candidateStatuses,
     dueBeforeIso,
     limit: remaining,
-    nullOnly: false
+    nullOnly: false,
+    generationId
   })
 
   return dedupeByMarketHashName([...nullDueRows, ...staleDueRows]).slice(0, limit)
@@ -967,6 +1086,11 @@ exports.listDueProgressionRows = async (options = {}) => {
 exports.listHotScanCohort = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 600)
   const categories = normalizeCategories(options.categories)
+  const { generationId, selectionBlocked } = await resolveGenerationSelection({
+    ...options,
+    requireOpportunityScanEnabled: options.requireOpportunityScanEnabled !== false
+  })
+  if (selectionBlocked || !generationId) return []
   const rows = await selectCatalogRowsWithCompatibility({
     buildPrimaryQuery: () => {
       let query = supabaseAdmin
@@ -974,7 +1098,7 @@ exports.listHotScanCohort = async (options = {}) => {
         .select(PRIMARY_SELECT_COLUMNS)
         .eq("is_active", true)
         .eq("tradable", true)
-        .or("catalog_status.eq.scannable,catalog_status.is.null")
+        .eq("catalog_status", "scannable")
         .eq("candidate_status", "eligible")
         .eq("scan_eligible", true)
         .order("priority_tier", { ascending: true, nullsFirst: false })
@@ -985,7 +1109,7 @@ exports.listHotScanCohort = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     buildCompatibilityQuery: () => {
       let query = supabaseAdmin
@@ -1000,7 +1124,7 @@ exports.listHotScanCohort = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     buildFallbackQuery: () => {
       let query = supabaseAdmin
@@ -1014,7 +1138,7 @@ exports.listHotScanCohort = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     limit,
     fallbackMessage: "market_source_catalog_list_hot_cohort_failed"
@@ -1025,6 +1149,11 @@ exports.listHotScanCohort = async (options = {}) => {
 exports.listWarmScanCohort = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 400)
   const categories = normalizeCategories(options.categories)
+  const { generationId, selectionBlocked } = await resolveGenerationSelection({
+    ...options,
+    requireOpportunityScanEnabled: options.requireOpportunityScanEnabled !== false
+  })
+  if (selectionBlocked || !generationId) return []
   const rows = await selectCatalogRowsWithCompatibility({
     buildPrimaryQuery: () => {
       let query = supabaseAdmin
@@ -1032,7 +1161,7 @@ exports.listWarmScanCohort = async (options = {}) => {
         .select(PRIMARY_SELECT_COLUMNS)
         .eq("is_active", true)
         .eq("tradable", true)
-        .or("catalog_status.eq.scannable,catalog_status.is.null")
+        .eq("catalog_status", "scannable")
         .eq("candidate_status", "near_eligible")
         .order("priority_tier", { ascending: true, nullsFirst: false })
         .order("priority_boost", { ascending: false, nullsFirst: false })
@@ -1042,7 +1171,7 @@ exports.listWarmScanCohort = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     buildCompatibilityQuery: () => {
       let query = supabaseAdmin
@@ -1056,7 +1185,7 @@ exports.listWarmScanCohort = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     buildFallbackQuery: () => {
       let query = supabaseAdmin
@@ -1070,7 +1199,7 @@ exports.listWarmScanCohort = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     limit,
     fallbackMessage: "market_source_catalog_list_warm_cohort_failed"
@@ -1081,6 +1210,11 @@ exports.listWarmScanCohort = async (options = {}) => {
 exports.listColdScanCohort = async (options = {}) => {
   const limit = normalizeLimit(options.limit, 300)
   const categories = normalizeCategories(options.categories)
+  const { generationId, selectionBlocked } = await resolveGenerationSelection({
+    ...options,
+    requireOpportunityScanEnabled: options.requireOpportunityScanEnabled !== false
+  })
+  if (selectionBlocked || !generationId) return []
   const rows = await selectCatalogRowsWithCompatibility({
     buildPrimaryQuery: () => {
       let query = supabaseAdmin
@@ -1088,7 +1222,7 @@ exports.listColdScanCohort = async (options = {}) => {
         .select(PRIMARY_SELECT_COLUMNS)
         .eq("is_active", true)
         .eq("tradable", true)
-        .or("catalog_status.eq.scannable,catalog_status.is.null")
+        .eq("catalog_status", "scannable")
         .in("candidate_status", ["enriching", "candidate"])
         .order("priority_tier", { ascending: true, nullsFirst: false })
         .order("priority_boost", { ascending: false, nullsFirst: false })
@@ -1098,7 +1232,7 @@ exports.listColdScanCohort = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     buildCompatibilityQuery: () => {
       let query = supabaseAdmin
@@ -1112,7 +1246,7 @@ exports.listColdScanCohort = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     buildFallbackQuery: () => {
       let query = supabaseAdmin
@@ -1126,7 +1260,7 @@ exports.listColdScanCohort = async (options = {}) => {
       if (categories.length) {
         query = query.in("category", categories)
       }
-      return query
+      return applyGenerationFilter(query, generationId)
     },
     limit,
     fallbackMessage: "market_source_catalog_list_cold_cohort_failed"
@@ -1141,6 +1275,8 @@ exports.listByMarketHashNames = async (marketHashNames = [], options = {}) => {
   const categories = normalizeCategories(options.categories)
   const activeOnly = options.activeOnly !== false
   const tradableOnly = options.tradableOnly !== false
+  const { generationId, selectionBlocked } = await resolveGenerationSelection(options)
+  if (selectionBlocked) return []
   const rows = []
 
   for (let index = 0; index < names.length; index += QUERY_BATCH_SIZE) {
@@ -1161,7 +1297,10 @@ exports.listByMarketHashNames = async (marketHashNames = [], options = {}) => {
         if (categories.length) {
           query = query.in("category", categories)
         }
-        return query.order("liquidity_rank", { ascending: false, nullsFirst: false })
+        return applyGenerationFilter(query, generationId).order("liquidity_rank", {
+          ascending: false,
+          nullsFirst: false
+        })
       },
       buildCompatibilityQuery: () => {
         let query = supabaseAdmin
@@ -1178,7 +1317,10 @@ exports.listByMarketHashNames = async (marketHashNames = [], options = {}) => {
         if (categories.length) {
           query = query.in("category", categories)
         }
-        return query.order("liquidity_rank", { ascending: false, nullsFirst: false })
+        return applyGenerationFilter(query, generationId).order("liquidity_rank", {
+          ascending: false,
+          nullsFirst: false
+        })
       },
       buildFallbackQuery: () => {
         let query = supabaseAdmin
@@ -1195,7 +1337,10 @@ exports.listByMarketHashNames = async (marketHashNames = [], options = {}) => {
         if (categories.length) {
           query = query.in("category", categories)
         }
-        return query.order("liquidity_rank", { ascending: false, nullsFirst: false })
+        return applyGenerationFilter(query, generationId).order("liquidity_rank", {
+          ascending: false,
+          nullsFirst: false
+        })
       },
       limit: chunk.length,
       fallbackMessage: "market_source_catalog_list_by_names_failed"

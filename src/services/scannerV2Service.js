@@ -1,4 +1,5 @@
 const AppError = require("../utils/AppError")
+const catalogGenerationRepo = require("../repositories/catalogGenerationRepository")
 const globalActiveOpportunityRepo = require("../repositories/globalActiveOpportunityRepository")
 const scannerRunRepo = require("../repositories/scannerRunRepository")
 const scannerRuntimeService = require("./arbitrageScannerService")
@@ -36,6 +37,46 @@ const manualRefreshTracker = new Map()
 
 function normalizeText(value) {
   return String(value || "").trim()
+}
+
+function buildCatalogGenerationSnapshot(generation = {}) {
+  if (!generation || typeof generation !== "object") return null
+  const id = normalizeText(generation?.id)
+  if (!id) return null
+  return {
+    id,
+    generationKey: normalizeText(generation?.generation_key || generation?.generationKey) || null,
+    status: normalizeText(generation?.status).toLowerCase() || null,
+    isActive: Boolean(generation?.is_active ?? generation?.isActive),
+    opportunityScanEnabled: Boolean(
+      generation?.opportunity_scan_enabled ?? generation?.opportunityScanEnabled
+    ),
+    activatedAt: toIsoOrNull(generation?.activated_at || generation?.activatedAt),
+    archivedAt: toIsoOrNull(generation?.archived_at || generation?.archivedAt),
+    sourceGenerationId:
+      normalizeText(generation?.source_generation_id || generation?.sourceGenerationId) || null
+  }
+}
+
+function buildOpportunityScanBlockedResult(generation = null) {
+  return {
+    jobType: SCANNER_TYPES.OPPORTUNITY_SCAN,
+    scanRunId: null,
+    status: "blocked_generation_not_ready",
+    alreadyRunning: false,
+    startedAt: new Date().toISOString(),
+    catalogGeneration: buildCatalogGenerationSnapshot(generation),
+    reason: "catalog_generation_scan_disabled"
+  }
+}
+
+async function enqueueOpportunityScanIfReady(runtime, trigger = "system") {
+  const generation = await catalogGenerationRepo.getCurrentGeneration().catch(() => null)
+  const snapshot = buildCatalogGenerationSnapshot(generation)
+  if (!snapshot?.opportunityScanEnabled) {
+    return buildOpportunityScanBlockedResult(generation)
+  }
+  return runtime.enqueueScan({ trigger })
 }
 
 function normalizeBoolean(value, fallback = false) {
@@ -319,12 +360,14 @@ function getRuntimeBridge() {
 async function getStatusInternal(options = {}) {
   const includeActiveCount = options.includeActiveCount !== false
   const [
+    currentGeneration,
     latestRun,
     latestCompletedRun,
     latestEnrichmentRun,
     latestEnrichmentCompletedRun,
     activeOpportunities
   ] = await Promise.all([
+    catalogGenerationRepo.getCurrentGeneration().catch(() => null),
     scannerRunRepo.getLatestRun(SCANNER_TYPES.OPPORTUNITY_SCAN),
     scannerRunRepo.getLatestCompletedRun(SCANNER_TYPES.OPPORTUNITY_SCAN),
     scannerRunRepo.getLatestRun(SCANNER_TYPES.ENRICHMENT),
@@ -337,6 +380,12 @@ async function getStatusInternal(options = {}) {
   const opportunityRunning = normalizeText(latestRun?.status).toLowerCase() === "running"
   const enrichmentRunning =
     normalizeText(latestEnrichmentRun?.status).toLowerCase() === "running"
+  const catalogGeneration = buildCatalogGenerationSnapshot(currentGeneration)
+  const opportunityStatus = opportunityRunning
+    ? "running"
+    : catalogGeneration?.opportunityScanEnabled
+      ? "idle"
+      : "blocked_generation_not_ready"
 
   return {
     schedulerRunning: Boolean(
@@ -344,7 +393,13 @@ async function getStatusInternal(options = {}) {
         schedulerState.enrichmentTimer ||
         schedulerState.feedRevalidationStarted
     ),
-    currentStatus: opportunityRunning ? "running" : "idle",
+    currentStatus: opportunityRunning
+      ? "running"
+      : enrichmentRunning && !catalogGeneration?.opportunityScanEnabled
+        ? "enrichment_only"
+        : opportunityStatus === "blocked_generation_not_ready"
+          ? "enrichment_only"
+          : "idle",
     currentRunId: opportunityRunning ? latestRun?.id || null : null,
     currentRunStartedAt: opportunityRunning ? latestRun?.started_at || null : null,
     currentRunElapsedMs:
@@ -354,6 +409,7 @@ async function getStatusInternal(options = {}) {
     nextScheduledAt: schedulerState.nextOpportunityScheduledAt,
     activeOpportunities:
       activeOpportunities == null ? null : Number(activeOpportunities || 0),
+    catalogGeneration,
     latestRun: latestRun || null,
     latestCompletedRun: latestCompletedRun || null,
     coordination: {
@@ -366,7 +422,8 @@ async function getStatusInternal(options = {}) {
         scannerType: SCANNER_TYPES.OPPORTUNITY_SCAN,
         intervalMinutes: OPPORTUNITY_SCAN_INTERVAL_MINUTES,
         nextScheduledAt: schedulerState.nextOpportunityScheduledAt,
-        status: opportunityRunning ? "running" : "idle",
+        status: opportunityStatus,
+        catalogGeneration,
         latestRun: latestRun || null,
         latestCompletedRun: latestCompletedRun || null
       },
@@ -522,7 +579,8 @@ async function getFeed(options = {}) {
         status?.activeOpportunities ?? totalCount ?? restricted.rows.length
       ),
       latestRun: toStatusRunSnapshot(status?.latestRun),
-      latestCompletedRun: toStatusRunSnapshot(latestCompleted)
+      latestCompletedRun: toStatusRunSnapshot(latestCompleted),
+      catalogGeneration: status?.catalogGeneration || null
     }
   }
 }
@@ -547,6 +605,7 @@ async function getStatus() {
     currentRunElapsedMs: status?.currentRunElapsedMs ?? null,
     nextScheduledAt: status?.nextScheduledAt || null,
     activeOpportunities: Number(status?.activeOpportunities || 0),
+    catalogGeneration: status?.catalogGeneration || null,
     latestRun: status?.latestRun || null,
     latestCompletedRun: status?.latestCompletedRun || null,
     coordination: status?.coordination || {},
@@ -566,7 +625,7 @@ async function triggerRefresh(options = {}) {
   const runEnrichment = !requestedJobType || requestedJobType === SCANNER_TYPES.ENRICHMENT
 
   const [opportunity, enrichment] = await Promise.all([
-    runOpportunity ? runtime.enqueueScan({ trigger }) : Promise.resolve(null),
+    runOpportunity ? enqueueOpportunityScanIfReady(runtime, trigger) : Promise.resolve(null),
     runEnrichment
       ? runtime.enqueueEnrichment({ forceRefresh, trigger })
       : Promise.resolve(null)
@@ -613,12 +672,12 @@ function startScheduler() {
   }
 
   if (!schedulerState.opportunityTimer) {
-    runtime.enqueueScan({ trigger: "startup_opportunity_scan" }).catch((err) => {
+    enqueueOpportunityScanIfReady(runtime, "startup_opportunity_scan").catch((err) => {
       console.error("[scanner-v2] Initial opportunity scan enqueue failed", err.message)
     })
     updateNextScheduledAt(SCANNER_TYPES.OPPORTUNITY_SCAN)
     schedulerState.opportunityTimer = setInterval(() => {
-      runtime.enqueueScan({ trigger: "scheduled_opportunity_scan" }).catch((err) => {
+      enqueueOpportunityScanIfReady(runtime, "scheduled_opportunity_scan").catch((err) => {
         console.error("[scanner-v2] Scheduled opportunity scan enqueue failed", err.message)
       })
       updateNextScheduledAt(SCANNER_TYPES.OPPORTUNITY_SCAN)
@@ -671,6 +730,9 @@ module.exports = {
     resolvePlanContext,
     applyFeedPlanRestrictions,
     toStatusRunSnapshot,
-    isScannerRunOverdue
+    isScannerRunOverdue,
+    buildCatalogGenerationSnapshot,
+    buildOpportunityScanBlockedResult,
+    enqueueOpportunityScanIfReady
   }
 }

@@ -1,6 +1,7 @@
 const AppError = require("../utils/AppError")
 const skinRepo = require("../repositories/skinRepository")
 const marketSourceCatalogRepo = require("../repositories/marketSourceCatalogRepository")
+const marketUniverseRepo = require("../repositories/marketUniverseRepository")
 const scannerRunRepo = require("../repositories/scannerRunRepository")
 const globalOpportunityLifecycleLogRepo = require("../repositories/globalOpportunityLifecycleLogRepository")
 const marketComparisonService = require("./marketComparisonService")
@@ -1240,7 +1241,6 @@ function decorateRecoveryFallbackRows(rows = [], fallbackSource = "") {
 }
 
 async function loadScannerSourceRowsRecovery() {
-  const minSourcePoolTarget = Math.max(OPPORTUNITY_BATCH_RUNTIME_TARGET * 3, 300)
   const attempts = Array.from(
     new Set([
       Math.max(UNIVERSE_DB_LIMIT, OPPORTUNITY_BATCH_RUNTIME_TARGET),
@@ -1254,7 +1254,7 @@ async function loadScannerSourceRowsRecovery() {
     selectedLimit: null,
     fallbackUsed: false,
     statementTimeoutFallbacks: 0,
-    sourceMode: "catalog_status_scannable",
+    sourceMode: "active_generation_universe_recovery",
     topup: {
       candidatePoolAttempted: false,
       candidatePoolFailed: false,
@@ -1268,17 +1268,65 @@ async function loadScannerSourceRowsRecovery() {
     scannablePoolBeforeTopup: 0,
     scannablePoolAfterTopup: 0,
     missingCategoriesBeforeTopup: [],
-    missingCategoriesAfterTopup: []
+    missingCategoriesAfterTopup: [],
+    universeRowsLoaded: 0,
+    catalogRowsResolved: 0,
+    universeRowsMissingCatalog: 0
   }
   let lastError = null
   for (let index = 0; index < attempts.length; index += 1) {
     const limit = attempts[index]
     diagnostics.attemptedLimits.push(limit)
     try {
-      let rows = decorateRecoveryPrimaryRows(
-        await marketSourceCatalogRepo.listScannerSource({
+      const universeRows = await marketUniverseRepo.listActiveByLiquidityRank({
+        limit,
+        categories: CATALOG_SCAN_CATEGORIES,
+        requireOpportunityScanEnabled: true
+      })
+      diagnostics.universeRowsLoaded = universeRows.length
+      const universeByName = new Map(
+        universeRows.map((row) => [
+          normalizeText(row?.market_hash_name || row?.marketHashName),
+          row
+        ])
+      )
+      const universeNames = universeRows
+        .map((row) => normalizeText(row?.market_hash_name || row?.marketHashName))
+        .filter(Boolean)
+      const catalogRows = universeNames.length
+        ? await marketSourceCatalogRepo.listByMarketHashNames(universeNames, {
           limit,
-          categories: CATALOG_SCAN_CATEGORIES
+          categories: CATALOG_SCAN_CATEGORIES,
+          requireOpportunityScanEnabled: true
+        })
+        : []
+      const matchedCatalogRows = catalogRows.filter((row) =>
+        universeByName.has(normalizeText(row?.market_hash_name || row?.marketHashName))
+      )
+      diagnostics.catalogRowsResolved = matchedCatalogRows.length
+      diagnostics.universeRowsMissingCatalog = Math.max(
+        universeNames.length - matchedCatalogRows.length,
+        0
+      )
+
+      let rows = decorateRecoveryPrimaryRows(
+        [...matchedCatalogRows].sort((left, right) => {
+          const leftUniverse = universeByName.get(
+            normalizeText(left?.market_hash_name || left?.marketHashName)
+          )
+          const rightUniverse = universeByName.get(
+            normalizeText(right?.market_hash_name || right?.marketHashName)
+          )
+          const leftRank = Number(
+            leftUniverse?.liquidity_rank || leftUniverse?.liquidityRank || Infinity
+          )
+          const rightRank = Number(
+            rightUniverse?.liquidity_rank || rightUniverse?.liquidityRank || Infinity
+          )
+          if (leftRank !== rightRank) return leftRank - rightRank
+          return normalizeText(left?.market_hash_name || left?.marketHashName).localeCompare(
+            normalizeText(right?.market_hash_name || right?.marketHashName)
+          )
         })
       )
 
@@ -1288,54 +1336,6 @@ async function loadScannerSourceRowsRecovery() {
       diagnostics.categoryCountsBeforeTopup = categoryCounts
       diagnostics.scannablePoolBeforeTopup = scannablePoolSize
       diagnostics.missingCategoriesBeforeTopup = missingCategories
-
-      if (scannablePoolSize < minSourcePoolTarget || missingCategories.length > 0) {
-        diagnostics.topup.candidatePoolAttempted = true
-        const candidateTopupCategories = missingCategories.length
-          ? missingCategories
-          : CATALOG_SCAN_CATEGORIES
-        try {
-          const candidateRows = decorateRecoveryFallbackRows(
-            await marketSourceCatalogRepo.listCandidatePool({
-              limit: Math.max(limit, minSourcePoolTarget * 2),
-              categories: candidateTopupCategories,
-              candidateStatuses: ["near_eligible", "enriching", "candidate"],
-              catalogStatuses: ["scannable"]
-            }),
-            "candidatePool"
-          )
-          const mergedRows = mergeUniqueScannerSourceRows(rows, candidateRows)
-          diagnostics.topup.candidatePoolRowsAdded = Math.max(mergedRows.length - rows.length, 0)
-          rows = mergedRows
-        } catch (_err) {
-          diagnostics.topup.candidatePoolFailed = true
-        }
-      }
-
-      categoryCounts = countRowsByScannerCategory(rows)
-      scannablePoolSize = sumCategoryCounts(categoryCounts)
-      missingCategories = listMissingScannerCategories(categoryCounts)
-      if (missingCategories.length > 0 || scannablePoolSize < minSourcePoolTarget) {
-        diagnostics.topup.activeTradableAttempted = true
-        const activeTopupCategories = missingCategories.length
-          ? missingCategories
-          : CATALOG_SCAN_CATEGORIES
-        try {
-          const activeRows = decorateRecoveryFallbackRows(
-            await marketSourceCatalogRepo.listActiveTradable({
-              limit: Math.max(limit, minSourcePoolTarget * 2),
-              categories: activeTopupCategories,
-              catalogStatuses: ["scannable"]
-            }),
-            "activeTradable"
-          )
-          const mergedRows = mergeUniqueScannerSourceRows(rows, activeRows)
-          diagnostics.topup.activeTradableRowsAdded = Math.max(mergedRows.length - rows.length, 0)
-          rows = mergedRows
-        } catch (_err) {
-          diagnostics.topup.activeTradableFailed = true
-        }
-      }
 
       categoryCounts = countRowsByScannerCategory(rows)
       scannablePoolSize = sumCategoryCounts(categoryCounts)
@@ -1368,7 +1368,7 @@ async function loadScannerSourceRows() {
       recovery?.diagnostics && typeof recovery.diagnostics === "object"
         ? recovery.diagnostics
         : {}
-    diagnostics.sourceMode = "recovery_legacy_source"
+    diagnostics.sourceMode = "recovery_universe_source"
     diagnostics.fallbackUsed = true
     diagnostics.degradedScannerHealth = true
     diagnostics.fallbackReasons = Array.from(
@@ -1378,6 +1378,8 @@ async function loadScannerSourceRows() {
       ])
     )
     diagnostics.cohortQueryFailures = diagnostics.cohortQueryFailures || {
+      universe: true,
+      catalog: false,
       hot: true,
       warm: true,
       cold: true,
