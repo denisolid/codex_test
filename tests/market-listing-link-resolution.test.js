@@ -10,7 +10,7 @@ const {
   __testables: { extractBestListing, describeCsfloatFetchError, sanitizeApiKey }
 } = require("../src/markets/csfloat.market");
 const {
-  __testables: { resolveOfferUrl, extractPrice, extractBestOffer }
+  __testables: { buildApiUrl, resolveOfferUrl, extractPrice, extractBestOffer }
 } = require("../src/markets/dmarket.market");
 const {
   __testables: { normalizeItemsPayload }
@@ -95,6 +95,14 @@ test("dmarket offer URL resolver prefers exact item page and falls back to searc
     fallback,
     "https://dmarket.com/ingame-items/item-list/csgo-skins?title=Fracture+Case&searchTitle=Fracture+Case"
   );
+});
+
+test("dmarket price lookup keeps using the read-only offers-by-title endpoint", () => {
+  const url = new URL(buildApiUrl("Fracture Case"));
+  assert.equal(url.origin, "https://api.dmarket.com");
+  assert.equal(url.pathname, "/exchange/v1/offers-by-title");
+  assert.equal(url.searchParams.get("gameId"), "a8db");
+  assert.equal(url.searchParams.get("title"), "Fracture Case");
 });
 
 test("dmarket offer extractor picks the cheapest exact title match", () => {

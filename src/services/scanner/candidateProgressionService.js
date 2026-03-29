@@ -8,6 +8,7 @@ const {
   ENRICHMENT_INTERVAL_MS,
   PROGRESSION_RETRY_INTERVAL_MULTIPLIERS,
   SCAN_COHORT_CATEGORIES,
+  DEFAULT_UNIVERSE_LIMIT,
   UNIVERSE_DB_LIMIT
 } = require("./config")
 
@@ -432,6 +433,45 @@ async function runProgressionBatch(options = {}) {
     }
     finalRows = Array.from(finalRowsByName.values())
   }
+  let universeRefresh = {
+    triggered: false,
+    skipped: true,
+    targetUniverseSize: DEFAULT_UNIVERSE_LIMIT,
+    universeRowsBeforeRefresh: 0,
+    universeRowsAfterRefresh: 0,
+    universeRowsDroppedAsStale: 0,
+    universeRowsAdded: 0,
+    activeUniverseBuilt: 0,
+    error: null
+  }
+  if (selectedRows.length > 0) {
+    try {
+      const refreshResult = await marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog({
+        targetUniverseSize: DEFAULT_UNIVERSE_LIMIT,
+        categories: SCAN_COHORT_CATEGORIES
+      })
+      universeRefresh = {
+        triggered: true,
+        skipped: Boolean(refreshResult?.persisted?.skipped ?? refreshResult?.skipped),
+        targetUniverseSize: Number(
+          refreshResult?.targetUniverseSize || DEFAULT_UNIVERSE_LIMIT
+        ),
+        universeRowsBeforeRefresh: Number(refreshResult?.universeRowsBeforeRefresh || 0),
+        universeRowsAfterRefresh: Number(refreshResult?.universeRowsAfterRefresh || 0),
+        universeRowsDroppedAsStale: Number(refreshResult?.universeRowsDroppedAsStale || 0),
+        universeRowsAdded: Number(refreshResult?.universeRowsAdded || 0),
+        activeUniverseBuilt: Number(refreshResult?.activeUniverseBuilt || 0),
+        error: normalizeText(refreshResult?.error) || null
+      }
+    } catch (err) {
+      universeRefresh = {
+        ...universeRefresh,
+        triggered: true,
+        skipped: true,
+        error: normalizeText(err?.message) || "active_universe_refresh_failed"
+      }
+    }
+  }
   const repairSummary = enrichmentRepairService.summarizeRepairDecisions(repairDecisions)
   const repairRefreshSummary = buildRepairSummaryFromRefresh(repairRefresh)
   const transitionMetrics = buildTransitionMetrics(selectedRows, finalRows)
@@ -462,6 +502,10 @@ async function runProgressionBatch(options = {}) {
       eligible_recheck_due_backlog: dueSummary.eligibleRecheckDueBacklog,
       promoted_to_near_eligible_total: Number(progressionDiagnostics?.promotedToNearEligible || 0),
       promoted_to_eligible_total: Number(progressionDiagnostics?.promotedToEligible || 0),
+      universeRowsBeforeRefresh: Number(universeRefresh.universeRowsBeforeRefresh || 0),
+      universeRowsAfterRefresh: Number(universeRefresh.universeRowsAfterRefresh || 0),
+      universeRowsDroppedAsStale: Number(universeRefresh.universeRowsDroppedAsStale || 0),
+      universeRowsAdded: Number(universeRefresh.universeRowsAdded || 0),
       demoted_from_eligible_total: Number(transitionMetrics.demotedFromEligibleTotal || 0),
       demoted_from_near_eligible_total: Number(transitionMetrics.demotedFromNearEligibleTotal || 0),
       eligible_tradable_rows: Number(coverageMetrics.eligibleTradableRows || 0),
@@ -513,7 +557,8 @@ async function runProgressionBatch(options = {}) {
         matchedExistingCatalogItems: Number(priorityCoverage?.matchedExistingCatalogItems || 0),
         insertedMissingCatalogItems: Number(priorityCoverage?.insertedMissingCatalogItems || 0),
         error: normalizeText(priorityCoverage?.error) || null
-      }
+      },
+      activeUniverseRefresh: universeRefresh
     }
   }
 }
