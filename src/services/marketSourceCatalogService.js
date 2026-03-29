@@ -4205,6 +4205,28 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, 
 
   const unchangedUniverse =
     existingUniverseRows.length > 0 && isSameUniverseRows(existingUniverseRows, normalizedUniverseRows)
+  const existingUniverseNames = new Set(
+    existingUniverseRows
+      .map((row) => normalizeText(row?.market_hash_name || row?.marketHashName))
+      .filter(Boolean)
+  )
+  const nextUniverseNames = new Set(
+    normalizedUniverseRows
+      .map((row) => normalizeText(row?.marketHashName || row?.market_hash_name))
+      .filter(Boolean)
+  )
+  let universeRowsDroppedAsStale = 0
+  for (const marketHashName of existingUniverseNames) {
+    if (!nextUniverseNames.has(marketHashName)) {
+      universeRowsDroppedAsStale += 1
+    }
+  }
+  let universeRowsAdded = 0
+  for (const marketHashName of nextUniverseNames) {
+    if (!existingUniverseNames.has(marketHashName)) {
+      universeRowsAdded += 1
+    }
+  }
   const persist = unchangedUniverse
     ? { generationId: generationId || null, deactivated: 0, upserted: 0, skipped: true }
     : {
@@ -4247,6 +4269,10 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, 
     backfillBlockedRows: backfillBlockedRows.length,
     backfillExcludedNonScannableRows: backfillExcludedNonScannableRows.length,
     backfillBlockedRowsByCategory: countCatalogRowsByCategory(backfillBlockedRows),
+    universeRowsBeforeRefresh: existingUniverseRows.length,
+    universeRowsAfterRefresh: normalizedUniverseRows.length,
+    universeRowsDroppedAsStale,
+    universeRowsAdded,
     activeUniverseBuilt: normalizedUniverseRows.length,
     missingToTarget: Math.max(safeTarget - normalizedUniverseRows.length, 0),
     quotaTargetByCategory: quotas,
@@ -4714,11 +4740,46 @@ async function recomputeCandidateReadinessRows(rows = [], options = {}) {
   })
 }
 
+async function refreshActiveUniverseFromCurrentCatalog(options = {}) {
+  const targetUniverseSize = Math.max(
+    Math.round(Number(options.targetUniverseSize || DEFAULT_UNIVERSE_TARGET)),
+    1
+  )
+  const catalogGeneration =
+    options.catalogGeneration && typeof options.catalogGeneration === "object"
+      ? options.catalogGeneration
+      : await catalogGenerationRepo.getCurrentGeneration().catch(() => null)
+  const catalogGenerationSnapshot = buildCatalogGenerationSnapshot(catalogGeneration)
+  const generationId = normalizeText(options.generationId || catalogGenerationSnapshot?.id)
+
+  if (!generationId) {
+    return {
+      catalogGeneration: catalogGenerationSnapshot,
+      catalogGenerationId: null,
+      targetUniverseSize,
+      universeRowsBeforeRefresh: 0,
+      universeRowsAfterRefresh: 0,
+      universeRowsDroppedAsStale: 0,
+      universeRowsAdded: 0,
+      activeUniverseBuilt: 0,
+      skipped: true,
+      error: "active_catalog_generation_missing"
+    }
+  }
+
+  return rebuildUniverseFromCatalog(targetUniverseSize, {
+    ...options,
+    catalogGeneration,
+    generationId
+  })
+}
+
 module.exports = {
   prepareSourceCatalog,
   getLastDiagnostics,
   getCatalogRowsByMarketHashNames,
   recomputeCandidateReadinessRows,
+  refreshActiveUniverseFromCurrentCatalog,
   normalizeCandidateStatus,
   evaluateEligibility,
   evaluateCandidateState,

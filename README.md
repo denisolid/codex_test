@@ -340,9 +340,11 @@ Configure backend env (root `.env`):
 - `SKINPORT_API_KEY=` (optional)
 - `CSFLOAT_API_URL=https://csfloat.com/api/v1`
 - `CSFLOAT_API_KEY=` (optional)
-- `DMARKET_API_URL=https://api.dmarket.com/exchange/v1`
+- `DMARKET_API_URL=https://api.dmarket.com/exchange/v1` for read-only price discovery via `GET /exchange/v1/offers-by-title`
 - `DMARKET_PUBLIC_KEY=` (optional)
 - `DMARKET_SECRET_KEY=` (optional)
+
+Note: this repo does not call the deprecated DMarket offer-management endpoints from Marketplace API v1. If you add trading writes later, use Marketplace API v2 batch endpoints such as `POST /marketplace-api/v2/offers:batchCreate`, `:batchUpdate`, and `:batchDelete`.
 
 Primary API:
 

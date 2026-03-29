@@ -7,9 +7,12 @@ const {
 } = require("./marketUtils");
 
 const SOURCE = "dmarket";
+// This integration is read-only and still relies on exchange/v1 `offers-by-title`.
+// If we add authenticated offer create/update/delete flows, those must use Marketplace API v2.
 const DEFAULT_API_URL = "https://api.dmarket.com/exchange/v1";
 const DEFAULT_GAME_ID = "a8db";
 const OFFER_SCAN_LIMIT = 20;
+const OFFERS_BY_TITLE_PATH = "/offers-by-title";
 
 function toApiBaseUrl() {
   const raw = String(dmarketApiUrl || DEFAULT_API_URL).trim();
@@ -23,7 +26,7 @@ function buildApiUrl(marketHashName) {
     limit: String(OFFER_SCAN_LIMIT)
   });
 
-  return `${toApiBaseUrl()}/offers-by-title?${params.toString()}`;
+  return `${toApiBaseUrl()}${OFFERS_BY_TITLE_PATH}?${params.toString()}`;
 }
 
 function buildListingUrl(marketHashName) {
@@ -259,6 +262,7 @@ module.exports = {
   searchItemPrice,
   batchGetPrices,
   __testables: {
+    buildApiUrl,
     extractPrice,
     toSafeHttpUrl,
     resolveOfferUrl,

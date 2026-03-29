@@ -67,6 +67,8 @@ test("candidate progression batch exposes backlog, promotions, and cohort metric
     listCoverageSummary: marketSourceCatalogRepo.listCoverageSummary,
     upsertRows: marketSourceCatalogRepo.upsertRows,
     recomputeCandidateReadinessRows: marketSourceCatalogService.recomputeCandidateReadinessRows,
+    refreshActiveUniverseFromCurrentCatalog:
+      marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog,
     syncPriorityCoverageSet: catalogPriorityCoverageService.syncPriorityCoverageSet,
     repairCatalogRows: upstreamMarketFreshnessRecoveryService.repairCatalogRows
   }
@@ -191,6 +193,17 @@ test("candidate progression batch exposes backlog, promotions, and cohort metric
     }
   ]
   marketSourceCatalogRepo.upsertRows = async (rows = []) => rows
+  marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog = async () => ({
+    targetUniverseSize: 3000,
+    universeRowsBeforeRefresh: 401,
+    universeRowsAfterRefresh: 351,
+    universeRowsDroppedAsStale: 50,
+    universeRowsAdded: 0,
+    activeUniverseBuilt: 351,
+    persisted: {
+      skipped: false
+    }
+  })
   catalogPriorityCoverageService.syncPriorityCoverageSet = async (options = {}) => {
     assert.equal(options.allowCatalogInsert, false)
     return {
@@ -227,6 +240,10 @@ test("candidate progression batch exposes backlog, promotions, and cohort metric
     assert.equal(result.diagnostics.progression_rows_processed_by_state.enriching, 1)
     assert.equal(result.diagnostics.near_eligible_due_backlog, 1)
     assert.equal(result.diagnostics.promoted_to_eligible_total, 1)
+    assert.equal(result.diagnostics.universeRowsBeforeRefresh, 401)
+    assert.equal(result.diagnostics.universeRowsAfterRefresh, 351)
+    assert.equal(result.diagnostics.universeRowsDroppedAsStale, 50)
+    assert.equal(result.diagnostics.universeRowsAdded, 0)
     assert.equal(result.diagnostics.eligible_tradable_rows, 1)
     assert.equal(result.diagnostics.hot_cohort_size, 1)
     assert.equal(result.diagnostics.warm_cohort_size, 1)
@@ -245,6 +262,8 @@ test("candidate progression batch exposes backlog, promotions, and cohort metric
     marketSourceCatalogRepo.upsertRows = originals.upsertRows
     marketSourceCatalogService.recomputeCandidateReadinessRows =
       originals.recomputeCandidateReadinessRows
+    marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog =
+      originals.refreshActiveUniverseFromCurrentCatalog
     catalogPriorityCoverageService.syncPriorityCoverageSet = originals.syncPriorityCoverageSet
     upstreamMarketFreshnessRecoveryService.repairCatalogRows = originals.repairCatalogRows
   }
@@ -295,6 +314,8 @@ test("repair lane cools down repeatedly unrepaired rows and records failure reas
     listCoverageSummary: marketSourceCatalogRepo.listCoverageSummary,
     upsertRows: marketSourceCatalogRepo.upsertRows,
     recomputeCandidateReadinessRows: marketSourceCatalogService.recomputeCandidateReadinessRows,
+    refreshActiveUniverseFromCurrentCatalog:
+      marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog,
     syncPriorityCoverageSet: catalogPriorityCoverageService.syncPriorityCoverageSet,
     repairCatalogRows: upstreamMarketFreshnessRecoveryService.repairCatalogRows
   }
@@ -338,6 +359,17 @@ test("repair lane cools down repeatedly unrepaired rows and records failure reas
   ]
   marketSourceCatalogRepo.listCoverageSummary = async () => []
   marketSourceCatalogRepo.upsertRows = async (rows = []) => rows
+  marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog = async () => ({
+    targetUniverseSize: 3000,
+    universeRowsBeforeRefresh: 1,
+    universeRowsAfterRefresh: 0,
+    universeRowsDroppedAsStale: 1,
+    universeRowsAdded: 0,
+    activeUniverseBuilt: 0,
+    persisted: {
+      skipped: false
+    }
+  })
   catalogPriorityCoverageService.syncPriorityCoverageSet = async () => ({
     totalPriorityItemsConfigured: 0,
     matchedExistingCatalogItems: 0,
@@ -387,6 +419,8 @@ test("repair lane cools down repeatedly unrepaired rows and records failure reas
     marketSourceCatalogRepo.upsertRows = originals.upsertRows
     marketSourceCatalogService.recomputeCandidateReadinessRows =
       originals.recomputeCandidateReadinessRows
+    marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog =
+      originals.refreshActiveUniverseFromCurrentCatalog
     catalogPriorityCoverageService.syncPriorityCoverageSet = originals.syncPriorityCoverageSet
     upstreamMarketFreshnessRecoveryService.repairCatalogRows = originals.repairCatalogRows
   }
@@ -399,6 +433,8 @@ test("repair lane promotes refreshed rows into near_eligible or eligible outcome
     listCoverageSummary: marketSourceCatalogRepo.listCoverageSummary,
     upsertRows: marketSourceCatalogRepo.upsertRows,
     recomputeCandidateReadinessRows: marketSourceCatalogService.recomputeCandidateReadinessRows,
+    refreshActiveUniverseFromCurrentCatalog:
+      marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog,
     syncPriorityCoverageSet: catalogPriorityCoverageService.syncPriorityCoverageSet,
     repairCatalogRows: upstreamMarketFreshnessRecoveryService.repairCatalogRows
   }
@@ -450,6 +486,17 @@ test("repair lane promotes refreshed rows into near_eligible or eligible outcome
     }
   ]
   marketSourceCatalogRepo.upsertRows = async (rows = []) => rows
+  marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog = async () => ({
+    targetUniverseSize: 3000,
+    universeRowsBeforeRefresh: 0,
+    universeRowsAfterRefresh: 1,
+    universeRowsDroppedAsStale: 0,
+    universeRowsAdded: 1,
+    activeUniverseBuilt: 1,
+    persisted: {
+      skipped: false
+    }
+  })
   catalogPriorityCoverageService.syncPriorityCoverageSet = async () => ({
     totalPriorityItemsConfigured: 0,
     matchedExistingCatalogItems: 0,
@@ -496,6 +543,8 @@ test("repair lane promotes refreshed rows into near_eligible or eligible outcome
     marketSourceCatalogRepo.upsertRows = originals.upsertRows
     marketSourceCatalogService.recomputeCandidateReadinessRows =
       originals.recomputeCandidateReadinessRows
+    marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog =
+      originals.refreshActiveUniverseFromCurrentCatalog
     catalogPriorityCoverageService.syncPriorityCoverageSet = originals.syncPriorityCoverageSet
     upstreamMarketFreshnessRecoveryService.repairCatalogRows = originals.repairCatalogRows
   }
