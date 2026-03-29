@@ -2254,8 +2254,24 @@ function mergeDiagnostics({
   runtimeConfig = {}
 } = {}) {
   const selectionDiag = selection.diagnostics || {}
+  const catalogLoad = toJsonObject(sourceCatalog?.catalogLoad)
+  const loadedScannerSourceRows = Number(
+    sourceCatalog?.loaded_scanner_source_rows ||
+      sourceCatalog?.loadedScannerSourceRows ||
+      sourceCatalog?.scannerSourceSize ||
+      0
+  )
+  const rowsDroppedBeforeAlpha = Number(
+    catalogLoad?.rows_dropped_before_alpha || catalogLoad?.universeRowsDroppedBeforeAlpha || 0
+  )
+  const finalItemsScanned = Number(
+    evaluations.scannedItems || selection.selected?.length || job?.selected_rows || 0
+  )
   return {
     ...job,
+    loaded_scanner_source_rows: loadedScannerSourceRows,
+    rows_dropped_before_alpha: rowsDroppedBeforeAlpha,
+    final_items_scanned: finalItemsScanned,
     scanStateCounts: {
       eligible: Number(selectionDiag.eligible || 0),
       nearEligible: Number(selectionDiag.nearEligible || 0),
@@ -2314,6 +2330,10 @@ function mergeDiagnostics({
       )
     },
     sourceCatalog,
+    sourceCatalogSummary: {
+      loaded_scanner_source_rows: loadedScannerSourceRows,
+      rows_dropped_before_alpha: rowsDroppedBeforeAlpha
+    },
     batchScan: compare,
     timing: {
       selectionMs: Number(timing.selectionMs || 0),

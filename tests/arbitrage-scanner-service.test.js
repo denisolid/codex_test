@@ -289,8 +289,10 @@ test("mergeDiagnostics adds one consolidated scanner_v2 summary and bounded tuni
     },
     sourceCatalog: {
       mode: "persisted_cohorts",
+      scannerSourceSize: 122,
       catalogLoad: {
         selection_layer: "alpha_hot_universe",
+        universeRowsDroppedBeforeAlpha: 50,
         hot_universe_size: 10,
         hot_universe_by_category: {
           weapon_skin: 6,
@@ -362,6 +364,13 @@ test("mergeDiagnostics adds one consolidated scanner_v2 summary and bounded tuni
   assert.deepEqual(diagnostics.consolidatedSummary.topBlockReasonsOnEmit[0], {
     reason: "missing_listing_availability",
     count: 2
+  })
+  assert.equal(diagnostics.loaded_scanner_source_rows, 122)
+  assert.equal(diagnostics.rows_dropped_before_alpha, 50)
+  assert.equal(diagnostics.final_items_scanned, 8)
+  assert.deepEqual(diagnostics.sourceCatalogSummary, {
+    loaded_scanner_source_rows: 122,
+    rows_dropped_before_alpha: 50
   })
   assert.deepEqual(diagnostics.tuningSurface, SCANNER_V2_TUNING_SURFACE)
 })

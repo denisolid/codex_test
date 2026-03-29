@@ -12,6 +12,7 @@ const scannerRunRepo = require("../src/repositories/scannerRunRepository")
 const planService = require("../src/services/planService")
 const feedRevalidationService = require("../src/services/feed/feedRevalidationService")
 const legacyScannerService = require("../src/services/arbitrageScannerService")
+const catalogGenerationService = require("../src/services/catalogGenerationService")
 const scannerV2Service = require("../src/services/scannerV2Service")
 
 test("scannerV2Service.getFeed reads active opportunities and preserves premium locks", async () => {
@@ -117,6 +118,8 @@ test("scannerV2Service.getFeed reads active opportunities and preserves premium 
 test("scannerV2Service.startScheduler owns v2 timers and feed revalidation", async () => {
   const originals = {
     getCurrentGeneration: catalogGenerationRepo.getCurrentGeneration,
+    ensureOpportunityScanEnabledForActiveGeneration:
+      catalogGenerationService.ensureOpportunityScanEnabledForActiveGeneration,
     startScheduler: feedRevalidationService.startScheduler,
     stopScheduler: feedRevalidationService.stopScheduler,
     runtime: legacyScannerService.__runtime
@@ -137,6 +140,25 @@ test("scannerV2Service.startScheduler owns v2 timers and feed revalidation", asy
     is_active: true,
     opportunity_scan_enabled: true,
     activated_at: "2026-03-27T11:00:00.000Z"
+  })
+  catalogGenerationService.ensureOpportunityScanEnabledForActiveGeneration = async () => ({
+    allowed: true,
+    autoEnabled: false,
+    catalogGeneration: {
+      id: "generation-active",
+      generation_key: "catalog-reset-active",
+      status: "active",
+      is_active: true,
+      opportunity_scan_enabled: true
+    },
+    diagnostics: {
+      blocked_by_generation_flag: false,
+      blocked_by_readiness_gate: false,
+      blocked_by_empty_scanner_source: false,
+      readiness_source: "generation_flag",
+      weapon_skin_readiness_source: "generation_flag"
+    },
+    readiness: null
   })
   legacyScannerService.__runtime = {
     enqueueScan: async () => {
@@ -161,6 +183,8 @@ test("scannerV2Service.startScheduler owns v2 timers and feed revalidation", asy
   } finally {
     scannerV2Service.stopScheduler()
     catalogGenerationRepo.getCurrentGeneration = originals.getCurrentGeneration
+    catalogGenerationService.ensureOpportunityScanEnabledForActiveGeneration =
+      originals.ensureOpportunityScanEnabledForActiveGeneration
     feedRevalidationService.startScheduler = originals.startScheduler
     feedRevalidationService.stopScheduler = originals.stopScheduler
     legacyScannerService.__runtime = originals.runtime
@@ -169,19 +193,35 @@ test("scannerV2Service.startScheduler owns v2 timers and feed revalidation", asy
 
 test("scannerV2Service blocks manual opportunity scans while the active generation is enrichment-only", async () => {
   const originals = {
-    getCurrentGeneration: catalogGenerationRepo.getCurrentGeneration,
+    ensureOpportunityScanEnabledForActiveGeneration:
+      catalogGenerationService.ensureOpportunityScanEnabledForActiveGeneration,
     runtime: legacyScannerService.__runtime
   }
 
   let scanEnqueueCalls = 0
 
-  catalogGenerationRepo.getCurrentGeneration = async () => ({
-    id: "generation-rebuild",
-    generation_key: "catalog-reset-rebuild",
-    status: "active",
-    is_active: true,
-    opportunity_scan_enabled: false,
-    activated_at: "2026-03-27T11:00:00.000Z"
+  catalogGenerationService.ensureOpportunityScanEnabledForActiveGeneration = async () => ({
+    allowed: false,
+    autoEnabled: false,
+    catalogGeneration: {
+      id: "generation-rebuild",
+      generation_key: "catalog-reset-rebuild",
+      status: "active",
+      is_active: true,
+      opportunity_scan_enabled: false,
+      activated_at: "2026-03-27T11:00:00.000Z"
+    },
+    diagnostics: {
+      blocked_by_generation_flag: true,
+      blocked_by_readiness_gate: true,
+      blocked_by_empty_scanner_source: true,
+      readiness_source: "not_ready",
+      weapon_skin_readiness_source: "not_ready"
+    },
+    readiness: {
+      readyForOpportunityScan: false
+    },
+    reason: "catalog_generation_scanner_source_empty"
   })
   legacyScannerService.__runtime = {
     enqueueScan: async () => {
@@ -208,8 +248,143 @@ test("scannerV2Service blocks manual opportunity scans while the active generati
     assert.equal(scanEnqueueCalls, 0)
     assert.equal(opportunityJob?.status, "blocked_generation_not_ready")
     assert.equal(opportunityJob?.catalogGeneration?.id, "generation-rebuild")
+    assert.equal(opportunityJob?.blocked_by_generation_flag, true)
+    assert.equal(opportunityJob?.blocked_by_readiness_gate, true)
+    assert.equal(opportunityJob?.blocked_by_empty_scanner_source, true)
+  } finally {
+    catalogGenerationService.ensureOpportunityScanEnabledForActiveGeneration =
+      originals.ensureOpportunityScanEnabledForActiveGeneration
+    legacyScannerService.__runtime = originals.runtime
+  }
+})
+
+test("scannerV2Service auto-enables opportunity scan when eligible supply is ready", async () => {
+  const originals = {
+    ensureOpportunityScanEnabledForActiveGeneration:
+      catalogGenerationService.ensureOpportunityScanEnabledForActiveGeneration,
+    runtime: legacyScannerService.__runtime
+  }
+
+  let scanEnqueueCalls = 0
+
+  catalogGenerationService.ensureOpportunityScanEnabledForActiveGeneration = async () => ({
+    allowed: true,
+    autoEnabled: true,
+    catalogGeneration: {
+      id: "generation-eligible-ready",
+      generation_key: "catalog-reset-eligible-ready",
+      status: "active",
+      is_active: true,
+      opportunity_scan_enabled: true,
+      activated_at: "2026-03-27T11:00:00.000Z"
+    },
+    diagnostics: {
+      blocked_by_generation_flag: false,
+      blocked_by_readiness_gate: false,
+      blocked_by_empty_scanner_source: false,
+      readiness_source: "eligible_supply",
+      weapon_skin_readiness_source: "eligible_supply"
+    },
+    readiness: {
+      readyForOpportunityScan: true,
+      readinessSource: "eligible_supply"
+    }
+  })
+  legacyScannerService.__runtime = {
+    enqueueScan: async () => {
+      scanEnqueueCalls += 1
+      return { scanRunId: "scan-run-eligible", alreadyRunning: false }
+    },
+    enqueueEnrichment: async () => ({ scanRunId: "enrichment-run-1", alreadyRunning: false })
+  }
+
+  try {
+    const result = await scannerV2Service.triggerRefresh({
+      jobType: "opportunity_scan",
+      entitlements: {
+        planTier: "pro",
+        advancedFilters: true,
+        visibleFeedLimit: 200,
+        delayedSignals: false,
+        signalDelayMinutes: 0,
+        manualRefreshCooldownMs: 0
+      }
+    })
+
+    const opportunityJob = result.jobs?.opportunity_scan
+    assert.equal(scanEnqueueCalls, 1)
+    assert.equal(opportunityJob?.scanRunId, "scan-run-eligible")
+    assert.equal(opportunityJob?.autoEnabledGenerationFlag, true)
+    assert.equal(opportunityJob?.blocked_by_generation_flag, false)
+    assert.equal(opportunityJob?.blocked_by_readiness_gate, false)
+    assert.equal(opportunityJob?.blocked_by_empty_scanner_source, false)
+    assert.equal(opportunityJob?.readinessSource, "eligible_supply")
+  } finally {
+    catalogGenerationService.ensureOpportunityScanEnabledForActiveGeneration =
+      originals.ensureOpportunityScanEnabledForActiveGeneration
+    legacyScannerService.__runtime = originals.runtime
+  }
+})
+
+test("scannerV2Service.getStatus exposes explicit generation and readiness block diagnostics", async () => {
+  const originals = {
+    getCurrentGeneration: catalogGenerationRepo.getCurrentGeneration,
+    getLatestRun: scannerRunRepo.getLatestRun,
+    getLatestCompletedRun: scannerRunRepo.getLatestCompletedRun,
+    countFeed: globalActiveOpportunityRepo.countFeed,
+    ensureOpportunityScanEnabledForActiveGeneration:
+      catalogGenerationService.ensureOpportunityScanEnabledForActiveGeneration
+  }
+
+  catalogGenerationRepo.getCurrentGeneration = async () => ({
+    id: "generation-status-blocked",
+    generation_key: "catalog-reset-status-blocked",
+    status: "active",
+    is_active: true,
+    opportunity_scan_enabled: false,
+    activated_at: "2026-03-27T11:00:00.000Z"
+  })
+  scannerRunRepo.getLatestRun = async () => null
+  scannerRunRepo.getLatestCompletedRun = async () => null
+  globalActiveOpportunityRepo.countFeed = async () => 0
+  catalogGenerationService.ensureOpportunityScanEnabledForActiveGeneration = async () => ({
+    allowed: false,
+    autoEnabled: false,
+    catalogGeneration: {
+      id: "generation-status-blocked",
+      generation_key: "catalog-reset-status-blocked",
+      status: "active",
+      is_active: true,
+      opportunity_scan_enabled: false
+    },
+    diagnostics: {
+      blocked_by_generation_flag: true,
+      blocked_by_readiness_gate: true,
+      blocked_by_empty_scanner_source: true,
+      readiness_source: "not_ready",
+      weapon_skin_readiness_source: "not_ready"
+    },
+    readiness: {
+      readyForOpportunityScan: false
+    },
+    reason: "catalog_generation_scanner_source_empty"
+  })
+
+  try {
+    const result = await scannerV2Service.getStatus()
+    const opportunityJob = result.jobs?.opportunity_scan
+
+    assert.equal(opportunityJob?.status, "blocked_generation_not_ready")
+    assert.equal(opportunityJob?.blocked_by_generation_flag, true)
+    assert.equal(opportunityJob?.blocked_by_readiness_gate, true)
+    assert.equal(opportunityJob?.blocked_by_empty_scanner_source, true)
+    assert.equal(opportunityJob?.readinessSource, "not_ready")
   } finally {
     catalogGenerationRepo.getCurrentGeneration = originals.getCurrentGeneration
-    legacyScannerService.__runtime = originals.runtime
+    scannerRunRepo.getLatestRun = originals.getLatestRun
+    scannerRunRepo.getLatestCompletedRun = originals.getLatestCompletedRun
+    globalActiveOpportunityRepo.countFeed = originals.countFeed
+    catalogGenerationService.ensureOpportunityScanEnabledForActiveGeneration =
+      originals.ensureOpportunityScanEnabledForActiveGeneration
   }
 })

@@ -197,6 +197,73 @@ test("buildReadinessSummary can explain near-eligible-led readiness when eligibl
   assert.equal(readiness.readyForOpportunityScan, true)
 })
 
+test("ensureOpportunityScanEnabledForActiveGeneration auto-enables when eligible supply is ready", async () => {
+  const originals = {
+    getCurrentGeneration: catalogGenerationRepo.getCurrentGeneration,
+    enableOpportunityScan: catalogGenerationRepo.enableOpportunityScan,
+    listCoverageSummary: marketSourceCatalogRepo.listCoverageSummary,
+    listActiveByLiquidityRank: marketUniverseRepo.listActiveByLiquidityRank
+  }
+
+  let enablePayload = null
+  let currentGeneration = {
+    id: "generation-eligible-unlock",
+    generation_key: "catalog-reset-eligible-unlock",
+    status: "active",
+    is_active: true,
+    opportunity_scan_enabled: false,
+    diagnostics_summary: {}
+  }
+
+  catalogGenerationRepo.getCurrentGeneration = async () => currentGeneration
+  catalogGenerationRepo.enableOpportunityScan = async (_id, payload = {}) => {
+    enablePayload = payload
+    currentGeneration = {
+      ...currentGeneration,
+      opportunity_scan_enabled: true,
+      diagnostics_summary: payload.diagnosticsSummary || {}
+    }
+    return currentGeneration
+  }
+  marketSourceCatalogRepo.listCoverageSummary = async () =>
+    buildCoverageRows({ category: "weapon_skin", count: 351, candidateStatus: "eligible" })
+  marketUniverseRepo.listActiveByLiquidityRank = async () =>
+    Array.from({ length: 401 }, (_, index) => ({
+      market_hash_name: `eligible-${index + 1}`,
+      item_name: `eligible-${index + 1}`,
+      category: "weapon_skin",
+      liquidity_rank: index + 1,
+      is_active: true
+    }))
+
+  try {
+    const result = await catalogGenerationService.ensureOpportunityScanEnabledForActiveGeneration({
+      minScannerSourceSize: 1,
+      minEligibleRows: 1,
+      minNearEligibleRows: 1,
+      minReadyCategories: 1,
+      minActiveUniverseRows: 1
+    })
+
+    assert.equal(result.allowed, true)
+    assert.equal(result.autoEnabled, true)
+    assert.equal(result.readiness?.readinessSource, "eligible_supply")
+    assert.equal(result.diagnostics.blocked_by_generation_flag, false)
+    assert.equal(result.diagnostics.blocked_by_readiness_gate, false)
+    assert.equal(result.diagnostics.blocked_by_empty_scanner_source, false)
+    assert.equal(enablePayload?.diagnosticsSummary?.readiness?.readyForOpportunityScan, true)
+    assert.equal(
+      enablePayload?.diagnosticsSummary?.opportunityScanUnlock?.readinessSource,
+      "eligible_supply"
+    )
+  } finally {
+    catalogGenerationRepo.getCurrentGeneration = originals.getCurrentGeneration
+    catalogGenerationRepo.enableOpportunityScan = originals.enableOpportunityScan
+    marketSourceCatalogRepo.listCoverageSummary = originals.listCoverageSummary
+    marketUniverseRepo.listActiveByLiquidityRank = originals.listActiveByLiquidityRank
+  }
+})
+
 test("buildCategoryFocusComparison highlights weapon_skin deltas across generations", () => {
   const previousSummary = summarizeCoverageRows([
     ...buildCoverageRows({ category: "weapon_skin", count: 4, candidateStatus: "eligible" }),

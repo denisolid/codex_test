@@ -564,6 +564,128 @@ async function summarizeUniverseGeneration(generationOrId, options = {}) {
   return summarizeUniverseRows(rows, generation, options)
 }
 
+function buildOpportunityScanGateDiagnostics(readiness = null, options = {}) {
+  const autoEnabled = Boolean(options.autoEnabled)
+  const generationFlagEnabled = Boolean(options.generationFlagEnabled)
+  return {
+    blocked_by_generation_flag: !generationFlagEnabled && !autoEnabled,
+    blocked_by_readiness_gate: readiness ? !Boolean(readiness.readyForOpportunityScan) : false,
+    blocked_by_empty_scanner_source: readiness
+      ? !Boolean(readiness?.signals?.scannerSourceNonZero)
+      : false,
+    readiness_source: readiness?.readinessSource || (generationFlagEnabled ? "generation_flag" : "not_ready"),
+    weapon_skin_readiness_source:
+      readiness?.weaponSkinReadinessSource ||
+      (generationFlagEnabled ? "generation_flag" : "not_ready"),
+    auto_enabled: autoEnabled
+  }
+}
+
+async function ensureOpportunityScanEnabledForActiveGeneration(options = {}) {
+  const categories = normalizeCategories(options.categories || SCAN_COHORT_CATEGORIES)
+  const currentGeneration =
+    options.generation && typeof options.generation === "object"
+      ? options.generation
+      : await catalogGenerationRepo.getCurrentGeneration().catch(() => null)
+  const snapshot = buildGenerationSnapshot(currentGeneration)
+
+  if (!snapshot?.id) {
+    return {
+      allowed: false,
+      autoEnabled: false,
+      catalogGeneration: null,
+      readiness: null,
+      diagnostics: {
+        blocked_by_generation_flag: true,
+        blocked_by_readiness_gate: true,
+        blocked_by_empty_scanner_source: true,
+        readiness_source: "not_ready",
+        weapon_skin_readiness_source: "not_ready",
+        auto_enabled: false
+      },
+      reason: "active_catalog_generation_missing",
+      canAutoEnable: false
+    }
+  }
+
+  if (snapshot.opportunityScanEnabled) {
+    return {
+      allowed: true,
+      autoEnabled: false,
+      catalogGeneration: snapshot,
+      readiness: null,
+      diagnostics: buildOpportunityScanGateDiagnostics(null, {
+        generationFlagEnabled: true,
+        autoEnabled: false
+      }),
+      reason: null,
+      canAutoEnable: false
+    }
+  }
+
+  const summary = await summarizeGeneration(currentGeneration, { categories })
+  const universeSummary = await summarizeUniverseGeneration(currentGeneration, { categories })
+  const readiness = buildReadinessSummary(summary, {
+    ...options,
+    categories,
+    universeSummary
+  })
+  const diagnostics = buildOpportunityScanGateDiagnostics(readiness, {
+    generationFlagEnabled: false,
+    autoEnabled: false
+  })
+
+  if (!readiness.readyForOpportunityScan || options.autoEnable === false) {
+    return {
+      allowed: false,
+      autoEnabled: false,
+      catalogGeneration: snapshot,
+      readiness,
+      diagnostics,
+      reason: diagnostics.blocked_by_empty_scanner_source
+        ? "catalog_generation_scanner_source_empty"
+        : diagnostics.blocked_by_readiness_gate
+          ? "catalog_generation_readiness_gate_failed"
+          : "catalog_generation_scan_disabled",
+      canAutoEnable: Boolean(readiness.readyForOpportunityScan)
+    }
+  }
+
+  const enabledAt = new Date().toISOString()
+  const diagnosticsSummary = {
+    ...(snapshot.diagnosticsSummary && typeof snapshot.diagnosticsSummary === "object"
+      ? snapshot.diagnosticsSummary
+      : {}),
+    readiness,
+    opportunityScanUnlock: {
+      autoEnabled: true,
+      enabledAt,
+      readinessSource: readiness.readinessSource,
+      weaponSkinReadinessSource: readiness.weaponSkinReadinessSource,
+      blocked_by_generation_flag: false,
+      blocked_by_readiness_gate: false,
+      blocked_by_empty_scanner_source: false
+    }
+  }
+  const enabledGeneration = await catalogGenerationRepo.enableOpportunityScan(snapshot.id, {
+    opportunityScanEnabledAt: enabledAt,
+    diagnosticsSummary
+  })
+
+  return {
+    allowed: true,
+    autoEnabled: true,
+    catalogGeneration: buildGenerationSnapshot(enabledGeneration),
+    readiness,
+    diagnostics: buildOpportunityScanGateDiagnostics(readiness, {
+      generationFlagEnabled: true,
+      autoEnabled: true
+    }),
+    reason: null,
+    canAutoEnable: false
+  }
+}
+
 async function runCatalogGenerationReset(options = {}) {
   const targetUniverseSize = Math.max(
     normalizeInteger(options.targetUniverseSize, DEFAULT_UNIVERSE_LIMIT, 1),
@@ -728,6 +850,8 @@ async function runCatalogGenerationReset(options = {}) {
 module.exports = {
   runCatalogGenerationReset,
   summarizeGeneration,
+  summarizeUniverseGeneration,
+  ensureOpportunityScanEnabledForActiveGeneration,
   buildGenerationSnapshot,
   __testables: {
     summarizeCoverageRows,
@@ -736,6 +860,7 @@ module.exports = {
     compareGenerationSummaries,
     compareUniverseSummaries,
     buildCategoryFocusComparison,
-    normalizeCategories
+    normalizeCategories,
+    buildOpportunityScanGateDiagnostics
   }
 }
