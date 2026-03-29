@@ -325,40 +325,69 @@ function buildReadinessSummary(summary = {}, options = {}) {
     weaponSkinEligibleRows: Number(weaponSkinSummary?.eligibleRows || 0),
     weaponSkinNearEligibleRows: Number(weaponSkinSummary?.nearEligibleRows || 0)
   }
+  const eligibleSupplyReady =
+    actuals.scannerSourceSize > 0 && actuals.eligibleRows >= thresholds.minEligibleRows
+  const nearEligibleSupplyReady =
+    actuals.scannerSourceSize > 0 &&
+    actuals.nearEligibleRows >= thresholds.minNearEligibleRows
+  const weaponSkinEligibleSupplyReady =
+    actuals.weaponSkinEligibleRows >= thresholds.minWeaponSkinEligibleRows
+  const weaponSkinNearEligibleSupplyReady =
+    actuals.weaponSkinNearEligibleRows >= thresholds.minWeaponSkinNearEligibleRows
 
   const signals = {
     scannerSourceNonZero: actuals.scannerSourceSize > 0,
     scannerSourceSizeReady: actuals.scannerSourceSize >= thresholds.minScannerSourceSize,
     eligibleRowsReady: actuals.eligibleRows >= thresholds.minEligibleRows,
     nearEligibleReady: actuals.nearEligibleRows >= thresholds.minNearEligibleRows,
+    eligibleSupplyReady,
+    nearEligibleSupplyReady,
+    supplyReady: eligibleSupplyReady || nearEligibleSupplyReady,
     categoryCoverageReady: actuals.readyCategoryCount >= thresholds.minReadyCategories,
     activeUniverseReady: actuals.activeUniverseRows >= thresholds.minActiveUniverseRows,
-    weaponSkinEligibleReady:
-      actuals.weaponSkinEligibleRows >= thresholds.minWeaponSkinEligibleRows,
-    weaponSkinNearEligibleReady:
-      actuals.weaponSkinNearEligibleRows >= thresholds.minWeaponSkinNearEligibleRows
+    weaponSkinEligibleReady: weaponSkinEligibleSupplyReady,
+    weaponSkinNearEligibleReady: weaponSkinNearEligibleSupplyReady,
+    weaponSkinEligibleSupplyReady,
+    weaponSkinNearEligibleSupplyReady,
+    weaponSkinSupplyReady:
+      weaponSkinEligibleSupplyReady || weaponSkinNearEligibleSupplyReady
   }
+
+  const readinessSource = eligibleSupplyReady
+    ? "eligible_supply"
+    : nearEligibleSupplyReady
+      ? "near_eligible_supply"
+      : "not_ready"
+  const weaponSkinReadinessSource = weaponSkinEligibleSupplyReady
+    ? "eligible_supply"
+    : weaponSkinNearEligibleSupplyReady
+      ? "near_eligible_supply"
+      : "not_ready"
 
   const requiredSignalKeys = [
     "scannerSourceNonZero",
     "scannerSourceSizeReady",
-    "eligibleRowsReady",
-    "nearEligibleReady",
+    "supplyReady",
     "categoryCoverageReady",
     "activeUniverseReady"
   ]
   if (enforceWeaponSkinReadiness) {
-    requiredSignalKeys.push("weaponSkinEligibleReady", "weaponSkinNearEligibleReady")
+    requiredSignalKeys.push("weaponSkinSupplyReady")
   }
 
   return {
     thresholds,
     actuals,
     signals,
+    readinessSource,
+    weaponSkinReadinessSource,
     requiredSignalKeys,
-    optionalSignalKeys: enforceWeaponSkinReadiness
-      ? []
-      : ["weaponSkinEligibleReady", "weaponSkinNearEligibleReady"],
+    optionalSignalKeys: [
+      "eligibleRowsReady",
+      "nearEligibleReady",
+      "weaponSkinEligibleReady",
+      "weaponSkinNearEligibleReady"
+    ],
     readyForOpportunityScan: requiredSignalKeys.every((key) => Boolean(signals[key]))
   }
 }

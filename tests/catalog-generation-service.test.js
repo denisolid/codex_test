@@ -69,7 +69,7 @@ test("summarizeCoverageRows and readiness capture generation maturity", () => {
   assert.equal(readiness.readyForOpportunityScan, true)
 })
 
-test("buildReadinessSummary keeps opportunity scan disabled until weapon_skin eligible and near_eligible are both non-zero", () => {
+test("buildReadinessSummary allows eligible supply to unlock scan without near-eligible rows", () => {
   const summary = summarizeCoverageRows(
     [
       ...buildCoverageRows({ category: "case", count: 24, candidateStatus: "eligible" }),
@@ -101,9 +101,14 @@ test("buildReadinessSummary keeps opportunity scan disabled until weapon_skin el
   })
 
   assert.equal(readiness.signals.scannerSourceNonZero, true)
+  assert.equal(readiness.signals.eligibleSupplyReady, true)
+  assert.equal(readiness.signals.nearEligibleSupplyReady, false)
+  assert.equal(readiness.signals.supplyReady, true)
   assert.equal(readiness.signals.weaponSkinEligibleReady, false)
   assert.equal(readiness.signals.weaponSkinNearEligibleReady, false)
-  assert.equal(readiness.readyForOpportunityScan, false)
+  assert.equal(readiness.readinessSource, "eligible_supply")
+  assert.equal(readiness.weaponSkinReadinessSource, "not_ready")
+  assert.equal(readiness.readyForOpportunityScan, true)
 })
 
 test("buildReadinessSummary unlocks scan on positive mature-pool counts while keeping weapon_skin diagnostics optional", () => {
@@ -142,13 +147,54 @@ test("buildReadinessSummary unlocks scan on positive mature-pool counts while ke
   assert.equal(readiness.signals.scannerSourceNonZero, true)
   assert.equal(readiness.signals.eligibleRowsReady, true)
   assert.equal(readiness.signals.nearEligibleReady, true)
+  assert.equal(readiness.signals.supplyReady, true)
   assert.equal(readiness.signals.weaponSkinEligibleReady, false)
   assert.equal(readiness.signals.weaponSkinNearEligibleReady, false)
+  assert.equal(readiness.readinessSource, "eligible_supply")
   assert.equal(readiness.readyForOpportunityScan, true)
   assert.deepEqual(readiness.optionalSignalKeys, [
+    "eligibleRowsReady",
+    "nearEligibleReady",
     "weaponSkinEligibleReady",
     "weaponSkinNearEligibleReady"
   ])
+})
+
+test("buildReadinessSummary can explain near-eligible-led readiness when eligible supply is absent", () => {
+  const summary = summarizeCoverageRows(
+    [
+      ...buildCoverageRows({
+        category: "weapon_skin",
+        count: 9,
+        candidateStatus: "near_eligible",
+        scanEligible: false
+      })
+    ],
+    {
+      id: "generation-near-eligible-ready",
+      generation_key: "catalog-reset-near-eligible-ready",
+      status: "active",
+      is_active: true,
+      opportunity_scan_enabled: false
+    }
+  )
+
+  const readiness = buildReadinessSummary(summary, {
+    universeSummary: {
+      totalRows: 9
+    },
+    minScannerSourceSize: 1,
+    minEligibleRows: 10,
+    minNearEligibleRows: 1,
+    minReadyCategories: 1,
+    minActiveUniverseRows: 1
+  })
+
+  assert.equal(readiness.signals.eligibleSupplyReady, false)
+  assert.equal(readiness.signals.nearEligibleSupplyReady, true)
+  assert.equal(readiness.signals.supplyReady, true)
+  assert.equal(readiness.readinessSource, "near_eligible_supply")
+  assert.equal(readiness.readyForOpportunityScan, true)
 })
 
 test("buildCategoryFocusComparison highlights weapon_skin deltas across generations", () => {
@@ -330,6 +376,10 @@ test("runCatalogGenerationReset archives the previous generation and enables sca
     assert.equal(
       enabledPayload?.diagnosticsSummary?.readiness?.readyForOpportunityScan,
       true
+    )
+    assert.equal(
+      enabledPayload?.diagnosticsSummary?.readiness?.readinessSource,
+      "eligible_supply"
     )
     assert.equal(
       enabledPayload?.diagnosticsSummary?.comparison?.weaponSkin?.category,
