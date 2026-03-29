@@ -57,6 +57,82 @@ function resolveConservativeMedian(values = []) {
   return roundPrice(sorted[Math.floor((sorted.length - 1) / 2)])
 }
 
+function buildCoverageByItem(rows = []) {
+  const coverageByItem = {}
+
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const itemName = normalizeText(row?.item_name)
+    if (!coverageByItem[itemName]) {
+      coverageByItem[itemName] = {
+        marketCoverageCount: 0,
+        quoteMarketsReturned: 0,
+        markets: {},
+        volume7dMax: null,
+        latestFetchedAt: null,
+        referencePriceCandidates: [],
+        referenceCandidateMarketCount: 0
+      }
+    }
+    const bucket = coverageByItem[itemName]
+    const market = normalizeSource(row?.market)
+    if (!bucket.markets[market]) {
+      bucket.markets[market] = {
+        fetchedAt: null,
+        hasReferenceCandidate: false,
+        referenceCandidate: null
+      }
+      bucket.marketCoverageCount += 1
+      bucket.quoteMarketsReturned += 1
+    }
+
+    const marketEntry = bucket.markets[market]
+
+    const volume7d = toIntegerOrNull(row?.volume_7d, { min: 0 })
+    if (volume7d != null) {
+      bucket.volume7dMax =
+        bucket.volume7dMax == null ? volume7d : Math.max(Number(bucket.volume7dMax), volume7d)
+    }
+    const referenceCandidate = resolveReferenceCandidate(row)
+    if (referenceCandidate != null) {
+      bucket.referencePriceCandidates.push(referenceCandidate)
+      marketEntry.referenceCandidate = referenceCandidate
+      if (!marketEntry.hasReferenceCandidate) {
+        marketEntry.hasReferenceCandidate = true
+        bucket.referenceCandidateMarketCount += 1
+      }
+    }
+    const fetchedAt = normalizeText(row?.fetched_at)
+    if (fetchedAt) {
+      marketEntry.fetchedAt = fetchedAt
+      const nextTs = new Date(fetchedAt).getTime()
+      const prevTs = bucket.latestFetchedAt
+        ? new Date(bucket.latestFetchedAt).getTime()
+        : NaN
+      if (!Number.isFinite(prevTs) || (Number.isFinite(nextTs) && nextTs > prevTs)) {
+        bucket.latestFetchedAt = fetchedAt
+      }
+    }
+  }
+
+  return Object.fromEntries(
+    Object.entries(coverageByItem).map(([itemName, bucket]) => [
+      itemName,
+      {
+        marketCoverageCount: Number(bucket?.marketCoverageCount || 0),
+        quoteMarketsReturned: Number(bucket?.quoteMarketsReturned || 0),
+        markets: bucket?.markets || {},
+        volume7dMax: bucket?.volume7dMax == null ? null : Number(bucket.volume7dMax),
+        latestFetchedAt: bucket?.latestFetchedAt || null,
+        referencePriceMedian: resolveConservativeMedian(bucket?.referencePriceCandidates),
+        referencePriceCandidateCount: Array.isArray(bucket?.referencePriceCandidates)
+          ? bucket.referencePriceCandidates.length
+          : 0,
+        referenceCandidateMarketCount: Number(bucket?.referenceCandidateMarketCount || 0)
+      }
+    ])
+  )
+}
+
 function toJsonObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {}
@@ -230,61 +306,7 @@ exports.getLatestCoverageByItemNames = async (itemNames = [], options = {}) => {
     }
   }
 
-  const coverageByItem = {}
-  for (const row of Object.values(latestByItemMarket)) {
-    const itemName = normalizeText(row?.item_name)
-    if (!coverageByItem[itemName]) {
-      coverageByItem[itemName] = {
-        marketCoverageCount: 0,
-        markets: {},
-        volume7dMax: null,
-        latestFetchedAt: null,
-        referencePriceCandidates: []
-      }
-    }
-    const bucket = coverageByItem[itemName]
-    const market = normalizeSource(row?.market)
-    if (!bucket.markets[market]) {
-      bucket.markets[market] = true
-      bucket.marketCoverageCount += 1
-    }
-
-    const volume7d = toIntegerOrNull(row?.volume_7d, { min: 0 })
-    if (volume7d != null) {
-      bucket.volume7dMax =
-        bucket.volume7dMax == null ? volume7d : Math.max(Number(bucket.volume7dMax), volume7d)
-    }
-    const referenceCandidate = resolveReferenceCandidate(row)
-    if (referenceCandidate != null) {
-      bucket.referencePriceCandidates.push(referenceCandidate)
-    }
-    const fetchedAt = normalizeText(row?.fetched_at)
-    if (fetchedAt) {
-      const nextTs = new Date(fetchedAt).getTime()
-      const prevTs = bucket.latestFetchedAt
-        ? new Date(bucket.latestFetchedAt).getTime()
-        : NaN
-      if (!Number.isFinite(prevTs) || (Number.isFinite(nextTs) && nextTs > prevTs)) {
-        bucket.latestFetchedAt = fetchedAt
-      }
-    }
-  }
-
-  return Object.fromEntries(
-    Object.entries(coverageByItem).map(([itemName, bucket]) => [
-      itemName,
-      {
-        marketCoverageCount: Number(bucket?.marketCoverageCount || 0),
-        markets: bucket?.markets || {},
-        volume7dMax: bucket?.volume7dMax == null ? null : Number(bucket.volume7dMax),
-        latestFetchedAt: bucket?.latestFetchedAt || null,
-        referencePriceMedian: resolveConservativeMedian(bucket?.referencePriceCandidates),
-        referencePriceCandidateCount: Array.isArray(bucket?.referencePriceCandidates)
-          ? bucket.referencePriceCandidates.length
-          : 0
-      }
-    ])
-  )
+  return buildCoverageByItem(Object.values(latestByItemMarket))
 }
 
 exports.getLatestRowsByItemNames = async (itemNames = [], options = {}) => {
@@ -370,5 +392,6 @@ exports.__testables = {
   formatSupabaseError,
   resolveReferenceCandidate,
   resolveConservativeMedian,
-  normalizeMarkets
+  normalizeMarkets,
+  buildCoverageByItem
 }
