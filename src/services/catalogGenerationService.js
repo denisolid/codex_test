@@ -260,35 +260,39 @@ function buildReadinessSummary(summary = {}, options = {}) {
     options?.universeSummary && typeof options.universeSummary === "object"
       ? options.universeSummary
       : {}
+  const enforceWeaponSkinReadiness = normalizeBoolean(
+    options.enforceWeaponSkinReadiness,
+    false
+  )
   const thresholds = {
     minScannerSourceSize: Math.max(
       normalizeInteger(
         options.minScannerSourceSize,
-        OPPORTUNITY_BATCH_RUNTIME_TARGET * 3,
-        OPPORTUNITY_BATCH_RUNTIME_TARGET
+        1,
+        1
       ),
-      OPPORTUNITY_BATCH_RUNTIME_TARGET
+      1
     ),
-    minEligibleTradableRows: Math.max(
+    minEligibleRows: Math.max(
       normalizeInteger(
-        options.minEligibleTradableRows,
-        Math.ceil(OPPORTUNITY_BATCH_RUNTIME_TARGET * 0.5),
-        4
+        options.minEligibleRows ?? options.minEligibleTradableRows,
+        1,
+        1
       ),
-      4
+      1
     ),
     minNearEligibleRows: Math.max(
       normalizeInteger(
         options.minNearEligibleRows,
-        Math.ceil(OPPORTUNITY_BATCH_RUNTIME_TARGET * 0.25),
-        2
+        1,
+        1
       ),
-      2
+      1
     ),
     minReadyCategories: Math.max(
       normalizeInteger(
         options.minReadyCategories,
-        Math.min(2, SCAN_COHORT_CATEGORIES.length),
+        1,
         1
       ),
       1
@@ -313,6 +317,7 @@ function buildReadinessSummary(summary = {}, options = {}) {
       : {}
   const actuals = {
     scannerSourceSize: Number(summary?.scannerSourceSize || 0),
+    eligibleRows: Number(summary?.eligibleTradableRows || 0),
     eligibleTradableRows: Number(summary?.eligibleTradableRows || 0),
     nearEligibleRows: Number(summary?.nearEligibleRows || 0),
     readyCategoryCount: Number(summary?.readyCategoryCount || 0),
@@ -324,8 +329,7 @@ function buildReadinessSummary(summary = {}, options = {}) {
   const signals = {
     scannerSourceNonZero: actuals.scannerSourceSize > 0,
     scannerSourceSizeReady: actuals.scannerSourceSize >= thresholds.minScannerSourceSize,
-    eligibleTradableReady:
-      actuals.eligibleTradableRows >= thresholds.minEligibleTradableRows,
+    eligibleRowsReady: actuals.eligibleRows >= thresholds.minEligibleRows,
     nearEligibleReady: actuals.nearEligibleRows >= thresholds.minNearEligibleRows,
     categoryCoverageReady: actuals.readyCategoryCount >= thresholds.minReadyCategories,
     activeUniverseReady: actuals.activeUniverseRows >= thresholds.minActiveUniverseRows,
@@ -335,11 +339,70 @@ function buildReadinessSummary(summary = {}, options = {}) {
       actuals.weaponSkinNearEligibleRows >= thresholds.minWeaponSkinNearEligibleRows
   }
 
+  const requiredSignalKeys = [
+    "scannerSourceNonZero",
+    "scannerSourceSizeReady",
+    "eligibleRowsReady",
+    "nearEligibleReady",
+    "categoryCoverageReady",
+    "activeUniverseReady"
+  ]
+  if (enforceWeaponSkinReadiness) {
+    requiredSignalKeys.push("weaponSkinEligibleReady", "weaponSkinNearEligibleReady")
+  }
+
   return {
     thresholds,
     actuals,
     signals,
-    readyForOpportunityScan: Object.values(signals).every(Boolean)
+    requiredSignalKeys,
+    optionalSignalKeys: enforceWeaponSkinReadiness
+      ? []
+      : ["weaponSkinEligibleReady", "weaponSkinNearEligibleReady"],
+    readyForOpportunityScan: requiredSignalKeys.every((key) => Boolean(signals[key]))
+  }
+}
+
+function buildCategoryFocusComparison(
+  previousSummary = null,
+  nextSummary = null,
+  previousUniverseSummary = null,
+  nextUniverseSummary = null,
+  category = "weapon_skin"
+) {
+  const safeCategory = normalizeText(category).toLowerCase() || "weapon_skin"
+  const previousSource = previousSummary?.byCategory?.[safeCategory] || {}
+  const nextSource = nextSummary?.byCategory?.[safeCategory] || {}
+  const previousUniverse = previousUniverseSummary?.byCategory?.[safeCategory] || {}
+  const nextUniverse = nextUniverseSummary?.byCategory?.[safeCategory] || {}
+
+  return {
+    category: safeCategory,
+    previous: {
+      sourceCatalog: previousSource,
+      universe: previousUniverse
+    },
+    next: {
+      sourceCatalog: nextSource,
+      universe: nextUniverse
+    },
+    delta: {
+      totalRows: Number(nextSource.totalRows || 0) - Number(previousSource.totalRows || 0),
+      scannerSourceSize:
+        Number(nextSource.scannerSourceSize || 0) - Number(previousSource.scannerSourceSize || 0),
+      eligibleRows:
+        Number(nextSource.eligibleRows || 0) - Number(previousSource.eligibleRows || 0),
+      nearEligibleRows:
+        Number(nextSource.nearEligibleRows || 0) - Number(previousSource.nearEligibleRows || 0),
+      enrichingRows:
+        Number(nextSource.enrichingRows || 0) - Number(previousSource.enrichingRows || 0),
+      rejectedRows:
+        Number(nextSource.rejectedRows || 0) - Number(previousSource.rejectedRows || 0),
+      blockedRows:
+        Number(nextSource.blockedRows || 0) - Number(previousSource.blockedRows || 0),
+      activeUniverseRows:
+        Number(nextUniverse.totalRows || 0) - Number(previousUniverse.totalRows || 0)
+    }
   }
 }
 
@@ -554,7 +617,14 @@ async function runCatalogGenerationReset(options = {}) {
     const comparison = {
       ...catalogComparison,
       catalog: catalogComparison,
-      universe: universeComparison
+      universe: universeComparison,
+      weaponSkin: buildCategoryFocusComparison(
+        previousSummary,
+        nextSummary,
+        previousUniverseSummary,
+        nextUniverseSummary,
+        "weapon_skin"
+      )
     }
     const readiness = buildReadinessSummary(nextSummary, {
       ...options,
@@ -636,6 +706,7 @@ module.exports = {
     buildReadinessSummary,
     compareGenerationSummaries,
     compareUniverseSummaries,
+    buildCategoryFocusComparison,
     normalizeCategories
   }
 }
