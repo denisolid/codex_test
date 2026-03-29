@@ -540,6 +540,18 @@ function buildWeaponSkinRecoveryPathCounter() {
   }
 }
 
+function buildWeaponSkinQuoteDiagnostics() {
+  return {
+    rowsProcessed: 0,
+    quoteMarketsReturned: 0,
+    freshQuoteMarketsUsable: 0,
+    referenceCandidateCount: 0,
+    quoteReferenceDerivedCount: 0,
+    blockedByMissingQuoteCoverage: 0,
+    blockedByMissingQuoteReference: 0
+  }
+}
+
 function incrementNamedCounter(counter = {}, key = "", amount = 1) {
   const normalizedKey = normalizeText(key)
   if (!normalizedKey || !Object.prototype.hasOwnProperty.call(counter, normalizedKey)) return
@@ -871,6 +883,161 @@ function resolveCatalogFreshnessState(ageMinutes = null, rules = {}) {
   if (safeAge <= Number(rules.freshMaxMinutes || 0)) return CATALOG_FRESHNESS_STATES.FRESH
   if (safeAge <= Number(rules.agingMaxMinutes || 0)) return CATALOG_FRESHNESS_STATES.AGING
   return CATALOG_FRESHNESS_STATES.STALE
+}
+
+function isUsableCatalogFreshnessState(state = "") {
+  return (
+    state === CATALOG_FRESHNESS_STATES.FRESH || state === CATALOG_FRESHNESS_STATES.AGING
+  )
+}
+
+function resolveConservativePriceMedian(values = []) {
+  const sorted = (Array.isArray(values) ? values : [])
+    .map((value) => toPositiveOrNull(value))
+    .filter((value) => value != null)
+    .sort((a, b) => a - b)
+  if (!sorted.length) return null
+  return Number(sorted[Math.floor((sorted.length - 1) / 2)].toFixed(4))
+}
+
+function normalizeQuoteCoverageMarketEntries(markets = {}) {
+  if (!markets || typeof markets !== "object" || Array.isArray(markets)) return []
+
+  return Object.entries(markets)
+    .map(([market, value]) => {
+      const normalizedMarket = normalizeText(market).toLowerCase()
+      if (!normalizedMarket) return null
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return {
+          market: normalizedMarket,
+          fetchedAt: null,
+          hasReferenceCandidate: false,
+          referenceCandidate: null
+        }
+      }
+
+      const referenceCandidate = toPositiveOrNull(
+        value?.referenceCandidate ??
+          value?.reference_candidate ??
+          value?.referencePrice ??
+          value?.reference_price
+      )
+
+      return {
+        market: normalizedMarket,
+        fetchedAt: toIsoStringOrNull(value?.fetchedAt || value?.fetched_at),
+        hasReferenceCandidate:
+          Boolean(value?.hasReferenceCandidate || value?.has_reference_candidate) ||
+          referenceCandidate != null,
+        referenceCandidate
+      }
+    })
+    .filter(Boolean)
+}
+
+function resolveQuoteCoverageInputs({
+  category = ITEM_CATEGORIES.WEAPON_SKIN,
+  quoteCoverage = {},
+  snapshotReferencePrice = null
+} = {}) {
+  const normalizedCategory = normalizeCategory(category) || ITEM_CATEGORIES.WEAPON_SKIN
+  const qualityRules =
+    SOURCE_QUALITY_RULES[normalizedCategory] || SOURCE_QUALITY_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
+  const freshnessRules = getCatalogFreshnessRules(normalizedCategory)
+  const quoteFetchedAt = toIsoStringOrNull(quoteCoverage?.latestFetchedAt) || null
+  const quoteMarkets = normalizeQuoteCoverageMarketEntries(quoteCoverage?.markets)
+  const quoteMarketsReturned = Math.max(
+    Number((quoteCoverage?.quoteMarketsReturned ?? quoteCoverage?.marketCoverageCount) || 0),
+    quoteMarkets.length,
+    0
+  )
+  const aggregateReferenceCandidateCount = Math.max(
+    Number(
+      quoteCoverage?.referencePriceCandidateCount ??
+        quoteCoverage?.referenceCandidateMarketCount ??
+        0
+    ),
+    0
+  )
+  const aggregateReferencePrice = toPositiveOrNull(quoteCoverage?.referencePriceMedian)
+  const aggregateQuoteFreshnessState = resolveCatalogFreshnessState(
+    resolveAgeMinutes(quoteFetchedAt),
+    freshnessRules
+  )
+  const aggregateQuoteFreshnessUsable = isUsableCatalogFreshnessState(aggregateQuoteFreshnessState)
+  const hasPerMarketFreshness = quoteMarkets.some((entry) => Boolean(entry?.fetchedAt))
+  const usableReferenceCandidates = []
+  const allReferenceCandidates = []
+  let freshQuoteMarketsUsable = 0
+
+  for (const market of quoteMarkets) {
+    const referenceCandidate = toPositiveOrNull(market?.referenceCandidate)
+    if (referenceCandidate != null) {
+      allReferenceCandidates.push(referenceCandidate)
+    }
+    const freshnessState = resolveCatalogFreshnessState(
+      resolveAgeMinutes(market?.fetchedAt),
+      freshnessRules
+    )
+    if (!isUsableCatalogFreshnessState(freshnessState)) continue
+    freshQuoteMarketsUsable += 1
+    if (referenceCandidate != null) {
+      usableReferenceCandidates.push(referenceCandidate)
+    }
+  }
+
+  if (!hasPerMarketFreshness && aggregateQuoteFreshnessUsable && quoteMarketsReturned > 0) {
+    freshQuoteMarketsUsable = quoteMarketsReturned
+  }
+
+  const usableReferenceCandidateCount =
+    usableReferenceCandidates.length > 0
+      ? usableReferenceCandidates.length
+      : aggregateQuoteFreshnessUsable
+        ? aggregateReferenceCandidateCount
+        : 0
+  const usableReferencePrice =
+    usableReferenceCandidates.length > 0
+      ? resolveConservativePriceMedian(usableReferenceCandidates)
+      : aggregateQuoteFreshnessUsable
+        ? aggregateReferencePrice
+        : null
+  const referencePriceCandidateCount = Math.max(usableReferenceCandidateCount, 0)
+  const marketCoverageCount = Math.max(freshQuoteMarketsUsable, 0)
+  const strictQuoteReferencePrice =
+    marketCoverageCount >= Math.max(Number(qualityRules.minMarketCoverage || 2), 2) &&
+    referencePriceCandidateCount >= 2
+      ? usableReferencePrice
+      : null
+  const progressiveQuoteReferencePrice =
+    normalizedCategory === ITEM_CATEGORIES.WEAPON_SKIN &&
+    snapshotReferencePrice == null &&
+    marketCoverageCount >= 1 &&
+    referencePriceCandidateCount >= 1
+      ? usableReferencePrice
+      : null
+  const quoteReferencePrice = strictQuoteReferencePrice ?? progressiveQuoteReferencePrice
+
+  return {
+    marketCoverageCount,
+    quoteMarketsReturned,
+    freshQuoteMarketsUsable,
+    returnedReferenceCandidateCount: Math.max(
+      aggregateReferenceCandidateCount,
+      allReferenceCandidates.length
+    ),
+    referencePriceCandidateCount,
+    quoteReferencePrice,
+    strictQuoteReferencePrice,
+    progressiveQuoteReferencePrice,
+    quoteFreshnessUsable: marketCoverageCount > 0,
+    quoteReferenceMode:
+      strictQuoteReferencePrice != null
+        ? "strict"
+        : progressiveQuoteReferencePrice != null
+          ? "progressive"
+          : "missing"
+  }
 }
 
 function resolveReferenceSignalAt({
@@ -1815,6 +1982,18 @@ function buildBaseDiagnostics() {
       candidateFunnel: buildStatusNumberMap(),
       maturityFunnel: buildMaturityNumberMap(),
       maturityFunnelByCategory: buildMaturityByCategoryMap(),
+      hardRejectToPenaltyConversionsByCategory: buildCategoryNumberMap(),
+      hard_reject_to_penalty_conversions_by_category: buildCategoryNumberMap(),
+      nearEligibleByCategory: buildCategoryNumberMap(),
+      near_eligible_by_category: buildCategoryNumberMap(),
+      eligibleByCategory: buildCategoryNumberMap(),
+      eligible_by_category: buildCategoryNumberMap(),
+      topRejectReasonsByCategory: buildDynamicReasonByCategoryMap(),
+      top_reject_reasons_by_category: buildDynamicReasonByCategoryMap(),
+      weaponSkinRecoveryPaths: buildWeaponSkinRecoveryPathCounter(),
+      weapon_skin_recovery_paths: buildWeaponSkinRecoveryPathCounter(),
+      weaponSkinQuoteDiagnostics: buildWeaponSkinQuoteDiagnostics(),
+      weapon_skin_quote_diagnostics: buildWeaponSkinQuoteDiagnostics(),
       candidateFunnelByCategory: buildEmptyCategoryCounter(),
       eligibleRowsByCategory: buildCategoryNumberMap(),
       nearEligibleRowsByCategory: buildCategoryNumberMap(),
@@ -3144,6 +3323,8 @@ async function enrichSourceCatalog(options = {}) {
       top_reject_reasons_by_category: buildDynamicReasonByCategoryMap(),
       weaponSkinRecoveryPaths: buildWeaponSkinRecoveryPathCounter(),
       weapon_skin_recovery_paths: buildWeaponSkinRecoveryPathCounter(),
+      weaponSkinQuoteDiagnostics: buildWeaponSkinQuoteDiagnostics(),
+      weapon_skin_quote_diagnostics: buildWeaponSkinQuoteDiagnostics(),
       candidateFunnelByCategory: buildEmptyCategoryCounter(),
       byCategory: buildEmptyCategoryCounter(),
       eligibleRowsByCategory: buildCategoryNumberMap(),
@@ -3211,6 +3392,7 @@ async function enrichSourceCatalog(options = {}) {
   const hardRejectToPenaltyConversionsByCategory = buildCategoryNumberMap()
   const topRejectReasonsByCategory = buildDynamicReasonByCategoryMap()
   const weaponSkinRecoveryPaths = buildWeaponSkinRecoveryPathCounter()
+  const weaponSkinQuoteDiagnostics = buildWeaponSkinQuoteDiagnostics()
   const updates = []
   const nowIso = new Date().toISOString()
   let skippedUnchangedRows = 0
@@ -3300,18 +3482,17 @@ async function enrichSourceCatalog(options = {}) {
     const skinId = Number(skinsByName[marketHashName]?.id || 0)
     const snapshot = skinId > 0 ? snapshotsBySkinId[skinId] || null : null
     const quoteCoverage = quoteCoverageByItem[marketHashName] || {}
-    const categoryRules =
-      SOURCE_QUALITY_RULES[category] || SOURCE_QUALITY_RULES[ITEM_CATEGORIES.WEAPON_SKIN]
     const snapshotCapturedAt = toIsoStringOrNull(snapshot?.captured_at) || null
     const snapshotReferencePrice = toPositiveOrNull(
       toFiniteOrNull(snapshot?.average_7d_price) ?? toFiniteOrNull(snapshot?.lowest_listing_price)
     )
-    const marketCoverageCount = Math.max(Number(quoteCoverage?.marketCoverageCount || 0), 0)
-    const quoteReferencePrice =
-      marketCoverageCount >= Math.max(Number(categoryRules.minMarketCoverage || 2), 2) &&
-      Number(quoteCoverage?.referencePriceCandidateCount || 0) >= 2
-        ? toPositiveOrNull(quoteCoverage?.referencePriceMedian)
-        : null
+    const quoteInputs = resolveQuoteCoverageInputs({
+      category,
+      quoteCoverage,
+      snapshotReferencePrice
+    })
+    const marketCoverageCount = Math.max(Number(quoteInputs?.marketCoverageCount || 0), 0)
+    const quoteReferencePrice = toPositiveOrNull(quoteInputs?.quoteReferencePrice)
     const referencePrice = snapshotReferencePrice ?? quoteReferencePrice
     const volume7d = resolveVolume7d(snapshot, quoteCoverage)
     const snapshotStale = snapshotCapturedAt ? isSnapshotStale(snapshot) : false
@@ -3389,6 +3570,30 @@ async function enrichSourceCatalog(options = {}) {
     const maturityState = normalizeMaturityState(candidateState.maturityState)
     if (candidateState.convertedHardRejectToPenalty) {
       hardRejectToPenaltyConversionsByCategory[category] += 1
+    }
+    if (category === ITEM_CATEGORIES.WEAPON_SKIN) {
+      weaponSkinQuoteDiagnostics.rowsProcessed += 1
+      weaponSkinQuoteDiagnostics.quoteMarketsReturned += Number(
+        quoteInputs?.quoteMarketsReturned || 0
+      )
+      weaponSkinQuoteDiagnostics.freshQuoteMarketsUsable += Number(
+        quoteInputs?.freshQuoteMarketsUsable || 0
+      )
+      weaponSkinQuoteDiagnostics.referenceCandidateCount += Number(
+        quoteInputs?.referencePriceCandidateCount || 0
+      )
+      if (snapshotReferencePrice == null && quoteReferencePrice != null) {
+        weaponSkinQuoteDiagnostics.quoteReferenceDerivedCount += 1
+      }
+      if (snapshotReferencePrice == null && Number(quoteInputs?.freshQuoteMarketsUsable || 0) <= 0) {
+        weaponSkinQuoteDiagnostics.blockedByMissingQuoteCoverage += 1
+      } else if (
+        snapshotReferencePrice == null &&
+        Number(quoteInputs?.freshQuoteMarketsUsable || 0) > 0 &&
+        quoteReferencePrice == null
+      ) {
+        weaponSkinQuoteDiagnostics.blockedByMissingQuoteReference += 1
+      }
     }
     candidateFunnel[candidateStatus] = Number(candidateFunnel[candidateStatus] || 0) + 1
     maturityFunnel[maturityState] = Number(maturityFunnel[maturityState] || 0) + 1
@@ -3666,6 +3871,8 @@ async function enrichSourceCatalog(options = {}) {
     top_reject_reasons_by_category: topRejectReasonsByCategory,
     weaponSkinRecoveryPaths,
     weapon_skin_recovery_paths: weaponSkinRecoveryPaths,
+    weaponSkinQuoteDiagnostics,
+    weapon_skin_quote_diagnostics: weaponSkinQuoteDiagnostics,
     eligibleRowsByCategory,
     nearEligibleRowsByCategory,
     candidateRowsByCategory,
@@ -4242,6 +4449,43 @@ async function runPipeline(options = {}) {
       nearEligibleFreshnessByStateByCategory:
         sourceCoverage?.nearEligibleFreshnessByStateByCategory ||
         base.sourceCatalog.nearEligibleFreshnessByStateByCategory,
+      hardRejectToPenaltyConversionsByCategory:
+        sourceCoverage?.hardRejectToPenaltyConversionsByCategory ||
+        base.sourceCatalog.hardRejectToPenaltyConversionsByCategory,
+      hard_reject_to_penalty_conversions_by_category:
+        sourceCoverage?.hard_reject_to_penalty_conversions_by_category ||
+        sourceCoverage?.hardRejectToPenaltyConversionsByCategory ||
+        base.sourceCatalog.hard_reject_to_penalty_conversions_by_category,
+      nearEligibleByCategory:
+        sourceCoverage?.nearEligibleByCategory || base.sourceCatalog.nearEligibleByCategory,
+      near_eligible_by_category:
+        sourceCoverage?.near_eligible_by_category ||
+        sourceCoverage?.nearEligibleByCategory ||
+        base.sourceCatalog.near_eligible_by_category,
+      eligibleByCategory:
+        sourceCoverage?.eligibleByCategory || base.sourceCatalog.eligibleByCategory,
+      eligible_by_category:
+        sourceCoverage?.eligible_by_category ||
+        sourceCoverage?.eligibleByCategory ||
+        base.sourceCatalog.eligible_by_category,
+      topRejectReasonsByCategory:
+        sourceCoverage?.topRejectReasonsByCategory || base.sourceCatalog.topRejectReasonsByCategory,
+      top_reject_reasons_by_category:
+        sourceCoverage?.top_reject_reasons_by_category ||
+        sourceCoverage?.topRejectReasonsByCategory ||
+        base.sourceCatalog.top_reject_reasons_by_category,
+      weaponSkinRecoveryPaths:
+        sourceCoverage?.weaponSkinRecoveryPaths || base.sourceCatalog.weaponSkinRecoveryPaths,
+      weapon_skin_recovery_paths:
+        sourceCoverage?.weapon_skin_recovery_paths ||
+        sourceCoverage?.weaponSkinRecoveryPaths ||
+        base.sourceCatalog.weapon_skin_recovery_paths,
+      weaponSkinQuoteDiagnostics:
+        sourceCoverage?.weaponSkinQuoteDiagnostics || base.sourceCatalog.weaponSkinQuoteDiagnostics,
+      weapon_skin_quote_diagnostics:
+        sourceCoverage?.weapon_skin_quote_diagnostics ||
+        sourceCoverage?.weaponSkinQuoteDiagnostics ||
+        base.sourceCatalog.weapon_skin_quote_diagnostics,
       candidateFunnelByCategory:
         sourceCoverage?.candidateFunnelByCategory || base.sourceCatalog.candidateFunnelByCategory,
       eligibleRowsByCategory:
@@ -4501,6 +4745,7 @@ module.exports = {
     buildSourceCatalogQuotas,
     buildSourceCatalogQuotasForCategories,
     resolveVolume7d,
+    resolveQuoteCoverageInputs,
     shouldBypassSkipForRecovery,
     normalizeCatalogScopeCategories,
     isFullCatalogScope

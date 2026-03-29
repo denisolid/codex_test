@@ -25,11 +25,12 @@ const {
     normalizeCategory,
     normalizeCatalogScopeCategories,
     resolveCompatibleCatalogStatusFields,
+    resolveQuoteCoverageInputs,
     shouldBypassSkipForRecovery
   }
 } = require("../src/services/marketSourceCatalogService")
 const {
-  __testables: { resolveConservativeMedian }
+  __testables: { resolveConservativeMedian, buildCoverageByItem }
 } = require("../src/repositories/marketQuoteRepository")
 
 test("source catalog seed expands with scanner-scope categories only", () => {
@@ -724,6 +725,81 @@ test("quote reference fallback uses a conservative median", () => {
   assert.equal(resolveConservativeMedian([8.4, 7.8, 9.2]), 8.4)
   assert.equal(resolveConservativeMedian([8.4, 7.8]), 7.8)
   assert.equal(resolveConservativeMedian([]), null)
+})
+
+test("quote coverage summary keeps per-market freshness and reference candidates", () => {
+  const freshIso = new Date().toISOString()
+  const staleIso = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString()
+  const coverage = buildCoverageByItem([
+    {
+      item_name: "AK-47 | Slate (Field-Tested)",
+      market: "steam",
+      best_sell_net: 8.5,
+      volume_7d: 22,
+      fetched_at: freshIso
+    },
+    {
+      item_name: "AK-47 | Slate (Field-Tested)",
+      market: "csfloat",
+      best_buy: 8.2,
+      volume_7d: 18,
+      fetched_at: staleIso
+    }
+  ])
+
+  assert.equal(coverage["AK-47 | Slate (Field-Tested)"].marketCoverageCount, 2)
+  assert.equal(coverage["AK-47 | Slate (Field-Tested)"].quoteMarketsReturned, 2)
+  assert.equal(
+    coverage["AK-47 | Slate (Field-Tested)"].markets.steam.hasReferenceCandidate,
+    true
+  )
+  assert.equal(
+    coverage["AK-47 | Slate (Field-Tested)"].markets.csfloat.referenceCandidate,
+    8.2
+  )
+  assert.equal(
+    coverage["AK-47 | Slate (Field-Tested)"].markets.steam.fetchedAt,
+    freshIso
+  )
+  assert.equal(
+    coverage["AK-47 | Slate (Field-Tested)"].referenceCandidateMarketCount,
+    2
+  )
+})
+
+test("weapon-skin quote inputs derive progression support from partial fresh quotes", () => {
+  const freshIso = new Date().toISOString()
+  const staleIso = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString()
+  const quoteInputs = resolveQuoteCoverageInputs({
+    category: "weapon_skin",
+    snapshotReferencePrice: null,
+    quoteCoverage: {
+      marketCoverageCount: 2,
+      latestFetchedAt: freshIso,
+      referencePriceMedian: 8.5,
+      referencePriceCandidateCount: 1,
+      markets: {
+        steam: {
+          fetchedAt: freshIso,
+          hasReferenceCandidate: true,
+          referenceCandidate: 8.5
+        },
+        csfloat: {
+          fetchedAt: staleIso,
+          hasReferenceCandidate: false,
+          referenceCandidate: null
+        }
+      }
+    }
+  })
+
+  assert.equal(quoteInputs.quoteMarketsReturned, 2)
+  assert.equal(quoteInputs.freshQuoteMarketsUsable, 1)
+  assert.equal(quoteInputs.marketCoverageCount, 1)
+  assert.equal(quoteInputs.referencePriceCandidateCount, 1)
+  assert.equal(quoteInputs.quoteReferencePrice, 8.5)
+  assert.equal(quoteInputs.strictQuoteReferencePrice, null)
+  assert.equal(quoteInputs.quoteReferenceMode, "progressive")
 })
 
 test("skip recovery bypass triggers for collapsed legacy diagnostics", () => {
