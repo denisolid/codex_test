@@ -1860,6 +1860,7 @@ function buildBaseDiagnostics() {
       selectedFromCandidate: 0,
       backfillReadyRows: 0,
       backfillBlockedRows: 0,
+      backfillExcludedNonScannableRows: 0,
       backfillBlockedRowsByCategory: buildCategoryNumberMap(),
       candidateBackfillUsed: false,
       seedPromotionActive: false,
@@ -3894,17 +3895,28 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, 
     }),
     "strict_eligible"
   )
+  const candidatePoolLimit = Math.max(SOURCE_CATALOG_LIMIT, safeTarget * 3)
+  const candidatePoolRequest = {
+    limit: candidatePoolLimit,
+    categories: scopedCategories,
+    generationId: generationId || null,
+    candidateStatuses: [
+      CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE,
+      CATALOG_CANDIDATE_STATUS.ENRICHING,
+      CATALOG_CANDIDATE_STATUS.CANDIDATE
+    ]
+  }
+  const candidatePoolRowsBeforeScannableGate = normalizeCatalogCandidateRows(
+    await marketSourceCatalogRepo.listCandidatePool(candidatePoolRequest)
+  )
   const candidatePoolRows = normalizeCatalogCandidateRows(
     await marketSourceCatalogRepo.listCandidatePool({
-      limit: Math.max(SOURCE_CATALOG_LIMIT, safeTarget * 3),
-      categories: scopedCategories,
-      generationId: generationId || null,
-      candidateStatuses: [
-        CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE,
-        CATALOG_CANDIDATE_STATUS.ENRICHING,
-        CATALOG_CANDIDATE_STATUS.CANDIDATE
-      ]
+      ...candidatePoolRequest,
+      catalogStatuses: [CATALOG_STATUS.SCANNABLE]
     })
+  )
+  const backfillExcludedNonScannableRows = candidatePoolRowsBeforeScannableGate.filter(
+    (row) => normalizeCatalogStatus(row?.catalog_status ?? row?.catalogStatus) !== CATALOG_STATUS.SCANNABLE
   )
   const backfillReadyCandidatePoolRows = candidatePoolRows.filter(isUniverseBackfillReadyRow)
   const backfillBlockedRows = candidatePoolRows.filter((row) => !isUniverseBackfillReadyRow(row))
@@ -4026,6 +4038,7 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, 
     selectedFromFallback,
     backfillReadyRows: backfillReadyCandidatePoolRows.length,
     backfillBlockedRows: backfillBlockedRows.length,
+    backfillExcludedNonScannableRows: backfillExcludedNonScannableRows.length,
     backfillBlockedRowsByCategory: countCatalogRowsByCategory(backfillBlockedRows),
     activeUniverseBuilt: normalizedUniverseRows.length,
     missingToTarget: Math.max(safeTarget - normalizedUniverseRows.length, 0),

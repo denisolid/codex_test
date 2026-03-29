@@ -13,7 +13,7 @@ const marketSourceCatalogService = require("../src/services/marketSourceCatalogS
 const catalogGenerationService = require("../src/services/catalogGenerationService")
 
 const {
-  __testables: { summarizeCoverageRows, buildReadinessSummary }
+  __testables: { summarizeCoverageRows, buildReadinessSummary, buildCategoryFocusComparison }
 } = catalogGenerationService
 
 function buildCoverageRows({
@@ -104,6 +104,96 @@ test("buildReadinessSummary keeps opportunity scan disabled until weapon_skin el
   assert.equal(readiness.signals.weaponSkinEligibleReady, false)
   assert.equal(readiness.signals.weaponSkinNearEligibleReady, false)
   assert.equal(readiness.readyForOpportunityScan, false)
+})
+
+test("buildReadinessSummary unlocks scan on positive mature-pool counts while keeping weapon_skin diagnostics optional", () => {
+  const summary = summarizeCoverageRows(
+    [
+      ...buildCoverageRows({ category: "case", count: 8, candidateStatus: "eligible" }),
+      ...buildCoverageRows({
+        category: "case",
+        count: 4,
+        candidateStatus: "near_eligible",
+        scanEligible: false
+      }),
+      ...buildCoverageRows({
+        category: "weapon_skin",
+        count: 12,
+        candidateStatus: "enriching",
+        scanEligible: false,
+        catalogStatus: "shadow"
+      })
+    ],
+    {
+      id: "generation-general-ready",
+      generation_key: "catalog-reset-general-ready",
+      status: "active",
+      is_active: true,
+      opportunity_scan_enabled: false
+    }
+  )
+
+  const readiness = buildReadinessSummary(summary, {
+    universeSummary: {
+      totalRows: 12
+    }
+  })
+
+  assert.equal(readiness.signals.scannerSourceNonZero, true)
+  assert.equal(readiness.signals.eligibleRowsReady, true)
+  assert.equal(readiness.signals.nearEligibleReady, true)
+  assert.equal(readiness.signals.weaponSkinEligibleReady, false)
+  assert.equal(readiness.signals.weaponSkinNearEligibleReady, false)
+  assert.equal(readiness.readyForOpportunityScan, true)
+  assert.deepEqual(readiness.optionalSignalKeys, [
+    "weaponSkinEligibleReady",
+    "weaponSkinNearEligibleReady"
+  ])
+})
+
+test("buildCategoryFocusComparison highlights weapon_skin deltas across generations", () => {
+  const previousSummary = summarizeCoverageRows([
+    ...buildCoverageRows({ category: "weapon_skin", count: 4, candidateStatus: "eligible" }),
+    ...buildCoverageRows({
+      category: "weapon_skin",
+      count: 2,
+      candidateStatus: "near_eligible",
+      scanEligible: false
+    })
+  ])
+  const nextSummary = summarizeCoverageRows([
+    ...buildCoverageRows({ category: "weapon_skin", count: 9, candidateStatus: "eligible" }),
+    ...buildCoverageRows({
+      category: "weapon_skin",
+      count: 5,
+      candidateStatus: "near_eligible",
+      scanEligible: false
+    })
+  ])
+
+  const focus = buildCategoryFocusComparison(
+    previousSummary,
+    nextSummary,
+    {
+      byCategory: {
+        weapon_skin: {
+          totalRows: 6
+        }
+      }
+    },
+    {
+      byCategory: {
+        weapon_skin: {
+          totalRows: 14
+        }
+      }
+    }
+  )
+
+  assert.equal(focus.category, "weapon_skin")
+  assert.equal(focus.delta.eligibleRows, 5)
+  assert.equal(focus.delta.nearEligibleRows, 3)
+  assert.equal(focus.delta.activeUniverseRows, 8)
 })
 
 test("runCatalogGenerationReset archives the previous generation and enables scan only after readiness", async () => {
@@ -240,6 +330,10 @@ test("runCatalogGenerationReset archives the previous generation and enables sca
     assert.equal(
       enabledPayload?.diagnosticsSummary?.readiness?.readyForOpportunityScan,
       true
+    )
+    assert.equal(
+      enabledPayload?.diagnosticsSummary?.comparison?.weaponSkin?.category,
+      "weapon_skin"
     )
     assert.equal(
       result.diagnostics.comparison.delta.scannerSourceSize > 0,
