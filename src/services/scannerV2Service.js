@@ -3,6 +3,7 @@ const catalogGenerationRepo = require("../repositories/catalogGenerationReposito
 const globalActiveOpportunityRepo = require("../repositories/globalActiveOpportunityRepository")
 const scannerRunRepo = require("../repositories/scannerRunRepository")
 const scannerRuntimeService = require("./arbitrageScannerService")
+const catalogGenerationService = require("./catalogGenerationService")
 const planService = require("./planService")
 const premiumCategoryAccessService = require("./premiumCategoryAccessService")
 const opportunityInsightService = require("./opportunityInsightService")
@@ -58,7 +59,8 @@ function buildCatalogGenerationSnapshot(generation = {}) {
   }
 }
 
-function buildOpportunityScanBlockedResult(generation = null) {
+function buildOpportunityScanBlockedResult(generation = null, gate = null) {
+  const diagnostics = gate?.diagnostics && typeof gate.diagnostics === "object" ? gate.diagnostics : {}
   return {
     jobType: SCANNER_TYPES.OPPORTUNITY_SCAN,
     scanRunId: null,
@@ -66,17 +68,38 @@ function buildOpportunityScanBlockedResult(generation = null) {
     alreadyRunning: false,
     startedAt: new Date().toISOString(),
     catalogGeneration: buildCatalogGenerationSnapshot(generation),
-    reason: "catalog_generation_scan_disabled"
+    reason: normalizeText(gate?.reason) || "catalog_generation_scan_disabled",
+    blocked_by_generation_flag: Boolean(diagnostics.blocked_by_generation_flag),
+    blocked_by_readiness_gate: Boolean(diagnostics.blocked_by_readiness_gate),
+    blocked_by_empty_scanner_source: Boolean(diagnostics.blocked_by_empty_scanner_source),
+    readinessSource: normalizeText(diagnostics.readiness_source) || "not_ready",
+    weaponSkinReadinessSource:
+      normalizeText(diagnostics.weapon_skin_readiness_source) || "not_ready",
+    autoEnabledGenerationFlag: Boolean(gate?.autoEnabled),
+    readiness: gate?.readiness || null
   }
 }
 
 async function enqueueOpportunityScanIfReady(runtime, trigger = "system") {
-  const generation = await catalogGenerationRepo.getCurrentGeneration().catch(() => null)
-  const snapshot = buildCatalogGenerationSnapshot(generation)
-  if (!snapshot?.opportunityScanEnabled) {
-    return buildOpportunityScanBlockedResult(generation)
+  const gate = await catalogGenerationService.ensureOpportunityScanEnabledForActiveGeneration({
+    autoEnable: true
+  })
+  if (!gate?.allowed) {
+    return buildOpportunityScanBlockedResult(gate?.catalogGeneration, gate)
   }
-  return runtime.enqueueScan({ trigger })
+  const enqueueResult = await runtime.enqueueScan({ trigger })
+  return {
+    ...(enqueueResult && typeof enqueueResult === "object" ? enqueueResult : {}),
+    catalogGeneration: buildCatalogGenerationSnapshot(gate?.catalogGeneration),
+    blocked_by_generation_flag: false,
+    blocked_by_readiness_gate: false,
+    blocked_by_empty_scanner_source: false,
+    readinessSource: normalizeText(gate?.diagnostics?.readiness_source) || "generation_flag",
+    weaponSkinReadinessSource:
+      normalizeText(gate?.diagnostics?.weapon_skin_readiness_source) || "generation_flag",
+    autoEnabledGenerationFlag: Boolean(gate?.autoEnabled),
+    readiness: gate?.readiness || null
+  }
 }
 
 function normalizeBoolean(value, fallback = false) {
@@ -377,6 +400,27 @@ async function getStatusInternal(options = {}) {
       : Promise.resolve(null)
   ])
 
+  const opportunityGate =
+    currentGeneration?.opportunity_scan_enabled ?? currentGeneration?.opportunityScanEnabled
+      ? {
+          allowed: true,
+          autoEnabled: false,
+          catalogGeneration: currentGeneration,
+          readiness: null,
+          diagnostics: {
+            blocked_by_generation_flag: false,
+            blocked_by_readiness_gate: false,
+            blocked_by_empty_scanner_source: false,
+            readiness_source: "generation_flag",
+            weapon_skin_readiness_source: "generation_flag",
+            auto_enabled: false
+          }
+        }
+      : await catalogGenerationService.ensureOpportunityScanEnabledForActiveGeneration({
+          autoEnable: false,
+          generation: currentGeneration
+        })
+
   const opportunityRunning = normalizeText(latestRun?.status).toLowerCase() === "running"
   const enrichmentRunning =
     normalizeText(latestEnrichmentRun?.status).toLowerCase() === "running"
@@ -424,6 +468,22 @@ async function getStatusInternal(options = {}) {
         nextScheduledAt: schedulerState.nextOpportunityScheduledAt,
         status: opportunityStatus,
         catalogGeneration,
+        blocked_by_generation_flag: Boolean(
+          opportunityGate?.diagnostics?.blocked_by_generation_flag
+        ),
+        blocked_by_readiness_gate: Boolean(
+          opportunityGate?.diagnostics?.blocked_by_readiness_gate
+        ),
+        blocked_by_empty_scanner_source: Boolean(
+          opportunityGate?.diagnostics?.blocked_by_empty_scanner_source
+        ),
+        readinessSource:
+          normalizeText(opportunityGate?.diagnostics?.readiness_source) || "generation_flag",
+        weaponSkinReadinessSource:
+          normalizeText(opportunityGate?.diagnostics?.weapon_skin_readiness_source) ||
+          "generation_flag",
+        autoEnabledGenerationFlag: Boolean(opportunityGate?.autoEnabled),
+        readiness: opportunityGate?.readiness || null,
         latestRun: latestRun || null,
         latestCompletedRun: latestCompletedRun || null
       },
