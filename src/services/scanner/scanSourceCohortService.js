@@ -20,6 +20,37 @@ function normalizeText(value) {
   return String(value || "").trim()
 }
 
+function toFiniteOrNull(value) {
+  if (value == null || value === "") return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function toIsoOrNull(value) {
+  if (value == null || value === "") return null
+  if (value instanceof Date) {
+    const ts = value.getTime()
+    return Number.isFinite(ts) ? new Date(ts).toISOString() : null
+  }
+  const numeric = toFiniteOrNull(value)
+  if (numeric != null) {
+    const normalizedTs =
+      numeric >= 1e12
+        ? Math.round(numeric)
+        : numeric >= 1e9
+          ? Math.round(numeric * 1000)
+          : null
+    if (normalizedTs != null) {
+      const ts = new Date(normalizedTs).getTime()
+      if (Number.isFinite(ts)) return new Date(ts).toISOString()
+    }
+  }
+  const text = normalizeText(value)
+  if (!text) return null
+  const ts = new Date(text).getTime()
+  return Number.isFinite(ts) ? new Date(ts).toISOString() : null
+}
+
 function normalizeCategory(value) {
   const category = normalizeText(value).toLowerCase()
   return SCAN_COHORT_CATEGORIES.includes(category) ? category : ""
@@ -51,13 +82,41 @@ function resolveScanEligible(row = {}) {
   return row?.scan_eligible == null ? Boolean(row?.scanEligible) : Boolean(row.scan_eligible)
 }
 
+function evaluateZeroSignalContract(row = {}) {
+  const referencePrice = toFiniteOrNull(row?.reference_price ?? row?.referencePrice)
+  const marketCoverageCount = Math.max(
+    Number(toFiniteOrNull(row?.market_coverage_count ?? row?.marketCoverageCount) || 0),
+    0
+  )
+  const hasUsableFreshnessSignal = Boolean(
+    toIsoOrNull(row?.last_market_signal_at || row?.lastMarketSignalAt) ||
+      toIsoOrNull(row?.latest_market_signal_at || row?.latestMarketSignalAt) ||
+      toIsoOrNull(row?.snapshot_captured_at || row?.snapshotCapturedAt) ||
+      toIsoOrNull(row?.quote_fetched_at || row?.quoteFetchedAt)
+  )
+  const missingReference = referencePrice == null
+  const missingCoverage = marketCoverageCount <= 0
+  const missingFreshness = !hasUsableFreshnessSignal
+  return {
+    missingReference,
+    missingCoverage,
+    missingFreshness,
+    rejected: missingReference && missingCoverage && missingFreshness
+  }
+}
+
 function isBaseScanCohortRow(row = {}) {
   const category = normalizeCategory(row?.category || row?.itemCategory)
   if (!category) return false
   if (row?.is_active === false || row?.isActive === false) return false
   if (row?.tradable === false) return false
   const compatibleRow = applyCatalogStatusCompatibility(row)
-  return normalizeCatalogStatus(compatibleRow?.catalog_status || compatibleRow?.catalogStatus) === "scannable"
+  if (
+    normalizeCatalogStatus(compatibleRow?.catalog_status || compatibleRow?.catalogStatus) !== "scannable"
+  ) {
+    return false
+  }
+  return !evaluateZeroSignalContract(compatibleRow).rejected
 }
 
 function isHotCohortRow(row = {}) {
@@ -206,6 +265,10 @@ async function loadScanSource(options = {}) {
     catalogRowsResolved: 0,
     universeRowsMissingCatalog: 0,
     universeRowsDroppedBeforeAlpha: 0,
+    rowsRejectedByZeroSignalContract: 0,
+    rowsRejectedByMissingReference: 0,
+    rowsRejectedByMissingCoverage: 0,
+    rowsRejectedByMissingFreshness: 0,
     activeUniverseRowsBeforeRepair: 0,
     activeCatalogRowsForGeneration: 0,
     scannableRowsInCatalogAtRepair: 0,
@@ -416,7 +479,19 @@ async function loadScanSource(options = {}) {
     }),
     universeRowsByName
   )
-  const baseRows = hydratedRows.filter((row) => isBaseScanCohortRow(row))
+  const baseRows = []
+  for (const row of hydratedRows) {
+    const zeroSignal = evaluateZeroSignalContract(row)
+    if (zeroSignal.rejected) {
+      diagnostics.rowsRejectedByZeroSignalContract += 1
+      if (zeroSignal.missingReference) diagnostics.rowsRejectedByMissingReference += 1
+      if (zeroSignal.missingCoverage) diagnostics.rowsRejectedByMissingCoverage += 1
+      if (zeroSignal.missingFreshness) diagnostics.rowsRejectedByMissingFreshness += 1
+    }
+    if (isBaseScanCohortRow(row)) {
+      baseRows.push(row)
+    }
+  }
 
   const hotRows = decorateRows(baseRows.filter((row) => isHotCohortRow(row)), {
     scanCohort: "hot",
@@ -481,6 +556,18 @@ async function loadScanSource(options = {}) {
           activeUniverseRowsBeforeRepair: diagnostics.activeUniverseRowsBeforeRepair,
           activeUniverseRowsAfterRepair:
             Number(result?.diagnostics?.activeUniverseRowsAfterRepair || diagnostics.activeUniverseRowsAfterRepair || 0),
+          rowsRejectedByZeroSignalContract:
+            Number(diagnostics.rowsRejectedByZeroSignalContract || 0) +
+            Number(result?.diagnostics?.rowsRejectedByZeroSignalContract || 0),
+          rowsRejectedByMissingReference:
+            Number(diagnostics.rowsRejectedByMissingReference || 0) +
+            Number(result?.diagnostics?.rowsRejectedByMissingReference || 0),
+          rowsRejectedByMissingCoverage:
+            Number(diagnostics.rowsRejectedByMissingCoverage || 0) +
+            Number(result?.diagnostics?.rowsRejectedByMissingCoverage || 0),
+          rowsRejectedByMissingFreshness:
+            Number(diagnostics.rowsRejectedByMissingFreshness || 0) +
+            Number(result?.diagnostics?.rowsRejectedByMissingFreshness || 0),
           activeCatalogRowsForGeneration: diagnostics.activeCatalogRowsForGeneration,
           scannableRowsInCatalogAtRepair: diagnostics.scannableRowsInCatalogAtRepair,
           staleUniverseRepairTriggered: diagnostics.staleUniverseRepairTriggered,
@@ -536,6 +623,7 @@ module.exports = {
     countRowsByCategory,
     listMissingCategories,
     filterScannableFallbackRows,
+    evaluateZeroSignalContract,
     isBaseScanCohortRow,
     isHotCohortRow,
     isWarmCohortRow,
