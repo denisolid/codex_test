@@ -17,7 +17,9 @@ const {
     selectByPricingMode,
     getModeUnitPrice,
     parseDmarketUsdMinorValue,
-    maybeRepairLegacyDmarketGross
+    maybeRepairLegacyDmarketGross,
+    normalizeSourceState,
+    resolveUnavailableContextForSource
   }
 } = require("../src/services/marketComparisonService");
 
@@ -199,4 +201,42 @@ test("compare route freshness contract preserves fresh route timestamps and list
   assert.equal(contract.requiredRouteState, "ready");
   assert.equal(contract.listingAvailabilityState, "available");
   assert.equal(contract.contractSource, "compare_result");
+});
+
+test("compare source-state helper keeps CSFloat auth failures structured", () => {
+  const context = resolveUnavailableContextForSource(
+    "csfloat",
+    "AK-47 | Redline (Field-Tested)",
+    {
+      csfloat: {
+        failuresByName: {
+          "AK-47 | Redline (Field-Tested)":
+            "CSFloat authentication failed. Check CSFLOAT_API_KEY."
+        },
+        stateByName: {
+          "AK-47 | Redline (Field-Tested)": "auth_failed"
+        },
+        diagnosticsByName: {
+          "AK-47 | Redline (Field-Tested)": {
+            api_key_present: true,
+            auth_header_sent: true,
+            response_status: 403,
+            source_failure_reason: "auth_failed"
+          }
+        },
+        sourceUnavailableReason: "CSFloat authentication failed. Check CSFLOAT_API_KEY.",
+        sourceFailureReason: "auth_failed"
+      }
+    }
+  );
+
+  assert.equal(context.unavailableReason, "CSFloat authentication failed. Check CSFLOAT_API_KEY.");
+  assert.equal(context.sourceState, "auth_failed");
+  assert.deepEqual(context.sourceDiagnostics, {
+    api_key_present: true,
+    auth_header_sent: true,
+    response_status: 403,
+    source_failure_reason: "auth_failed"
+  });
+  assert.equal(normalizeSourceState("AUTH_FAILED"), "auth_failed");
 });

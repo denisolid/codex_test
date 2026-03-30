@@ -8,6 +8,18 @@ const {
 
 const SOURCE = "csfloat";
 const DEFAULT_API_URL = "https://csfloat.com/api/v1";
+const SOURCE_STATES = Object.freeze({
+  AUTH_FAILED: "auth_failed",
+  SOURCE_UNAVAILABLE: "source_unavailable",
+  NO_LISTING: "no_listing",
+  NO_QUOTE_DATA: "no_quote_data",
+  OK: "ok"
+});
+const AUTH_FAILURE_MESSAGE = "CSFloat authentication failed. Check CSFLOAT_API_KEY.";
+const SOURCE_UNAVAILABLE_MESSAGE = "CSFloat data unavailable.";
+const NO_LISTING_MESSAGE = "No CSFloat listing found.";
+const NO_QUOTE_DATA_MESSAGE = "CSFloat returned no usable quote data.";
+const AUTH_HEADER_FORMAT = "Authorization: <API-KEY>";
 
 function toApiBaseUrl() {
   const raw = String(csfloatApiUrl || DEFAULT_API_URL).trim();
@@ -84,34 +96,25 @@ function sanitizeApiKey(rawValue) {
   return value;
 }
 
-function buildHeaderVariantMap() {
+function buildRequestHeaders(apiKey = sanitizeApiKey(csfloatApiKey)) {
+  const safeApiKey = sanitizeApiKey(apiKey);
   const baseHeaders = {
     Accept: "application/json",
     "User-Agent": "cs2-portfolio-analyzer/1.0"
   };
 
-  const apiKey = sanitizeApiKey(csfloatApiKey);
-  if (!apiKey) {
-    return [baseHeaders];
+  if (!safeApiKey) {
+    return baseHeaders;
   }
 
-  const variants = [
-    { ...baseHeaders, Authorization: apiKey },
-    { ...baseHeaders, Authorization: `Bearer ${apiKey}` },
-    { ...baseHeaders, "X-Api-Key": apiKey },
-    { ...baseHeaders, "X-API-Key": apiKey }
-  ];
+  return {
+    ...baseHeaders,
+    Authorization: safeApiKey
+  };
+}
 
-  const seen = new Set();
-  const unique = [];
-  for (const headers of variants) {
-    const key = JSON.stringify(headers);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    unique.push(headers);
-  }
-
-  return unique;
+function buildHeaderVariantMap() {
+  return [buildRequestHeaders()];
 }
 
 function normalizeCsfloatPrice(value) {
@@ -126,32 +129,82 @@ function normalizeCsfloatPrice(value) {
   return normalizePriceNumber(raw);
 }
 
-function describeCsfloatFetchError(err) {
+function buildDiagnostics({
+  apiKeyPresent = false,
+  authHeaderSent = false,
+  responseStatus = null,
+  sourceFailureReason = null
+} = {}) {
+  const parsedStatus = Number(responseStatus);
+  return {
+    api_key_present: Boolean(apiKeyPresent),
+    auth_header_sent: Boolean(authHeaderSent),
+    response_status: Number.isFinite(parsedStatus) ? parsedStatus : null,
+    source_failure_reason: sourceFailureReason
+      ? String(sourceFailureReason || "").trim()
+      : null
+  };
+}
+
+function classifyCsfloatFetchError(err) {
   const status = Number(err?.upstreamStatus || err?.statusCode || err?.status || 0);
   if (status === 401 || status === 403) {
-    return "CSFloat authentication failed. Check CSFLOAT_API_KEY.";
+    return {
+      state: SOURCE_STATES.AUTH_FAILED,
+      reason: AUTH_FAILURE_MESSAGE,
+      responseStatus: status || null,
+      sourceFailureReason: SOURCE_STATES.AUTH_FAILED
+    };
   }
   if (status === 429) {
-    return "CSFloat rate limit reached. Retry shortly.";
+    return {
+      state: SOURCE_STATES.SOURCE_UNAVAILABLE,
+      reason: "CSFloat rate limit reached. Retry shortly.",
+      responseStatus: status,
+      sourceFailureReason: SOURCE_STATES.SOURCE_UNAVAILABLE
+    };
   }
   if (status >= 500) {
-    return "CSFloat is temporarily unavailable.";
+    return {
+      state: SOURCE_STATES.SOURCE_UNAVAILABLE,
+      reason: "CSFloat is temporarily unavailable.",
+      responseStatus: status,
+      sourceFailureReason: SOURCE_STATES.SOURCE_UNAVAILABLE
+    };
   }
   const message = String(err?.message || "").toLowerCase();
   if (message.includes("timed out")) {
-    return "CSFloat request timed out.";
+    return {
+      state: SOURCE_STATES.SOURCE_UNAVAILABLE,
+      reason: "CSFloat request timed out.",
+      responseStatus: status || 504,
+      sourceFailureReason: SOURCE_STATES.SOURCE_UNAVAILABLE
+    };
   }
-  return "CSFloat data unavailable.";
+  return {
+    state: SOURCE_STATES.SOURCE_UNAVAILABLE,
+    reason: SOURCE_UNAVAILABLE_MESSAGE,
+    responseStatus: status || null,
+    sourceFailureReason: SOURCE_STATES.SOURCE_UNAVAILABLE
+  };
 }
 
-function extractBestListing(payload, marketHashName = "") {
-  const list = Array.isArray(payload?.data)
+function describeCsfloatFetchError(err) {
+  return classifyCsfloatFetchError(err).reason;
+}
+
+function getPayloadListings(payload) {
+  return Array.isArray(payload?.data)
     ? payload.data
     : Array.isArray(payload?.listings)
       ? payload.listings
       : Array.isArray(payload?.results)
         ? payload.results
         : [];
+}
+
+function extractBestListing(payload, marketHashName = "") {
+  const list = getPayloadListings(payload);
 
   const first = list[0] || null;
   if (!first) return null;
@@ -210,50 +263,84 @@ function extractBestListing(payload, marketHashName = "") {
   return null;
 }
 
+function buildFailureResult(state, reason, diagnostics = {}) {
+  return {
+    state,
+    price: null,
+    reason: String(reason || "").trim() || null,
+    diagnostics: buildDiagnostics(diagnostics)
+  };
+}
+
 async function searchItemPrice(input = {}) {
   const marketHashName = String(input.marketHashName || "").trim();
   if (!marketHashName) return null;
 
-  const url = buildApiUrl(marketHashName);
-  const headerVariants = buildHeaderVariantMap();
-  let lastError = null;
-  let payload = null;
-
-  for (const headers of headerVariants) {
-    try {
-      payload = await fetchJsonWithRetry(url, {
-        timeoutMs: input.timeoutMs,
-        maxRetries: input.maxRetries,
-        headers
-      });
-      if (payload) break;
-    } catch (err) {
-      lastError = err;
-      const status = Number(err?.upstreamStatus || err?.statusCode || err?.status || 0);
-      if (status === 401 || status === 403) {
-        continue;
-      }
-      throw err;
-    }
+  const apiKey = sanitizeApiKey(csfloatApiKey);
+  const apiKeyPresent = Boolean(apiKey);
+  if (!apiKeyPresent) {
+    return buildFailureResult(SOURCE_STATES.AUTH_FAILED, AUTH_FAILURE_MESSAGE, {
+      apiKeyPresent: false,
+      authHeaderSent: false,
+      responseStatus: null,
+      sourceFailureReason: SOURCE_STATES.AUTH_FAILED
+    });
   }
 
-  if (!payload) {
-    if (lastError) throw lastError;
-    return null;
+  const url = buildApiUrl(marketHashName);
+  const headers = buildRequestHeaders(apiKey);
+  let payload = null;
+
+  try {
+    payload = await fetchJsonWithRetry(url, {
+      timeoutMs: input.timeoutMs,
+      maxRetries: input.maxRetries,
+      headers
+    });
+  } catch (err) {
+    const failure = classifyCsfloatFetchError(err);
+    return buildFailureResult(failure.state, failure.reason, {
+      apiKeyPresent,
+      authHeaderSent: true,
+      responseStatus: failure.responseStatus,
+      sourceFailureReason: failure.sourceFailureReason
+    });
   }
 
   const best = extractBestListing(payload, marketHashName);
-  if (!best) return null;
+  if (!best) {
+    const listings = getPayloadListings(payload);
+    const state = listings.length ? SOURCE_STATES.NO_QUOTE_DATA : SOURCE_STATES.NO_LISTING;
+    const reason = state === SOURCE_STATES.NO_QUOTE_DATA
+      ? NO_QUOTE_DATA_MESSAGE
+      : NO_LISTING_MESSAGE;
+    return buildFailureResult(state, reason, {
+      apiKeyPresent,
+      authHeaderSent: true,
+      responseStatus: 200,
+      sourceFailureReason: state
+    });
+  }
 
-  return buildMarketPriceRecord({
-    source: SOURCE,
-    marketHashName,
-    grossPrice: best.price,
-    currency: best.currency || "USD",
-    url: best.url || buildListingUrl(marketHashName),
-    confidence: "medium",
-    raw: best.raw
-  });
+  return {
+    state: SOURCE_STATES.OK,
+    reason: null,
+    diagnostics: buildDiagnostics({
+      apiKeyPresent,
+      authHeaderSent: true,
+      responseStatus: 200,
+      sourceFailureReason: null
+    }),
+    price: buildMarketPriceRecord({
+      source: SOURCE,
+      marketHashName,
+      grossPrice: best.price,
+      currency: best.currency || "USD",
+      url: best.url || buildListingUrl(marketHashName),
+      confidence: "medium",
+      raw: best.raw
+    })
+  };
 }
 
 async function batchGetPrices(items = [], options = {}) {
@@ -270,23 +357,46 @@ async function batchGetPrices(items = [], options = {}) {
   }
 
   const failuresByName = {};
+  const stateByName = {};
+  const diagnosticsByName = {};
+  const apiKeyPresent = Boolean(sanitizeApiKey(csfloatApiKey));
   const rows = await mapWithConcurrency(
     list,
     async (marketHashName) => {
       try {
-        const price = await searchItemPrice({
+        const result = await searchItemPrice({
           marketHashName,
           timeoutMs: options.timeoutMs,
           maxRetries: options.maxRetries
         });
-        return price
+        if (result?.state) {
+          stateByName[marketHashName] = result.state;
+        }
+        if (result?.diagnostics && typeof result.diagnostics === "object") {
+          diagnosticsByName[marketHashName] = result.diagnostics;
+        }
+        if (!result?.price) {
+          if (result?.reason) {
+            failuresByName[marketHashName] = result.reason;
+          }
+          return null;
+        }
+        return result.price
           ? {
               marketHashName,
-              price
+              price: result.price
             }
           : null;
       } catch (err) {
-        failuresByName[marketHashName] = describeCsfloatFetchError(err);
+        const failure = classifyCsfloatFetchError(err);
+        stateByName[marketHashName] = failure.state;
+        diagnosticsByName[marketHashName] = buildDiagnostics({
+          apiKeyPresent,
+          authHeaderSent: apiKeyPresent,
+          responseStatus: failure.responseStatus,
+          sourceFailureReason: failure.sourceFailureReason
+        });
+        failuresByName[marketHashName] = failure.reason;
         return null;
       }
     },
@@ -299,23 +409,53 @@ async function batchGetPrices(items = [], options = {}) {
     byName[row.marketHashName] = row.price;
   }
 
-  if (Object.keys(failuresByName).length) {
-    const uniqueReasons = Array.from(
-      new Set(
-        Object.values(failuresByName)
-          .map((value) => String(value || "").trim())
-          .filter(Boolean)
-      )
-    );
-    const sourceUnavailableReason = uniqueReasons.length === 1 ? uniqueReasons[0] : null;
-    Object.defineProperty(byName, "__meta", {
-      value: {
-        failuresByName,
-        sourceUnavailableReason
-      },
-      enumerable: false
-    });
-  }
+  const sourceLevelStates = Object.entries(stateByName)
+    .filter(([, value]) =>
+      [SOURCE_STATES.AUTH_FAILED, SOURCE_STATES.SOURCE_UNAVAILABLE].includes(value)
+    )
+    .map(([, value]) => value);
+  const uniqueSourceLevelStates = Array.from(new Set(sourceLevelStates));
+  const uniqueUnavailableReasons = Array.from(
+    new Set(
+      Object.entries(failuresByName)
+        .filter(([marketHashName]) =>
+          [SOURCE_STATES.AUTH_FAILED, SOURCE_STATES.SOURCE_UNAVAILABLE].includes(
+            stateByName[marketHashName]
+          )
+        )
+        .map(([, value]) => String(value || "").trim())
+        .filter(Boolean)
+    )
+  );
+  const uniqueResponseStatuses = Array.from(
+    new Set(
+      Object.values(diagnosticsByName)
+        .map((value) => Number(value?.response_status))
+        .filter((value) => Number.isFinite(value))
+    )
+  );
+  Object.defineProperty(byName, "__meta", {
+    value: {
+      failuresByName,
+      stateByName,
+      diagnosticsByName,
+      sourceUnavailableReason:
+        uniqueSourceLevelStates.length === 1 && uniqueUnavailableReasons.length === 1
+          ? uniqueUnavailableReasons[0]
+          : null,
+      sourceFailureReason:
+        uniqueSourceLevelStates.length === 1 ? uniqueSourceLevelStates[0] : null,
+      api_key_present: apiKeyPresent,
+      auth_header_sent: apiKeyPresent,
+      response_status: uniqueResponseStatuses.length === 1 ? uniqueResponseStatuses[0] : null,
+      source_failure_reason:
+        uniqueSourceLevelStates.length === 1 ? uniqueSourceLevelStates[0] : null,
+      pipeline: {
+        auth_header_format: AUTH_HEADER_FORMAT
+      }
+    },
+    enumerable: false
+  });
 
   return byName;
 }
@@ -329,6 +469,11 @@ module.exports = {
     toSafeHttpUrl,
     buildHeaderVariantMap,
     describeCsfloatFetchError,
-    sanitizeApiKey
+    sanitizeApiKey,
+    buildRequestHeaders,
+    classifyCsfloatFetchError,
+    getPayloadListings,
+    buildDiagnostics,
+    SOURCE_STATES
   }
 };

@@ -44,6 +44,13 @@ const ADAPTERS = Object.freeze({
 const PRICING_MODES = Object.freeze(["steam", "best_sell_net", "lowest_buy"]);
 const DEFAULT_PRICING_MODE = "lowest_buy";
 const CACHE_TTL_MINUTES = Math.max(Number(marketCompareCacheTtlMinutes || 60), 1);
+const SOURCE_STATE_SET = new Set([
+  "auth_failed",
+  "source_unavailable",
+  "no_listing",
+  "no_quote_data",
+  "ok"
+]);
 
 function normalizeText(value) {
   return String(value || "").trim();
@@ -78,7 +85,91 @@ function isFreshTimestamp(isoValue, ttlMinutes) {
   return Date.now() - ts <= Math.max(Number(ttlMinutes || CACHE_TTL_MINUTES), 1) * 60 * 1000;
 }
 
-function toUnavailable(source, currency, unavailableReason = null) {
+function normalizeSourceState(value) {
+  const state = String(value || "")
+    .trim()
+    .toLowerCase();
+  return SOURCE_STATE_SET.has(state) ? state : null;
+}
+
+function buildMissingCsfloatKeyDiagnostics() {
+  return {
+    api_key_present: false,
+    auth_header_sent: false,
+    response_status: null,
+    source_failure_reason: "auth_failed"
+  };
+}
+
+function resolveUnavailableContextForSource(
+  source,
+  marketHashName = "",
+  liveDiagnosticsBySource = null
+) {
+  if (source === "csfloat" && !String(csfloatApiKey || "").trim()) {
+    return {
+      unavailableReason: "CSFloat authentication failed. Check CSFLOAT_API_KEY.",
+      sourceState: "auth_failed",
+      sourceDiagnostics: buildMissingCsfloatKeyDiagnostics()
+    };
+  }
+
+  const sourceDiagnostics =
+    liveDiagnosticsBySource && typeof liveDiagnosticsBySource === "object"
+      ? liveDiagnosticsBySource[source]
+      : null;
+  if (!sourceDiagnostics || typeof sourceDiagnostics !== "object") {
+    return {
+      unavailableReason: null,
+      sourceState: null,
+      sourceDiagnostics: null
+    };
+  }
+
+  const itemDiagnostics =
+    sourceDiagnostics?.diagnosticsByName &&
+    typeof sourceDiagnostics.diagnosticsByName === "object"
+      ? sourceDiagnostics.diagnosticsByName[marketHashName] || null
+      : null;
+  const marketReason = String(
+    sourceDiagnostics?.failuresByName?.[marketHashName] || ""
+  ).trim();
+  const sourceReason = String(sourceDiagnostics?.sourceUnavailableReason || "").trim();
+  const sourceState =
+    normalizeSourceState(sourceDiagnostics?.stateByName?.[marketHashName]) ||
+    normalizeSourceState(sourceDiagnostics?.sourceFailureReason) ||
+    normalizeSourceState(sourceDiagnostics?.source_failure_reason);
+  const diagnostics =
+    itemDiagnostics ||
+    (sourceDiagnostics &&
+    ["api_key_present", "auth_header_sent", "response_status", "source_failure_reason"].some(
+      (key) => Object.prototype.hasOwnProperty.call(sourceDiagnostics, key)
+    )
+      ? {
+          api_key_present: sourceDiagnostics.api_key_present,
+          auth_header_sent: sourceDiagnostics.auth_header_sent,
+          response_status: sourceDiagnostics.response_status ?? null,
+          source_failure_reason:
+            sourceDiagnostics.source_failure_reason || sourceDiagnostics.sourceFailureReason || null
+        }
+      : null);
+
+  return {
+    unavailableReason: marketReason || sourceReason || null,
+    sourceState,
+    sourceDiagnostics: diagnostics
+  };
+}
+
+function toUnavailable(source, currency, details = {}) {
+  const unavailableReason =
+    details && typeof details === "object" ? details.unavailableReason : details;
+  const sourceState =
+    details && typeof details === "object"
+      ? normalizeSourceState(details.sourceState)
+      : null;
+  const sourceDiagnostics =
+    details && typeof details === "object" ? details.sourceDiagnostics || null : null;
   return {
     source,
     grossPrice: null,
@@ -89,38 +180,14 @@ function toUnavailable(source, currency, unavailableReason = null) {
     updatedAt: null,
     confidence: "low",
     available: false,
+    sourceState,
+    sourceFailureReason:
+      normalizeSourceState(sourceDiagnostics?.source_failure_reason) || sourceState || null,
+    sourceDiagnostics,
     unavailableReason: unavailableReason
       ? String(unavailableReason || "").trim()
       : null
   };
-}
-
-function getUnavailableReasonForSource(
-  source,
-  marketHashName = "",
-  liveDiagnosticsBySource = null
-) {
-  if (source === "csfloat" && !String(csfloatApiKey || "").trim()) {
-    return "Missing CSFloat API key";
-  }
-
-  const sourceDiagnostics =
-    liveDiagnosticsBySource && typeof liveDiagnosticsBySource === "object"
-      ? liveDiagnosticsBySource[source]
-      : null;
-  if (!sourceDiagnostics || typeof sourceDiagnostics !== "object") {
-    return null;
-  }
-
-  const marketReason = String(
-    sourceDiagnostics?.failuresByName?.[marketHashName] || ""
-  ).trim();
-  if (marketReason) return marketReason;
-
-  const sourceReason = String(sourceDiagnostics?.sourceUnavailableReason || "").trim();
-  if (sourceReason) return sourceReason;
-
-  return null;
 }
 
 function normalizeItems(items = []) {
@@ -444,8 +511,37 @@ async function fetchLiveMarketData(itemsBySource = {}, displayCurrency, options 
             typeof adapterMeta.failuresByName === "object"
               ? adapterMeta.failuresByName
               : {},
+          stateByName:
+            adapterMeta &&
+            adapterMeta.stateByName &&
+            typeof adapterMeta.stateByName === "object"
+              ? adapterMeta.stateByName
+              : {},
+          diagnosticsByName:
+            adapterMeta &&
+            adapterMeta.diagnosticsByName &&
+            typeof adapterMeta.diagnosticsByName === "object"
+              ? adapterMeta.diagnosticsByName
+              : {},
           sourceUnavailableReason:
             String(adapterMeta?.sourceUnavailableReason || "").trim() || null,
+          sourceFailureReason:
+            String(
+              adapterMeta?.sourceFailureReason || adapterMeta?.source_failure_reason || ""
+            ).trim() || null,
+          api_key_present:
+            adapterMeta && Object.prototype.hasOwnProperty.call(adapterMeta, "api_key_present")
+              ? Boolean(adapterMeta.api_key_present)
+              : null,
+          auth_header_sent:
+            adapterMeta && Object.prototype.hasOwnProperty.call(adapterMeta, "auth_header_sent")
+              ? Boolean(adapterMeta.auth_header_sent)
+              : null,
+          response_status: Number.isFinite(Number(adapterMeta?.response_status))
+            ? Number(adapterMeta.response_status)
+            : null,
+          source_failure_reason:
+            String(adapterMeta?.source_failure_reason || "").trim() || null,
           pipeline:
             adapterMeta &&
             adapterMeta.pipeline &&
@@ -759,7 +855,10 @@ exports.compareItems = async (items = [], options = {}) => {
       if (live) {
         return {
           ...live,
-          available: true
+          available: true,
+          sourceState: "ok",
+          sourceFailureReason: null,
+          sourceDiagnostics: null
         };
       }
 
@@ -770,7 +869,10 @@ exports.compareItems = async (items = [], options = {}) => {
       if (cached) {
         return {
           ...cached,
-          available: true
+          available: true,
+          sourceState: "ok",
+          sourceFailureReason: null,
+          sourceDiagnostics: null
         };
       }
 
@@ -779,20 +881,21 @@ exports.compareItems = async (items = [], options = {}) => {
         if (fallback) {
           return {
             ...fallback,
-            available: true
+            available: true,
+            sourceState: "ok",
+            sourceFailureReason: null,
+            sourceDiagnostics: null
           };
         }
       }
 
-      return toUnavailable(
-        source,
-        displayCurrency,
-        getUnavailableReasonForSource(
+      return toUnavailable(source, displayCurrency, {
+        ...resolveUnavailableContextForSource(
           source,
           item.marketHashName,
           liveDiagnosticsBySource
         )
-      );
+      });
     });
 
     const bestBuy = pickBestBuy(perMarket);
@@ -966,5 +1069,7 @@ exports.__testables = {
   getModeUnitPrice,
   isFreshTimestamp,
   parseDmarketUsdMinorValue,
-  maybeRepairLegacyDmarketGross
+  maybeRepairLegacyDmarketGross,
+  normalizeSourceState,
+  resolveUnavailableContextForSource
 };
