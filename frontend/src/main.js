@@ -9766,6 +9766,12 @@ function resolveCompareDrawerFeePercent(row, feeMap = null) {
   return Number.isFinite(mappedFee) ? mappedFee : null;
 }
 
+function toFiniteMarketMoneyValue(value) {
+  if (value == null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function getCompareDrawerInsights(payload = null) {
   if (!payload || typeof payload !== "object") return null;
   const comparison = payload.marketComparison || null;
@@ -9784,16 +9790,23 @@ function getCompareDrawerInsights(payload = null) {
 
   const rows = perMarket.map((row) => {
     const available = Boolean(row?.available);
-    const buyValue = Number(row?.grossPrice);
-    const sellValue = Number(row?.netPriceAfterFees);
+    const buyValue = toFiniteMarketMoneyValue(row?.grossPrice);
+    const sellValue = toFiniteMarketMoneyValue(row?.netPriceAfterFees);
     const sourceKey = getMarketSourceKey(row?.source);
     return {
       source: String(row?.source || ""),
       sourceKey,
       label: formatMarketSourceLabel(sourceKey),
       available,
-      buyValue: available && Number.isFinite(buyValue) ? buyValue : null,
-      sellValue: available && Number.isFinite(sellValue) ? sellValue : null,
+      sourceState: String(row?.sourceState || "").trim().toLowerCase() || null,
+      sourceFailureReason:
+        String(row?.sourceFailureReason || "").trim().toLowerCase() || null,
+      sourceDiagnostics:
+        row?.sourceDiagnostics && typeof row.sourceDiagnostics === "object"
+          ? row.sourceDiagnostics
+          : null,
+      buyValue: available && buyValue != null ? buyValue : null,
+      sellValue: available && sellValue != null ? sellValue : null,
       currency: row?.currency || payload.currency || state.currency,
       updatedAt: row?.updatedAt || null,
       unavailableReason: row?.unavailableReason
@@ -10169,14 +10182,14 @@ function renderCompareDrawerBody() {
       <ul class="compare-drawer-top-list">
         ${entries
           .map((entry) => {
-            const value = Number(entry?.[valueKey]);
+            const value = toFiniteMarketMoneyValue(entry?.[valueKey]);
             return `
               <li>
                 <span class="compare-drawer-top-list-market">
                   ${renderMarketSourceIcon(entry?.sourceKey || entry?.source || entry?.label)}
                   <span>${escapeHtml(entry?.label || "Market")}</span>
                 </span>
-                <strong>${Number.isFinite(value) ? formatMoney(value, entry?.currency || payload.currency) : "-"}</strong>
+                <strong>${value != null ? formatMoney(value, entry?.currency || payload.currency) : "-"}</strong>
               </li>
             `;
           })
@@ -10189,10 +10202,10 @@ function renderCompareDrawerBody() {
     ? rows
         .map((entry) => {
           const available = Boolean(entry?.available);
-          const buyValue = Number(entry?.buyValue);
-          const sellValue = Number(entry?.sellValue);
-          const hasBuy = Number.isFinite(buyValue);
-          const hasSell = Number.isFinite(sellValue);
+          const buyValue = toFiniteMarketMoneyValue(entry?.buyValue);
+          const sellValue = toFiniteMarketMoneyValue(entry?.sellValue);
+          const hasBuy = buyValue != null;
+          const hasSell = sellValue != null;
           const feeValue = Number(entry?.feePercent);
           const feeDisplay = Number.isFinite(feeValue)
             ? `${formatNumber(feeValue, 2)}%`

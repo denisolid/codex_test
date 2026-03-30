@@ -7,7 +7,14 @@ process.env.SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY || "service-role";
 
 const {
-  __testables: { extractBestListing, describeCsfloatFetchError, sanitizeApiKey }
+  __testables: {
+    extractBestListing,
+    describeCsfloatFetchError,
+    sanitizeApiKey,
+    buildRequestHeaders,
+    classifyCsfloatFetchError,
+    SOURCE_STATES
+  }
 } = require("../src/markets/csfloat.market");
 const {
   __testables: { buildApiUrl, resolveOfferUrl, extractPrice, extractBestOffer }
@@ -55,6 +62,13 @@ test("csfloat fetch error mapper returns actionable reason for auth failures", (
   );
 });
 
+test("csfloat auth error classification keeps structured auth_failed state", () => {
+  const result = classifyCsfloatFetchError({ upstreamStatus: 403 });
+  assert.equal(result.state, SOURCE_STATES.AUTH_FAILED);
+  assert.equal(result.sourceFailureReason, SOURCE_STATES.AUTH_FAILED);
+  assert.equal(result.responseStatus, 403);
+});
+
 test("csfloat key sanitizer removes wrappers and whitespace", () => {
   assert.equal(
     sanitizeApiKey("  \"abc123\"  "),
@@ -76,6 +90,13 @@ test("csfloat key sanitizer removes wrappers and whitespace", () => {
     sanitizeApiKey("CSFLOAT_API_KEY=\"abc123\""),
     "abc123"
   );
+});
+
+test("csfloat request headers use documented raw Authorization header format", () => {
+  const headers = buildRequestHeaders("  Bearer abc123  ");
+  assert.equal(headers.Authorization, "abc123");
+  assert.equal(headers["X-Api-Key"], undefined);
+  assert.equal(headers["X-API-Key"], undefined);
 });
 
 test("dmarket offer URL resolver prefers exact item page and falls back to search", () => {
