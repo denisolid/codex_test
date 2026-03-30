@@ -4085,6 +4085,13 @@ function countCatalogRowsByCategory(rows = []) {
   return counts
 }
 
+function shouldPreserveExistingUniverseOnEmptyRebuild(existingRows = [], nextRows = [], options = {}) {
+  if (options.allowEmptyUniverseReplace === true) {
+    return false
+  }
+  return Array.isArray(existingRows) && existingRows.length > 0 && Array.isArray(nextRows) && nextRows.length === 0
+}
+
 async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, options = {}) {
   const safeTarget = Math.max(Math.round(Number(targetSize || DEFAULT_UNIVERSE_TARGET)), 1)
   const scopedCategories = normalizeCatalogScopeCategories(options.categories)
@@ -4227,14 +4234,31 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, 
       universeRowsAdded += 1
     }
   }
+  const preserveExistingUniverse = shouldPreserveExistingUniverseOnEmptyRebuild(
+    existingUniverseRows,
+    normalizedUniverseRows,
+    options
+  )
+  const persistedUniverseRowCount = preserveExistingUniverse
+    ? existingUniverseRows.length
+    : normalizedUniverseRows.length
   const persist = unchangedUniverse
     ? { generationId: generationId || null, deactivated: 0, upserted: 0, skipped: true }
-    : {
-        ...(await marketUniverseRepo.replaceActiveUniverse(normalizedUniverseRows, {
-          generationId: generationId || null
-        })),
-        skipped: false
-      }
+    : preserveExistingUniverse
+      ? {
+          generationId: generationId || null,
+          deactivated: 0,
+          upserted: 0,
+          skipped: true,
+          preservedExistingUniverse: true,
+          reason: "empty_rebuild_preserved_existing_universe"
+        }
+      : {
+          ...(await marketUniverseRepo.replaceActiveUniverse(normalizedUniverseRows, {
+            generationId: generationId || null
+          })),
+          skipped: false
+        }
   const quotaShortfallByCategory = buildCategoryNumberMap()
   const quotaOverflowByCategory = buildCategoryNumberMap()
   const quotaReallocationByCategory = buildCategoryNumberMap()
@@ -4270,11 +4294,14 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, 
     backfillExcludedNonScannableRows: backfillExcludedNonScannableRows.length,
     backfillBlockedRowsByCategory: countCatalogRowsByCategory(backfillBlockedRows),
     universeRowsBeforeRefresh: existingUniverseRows.length,
-    universeRowsAfterRefresh: normalizedUniverseRows.length,
+    universeRowsAfterRefresh: persistedUniverseRowCount,
     universeRowsDroppedAsStale,
     universeRowsAdded,
-    activeUniverseBuilt: normalizedUniverseRows.length,
-    missingToTarget: Math.max(safeTarget - normalizedUniverseRows.length, 0),
+    activeUniverseBuilt: persistedUniverseRowCount,
+    computedUniverseRows: normalizedUniverseRows.length,
+    preservedExistingUniverseOnEmptyRebuild: preserveExistingUniverse,
+    missingToTarget: Math.max(safeTarget - persistedUniverseRowCount, 0),
+    computedMissingToTarget: Math.max(safeTarget - normalizedUniverseRows.length, 0),
     quotaTargetByCategory: quotas,
     selectedByCategory,
     selectedByCategoryQuotaStage,
@@ -4809,6 +4836,7 @@ module.exports = {
     resolveQuoteCoverageInputs,
     shouldBypassSkipForRecovery,
     normalizeCatalogScopeCategories,
-    isFullCatalogScope
+    isFullCatalogScope,
+    shouldPreserveExistingUniverseOnEmptyRebuild
   }
 }
