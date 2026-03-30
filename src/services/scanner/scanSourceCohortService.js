@@ -11,6 +11,7 @@ const {
 } = require("./config")
 
 const {
+  evaluateZeroSignalContract,
   isUniverseBackfillReadyRow,
   normalizeCandidateStatus,
   resolveCompatibleCatalogStatusFields
@@ -18,37 +19,6 @@ const {
 
 function normalizeText(value) {
   return String(value || "").trim()
-}
-
-function toFiniteOrNull(value) {
-  if (value == null || value === "") return null
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : null
-}
-
-function toIsoOrNull(value) {
-  if (value == null || value === "") return null
-  if (value instanceof Date) {
-    const ts = value.getTime()
-    return Number.isFinite(ts) ? new Date(ts).toISOString() : null
-  }
-  const numeric = toFiniteOrNull(value)
-  if (numeric != null) {
-    const normalizedTs =
-      numeric >= 1e12
-        ? Math.round(numeric)
-        : numeric >= 1e9
-          ? Math.round(numeric * 1000)
-          : null
-    if (normalizedTs != null) {
-      const ts = new Date(normalizedTs).getTime()
-      if (Number.isFinite(ts)) return new Date(ts).toISOString()
-    }
-  }
-  const text = normalizeText(value)
-  if (!text) return null
-  const ts = new Date(text).getTime()
-  return Number.isFinite(ts) ? new Date(ts).toISOString() : null
 }
 
 function normalizeCategory(value) {
@@ -80,29 +50,6 @@ function applyCatalogStatusCompatibility(row = {}) {
 
 function resolveScanEligible(row = {}) {
   return row?.scan_eligible == null ? Boolean(row?.scanEligible) : Boolean(row.scan_eligible)
-}
-
-function evaluateZeroSignalContract(row = {}) {
-  const referencePrice = toFiniteOrNull(row?.reference_price ?? row?.referencePrice)
-  const marketCoverageCount = Math.max(
-    Number(toFiniteOrNull(row?.market_coverage_count ?? row?.marketCoverageCount) || 0),
-    0
-  )
-  const hasUsableFreshnessSignal = Boolean(
-    toIsoOrNull(row?.last_market_signal_at || row?.lastMarketSignalAt) ||
-      toIsoOrNull(row?.latest_market_signal_at || row?.latestMarketSignalAt) ||
-      toIsoOrNull(row?.snapshot_captured_at || row?.snapshotCapturedAt) ||
-      toIsoOrNull(row?.quote_fetched_at || row?.quoteFetchedAt)
-  )
-  const missingReference = referencePrice == null
-  const missingCoverage = marketCoverageCount <= 0
-  const missingFreshness = !hasUsableFreshnessSignal
-  return {
-    missingReference,
-    missingCoverage,
-    missingFreshness,
-    rejected: missingReference && missingCoverage && missingFreshness
-  }
 }
 
 function isBaseScanCohortRow(row = {}) {
