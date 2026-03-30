@@ -8,6 +8,8 @@ process.env.SUPABASE_SERVICE_ROLE_KEY =
 
 const marketSourceCatalogRepo = require("../src/repositories/marketSourceCatalogRepository")
 const marketUniverseRepo = require("../src/repositories/marketUniverseRepository")
+const catalogGenerationRepo = require("../src/repositories/catalogGenerationRepository")
+const marketSourceCatalogService = require("../src/services/marketSourceCatalogService")
 const scanSourceCohortService = require("../src/services/scanner/scanSourceCohortService")
 
 function buildUniverseRows(names = [], category = "weapon_skin", startRank = 1) {
@@ -187,5 +189,130 @@ test("scan source cohort loader still normalizes null catalog status rows from t
   } finally {
     marketUniverseRepo.listActiveByLiquidityRank = originals.listActiveByLiquidityRank
     marketSourceCatalogRepo.listByMarketHashNames = originals.listByMarketHashNames
+  }
+})
+
+test("scan source cohort loader repairs the active universe once when it is empty but the active generation catalog is populated", async () => {
+  const originals = {
+    getActiveGeneration: catalogGenerationRepo.getActiveGeneration,
+    listActiveByLiquidityRank: marketUniverseRepo.listActiveByLiquidityRank,
+    listCoverageSummary: marketSourceCatalogRepo.listCoverageSummary,
+    listByMarketHashNames: marketSourceCatalogRepo.listByMarketHashNames,
+    refreshActiveUniverseFromCurrentCatalog:
+      marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog
+  }
+
+  const repairedNames = [
+    "AK-47 | Head Shot (Field-Tested)",
+    "M4A1-S | Decimator (Field-Tested)"
+  ]
+  let universeReads = 0
+  let repairRequest = null
+
+  catalogGenerationRepo.getActiveGeneration = async () => ({
+    id: "generation-active",
+    opportunity_scan_enabled: true
+  })
+  marketUniverseRepo.listActiveByLiquidityRank = async () => {
+    universeReads += 1
+    return universeReads === 1 ? [] : buildUniverseRows(repairedNames, "weapon_skin", 1)
+  }
+  marketSourceCatalogRepo.listCoverageSummary = async () =>
+    buildCatalogRows(repairedNames, {
+      category: "weapon_skin",
+      candidate_status: "eligible",
+      scan_eligible: true,
+      catalog_status: "scannable"
+    })
+  marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog = async (options = {}) => {
+    repairRequest = options
+    return {
+      catalogGenerationId: "generation-active",
+      targetUniverseSize: 3000,
+      universeRowsBeforeRefresh: 0,
+      universeRowsAfterRefresh: 2,
+      universeRowsDroppedAsStale: 0,
+      universeRowsAdded: 2,
+      activeUniverseBuilt: 2
+    }
+  }
+  marketSourceCatalogRepo.listByMarketHashNames = async (marketHashNames = []) => {
+    const requested = new Set(marketHashNames)
+    return buildCatalogRows(
+      repairedNames.filter((name) => requested.has(name)),
+      { category: "weapon_skin", candidate_status: "eligible", scan_eligible: true, catalog_status: "scannable" }
+    )
+  }
+
+  try {
+    const result = await scanSourceCohortService.loadScanSource({ batchSize: 2 })
+    assert.equal(result.rows.length, 2)
+    assert.equal(repairRequest?.generationId, "generation-active")
+    assert.equal(result.diagnostics.catalogGenerationId, "generation-active")
+    assert.equal(result.diagnostics.activeUniverseRowsBeforeRepair, 0)
+    assert.equal(result.diagnostics.activeCatalogRowsForGeneration, 2)
+    assert.equal(result.diagnostics.universeRepairTriggered, true)
+    assert.equal(result.diagnostics.activeUniverseRowsAfterRepair, 2)
+    assert.equal(result.diagnostics.retriedSourceLoad, true)
+    assert.equal(
+      result.diagnostics.fallbackReasons.includes("active_generation_universe_repair_triggered"),
+      true
+    )
+  } finally {
+    catalogGenerationRepo.getActiveGeneration = originals.getActiveGeneration
+    marketUniverseRepo.listActiveByLiquidityRank = originals.listActiveByLiquidityRank
+    marketSourceCatalogRepo.listCoverageSummary = originals.listCoverageSummary
+    marketSourceCatalogRepo.listByMarketHashNames = originals.listByMarketHashNames
+    marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog =
+      originals.refreshActiveUniverseFromCurrentCatalog
+  }
+})
+
+test("scan source cohort loader leaves explicit diagnostics when the active universe stays empty after one repair attempt", async () => {
+  const originals = {
+    getActiveGeneration: catalogGenerationRepo.getActiveGeneration,
+    listActiveByLiquidityRank: marketUniverseRepo.listActiveByLiquidityRank,
+    listCoverageSummary: marketSourceCatalogRepo.listCoverageSummary,
+    refreshActiveUniverseFromCurrentCatalog:
+      marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog
+  }
+
+  catalogGenerationRepo.getActiveGeneration = async () => ({
+    id: "generation-active",
+    opportunity_scan_enabled: true
+  })
+  marketUniverseRepo.listActiveByLiquidityRank = async () => []
+  marketSourceCatalogRepo.listCoverageSummary = async () =>
+    buildCatalogRows(["AK-47 | Asiimov (Battle-Scarred)"], {
+      category: "weapon_skin",
+      candidate_status: "candidate",
+      scan_eligible: false,
+      catalog_status: "shadow"
+    })
+  marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog = async () => ({
+    catalogGenerationId: "generation-active",
+    universeRowsBeforeRefresh: 0,
+    universeRowsAfterRefresh: 0,
+    activeUniverseBuilt: 0
+  })
+
+  try {
+    const result = await scanSourceCohortService.loadScanSource({ batchSize: 2 })
+    assert.equal(result.rows.length, 0)
+    assert.equal(result.diagnostics.activeUniverseRowsBeforeRepair, 0)
+    assert.equal(result.diagnostics.activeCatalogRowsForGeneration, 1)
+    assert.equal(result.diagnostics.universeRepairTriggered, true)
+    assert.equal(result.diagnostics.activeUniverseRowsAfterRepair, 0)
+    assert.equal(result.diagnostics.retriedSourceLoad, true)
+    assert.equal(
+      result.diagnostics.fallbackReasons.includes("active_generation_universe_still_empty_after_repair"),
+      true
+    )
+  } finally {
+    catalogGenerationRepo.getActiveGeneration = originals.getActiveGeneration
+    marketUniverseRepo.listActiveByLiquidityRank = originals.listActiveByLiquidityRank
+    marketSourceCatalogRepo.listCoverageSummary = originals.listCoverageSummary
+    marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog =
+      originals.refreshActiveUniverseFromCurrentCatalog
   }
 })
