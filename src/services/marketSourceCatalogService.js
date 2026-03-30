@@ -618,6 +618,31 @@ function toPositiveOrNull(value) {
   return parsed > 0 ? parsed : null
 }
 
+function toIsoOrNull(value) {
+  if (value == null || value === "") return null
+  if (value instanceof Date) {
+    const ts = value.getTime()
+    return Number.isFinite(ts) ? new Date(ts).toISOString() : null
+  }
+  const numeric = toFiniteOrNull(value)
+  if (numeric != null) {
+    const normalizedTs =
+      numeric >= 1e12
+        ? Math.round(numeric)
+        : numeric >= 1e9
+          ? Math.round(numeric * 1000)
+          : null
+    if (normalizedTs != null) {
+      const ts = new Date(normalizedTs).getTime()
+      if (Number.isFinite(ts)) return new Date(ts).toISOString()
+    }
+  }
+  const text = normalizeText(value)
+  if (!text) return null
+  const ts = new Date(text).getTime()
+  return Number.isFinite(ts) ? new Date(ts).toISOString() : null
+}
+
 function countTrueValues(values = []) {
   return (Array.isArray(values) ? values : []).reduce(
     (sum, value) => sum + Number(Boolean(value)),
@@ -1582,6 +1607,59 @@ function isUniverseBackfillReadyRow(row = {}) {
   }
 
   return progress.hasMeaningfulProgress
+}
+
+function evaluateZeroSignalContract(row = {}) {
+  const referencePrice = toFiniteOrNull(row?.reference_price ?? row?.referencePrice)
+  const marketCoverageCount = Math.max(
+    Number(toFiniteOrNull(row?.market_coverage_count ?? row?.marketCoverageCount) || 0),
+    0
+  )
+  const hasUsableFreshnessSignal = Boolean(
+    toIsoOrNull(row?.last_market_signal_at || row?.lastMarketSignalAt) ||
+      toIsoOrNull(row?.latest_market_signal_at || row?.latestMarketSignalAt) ||
+      toIsoOrNull(row?.snapshot_captured_at || row?.snapshotCapturedAt) ||
+      toIsoOrNull(row?.quote_fetched_at || row?.quoteFetchedAt)
+  )
+  const missingReference = referencePrice == null
+  const missingCoverage = marketCoverageCount <= 0
+  const missingFreshness = !hasUsableFreshnessSignal
+  return {
+    missingReference,
+    missingCoverage,
+    missingFreshness,
+    rejected: missingReference && missingCoverage && missingFreshness
+  }
+}
+
+function splitRowsByZeroSignalContract(rows = []) {
+  const acceptedRows = []
+  const rejectedRows = []
+  const diagnostics = {
+    rowsExcludedFromUniverseByZeroSignalContract: 0,
+    rowsExcludedFromUniverseByMissingReference: 0,
+    rowsExcludedFromUniverseByMissingCoverage: 0,
+    rowsExcludedFromUniverseByMissingFreshness: 0
+  }
+
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const evaluation = evaluateZeroSignalContract(row)
+    if (evaluation.rejected) {
+      rejectedRows.push(row)
+      diagnostics.rowsExcludedFromUniverseByZeroSignalContract += 1
+      if (evaluation.missingReference) diagnostics.rowsExcludedFromUniverseByMissingReference += 1
+      if (evaluation.missingCoverage) diagnostics.rowsExcludedFromUniverseByMissingCoverage += 1
+      if (evaluation.missingFreshness) diagnostics.rowsExcludedFromUniverseByMissingFreshness += 1
+      continue
+    }
+    acceptedRows.push(row)
+  }
+
+  return {
+    acceptedRows,
+    rejectedRows,
+    diagnostics
+  }
 }
 
 function incrementPromotionReasons(counter = {}, reasons = [], category = "", byCategory = null) {
@@ -4101,7 +4179,7 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, 
       : await catalogGenerationRepo.getCurrentGeneration().catch(() => null)
   const catalogGenerationSnapshot = buildCatalogGenerationSnapshot(catalogGeneration)
   const generationId = normalizeText(options.generationId || catalogGenerationSnapshot?.id)
-  const strictEligibleRows = normalizeCatalogCandidateRows(
+  const rawStrictEligibleRows = normalizeCatalogCandidateRows(
     await marketSourceCatalogRepo.listScanEligible({
       limit: Math.max(SOURCE_CATALOG_LIMIT, safeTarget * 3),
       categories: scopedCategories,
@@ -4109,6 +4187,8 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, 
     }),
     "strict_eligible"
   )
+  const strictEligibleZeroSignalSplit = splitRowsByZeroSignalContract(rawStrictEligibleRows)
+  const strictEligibleRows = strictEligibleZeroSignalSplit.acceptedRows
   const candidatePoolLimit = Math.max(SOURCE_CATALOG_LIMIT, safeTarget * 3)
   const candidatePoolRequest = {
     limit: candidatePoolLimit,
@@ -4123,12 +4203,14 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, 
   const candidatePoolRowsBeforeScannableGate = normalizeCatalogCandidateRows(
     await marketSourceCatalogRepo.listCandidatePool(candidatePoolRequest)
   )
-  const candidatePoolRows = normalizeCatalogCandidateRows(
+  const rawCandidatePoolRows = normalizeCatalogCandidateRows(
     await marketSourceCatalogRepo.listCandidatePool({
       ...candidatePoolRequest,
       catalogStatuses: [CATALOG_STATUS.SCANNABLE]
     })
   )
+  const candidatePoolZeroSignalSplit = splitRowsByZeroSignalContract(rawCandidatePoolRows)
+  const candidatePoolRows = candidatePoolZeroSignalSplit.acceptedRows
   const backfillExcludedNonScannableRows = candidatePoolRowsBeforeScannableGate.filter(
     (row) => normalizeCatalogStatus(row?.catalog_status ?? row?.catalogStatus) !== CATALOG_STATUS.SCANNABLE
   )
@@ -4234,11 +4316,23 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, 
       universeRowsAdded += 1
     }
   }
-  const preserveExistingUniverse = shouldPreserveExistingUniverseOnEmptyRebuild(
-    existingUniverseRows,
-    normalizedUniverseRows,
-    options
-  )
+  const zeroSignalContractDiagnostics = {
+    rowsExcludedFromUniverseByZeroSignalContract:
+      Number(strictEligibleZeroSignalSplit?.diagnostics?.rowsExcludedFromUniverseByZeroSignalContract || 0) +
+      Number(candidatePoolZeroSignalSplit?.diagnostics?.rowsExcludedFromUniverseByZeroSignalContract || 0),
+    rowsExcludedFromUniverseByMissingReference:
+      Number(strictEligibleZeroSignalSplit?.diagnostics?.rowsExcludedFromUniverseByMissingReference || 0) +
+      Number(candidatePoolZeroSignalSplit?.diagnostics?.rowsExcludedFromUniverseByMissingReference || 0),
+    rowsExcludedFromUniverseByMissingCoverage:
+      Number(strictEligibleZeroSignalSplit?.diagnostics?.rowsExcludedFromUniverseByMissingCoverage || 0) +
+      Number(candidatePoolZeroSignalSplit?.diagnostics?.rowsExcludedFromUniverseByMissingCoverage || 0),
+    rowsExcludedFromUniverseByMissingFreshness:
+      Number(strictEligibleZeroSignalSplit?.diagnostics?.rowsExcludedFromUniverseByMissingFreshness || 0) +
+      Number(candidatePoolZeroSignalSplit?.diagnostics?.rowsExcludedFromUniverseByMissingFreshness || 0)
+  }
+  const preserveExistingUniverse =
+    shouldPreserveExistingUniverseOnEmptyRebuild(existingUniverseRows, normalizedUniverseRows, options) &&
+    Number(zeroSignalContractDiagnostics.rowsExcludedFromUniverseByZeroSignalContract || 0) <= 0
   const persistedUniverseRowCount = preserveExistingUniverse
     ? existingUniverseRows.length
     : normalizedUniverseRows.length
@@ -4298,8 +4392,17 @@ async function rebuildUniverseFromCatalog(targetSize = DEFAULT_UNIVERSE_TARGET, 
     universeRowsDroppedAsStale,
     universeRowsAdded,
     activeUniverseBuilt: persistedUniverseRowCount,
+    universeRowsPersistedAfterContractAlignment: persistedUniverseRowCount,
     computedUniverseRows: normalizedUniverseRows.length,
     preservedExistingUniverseOnEmptyRebuild: preserveExistingUniverse,
+    rowsExcludedFromUniverseByZeroSignalContract:
+      zeroSignalContractDiagnostics.rowsExcludedFromUniverseByZeroSignalContract,
+    rowsExcludedFromUniverseByMissingReference:
+      zeroSignalContractDiagnostics.rowsExcludedFromUniverseByMissingReference,
+    rowsExcludedFromUniverseByMissingCoverage:
+      zeroSignalContractDiagnostics.rowsExcludedFromUniverseByMissingCoverage,
+    rowsExcludedFromUniverseByMissingFreshness:
+      zeroSignalContractDiagnostics.rowsExcludedFromUniverseByMissingFreshness,
     missingToTarget: Math.max(safeTarget - persistedUniverseRowCount, 0),
     computedMissingToTarget: Math.max(safeTarget - normalizedUniverseRows.length, 0),
     quotaTargetByCategory: quotas,
@@ -4807,6 +4910,7 @@ module.exports = {
   getCatalogRowsByMarketHashNames,
   recomputeCandidateReadinessRows,
   refreshActiveUniverseFromCurrentCatalog,
+  evaluateZeroSignalContract,
   normalizeCandidateStatus,
   evaluateEligibility,
   evaluateCandidateState,
@@ -4837,6 +4941,8 @@ module.exports = {
     shouldBypassSkipForRecovery,
     normalizeCatalogScopeCategories,
     isFullCatalogScope,
-    shouldPreserveExistingUniverseOnEmptyRebuild
+    shouldPreserveExistingUniverseOnEmptyRebuild,
+    evaluateZeroSignalContract,
+    splitRowsByZeroSignalContract
   }
 }

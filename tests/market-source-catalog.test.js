@@ -24,10 +24,12 @@ const {
     normalizeMaturityState,
     normalizeCategory,
     normalizeCatalogScopeCategories,
+    evaluateZeroSignalContract,
     resolveCompatibleCatalogStatusFields,
     resolveQuoteCoverageInputs,
     shouldBypassSkipForRecovery,
-    shouldPreserveExistingUniverseOnEmptyRebuild
+    shouldPreserveExistingUniverseOnEmptyRebuild,
+    splitRowsByZeroSignalContract
   }
 } = require("../src/services/marketSourceCatalogService")
 const {
@@ -801,6 +803,55 @@ test("weapon-skin quote inputs derive progression support from partial fresh quo
   assert.equal(quoteInputs.quoteReferencePrice, 8.5)
   assert.equal(quoteInputs.strictQuoteReferencePrice, null)
   assert.equal(quoteInputs.quoteReferenceMode, "progressive")
+})
+
+test("zero-signal contract rejects rows with no reference, coverage, or freshness", () => {
+  const rejected = evaluateZeroSignalContract({
+    reference_price: null,
+    market_coverage_count: 0,
+    snapshot_captured_at: null,
+    quote_fetched_at: null,
+    last_market_signal_at: null
+  })
+
+  assert.equal(rejected.rejected, true)
+  assert.equal(rejected.missingReference, true)
+  assert.equal(rejected.missingCoverage, true)
+  assert.equal(rejected.missingFreshness, true)
+
+  const accepted = evaluateZeroSignalContract({
+    reference_price: 7.5,
+    market_coverage_count: 2,
+    last_market_signal_at: new Date().toISOString()
+  })
+
+  assert.equal(accepted.rejected, false)
+})
+
+test("zero-signal contract split excludes only rows that fully fail the shared source contract", () => {
+  const split = splitRowsByZeroSignalContract([
+    {
+      market_hash_name: "AK-47 | Ice Coaled (Battle-Scarred)",
+      reference_price: null,
+      market_coverage_count: 0,
+      snapshot_captured_at: null,
+      quote_fetched_at: null,
+      last_market_signal_at: null
+    },
+    {
+      market_hash_name: "AK-47 | Slate (Field-Tested)",
+      reference_price: 7.5,
+      market_coverage_count: 2,
+      last_market_signal_at: new Date().toISOString()
+    }
+  ])
+
+  assert.equal(split.acceptedRows.length, 1)
+  assert.equal(split.rejectedRows.length, 1)
+  assert.equal(split.diagnostics.rowsExcludedFromUniverseByZeroSignalContract, 1)
+  assert.equal(split.diagnostics.rowsExcludedFromUniverseByMissingReference, 1)
+  assert.equal(split.diagnostics.rowsExcludedFromUniverseByMissingCoverage, 1)
+  assert.equal(split.diagnostics.rowsExcludedFromUniverseByMissingFreshness, 1)
 })
 
 test("skip recovery bypass triggers for collapsed legacy diagnostics", () => {
