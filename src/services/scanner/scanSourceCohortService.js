@@ -1,8 +1,10 @@
 const marketSourceCatalogRepo = require("../../repositories/marketSourceCatalogRepository")
 const marketUniverseRepo = require("../../repositories/marketUniverseRepository")
+const catalogGenerationRepo = require("../../repositories/catalogGenerationRepository")
 const marketSourceCatalogService = require("../marketSourceCatalogService")
 const alphaHotUniverseService = require("./alphaHotUniverseService")
 const {
+  DEFAULT_UNIVERSE_LIMIT,
   OPPORTUNITY_BATCH_RUNTIME_TARGET,
   SCAN_COHORT_CATEGORIES,
   SCAN_COHORT_PRIMARY_POOL_MULTIPLIER
@@ -172,6 +174,7 @@ async function loadScanSource(options = {}) {
     sourceMode: "active_generation_universe",
     fallbackUsed: false,
     fallbackReasons: [],
+    catalogGenerationId: normalizeText(options.generationId || options.catalogGenerationId) || null,
     primaryCohortCounts: {
       hot: 0,
       warm: 0,
@@ -201,28 +204,104 @@ async function loadScanSource(options = {}) {
     universeRowsLoaded: 0,
     catalogRowsResolved: 0,
     universeRowsMissingCatalog: 0,
-    universeRowsDroppedBeforeAlpha: 0
+    universeRowsDroppedBeforeAlpha: 0,
+    activeUniverseRowsBeforeRepair: 0,
+    activeCatalogRowsForGeneration: 0,
+    universeRepairTriggered: false,
+    activeUniverseRowsAfterRepair: 0,
+    retriedSourceLoad: false
   }
+
+  const explicitGenerationId = normalizeText(options.generationId || options.catalogGenerationId)
+  const explicitCatalogGeneration =
+    options.catalogGeneration && typeof options.catalogGeneration === "object"
+      ? options.catalogGeneration
+      : null
+  const activeCatalogGeneration = explicitCatalogGeneration
+    ? explicitCatalogGeneration
+    : explicitGenerationId
+      ? null
+      : await catalogGenerationRepo
+          .getActiveGeneration({ requireOpportunityScanEnabled: true })
+          .catch(() => null)
+  const generationId =
+    explicitGenerationId || normalizeText(activeCatalogGeneration?.id) || null
+  diagnostics.catalogGenerationId = generationId
+
+  const loadUniverseRows = async () =>
+    marketUniverseRepo.listActiveByLiquidityRank({
+      limit: cohortLimit,
+      categories,
+      generationId,
+      requireOpportunityScanEnabled: !generationId
+    })
 
   let universeRows = []
   try {
-    universeRows = await marketUniverseRepo.listActiveByLiquidityRank({
-      limit: cohortLimit,
-      categories,
-      requireOpportunityScanEnabled: true
-    })
+    universeRows = await loadUniverseRows()
   } catch (_err) {
     diagnostics.cohortQueryFailures.universe = true
     throw _err
   }
 
   diagnostics.universeRowsLoaded = universeRows.length
+  diagnostics.activeUniverseRowsBeforeRepair = universeRows.length
+  diagnostics.activeUniverseRowsAfterRepair = universeRows.length
   if (!universeRows.length) {
+    diagnostics.degradedScannerHealth = true
     diagnostics.fallbackReasons.push("active_generation_universe_empty")
-    diagnostics.missingCategoriesAfterPrimary = [...categories]
-    return {
-      rows: [],
-      diagnostics
+
+    if (generationId) {
+      let activeCatalogRows = []
+      try {
+        activeCatalogRows = await marketSourceCatalogRepo.listCoverageSummary({
+          generationId,
+          categories,
+          limit: 12000
+        })
+      } catch (_err) {
+        diagnostics.cohortQueryFailures.catalog = true
+        throw _err
+      }
+
+      diagnostics.activeCatalogRowsForGeneration = Array.isArray(activeCatalogRows)
+        ? activeCatalogRows.length
+        : 0
+
+      if (diagnostics.activeCatalogRowsForGeneration > 0) {
+        diagnostics.universeRepairTriggered = true
+        diagnostics.retriedSourceLoad = true
+        diagnostics.fallbackReasons.push("active_generation_universe_repair_triggered")
+        await marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog({
+          catalogGeneration: activeCatalogGeneration,
+          generationId,
+          targetUniverseSize: Math.max(
+            Math.round(Number(options.targetUniverseSize || DEFAULT_UNIVERSE_LIMIT)),
+            1
+          ),
+          categories
+        })
+        try {
+          universeRows = await loadUniverseRows()
+        } catch (_err) {
+          diagnostics.cohortQueryFailures.universe = true
+          throw _err
+        }
+        diagnostics.universeRowsLoaded = universeRows.length
+        diagnostics.activeUniverseRowsAfterRepair = universeRows.length
+        if (!universeRows.length) {
+          diagnostics.fallbackReasons.push("active_generation_universe_still_empty_after_repair")
+        }
+      }
+    }
+
+    if (!universeRows.length) {
+      diagnostics.missingCategoriesAfterPrimary = [...categories]
+      diagnostics.fallbackReasons = Array.from(new Set(diagnostics.fallbackReasons))
+      return {
+        rows: [],
+        diagnostics
+      }
     }
   }
 
@@ -317,6 +396,7 @@ async function loadScanSource(options = {}) {
     rows: Array.isArray(alphaHotUniverse?.rows) ? alphaHotUniverse.rows : [],
     diagnostics: {
       ...diagnostics,
+      fallbackReasons: Array.from(new Set(diagnostics.fallbackReasons)),
       ...alphaDiagnostics
     }
   }
