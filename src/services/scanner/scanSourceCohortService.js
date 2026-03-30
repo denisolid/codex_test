@@ -164,6 +164,7 @@ function resolveSettledRows(result = {}) {
 }
 
 async function loadScanSource(options = {}) {
+  const repairedUniverseOnce = options._repairedUniverseOnce === true
   const batchSize = Math.max(
     Math.round(Number(options.batchSize || OPPORTUNITY_BATCH_RUNTIME_TARGET)),
     1
@@ -207,8 +208,13 @@ async function loadScanSource(options = {}) {
     universeRowsDroppedBeforeAlpha: 0,
     activeUniverseRowsBeforeRepair: 0,
     activeCatalogRowsForGeneration: 0,
+    scannableRowsInCatalogAtRepair: 0,
     universeRepairTriggered: false,
+    staleUniverseRepairTriggered: false,
+    staleUniverseRowsLoaded: 0,
+    staleUniverseRowsDropped: 0,
     activeUniverseRowsAfterRepair: 0,
+    universeRowsAfterRepair: 0,
     retriedSourceLoad: false
   }
 
@@ -237,6 +243,102 @@ async function loadScanSource(options = {}) {
     })
 
   let universeRows = []
+  let cachedActiveCatalogRowsForGeneration = null
+  let cachedScannableRowsInCatalogAtRepair = null
+  const loadActiveCatalogRowsForGeneration = async () => {
+    if (cachedActiveCatalogRowsForGeneration != null) {
+      diagnostics.activeCatalogRowsForGeneration = cachedActiveCatalogRowsForGeneration
+      return cachedActiveCatalogRowsForGeneration
+    }
+    let activeCatalogRows = []
+    try {
+      activeCatalogRows = await marketSourceCatalogRepo.listCoverageSummary({
+        generationId,
+        categories,
+        limit: 12000
+      })
+    } catch (_err) {
+      diagnostics.cohortQueryFailures.catalog = true
+      throw _err
+    }
+    cachedActiveCatalogRowsForGeneration = Array.isArray(activeCatalogRows) ? activeCatalogRows.length : 0
+    diagnostics.activeCatalogRowsForGeneration = cachedActiveCatalogRowsForGeneration
+    return cachedActiveCatalogRowsForGeneration
+  }
+  const loadScannableRowsInCatalogAtRepair = async () => {
+    if (cachedScannableRowsInCatalogAtRepair != null) {
+      diagnostics.scannableRowsInCatalogAtRepair = cachedScannableRowsInCatalogAtRepair
+      return cachedScannableRowsInCatalogAtRepair
+    }
+    let scannableRows = []
+    try {
+      scannableRows = await marketSourceCatalogRepo.listActiveTradable({
+        generationId,
+        categories,
+        catalogStatuses: ["scannable"],
+        limit: 12000
+      })
+    } catch (_err) {
+      diagnostics.cohortQueryFailures.catalog = true
+      throw _err
+    }
+    cachedScannableRowsInCatalogAtRepair = Array.isArray(scannableRows) ? scannableRows.length : 0
+    diagnostics.scannableRowsInCatalogAtRepair = cachedScannableRowsInCatalogAtRepair
+    return cachedScannableRowsInCatalogAtRepair
+  }
+  const triggerUniverseRepair = async ({
+    triggerReason = "active_generation_universe_repair_triggered",
+    emptyReason = "active_generation_universe_still_empty_after_repair",
+    staleRepair = false,
+    staleRowsLoaded = 0,
+    staleRowsDropped = 0
+  } = {}) => {
+    if (!generationId || repairedUniverseOnce || diagnostics.retriedSourceLoad) {
+      return false
+    }
+
+    if (staleRepair) {
+      const scannableRowsInCatalogAtRepair = await loadScannableRowsInCatalogAtRepair()
+      if (scannableRowsInCatalogAtRepair <= 0) {
+        return false
+      }
+      diagnostics.staleUniverseRepairTriggered = true
+      diagnostics.staleUniverseRowsLoaded = Math.max(Number(staleRowsLoaded || 0), 0)
+      diagnostics.staleUniverseRowsDropped = Math.max(Number(staleRowsDropped || 0), 0)
+    } else {
+      const activeCatalogRowsForGeneration = await loadActiveCatalogRowsForGeneration()
+      if (activeCatalogRowsForGeneration <= 0) {
+        return false
+      }
+      await loadScannableRowsInCatalogAtRepair().catch(() => 0)
+      diagnostics.universeRepairTriggered = true
+    }
+
+    diagnostics.retriedSourceLoad = true
+    diagnostics.fallbackReasons.push(triggerReason)
+    await marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog({
+      catalogGeneration: activeCatalogGeneration,
+      generationId,
+      targetUniverseSize: Math.max(
+        Math.round(Number(options.targetUniverseSize || DEFAULT_UNIVERSE_LIMIT)),
+        1
+      ),
+      categories
+    })
+    try {
+      universeRows = await loadUniverseRows()
+    } catch (_err) {
+      diagnostics.cohortQueryFailures.universe = true
+      throw _err
+    }
+    diagnostics.universeRowsLoaded = universeRows.length
+    diagnostics.activeUniverseRowsAfterRepair = universeRows.length
+    diagnostics.universeRowsAfterRepair = universeRows.length
+    if (!universeRows.length) {
+      diagnostics.fallbackReasons.push(emptyReason)
+    }
+    return true
+  }
   try {
     universeRows = await loadUniverseRows()
   } catch (_err) {
@@ -247,52 +349,17 @@ async function loadScanSource(options = {}) {
   diagnostics.universeRowsLoaded = universeRows.length
   diagnostics.activeUniverseRowsBeforeRepair = universeRows.length
   diagnostics.activeUniverseRowsAfterRepair = universeRows.length
+  diagnostics.universeRowsAfterRepair = universeRows.length
   if (!universeRows.length) {
     diagnostics.degradedScannerHealth = true
     diagnostics.fallbackReasons.push("active_generation_universe_empty")
 
     if (generationId) {
-      let activeCatalogRows = []
-      try {
-        activeCatalogRows = await marketSourceCatalogRepo.listCoverageSummary({
-          generationId,
-          categories,
-          limit: 12000
-        })
-      } catch (_err) {
-        diagnostics.cohortQueryFailures.catalog = true
-        throw _err
-      }
-
-      diagnostics.activeCatalogRowsForGeneration = Array.isArray(activeCatalogRows)
-        ? activeCatalogRows.length
-        : 0
-
-      if (diagnostics.activeCatalogRowsForGeneration > 0) {
-        diagnostics.universeRepairTriggered = true
-        diagnostics.retriedSourceLoad = true
-        diagnostics.fallbackReasons.push("active_generation_universe_repair_triggered")
-        await marketSourceCatalogService.refreshActiveUniverseFromCurrentCatalog({
-          catalogGeneration: activeCatalogGeneration,
-          generationId,
-          targetUniverseSize: Math.max(
-            Math.round(Number(options.targetUniverseSize || DEFAULT_UNIVERSE_LIMIT)),
-            1
-          ),
-          categories
-        })
-        try {
-          universeRows = await loadUniverseRows()
-        } catch (_err) {
-          diagnostics.cohortQueryFailures.universe = true
-          throw _err
-        }
-        diagnostics.universeRowsLoaded = universeRows.length
-        diagnostics.activeUniverseRowsAfterRepair = universeRows.length
-        if (!universeRows.length) {
-          diagnostics.fallbackReasons.push("active_generation_universe_still_empty_after_repair")
-        }
-      }
+      await triggerUniverseRepair({
+        triggerReason: "active_generation_universe_repair_triggered",
+        emptyReason: "active_generation_universe_still_empty_after_repair",
+        staleRepair: false
+      })
     }
 
     if (!universeRows.length) {
@@ -314,7 +381,7 @@ async function loadScanSource(options = {}) {
   try {
     catalogRows = await marketSourceCatalogRepo.listByMarketHashNames(universeMarketHashNames, {
       categories,
-      requireOpportunityScanEnabled: true
+      generationId
     })
   } catch (_err) {
     diagnostics.cohortQueryFailures.catalog = true
@@ -349,16 +416,17 @@ async function loadScanSource(options = {}) {
     }),
     universeRowsByName
   )
+  const baseRows = hydratedRows.filter((row) => isBaseScanCohortRow(row))
 
-  const hotRows = decorateRows(hydratedRows.filter((row) => isHotCohortRow(row)), {
+  const hotRows = decorateRows(baseRows.filter((row) => isHotCohortRow(row)), {
     scanCohort: "hot",
     sourceOrigin: "active_universe"
   })
-  const warmRows = decorateRows(hydratedRows.filter((row) => isWarmCohortRow(row)), {
+  const warmRows = decorateRows(baseRows.filter((row) => isWarmCohortRow(row)), {
     scanCohort: "warm",
     sourceOrigin: "active_universe"
   })
-  const coldRows = decorateRows(hydratedRows.filter((row) => isColdProbeRow(row)), {
+  const coldRows = decorateRows(baseRows.filter((row) => isColdProbeRow(row)), {
     scanCohort: "cold",
     sourceOrigin: "active_universe"
   })
@@ -373,6 +441,66 @@ async function loadScanSource(options = {}) {
   diagnostics.universeRowsDroppedBeforeAlpha = Math.max(hydratedRows.length - rows.length, 0)
   diagnostics.primaryCategoryCounts = countRowsByCategory(rows)
   diagnostics.missingCategoriesAfterPrimary = listMissingCategories(diagnostics.primaryCategoryCounts)
+
+  const shouldTriggerStaleUniverseRepair =
+    !repairedUniverseOnce &&
+    Boolean(generationId) &&
+    universeRows.length > 0 &&
+    matchedCatalogRows.length > 0 &&
+    (baseRows.length === 0 || diagnostics.universeRowsDroppedBeforeAlpha === hydratedRows.length)
+
+  if (shouldTriggerStaleUniverseRepair) {
+    const scannableRowsInCatalogAtRepair = await loadScannableRowsInCatalogAtRepair()
+    if (scannableRowsInCatalogAtRepair > 0) {
+      diagnostics.degradedScannerHealth = true
+      await triggerUniverseRepair({
+        triggerReason: "active_generation_universe_stale_repair_triggered",
+        emptyReason: "active_generation_universe_still_empty_after_stale_repair",
+        staleRepair: true,
+        staleRowsLoaded: universeRows.length,
+        staleRowsDropped: diagnostics.universeRowsDroppedBeforeAlpha
+      })
+      if (!universeRows.length) {
+        diagnostics.missingCategoriesAfterPrimary = [...categories]
+        diagnostics.fallbackReasons = Array.from(new Set(diagnostics.fallbackReasons))
+        return {
+          rows: [],
+          diagnostics
+        }
+      }
+      return loadScanSource({
+        ...options,
+        catalogGenerationId: generationId,
+        generationId,
+        catalogGeneration: activeCatalogGeneration,
+        _repairedUniverseOnce: true
+      }).then((result) => ({
+        rows: result.rows,
+        diagnostics: {
+          ...result.diagnostics,
+          activeUniverseRowsBeforeRepair: diagnostics.activeUniverseRowsBeforeRepair,
+          activeUniverseRowsAfterRepair:
+            Number(result?.diagnostics?.activeUniverseRowsAfterRepair || diagnostics.activeUniverseRowsAfterRepair || 0),
+          activeCatalogRowsForGeneration: diagnostics.activeCatalogRowsForGeneration,
+          scannableRowsInCatalogAtRepair: diagnostics.scannableRowsInCatalogAtRepair,
+          staleUniverseRepairTriggered: diagnostics.staleUniverseRepairTriggered,
+          staleUniverseRowsLoaded: diagnostics.staleUniverseRowsLoaded,
+          staleUniverseRowsDropped: diagnostics.staleUniverseRowsDropped,
+          universeRowsAfterRepair:
+            Number(result?.diagnostics?.universeRowsAfterRepair || diagnostics.universeRowsAfterRepair || 0),
+          retriedSourceLoad: true,
+          fallbackReasons: Array.from(
+            new Set([
+              ...(Array.isArray(diagnostics.fallbackReasons) ? diagnostics.fallbackReasons : []),
+              ...(Array.isArray(result?.diagnostics?.fallbackReasons)
+                ? result.diagnostics.fallbackReasons
+                : [])
+            ])
+          )
+        }
+      }))
+    }
+  }
 
   if (rows.length < batchSize * SCAN_COHORT_PRIMARY_POOL_MULTIPLIER) {
     diagnostics.fallbackReasons.push("active_generation_universe_under_target")
