@@ -34,14 +34,38 @@ function buildCatalogRows(names = [], patch = {}) {
     candidate_status: patch.candidate_status || "eligible",
     scan_eligible: patch.scan_eligible == null ? true : patch.scan_eligible,
     catalog_status: patch.catalog_status,
-    reference_price: 5 + index,
-    market_coverage_count: 3,
-    liquidity_rank: 200 - index,
-    volume_7d: 100,
-    maturity_score: 80,
-    snapshot_captured_at: nowIso,
-    quote_fetched_at: nowIso,
-    last_market_signal_at: nowIso
+    reference_price:
+      Object.prototype.hasOwnProperty.call(patch, "reference_price")
+        ? patch.reference_price
+        : 5 + index,
+    market_coverage_count:
+      Object.prototype.hasOwnProperty.call(patch, "market_coverage_count")
+        ? patch.market_coverage_count
+        : 3,
+    liquidity_rank:
+      Object.prototype.hasOwnProperty.call(patch, "liquidity_rank")
+        ? patch.liquidity_rank
+        : 200 - index,
+    volume_7d:
+      Object.prototype.hasOwnProperty.call(patch, "volume_7d")
+        ? patch.volume_7d
+        : 100,
+    maturity_score:
+      Object.prototype.hasOwnProperty.call(patch, "maturity_score")
+        ? patch.maturity_score
+        : 80,
+    snapshot_captured_at:
+      Object.prototype.hasOwnProperty.call(patch, "snapshot_captured_at")
+        ? patch.snapshot_captured_at
+        : nowIso,
+    quote_fetched_at:
+      Object.prototype.hasOwnProperty.call(patch, "quote_fetched_at")
+        ? patch.quote_fetched_at
+        : nowIso,
+    last_market_signal_at:
+      Object.prototype.hasOwnProperty.call(patch, "last_market_signal_at")
+        ? patch.last_market_signal_at
+        : nowIso
   }))
 }
 
@@ -329,7 +353,7 @@ test("scan source cohort loader leaves explicit diagnostics when the active univ
   }
 })
 
-test("scan source cohort loader repairs a stale non-empty active universe once when all hydrated rows fail the base cohort", async () => {
+test("scan source cohort loader repairs a stale non-empty active universe once when hydrated rows fail the zero-signal contract", async () => {
   const originals = {
     getActiveGeneration: catalogGenerationRepo.getActiveGeneration,
     listActiveByLiquidityRank: marketUniverseRepo.listActiveByLiquidityRank,
@@ -390,7 +414,12 @@ test("scan source cohort loader repairs a stale non-empty active universe once w
             category: "weapon_skin",
             candidate_status: "eligible",
             scan_eligible: true,
-            catalog_status: "shadow"
+            catalog_status: "scannable",
+            reference_price: null,
+            market_coverage_count: 0,
+            snapshot_captured_at: null,
+            quote_fetched_at: null,
+            last_market_signal_at: null
           }
         ),
         ...buildCatalogRows(
@@ -399,7 +428,12 @@ test("scan source cohort loader repairs a stale non-empty active universe once w
             category: "case",
             candidate_status: "eligible",
             scan_eligible: true,
-            catalog_status: "blocked"
+            catalog_status: "scannable",
+            reference_price: null,
+            market_coverage_count: 0,
+            snapshot_captured_at: null,
+            quote_fetched_at: null,
+            last_market_signal_at: null
           }
         )
       ]
@@ -443,6 +477,10 @@ test("scan source cohort loader repairs a stale non-empty active universe once w
     assert.equal(repairRequest?.generationId, "generation-active")
     assert.equal(result.diagnostics.catalogGenerationId, "generation-active")
     assert.equal(result.diagnostics.activeUniverseRowsBeforeRepair, 3)
+    assert.equal(result.diagnostics.rowsRejectedByZeroSignalContract, 3)
+    assert.equal(result.diagnostics.rowsRejectedByMissingReference, 3)
+    assert.equal(result.diagnostics.rowsRejectedByMissingCoverage, 3)
+    assert.equal(result.diagnostics.rowsRejectedByMissingFreshness, 3)
     assert.equal(result.diagnostics.staleUniverseRepairTriggered, true)
     assert.equal(result.diagnostics.staleUniverseRowsLoaded, 3)
     assert.equal(result.diagnostics.staleUniverseRowsDropped, 3)
