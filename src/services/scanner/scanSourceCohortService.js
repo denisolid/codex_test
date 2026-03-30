@@ -127,6 +127,14 @@ function dedupeRows(rows = []) {
   return deduped
 }
 
+function isRebuildableUniverseStrictRow(row = {}) {
+  return !evaluateZeroSignalContract(row).rejected
+}
+
+function isRebuildableUniverseBackfillRow(row = {}) {
+  return !evaluateZeroSignalContract(row).rejected && isUniverseBackfillReadyRow(row)
+}
+
 function buildUniverseRowMap(rows = []) {
   const map = new Map()
   for (const row of Array.isArray(rows) ? rows : []) {
@@ -219,10 +227,12 @@ async function loadScanSource(options = {}) {
     activeUniverseRowsBeforeRepair: 0,
     activeCatalogRowsForGeneration: 0,
     scannableRowsInCatalogAtRepair: 0,
+    rebuildableUniverseRowCount: 0,
     universeRepairTriggered: false,
     staleUniverseRepairTriggered: false,
     staleUniverseRowsLoaded: 0,
     staleUniverseRowsDropped: 0,
+    emptyUniverseRepairSkippedBecauseNoRebuildableRows: false,
     activeUniverseRowsAfterRepair: 0,
     universeRowsAfterRepair: 0,
     retriedSourceLoad: false
@@ -255,6 +265,7 @@ async function loadScanSource(options = {}) {
   let universeRows = []
   let cachedActiveCatalogRowsForGeneration = null
   let cachedScannableRowsInCatalogAtRepair = null
+  let cachedRebuildableUniverseRowCount = null
   const loadActiveCatalogRowsForGeneration = async () => {
     if (cachedActiveCatalogRowsForGeneration != null) {
       diagnostics.activeCatalogRowsForGeneration = cachedActiveCatalogRowsForGeneration
@@ -296,6 +307,49 @@ async function loadScanSource(options = {}) {
     diagnostics.scannableRowsInCatalogAtRepair = cachedScannableRowsInCatalogAtRepair
     return cachedScannableRowsInCatalogAtRepair
   }
+  const loadRebuildableUniverseRowCount = async () => {
+    if (cachedRebuildableUniverseRowCount != null) {
+      diagnostics.rebuildableUniverseRowCount = cachedRebuildableUniverseRowCount
+      return cachedRebuildableUniverseRowCount
+    }
+
+    const rebuildableLimit = Math.max(
+      Math.round(Number(options.targetUniverseSize || DEFAULT_UNIVERSE_LIMIT)),
+      1
+    ) * 3
+
+    let strictEligibleRows = []
+    let candidatePoolRows = []
+    try {
+      strictEligibleRows = await marketSourceCatalogRepo.listScanEligible({
+        generationId,
+        categories,
+        limit: rebuildableLimit
+      })
+      candidatePoolRows = await marketSourceCatalogRepo.listCandidatePool({
+        generationId,
+        categories,
+        limit: rebuildableLimit,
+        candidateStatuses: ["near_eligible", "enriching", "candidate"],
+        catalogStatuses: ["scannable"]
+      })
+    } catch (_err) {
+      diagnostics.cohortQueryFailures.catalog = true
+      throw _err
+    }
+
+    const rebuildableRows = dedupeRows([
+      ...(Array.isArray(strictEligibleRows) ? strictEligibleRows : []).filter(
+        isRebuildableUniverseStrictRow
+      ),
+      ...(Array.isArray(candidatePoolRows) ? candidatePoolRows : []).filter(
+        isRebuildableUniverseBackfillRow
+      )
+    ])
+    cachedRebuildableUniverseRowCount = rebuildableRows.length
+    diagnostics.rebuildableUniverseRowCount = cachedRebuildableUniverseRowCount
+    return cachedRebuildableUniverseRowCount
+  }
   const triggerUniverseRepair = async ({
     triggerReason = "active_generation_universe_repair_triggered",
     emptyReason = "active_generation_universe_still_empty_after_repair",
@@ -321,6 +375,11 @@ async function loadScanSource(options = {}) {
         return false
       }
       await loadScannableRowsInCatalogAtRepair().catch(() => 0)
+      const rebuildableUniverseRowCount = await loadRebuildableUniverseRowCount()
+      if (rebuildableUniverseRowCount <= 0) {
+        diagnostics.emptyUniverseRepairSkippedBecauseNoRebuildableRows = true
+        return false
+      }
       diagnostics.universeRepairTriggered = true
     }
 
