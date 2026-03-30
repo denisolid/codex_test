@@ -26,7 +26,8 @@ const {
     normalizeCatalogScopeCategories,
     resolveCompatibleCatalogStatusFields,
     resolveQuoteCoverageInputs,
-    shouldBypassSkipForRecovery
+    shouldBypassSkipForRecovery,
+    shouldPreserveExistingUniverseOnEmptyRebuild
   }
 } = require("../src/services/marketSourceCatalogService")
 const {
@@ -842,4 +843,39 @@ test("skip recovery bypass triggers for collapsed legacy diagnostics", () => {
     3000
   )
   assert.equal(shouldNotBypass, false)
+})
+
+test("empty universe rebuild preserves a non-empty active universe by default", () => {
+  assert.equal(
+    shouldPreserveExistingUniverseOnEmptyRebuild(
+      [{ market_hash_name: "AK-47 | Redline (Field-Tested)" }],
+      []
+    ),
+    true
+  )
+
+  assert.equal(
+    shouldPreserveExistingUniverseOnEmptyRebuild(
+      [{ market_hash_name: "AK-47 | Redline (Field-Tested)" }],
+      [],
+      { allowEmptyUniverseReplace: true }
+    ),
+    false
+  )
+
+  assert.equal(
+    shouldPreserveExistingUniverseOnEmptyRebuild(
+      [],
+      []
+    ),
+    false
+  )
+
+  assert.equal(
+    shouldPreserveExistingUniverseOnEmptyRebuild(
+      [{ market_hash_name: "AK-47 | Redline (Field-Tested)" }],
+      [{ marketHashName: "AK-47 | Slate (Field-Tested)" }]
+    ),
+    false
+  )
 })
