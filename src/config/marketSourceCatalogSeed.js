@@ -1,3 +1,5 @@
+const referenceCatalogRules = require("./referenceCatalogRules")
+
 const WEAR_STATES = Object.freeze([
   "Factory New",
   "Minimal Wear",
@@ -119,6 +121,8 @@ const CURATED_LEGACY_CAPSULES = Object.freeze([
   "RMR 2020 Contenders Autograph Capsule"
 ])
 const CURATED_SOUVENIR_EVENTS = Object.freeze([
+  "Katowice 2019",
+  "Berlin 2019",
   "Stockholm 2021",
   "Antwerp 2022",
   "Rio 2022",
@@ -132,7 +136,8 @@ const CURATED_SOUVENIR_MAPS = Object.freeze([
   "Inferno",
   "Ancient",
   "Anubis",
-  "Overpass"
+  "Overpass",
+  "Vertigo"
 ])
 
 const CURATED_WEAPON_SKIN_BASES = Object.freeze([
@@ -483,9 +488,18 @@ const CATEGORY_ORDER = Object.freeze([
 ])
 
 const CATEGORY_SEED_TARGETS = Object.freeze({
-  weapon_skin: 4400,
-  case: 350,
-  sticker_capsule: 250
+  weapon_skin: Math.round(
+    Number(referenceCatalogRules.REFERENCE_SEED_TARGET.target || 960) *
+      Number(referenceCatalogRules.PRIMARY_CATEGORY_SHARE_RULES.weapon_skin.target || 0.8)
+  ),
+  case: Math.round(
+    Number(referenceCatalogRules.REFERENCE_SEED_TARGET.target || 960) *
+      Number(referenceCatalogRules.PRIMARY_CATEGORY_SHARE_RULES.case.target || 0.1)
+  ),
+  sticker_capsule: Math.round(
+    Number(referenceCatalogRules.REFERENCE_SEED_TARGET.target || 960) *
+      Number(referenceCatalogRules.PRIMARY_CATEGORY_SHARE_RULES.sticker_capsule.target || 0.1)
+  )
 })
 
 const CATEGORY_SEED_BASE_TOTAL = Object.values(CATEGORY_SEED_TARGETS).reduce(
@@ -699,7 +713,9 @@ function buildCategorySeedQuotas(limit = 5000) {
   return quotas
 }
 
-function buildSourceCatalogSeed(limit = 5000) {
+function buildSourceCatalogSeed(
+  limit = Number(referenceCatalogRules.REFERENCE_SEED_TARGET.target || 960)
+) {
   const targetLimit = Math.max(Math.round(Number(limit || 0)), 1)
   const byCategory = {
     weapon_skin: buildWeaponSkinRows(),
@@ -740,7 +756,9 @@ function buildSourceCatalogSeed(limit = 5000) {
   return selected
 }
 
-const defaultSeed = buildSourceCatalogSeed(5000)
+const defaultSeed = buildSourceCatalogSeed(
+  Number(referenceCatalogRules.REFERENCE_SEED_TARGET.target || 960)
+)
 
 module.exports = defaultSeed
 module.exports.buildSourceCatalogSeed = buildSourceCatalogSeed

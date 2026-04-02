@@ -5,6 +5,7 @@ const {
   arbitrageSourceCatalogRefreshMinutes,
   marketSnapshotTtlMinutes
 } = require("../config/env")
+const referenceCatalogRules = require("../config/referenceCatalogRules")
 const sourceCatalogSeed = require("../config/marketSourceCatalogSeed")
 const catalogGenerationRepo = require("../repositories/catalogGenerationRepository")
 const marketSourceCatalogRepo = require("../repositories/marketSourceCatalogRepository")
@@ -54,19 +55,51 @@ const CATALOG_CANDIDATE_STATUS_SET = new Set(
 )
 const CATALOG_MATURITY_STATE_SET = new Set(Object.values(CATALOG_MATURITY_STATE))
 
-const DEFAULT_UNIVERSE_LIMIT = 3000
-const DEFAULT_SOURCE_CATALOG_TARGET = 5000
-const DEFAULT_UNIVERSE_TARGET = Math.max(
-  Number(
-    arbitrageScannerUniverseTargetSize ||
-      arbitrageDefaultUniverseLimit ||
-      DEFAULT_UNIVERSE_LIMIT
-  ),
-  100
+const PRIMARY_GENERATION_CATEGORIES = Object.freeze(
+  Array.isArray(referenceCatalogRules?.PRIMARY_GENERATION_CATEGORIES)
+    ? referenceCatalogRules.PRIMARY_GENERATION_CATEGORIES.slice()
+    : [
+        ITEM_CATEGORIES.WEAPON_SKIN,
+        ITEM_CATEGORIES.CASE,
+        ITEM_CATEGORIES.STICKER_CAPSULE
+      ]
 )
-const SOURCE_CATALOG_LIMIT = Math.max(
-  Number(arbitrageSourceCatalogLimit || DEFAULT_SOURCE_CATALOG_TARGET),
-  DEFAULT_SOURCE_CATALOG_TARGET
+const PRIMARY_CATEGORY_SHARE_RULES =
+  referenceCatalogRules?.PRIMARY_CATEGORY_SHARE_RULES || {}
+const ACTIVE_GENERATION_TARGET_RULES =
+  referenceCatalogRules?.ACTIVE_GENERATION_TARGET || {}
+const REFERENCE_SEED_TARGET_RULES =
+  referenceCatalogRules?.REFERENCE_SEED_TARGET || {}
+const HEALTHY_OUTPUT_TARGET_RULES =
+  referenceCatalogRules?.HEALTHY_OUTPUT_TARGET || {}
+const ACTIVE_ADMISSION_RULES =
+  referenceCatalogRules?.ACTIVE_ADMISSION_RULES || {}
+const REPEATED_FAILURE_RULES =
+  referenceCatalogRules?.REPEATED_FAILURE_RULES || {}
+
+const DEFAULT_UNIVERSE_LIMIT = Number(ACTIVE_GENERATION_TARGET_RULES.target || 720)
+const DEFAULT_SOURCE_CATALOG_TARGET = Number(REFERENCE_SEED_TARGET_RULES.target || 960)
+const DEFAULT_UNIVERSE_TARGET = Math.min(
+  Number(
+    Math.max(
+      Number(
+        arbitrageScannerUniverseTargetSize ||
+          arbitrageDefaultUniverseLimit ||
+          DEFAULT_UNIVERSE_LIMIT
+      ),
+      Number(ACTIVE_GENERATION_TARGET_RULES.min || 600)
+    )
+  ),
+  Number(ACTIVE_GENERATION_TARGET_RULES.max || 900)
+)
+const SOURCE_CATALOG_LIMIT = Math.min(
+  Number(
+    Math.max(
+      Number(arbitrageSourceCatalogLimit || DEFAULT_SOURCE_CATALOG_TARGET),
+      Number(REFERENCE_SEED_TARGET_RULES.min || 900)
+    )
+  ),
+  Number(REFERENCE_SEED_TARGET_RULES.max || 1200)
 )
 const SOURCE_CATALOG_REFRESH_MS =
   Math.max(Number(arbitrageSourceCatalogRefreshMinutes || 60), 5) * 60 * 1000
@@ -175,19 +208,19 @@ const LIQUID_WEAPON_KEYWORDS = Object.freeze([
 ])
 const SOURCE_CATALOG_QUOTA_RULES = Object.freeze({
   [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({
-    min: 3900,
-    target: 4400,
-    max: 8400
+    min: 749,
+    target: 768,
+    max: 787
   }),
   [ITEM_CATEGORIES.CASE]: Object.freeze({
-    min: 260,
-    target: 350,
-    max: 1000
+    min: 96,
+    target: 96,
+    max: 134
   }),
   [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
-    min: 180,
-    target: 250,
-    max: 800
+    min: 58,
+    target: 96,
+    max: 96
   }),
   [ITEM_CATEGORIES.KNIFE]: Object.freeze({
     min: 0,
@@ -238,19 +271,19 @@ const SOURCE_CANDIDATE_HARD_FLOOR = Object.freeze({
 
 const CATEGORY_QUOTA_RULES = Object.freeze({
   [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({
-    min: 2200,
-    target: 2400,
-    max: 2800
+    min: 562,
+    target: 576,
+    max: 590
   }),
   [ITEM_CATEGORIES.CASE]: Object.freeze({
-    min: 250,
-    target: 350,
-    max: 650
+    min: 72,
+    target: 72,
+    max: 101
   }),
   [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
-    min: 180,
-    target: 250,
-    max: 450
+    min: 43,
+    target: 72,
+    max: 72
   }),
   [ITEM_CATEGORIES.KNIFE]: Object.freeze({
     min: 0,
@@ -264,7 +297,7 @@ const CATEGORY_QUOTA_RULES = Object.freeze({
   })
 })
 
-const CATEGORY_PRIORITY = SCANNER_SCOPE_CATEGORIES
+const CATEGORY_PRIORITY = PRIMARY_GENERATION_CATEGORIES
 const CATEGORY_QUOTA_BASE_TOTAL = Object.values(CATEGORY_QUOTA_RULES).reduce(
   (sum, value) => sum + Number(value?.target || 0),
   0
@@ -1662,6 +1695,405 @@ function splitRowsByZeroSignalContract(rows = []) {
   }
 }
 
+const REFERENCE_ADMISSION_BASIS = Object.freeze({
+  MARKET_SUPPORT: "usable_market_support",
+  RECENT_HISTORY: "recent_scannable_or_eligible_history",
+  PRIORITY_WATCHLIST: "priority_watchlist_with_fresh_evidence"
+})
+
+const REFERENCE_RESERVE_REASONS = Object.freeze({
+  NO_REFERENCE: "no_reference",
+  NO_COVERAGE: "no_coverage",
+  NO_FRESHNESS: "no_freshness",
+  NO_ADMISSION_BASIS: "no_admission_basis",
+  REPEATED_NO_REFERENCE: "repeated_no_reference_failure",
+  REPEATED_NO_COVERAGE: "repeated_no_coverage_failure",
+  REPEATED_NO_FRESHNESS: "repeated_no_freshness_failure",
+  CAPACITY_OVERFLOW: "capacity_overflow"
+})
+
+function buildReferenceReasonCounter(initialValue = 0) {
+  const initial = Number(initialValue || 0)
+  return Object.fromEntries(
+    Object.values(REFERENCE_RESERVE_REASONS).map((reason) => [reason, initial])
+  )
+}
+
+function buildReferenceReasonByCategoryMap(initialValue = 0) {
+  return Object.fromEntries(
+    SCANNER_SCOPE_CATEGORIES.map((category) => [category, buildReferenceReasonCounter(initialValue)])
+  )
+}
+
+function buildReferenceAdmissionCounter(initialValue = 0) {
+  const initial = Number(initialValue || 0)
+  return Object.fromEntries(
+    Object.values(REFERENCE_ADMISSION_BASIS).map((basis) => [basis, initial])
+  )
+}
+
+function buildReferenceAdmissionByCategoryMap(initialValue = 0) {
+  return Object.fromEntries(
+    SCANNER_SCOPE_CATEGORIES.map((category) => [category, buildReferenceAdmissionCounter(initialValue)])
+  )
+}
+
+function resolveHistoryAgeHours(value = null) {
+  const iso = toIsoOrNull(value)
+  if (!iso) return null
+  const ageHours = (Date.now() - new Date(iso).getTime()) / (60 * 60 * 1000)
+  if (!Number.isFinite(ageHours) || ageHours < 0) return null
+  return Number(ageHours.toFixed(2))
+}
+
+function hasRecentScannableOrEligibleHistory(row = {}) {
+  const historyMaxAgeHours = Math.max(
+    Number(ACTIVE_ADMISSION_RULES.recentHistoryMaxAgeHours || 168),
+    1
+  )
+  const lastMarketSignalAt = toIsoOrNull(row?.last_market_signal_at || row?.lastMarketSignalAt)
+  const historyAgeHours = resolveHistoryAgeHours(lastMarketSignalAt)
+  if (historyAgeHours == null || historyAgeHours > historyMaxAgeHours) {
+    return false
+  }
+  if (row?.scan_eligible == null ? Boolean(row?.scanEligible) : Boolean(row.scan_eligible)) {
+    return true
+  }
+  const candidateStatus = normalizeCandidateStatus(row?.candidate_status ?? row?.candidateStatus)
+  if (candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE) {
+    return true
+  }
+  return normalizeCatalogStatus(row?.catalog_status ?? row?.catalogStatus) === CATALOG_STATUS.SCANNABLE
+}
+
+function evaluateReferenceCatalogAdmission({
+  row = {},
+  historyRow = null,
+  freshnessState = CATALOG_FRESHNESS_STATES.MISSING
+} = {}) {
+  const referencePrice = toPositiveOrNull(row?.reference_price ?? row?.referencePrice)
+  const marketCoverageCount = Math.max(
+    Number((row?.market_coverage_count ?? row?.marketCoverageCount) || 0),
+    0
+  )
+  const usableFreshness =
+    freshnessState === CATALOG_FRESHNESS_STATES.FRESH ||
+    freshnessState === CATALOG_FRESHNESS_STATES.AGING
+  const hasReference = referencePrice != null
+  const hasCoverage = marketCoverageCount > 0
+  const failureReasons = []
+  if (ACTIVE_ADMISSION_RULES.requireReferencePrice !== false && !hasReference) {
+    failureReasons.push(REFERENCE_RESERVE_REASONS.NO_REFERENCE)
+  }
+  if (
+    ACTIVE_ADMISSION_RULES.requireCoverageCountAboveZero !== false &&
+    !hasCoverage
+  ) {
+    failureReasons.push(REFERENCE_RESERVE_REASONS.NO_COVERAGE)
+  }
+  if (ACTIVE_ADMISSION_RULES.requireUsableFreshness !== false && !usableFreshness) {
+    failureReasons.push(REFERENCE_RESERVE_REASONS.NO_FRESHNESS)
+  }
+
+  const basis = []
+  const catalogStatus = normalizeCatalogStatus(row?.catalog_status ?? row?.catalogStatus)
+  if (catalogStatus === CATALOG_STATUS.SCANNABLE && hasReference && hasCoverage && usableFreshness) {
+    basis.push(REFERENCE_ADMISSION_BASIS.MARKET_SUPPORT)
+  }
+  if (hasReference && hasCoverage && usableFreshness && hasRecentScannableOrEligibleHistory(historyRow)) {
+    basis.push(REFERENCE_ADMISSION_BASIS.RECENT_HISTORY)
+  }
+
+  const hasPriorityItem =
+    row?.is_priority_item == null ? Boolean(row?.isPriorityItem) : Boolean(row.is_priority_item)
+  const hasPriorityEvidence = Boolean(
+    toIsoOrNull(row?.snapshot_captured_at || row?.snapshotCapturedAt) ||
+      toIsoOrNull(row?.quote_fetched_at || row?.quoteFetchedAt)
+  )
+  if (
+    hasPriorityItem &&
+    hasReference &&
+    hasCoverage &&
+    hasPriorityEvidence &&
+    (!ACTIVE_ADMISSION_RULES.prioritySupportRequiresFreshEvidence ||
+      freshnessState === CATALOG_FRESHNESS_STATES.FRESH)
+  ) {
+    basis.push(REFERENCE_ADMISSION_BASIS.PRIORITY_WATCHLIST)
+  }
+
+  const hasHistoryRow = Boolean(
+    historyRow &&
+      typeof historyRow === "object" &&
+      (
+        normalizeText(historyRow?.market_hash_name || historyRow?.marketHashName) ||
+        normalizeText(historyRow?.candidate_status || historyRow?.candidateStatus) ||
+        toIsoOrNull(historyRow?.last_market_signal_at || historyRow?.lastMarketSignalAt) ||
+        toPositiveOrNull(historyRow?.reference_price ?? historyRow?.referencePrice) != null
+      )
+  )
+  const historyContract = hasHistoryRow
+    ? evaluateZeroSignalContract(historyRow || {})
+    : {
+        missingReference: false,
+        missingCoverage: false,
+        missingFreshness: false,
+        rejected: false
+      }
+  const repeatedFailureReasons = []
+  if (
+    failureReasons.includes(REFERENCE_RESERVE_REASONS.NO_REFERENCE) &&
+    historyContract.missingReference
+  ) {
+    repeatedFailureReasons.push(REFERENCE_RESERVE_REASONS.REPEATED_NO_REFERENCE)
+  }
+  if (
+    failureReasons.includes(REFERENCE_RESERVE_REASONS.NO_COVERAGE) &&
+    historyContract.missingCoverage
+  ) {
+    repeatedFailureReasons.push(REFERENCE_RESERVE_REASONS.REPEATED_NO_COVERAGE)
+  }
+  if (
+    failureReasons.includes(REFERENCE_RESERVE_REASONS.NO_FRESHNESS) &&
+    historyContract.missingFreshness
+  ) {
+    repeatedFailureReasons.push(REFERENCE_RESERVE_REASONS.REPEATED_NO_FRESHNESS)
+  }
+
+  const eligibleForActive = failureReasons.length === 0 && basis.length > 0
+  const reserveReason = eligibleForActive
+    ? null
+    : repeatedFailureReasons[0] ||
+      failureReasons[0] ||
+      REFERENCE_RESERVE_REASONS.NO_ADMISSION_BASIS
+
+  return {
+    eligibleForActive,
+    basis,
+    failureReasons,
+    repeatedFailureReasons,
+    reserveReason,
+    hasReference,
+    hasCoverage,
+    usableFreshness,
+    recentHistorySupported: basis.includes(REFERENCE_ADMISSION_BASIS.RECENT_HISTORY),
+    prioritySupported: basis.includes(REFERENCE_ADMISSION_BASIS.PRIORITY_WATCHLIST),
+    marketSupported: basis.includes(REFERENCE_ADMISSION_BASIS.MARKET_SUPPORT)
+  }
+}
+
+function computeReferenceSelectionScore(row = {}, admission = {}) {
+  const candidateStatus = normalizeCandidateStatus(row?.candidate_status ?? row?.candidateStatus)
+  const catalogStatus = normalizeCatalogStatus(row?.catalog_status ?? row?.catalogStatus)
+  const freshnessState = normalizeText(row?.freshness_state || row?.freshnessState).toLowerCase()
+  const priorityTier = normalizePriorityTier(row?.priority_tier || row?.priorityTier, null)
+  const basisScore =
+    (admission.marketSupported ? 100 : 0) +
+    (admission.recentHistorySupported ? 72 : 0) +
+    (admission.prioritySupported ? 48 : 0)
+  const candidateScore =
+    candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE
+      ? 42
+      : candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE
+        ? 24
+        : candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING
+          ? 8
+          : 2
+  const catalogScore = catalogStatus === CATALOG_STATUS.SCANNABLE ? 34 : 8
+  const freshnessScore =
+    freshnessState === CATALOG_FRESHNESS_STATES.FRESH
+      ? 18
+      : freshnessState === CATALOG_FRESHNESS_STATES.AGING
+        ? 8
+        : 0
+  const tierScore = priorityTier === "tier_a" ? 18 : priorityTier === "tier_b" ? 10 : 0
+  const liquidityRank = Math.max(
+    Number((row?.liquidity_rank ?? row?.liquidityRank) || 0),
+    0
+  )
+  const catalogQualityScore = Math.max(
+    Number((row?.catalog_quality_score ?? row?.catalogQualityScore) || 0),
+    0
+  )
+  const priorityBoost = Math.max(Number((row?.priority_boost ?? row?.priorityBoost) || 0), 0)
+  const marketCoverageCount = Math.max(
+    Number((row?.market_coverage_count ?? row?.marketCoverageCount) || 0),
+    0
+  )
+  const referencePrice = Math.max(Number((row?.reference_price ?? row?.referencePrice) || 0), 0)
+
+  return Number(
+    (
+      basisScore +
+      candidateScore +
+      catalogScore +
+      freshnessScore +
+      tierScore +
+      catalogQualityScore * 1.1 +
+      liquidityRank * 0.18 +
+      priorityBoost * 0.04 +
+      marketCoverageCount * 5 +
+      Math.min(referencePrice, 30) * 0.5
+    ).toFixed(2)
+  )
+}
+
+function selectReferenceActiveRows(rows = [], targetSize = DEFAULT_UNIVERSE_TARGET) {
+  const safeTarget = Math.max(Math.round(Number(targetSize || 0)), 1)
+  const admissionEligibleRows = dedupeByMarketHashName(
+    (Array.isArray(rows) ? rows : [])
+      .filter((row) => Boolean(row?.referenceAdmission?.eligibleForActive))
+      .sort(
+        (a, b) =>
+          Number(b.referenceSelectionScore || 0) - Number(a.referenceSelectionScore || 0) ||
+          Number(b.priority_boost || 0) - Number(a.priority_boost || 0) ||
+          Number(b.catalog_quality_score || 0) - Number(a.catalog_quality_score || 0) ||
+          Number(b.liquidity_rank || 0) - Number(a.liquidity_rank || 0)
+      )
+  )
+  const quotas = buildCategoryQuotasForCategories(safeTarget, CATEGORY_PRIORITY)
+  const { selected, leftovers, selectedByCategory } = takeTopByCategory(admissionEligibleRows, quotas)
+  const finalSelected = [...selected]
+
+  for (const row of leftovers) {
+    if (finalSelected.length >= safeTarget) break
+    finalSelected.push(row)
+    const category = normalizeCategory(row?.category, row?.market_hash_name)
+    if (isScannerScopeCategory(category)) {
+      selectedByCategory[category] = Number(selectedByCategory[category] || 0) + 1
+    }
+  }
+
+  const selectedNameSet = new Set(
+    finalSelected
+      .map((row) => normalizeText(row?.market_hash_name || row?.marketHashName))
+      .filter(Boolean)
+  )
+
+  return {
+    targetSize: safeTarget,
+    quotas,
+    selectedByCategory,
+    selectedRows: finalSelected,
+    overflowRows: admissionEligibleRows.filter((row) => {
+      const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
+      return marketHashName && !selectedNameSet.has(marketHashName)
+    })
+  }
+}
+
+function summarizeReferencePool(rows = []) {
+  const byCategory = buildEmptyCategoryCounter()
+  const summary = {
+    totalRows: 0,
+    scannable: 0,
+    shadow: 0,
+    blocked: 0,
+    candidateRows: 0,
+    enrichingRows: 0,
+    nearEligibleRows: 0,
+    eligibleRows: 0,
+    rejectedRows: 0,
+    eligibleTradableRows: 0,
+    byCategory
+  }
+
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const category = normalizeCategory(row?.category, row?.market_hash_name)
+    const candidateStatus = normalizeCandidateStatus(row?.candidate_status ?? row?.candidateStatus)
+    const catalogStatus = normalizeCatalogStatus(row?.catalog_status ?? row?.catalogStatus)
+    const scanEligible =
+      row?.scan_eligible == null ? Boolean(row?.scanEligible) : Boolean(row.scan_eligible)
+    if (!byCategory[category]) continue
+
+    summary.totalRows += 1
+    byCategory[category].total += 1
+
+    if (catalogStatus === CATALOG_STATUS.SCANNABLE) {
+      summary.scannable += 1
+      byCategory[category].scannable += 1
+    } else if (catalogStatus === CATALOG_STATUS.SHADOW) {
+      summary.shadow += 1
+      byCategory[category].shadow += 1
+    } else {
+      summary.blocked += 1
+      byCategory[category].blocked += 1
+    }
+
+    if (candidateStatus === CATALOG_CANDIDATE_STATUS.ELIGIBLE) {
+      summary.eligibleRows += 1
+      byCategory[category].eligible += 1
+      if (scanEligible && catalogStatus === CATALOG_STATUS.SCANNABLE) {
+        summary.eligibleTradableRows += 1
+      }
+    } else if (candidateStatus === CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE) {
+      summary.nearEligibleRows += 1
+      byCategory[category].nearEligible += 1
+    } else if (candidateStatus === CATALOG_CANDIDATE_STATUS.ENRICHING) {
+      summary.enrichingRows += 1
+      byCategory[category].enriching += 1
+    } else if (candidateStatus === CATALOG_CANDIDATE_STATUS.CANDIDATE) {
+      summary.candidateRows += 1
+      byCategory[category].candidate += 1
+    } else if (candidateStatus === CATALOG_CANDIDATE_STATUS.REJECTED) {
+      summary.rejectedRows += 1
+      byCategory[category].rejected += 1
+    }
+  }
+
+  return summary
+}
+
+function buildReferenceLivenessDiagnostics(activeRows = [], reserveRows = []) {
+  const activeSummary = summarizeReferencePool(activeRows)
+  const reserveSummary = summarizeReferencePool(reserveRows)
+  const activeRowsCount = Number(activeSummary.totalRows || 0)
+  const scannableRows = Number(activeSummary.scannable || 0)
+  const hotUniverseRows = Number(activeSummary.eligibleTradableRows || 0)
+  const activeTarget = ACTIVE_GENERATION_TARGET_RULES
+  const healthyTarget = HEALTHY_OUTPUT_TARGET_RULES
+
+  const activeWithinTarget =
+    activeRowsCount >= Number(activeTarget.min || 600) &&
+    activeRowsCount <= Number(activeTarget.max || 900)
+  const scannableWithinTarget =
+    scannableRows >= Number(healthyTarget?.scannable?.min || 250) &&
+    scannableRows <= Number(healthyTarget?.scannable?.max || 450)
+  const hotUniverseWithinTarget =
+    hotUniverseRows >= Number(healthyTarget?.hot_universe?.min || 120) &&
+    hotUniverseRows <= Number(healthyTarget?.hot_universe?.max || 250)
+
+  let status = "degraded"
+  if (activeRowsCount <= 0 || scannableRows <= 0) {
+    status = "dead"
+  } else if (activeWithinTarget && scannableWithinTarget && hotUniverseWithinTarget) {
+    status = "healthy"
+  } else if (
+    activeRowsCount >= Number(activeTarget.min || 600) &&
+    scannableRows >= Number(healthyTarget?.scannable?.min || 250) &&
+    hotUniverseRows >= Number(healthyTarget?.hot_universe?.min || 120)
+  ) {
+    status = "recovering"
+  }
+
+  return {
+    status,
+    activeRows: activeRowsCount,
+    reserveRows: Number(reserveSummary.totalRows || 0),
+    scannableRows,
+    hotUniverseRows,
+    targets: {
+      active_generation: activeTarget,
+      scannable: healthyTarget?.scannable || {},
+      hot_universe: healthyTarget?.hot_universe || {}
+    },
+    withinTarget: {
+      active_generation: activeWithinTarget,
+      scannable: scannableWithinTarget,
+      hot_universe: hotUniverseWithinTarget
+    }
+  }
+}
+
 function incrementPromotionReasons(counter = {}, reasons = [], category = "", byCategory = null) {
   const safeReasons = Array.isArray(reasons) ? reasons : []
   const normalizedCategory = normalizeCategory(category)
@@ -2005,6 +2437,13 @@ function buildBaseDiagnostics() {
       totalRows: 0,
       totalCatalog: 0,
       total_catalog: 0,
+      referencePolicy: {
+        seedTarget: REFERENCE_SEED_TARGET_RULES,
+        activeGenerationTarget: ACTIVE_GENERATION_TARGET_RULES,
+        categoryShareRules: PRIMARY_CATEGORY_SHARE_RULES,
+        activeAdmissionRules: ACTIVE_ADMISSION_RULES,
+        repeatedFailureRules: REPEATED_FAILURE_RULES
+      },
       seededRows: 0,
       sourceCandidateRows: 0,
       selectedSeedRowsByCategory: buildCategoryNumberMap(),
@@ -2086,6 +2525,37 @@ function buildBaseDiagnostics() {
         shadowPriorityItemsByTier: buildPriorityTierNumberMap(),
         blockedPriorityItemsByTier: buildPriorityTierNumberMap(),
         scannerSourceCountsByTier: buildPriorityTierNumberMap()
+      },
+      activeGeneration: {
+        targetRows: DEFAULT_UNIVERSE_TARGET,
+        selectedRows: 0,
+        selectedByCategory: buildCategoryNumberMap(),
+        admissionBasisCounts: buildReferenceAdmissionCounter(),
+        admissionBasisByCategory: buildReferenceAdmissionByCategoryMap()
+      },
+      reserveQueue: {
+        rows: 0,
+        byCategory: buildCategoryNumberMap(),
+        byReason: buildReferenceReasonCounter(),
+        byReasonByCategory: buildReferenceReasonByCategoryMap(),
+        overflowRows: 0
+      },
+      liveness: {
+        status: "dead",
+        activeRows: 0,
+        reserveRows: 0,
+        scannableRows: 0,
+        hotUniverseRows: 0,
+        targets: {
+          active_generation: ACTIVE_GENERATION_TARGET_RULES,
+          scannable: HEALTHY_OUTPUT_TARGET_RULES.scannable || {},
+          hot_universe: HEALTHY_OUTPUT_TARGET_RULES.hot_universe || {}
+        },
+        withinTarget: {
+          active_generation: false,
+          scannable: false,
+          hot_universe: false
+        }
       },
       fullRebuildRows: 0,
       incrementalRecomputeRows: 0,
@@ -2448,29 +2918,14 @@ async function ingestSourceCatalogSeeds(options = {}) {
   const scopedCategorySet = new Set(scopedCategories)
   const ingestExclusions = { ...BASE_INGEST_EXCLUDED_REASON_COUNTER }
   const curatedSeedRows = toSourceCatalogSeedRows(
-    resolveSeedBuilder(Math.max(SOURCE_CATALOG_LIMIT * 2, 1000)),
+    resolveSeedBuilder(SOURCE_CATALOG_LIMIT),
     "curated_seed",
     20,
     ingestExclusions
   ).filter((row) => scopedCategorySet.has(normalizeCategory(row?.category, row?.marketHashName)))
 
-  let skinIndexRows = []
-  try {
-    const allSkins = await skinRepo.listAll()
-    skinIndexRows = toSourceCatalogSeedRows(
-      allSkins.map((row) => ({
-        marketHashName: row?.market_hash_name || row?.marketHashName
-      })),
-      "skin_index_curated",
-      10,
-      ingestExclusions
-    ).filter((row) => scopedCategorySet.has(normalizeCategory(row?.category, row?.marketHashName)))
-  } catch (err) {
-    console.error("[source-catalog] Failed to read skin index for source expansion", err.message)
-  }
-
   const selection = pickSourceCatalogRowsByQuota(
-    [...curatedSeedRows, ...skinIndexRows],
+    curatedSeedRows,
     SOURCE_CATALOG_LIMIT,
     scopedCategories
   )
@@ -2486,7 +2941,7 @@ async function ingestSourceCatalogSeeds(options = {}) {
 
   return {
     seedRows: curatedSeedRows.length,
-    sourceCandidateRows: curatedSeedRows.length + skinIndexRows.length,
+    sourceCandidateRows: curatedSeedRows.length,
     seededRows,
     seededSkins: Array.isArray(skins) ? skins.length : 0,
     selectedSeedRowsByCategory: selection.selectedByCategory,
@@ -3416,6 +3871,23 @@ async function enrichSourceCatalog(options = {}) {
   }
 
   const marketNames = rows.map((row) => normalizeText(row?.market_hash_name || row?.marketHashName)).filter(Boolean)
+  const previousGenerationId = normalizeText(
+    options.previousGenerationId || options?.previousGeneration?.id
+  )
+  let historyRows = []
+  if (previousGenerationId) {
+    historyRows = await marketSourceCatalogRepo.listByMarketHashNames(marketNames, {
+      categories: scopedCategories,
+      activeOnly: false,
+      tradableOnly: false,
+      generationId: previousGenerationId
+    }).catch(() => [])
+  }
+  const historyByName = new Map(
+    (Array.isArray(historyRows) ? historyRows : [])
+      .map((row) => [normalizeText(row?.market_hash_name || row?.marketHashName), row])
+      .filter(([marketHashName]) => Boolean(marketHashName))
+  )
   const [skinsResult, quoteCoverageResult] = await Promise.allSettled([
     ensureSkinsForCatalogNames(marketNames),
     marketQuoteRepo.getLatestCoverageByItemNames(marketNames)
@@ -3471,6 +3943,7 @@ async function enrichSourceCatalog(options = {}) {
   const topRejectReasonsByCategory = buildDynamicReasonByCategoryMap()
   const weaponSkinRecoveryPaths = buildWeaponSkinRecoveryPathCounter()
   const weaponSkinQuoteDiagnostics = buildWeaponSkinQuoteDiagnostics()
+  const referenceSelectionRows = []
   const updates = []
   const nowIso = new Date().toISOString()
   let skippedUnchangedRows = 0
@@ -3888,14 +4361,96 @@ async function enrichSourceCatalog(options = {}) {
       source_tag: normalizeText(row?.source_tag || row?.sourceTag) || "curated_seed",
       is_active: row?.is_active == null ? true : Boolean(row.is_active)
     }
+    const historyRow = historyByName.get(marketHashName) || row
+    const referenceAdmission = evaluateReferenceCatalogAdmission({
+      row: nextRow,
+      historyRow,
+      freshnessState: catalogClassification.freshnessState
+    })
+    const referenceSelectionScore = computeReferenceSelectionScore(
+      {
+        ...nextRow,
+        freshness_state: catalogClassification.freshnessState
+      },
+      referenceAdmission
+    )
+    referenceSelectionRows.push({
+      ...nextRow,
+      freshnessState: catalogClassification.freshnessState,
+      referenceAdmission,
+      referenceSelectionScore
+    })
+  }
 
-    if (!hasCatalogRowChanges(row, nextRow)) {
+  const activeTargetSize = Math.max(
+    Math.round(Number(options.activeTargetSize || options.targetUniverseSize || DEFAULT_UNIVERSE_TARGET)),
+    1
+  )
+  const activeSelection = selectReferenceActiveRows(referenceSelectionRows, activeTargetSize)
+  const selectedActiveNameSet = new Set(
+    activeSelection.selectedRows
+      .map((row) => normalizeText(row?.market_hash_name || row?.marketHashName))
+      .filter(Boolean)
+  )
+  const overflowNameSet = new Set(
+    activeSelection.overflowRows
+      .map((row) => normalizeText(row?.market_hash_name || row?.marketHashName))
+      .filter(Boolean)
+  )
+  const reserveByCategory = buildCategoryNumberMap()
+  const reserveByReason = buildReferenceReasonCounter()
+  const reserveByReasonByCategory = buildReferenceReasonByCategoryMap()
+  const activeAdmissionBasisCounts = buildReferenceAdmissionCounter()
+  const activeAdmissionBasisByCategory = buildReferenceAdmissionByCategoryMap()
+  const activeRows = []
+  const reserveRows = []
+
+  for (const row of referenceSelectionRows) {
+    const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
+    if (!marketHashName) continue
+    const category = normalizeCategory(row?.category, marketHashName)
+    const isSelectedActive = selectedActiveNameSet.has(marketHashName)
+    const reserveReason = isSelectedActive
+      ? null
+      : overflowNameSet.has(marketHashName)
+        ? REFERENCE_RESERVE_REASONS.CAPACITY_OVERFLOW
+        : row?.referenceAdmission?.reserveReason || REFERENCE_RESERVE_REASONS.NO_ADMISSION_BASIS
+    const finalRow = {
+      ...row,
+      is_active: isSelectedActive,
+      last_enriched_at: nowIso
+    }
+
+    if (!hasCatalogRowChanges(historyByName.get(marketHashName) || row, finalRow)) {
       skippedUnchangedRows += 1
     }
-    updates.push({
-      ...nextRow,
-      last_enriched_at: nowIso
-    })
+    updates.push(finalRow)
+
+    if (isSelectedActive) {
+      activeRows.push(finalRow)
+      for (const basis of Array.isArray(row?.referenceAdmission?.basis)
+        ? row.referenceAdmission.basis
+        : []) {
+        if (activeAdmissionBasisCounts[basis] != null) {
+          activeAdmissionBasisCounts[basis] += 1
+        }
+        if (activeAdmissionBasisByCategory[category]?.[basis] != null) {
+          activeAdmissionBasisByCategory[category][basis] += 1
+        }
+      }
+    } else {
+      reserveRows.push({
+        ...finalRow,
+        reserveReason
+      })
+      reserveByCategory[category] = Number(reserveByCategory[category] || 0) + 1
+      if (reserveByReason[reserveReason] != null) {
+        reserveByReason[reserveReason] += 1
+      }
+      if (reserveByReasonByCategory[category]?.[reserveReason] != null) {
+        reserveByReasonByCategory[category][reserveReason] += 1
+      }
+    }
   }
 
   if (updates.length) {
@@ -3903,6 +4458,60 @@ async function enrichSourceCatalog(options = {}) {
       generationId: generationId || null
     })
   }
+
+  const activeSummary = summarizeReferencePool(activeRows)
+  const reserveSummary = summarizeReferencePool(reserveRows)
+  const activeCatalogStatusCounts = buildCatalogStatusNumberMap()
+  activeCatalogStatusCounts.scannable = Number(activeSummary.scannable || 0)
+  activeCatalogStatusCounts.shadow = Number(activeSummary.shadow || 0)
+  activeCatalogStatusCounts.blocked = Number(activeSummary.blocked || 0)
+  const activeBlockedByReason = buildCatalogReasonMap(0, CATALOG_BLOCK_REASONS)
+  const activeShadowByReason = buildCatalogReasonMap(0, CATALOG_SHADOW_REASONS)
+  for (const row of activeRows) {
+    const status = normalizeCatalogStatus(row?.catalog_status ?? row?.catalogStatus)
+    const reason = normalizeText(row?.catalog_block_reason || row?.catalogBlockReason) || null
+    if (status === CATALOG_STATUS.BLOCKED && reason && activeBlockedByReason[reason] != null) {
+      activeBlockedByReason[reason] += 1
+    }
+    if (status === CATALOG_STATUS.SHADOW && reason && activeShadowByReason[reason] != null) {
+      activeShadowByReason[reason] += 1
+    }
+  }
+  const activeEligibleRowsByCategory = buildCategoryNumberMap()
+  const activeNearEligibleRowsByCategory = buildCategoryNumberMap()
+  const activeCandidateRowsByCategory = buildCategoryNumberMap()
+  const activeEnrichingRowsByCategory = buildCategoryNumberMap()
+  for (const category of SCANNER_SCOPE_CATEGORIES) {
+    activeEligibleRowsByCategory[category] = Number(activeSummary?.byCategory?.[category]?.eligible || 0)
+    activeNearEligibleRowsByCategory[category] = Number(
+      activeSummary?.byCategory?.[category]?.nearEligible || 0
+    )
+    activeCandidateRowsByCategory[category] = Number(activeSummary?.byCategory?.[category]?.candidate || 0)
+    activeEnrichingRowsByCategory[category] = Number(
+      activeSummary?.byCategory?.[category]?.enriching || 0
+    )
+  }
+  const activeCandidateFunnel = buildStatusNumberMap()
+  activeCandidateFunnel[CATALOG_CANDIDATE_STATUS.ELIGIBLE] = Number(activeSummary.eligibleRows || 0)
+  activeCandidateFunnel[CATALOG_CANDIDATE_STATUS.NEAR_ELIGIBLE] = Number(
+    activeSummary.nearEligibleRows || 0
+  )
+  activeCandidateFunnel[CATALOG_CANDIDATE_STATUS.ENRICHING] = Number(activeSummary.enrichingRows || 0)
+  activeCandidateFunnel[CATALOG_CANDIDATE_STATUS.CANDIDATE] = Number(activeSummary.candidateRows || 0)
+  activeCandidateFunnel[CATALOG_CANDIDATE_STATUS.REJECTED] = Number(activeSummary.rejectedRows || 0)
+  counts.activeCatalogRows = Number(activeSummary.totalRows || 0)
+  counts.activeTradable = Number(activeSummary.totalRows || 0)
+  counts.scannable = Number(activeSummary.scannable || 0)
+  counts.shadow = Number(activeSummary.shadow || 0)
+  counts.blocked = Number(activeSummary.blocked || 0)
+  counts.scannerSourceSize = Number(activeSummary.scannable || 0)
+  counts.candidateRows = Number(activeSummary.candidateRows || 0)
+  counts.enrichingRows = Number(activeSummary.enrichingRows || 0)
+  counts.nearEligibleRows = Number(activeSummary.nearEligibleRows || 0)
+  counts.eligibleRows = Number(activeSummary.eligibleRows || 0)
+  counts.rejectedRows = Number(activeSummary.rejectedRows || 0)
+  counts.eligibleTradableRows = Number(activeSummary.eligibleTradableRows || 0)
+  const liveness = buildReferenceLivenessDiagnostics(activeRows, reserveRows)
 
   const excludedRowsByReason = {
     excludedLowValueItems: Number(counts.excludedLowValueItems || 0),
@@ -3914,16 +4523,16 @@ async function enrichSourceCatalog(options = {}) {
 
   return {
     ...counts,
-    catalogStatusCounts,
-    blockedByReason,
-    shadowByReason,
+    catalogStatusCounts: activeCatalogStatusCounts,
+    blockedByReason: activeBlockedByReason,
+    shadowByReason: activeShadowByReason,
     total_catalog: Number(counts.totalCatalog || counts.totalRows || 0),
     active_tradable: Number(counts.activeTradable || counts.tradableRows || 0),
-    blocked_by_reason: blockedByReason,
-    shadow_by_reason: shadowByReason,
+    blocked_by_reason: activeBlockedByReason,
+    shadow_by_reason: activeShadowByReason,
     scanner_source_size: Number(counts.scannerSourceSize || counts.scannable || 0),
     excludedRowsByReason,
-    candidateFunnel,
+    candidateFunnel: activeCandidateFunnel,
     maturityFunnel,
     maturityFunnelByCategory,
     promotedToNearEligibleByCategory,
@@ -3937,25 +4546,41 @@ async function enrichSourceCatalog(options = {}) {
     enrichingFreshnessByStateByCategory,
     nearEligibleFreshnessByState,
     nearEligibleFreshnessByStateByCategory,
-    candidateFunnelByCategory: byCategory,
-    byCategory,
+    candidateFunnelByCategory: activeSummary.byCategory,
+    byCategory: activeSummary.byCategory,
     hardRejectToPenaltyConversionsByCategory,
     hard_reject_to_penalty_conversions_by_category: hardRejectToPenaltyConversionsByCategory,
-    nearEligibleByCategory: nearEligibleRowsByCategory,
-    near_eligible_by_category: nearEligibleRowsByCategory,
-    eligibleByCategory: eligibleRowsByCategory,
-    eligible_by_category: eligibleRowsByCategory,
+    nearEligibleByCategory: activeNearEligibleRowsByCategory,
+    near_eligible_by_category: activeNearEligibleRowsByCategory,
+    eligibleByCategory: activeEligibleRowsByCategory,
+    eligible_by_category: activeEligibleRowsByCategory,
     topRejectReasonsByCategory,
     top_reject_reasons_by_category: topRejectReasonsByCategory,
     weaponSkinRecoveryPaths,
     weapon_skin_recovery_paths: weaponSkinRecoveryPaths,
     weaponSkinQuoteDiagnostics,
     weapon_skin_quote_diagnostics: weaponSkinQuoteDiagnostics,
-    eligibleRowsByCategory,
-    nearEligibleRowsByCategory,
-    candidateRowsByCategory,
-    enrichingRowsByCategory,
+    eligibleRowsByCategory: activeEligibleRowsByCategory,
+    nearEligibleRowsByCategory: activeNearEligibleRowsByCategory,
+    candidateRowsByCategory: activeCandidateRowsByCategory,
+    enrichingRowsByCategory: activeEnrichingRowsByCategory,
     processedMarketHashNames: marketNames,
+    activeGeneration: {
+      targetRows: activeTargetSize,
+      selectedRows: activeRows.length,
+      selectedByCategory: activeSelection.selectedByCategory,
+      quotas: activeSelection.quotas,
+      admissionBasisCounts: activeAdmissionBasisCounts,
+      admissionBasisByCategory: activeAdmissionBasisByCategory
+    },
+    reserveQueue: {
+      rows: reserveRows.length,
+      byCategory: reserveByCategory,
+      byReason: reserveByReason,
+      byReasonByCategory: reserveByReasonByCategory,
+      overflowRows: Number(reserveByReason[REFERENCE_RESERVE_REASONS.CAPACITY_OVERFLOW] || 0)
+    },
+    liveness,
     priorityCoverage: {
       totalPriorityItemsConfigured: Number(priorityCoverage?.totalPriorityItemsConfigured || 0),
       matchedExistingCatalogItems: Number(priorityCoverage?.matchedExistingCatalogItems || 0),
@@ -4457,8 +5082,7 @@ async function runPipeline(options = {}) {
   })
   const priorityCoverage = await catalogPriorityCoverageService
     .syncPriorityCoverageSet({
-      allowCatalogInsert:
-        options.allowCatalogInsert == null ? fullScope : Boolean(options.allowCatalogInsert)
+      allowCatalogInsert: false
     })
     .catch((err) => ({
       setName: null,
@@ -4478,7 +5102,11 @@ async function runPipeline(options = {}) {
     priorityCoverage,
     categories: scopedCategories,
     catalogGeneration,
-    generationId: catalogGeneration?.id || null
+    generationId: catalogGeneration?.id || null,
+    previousGenerationId:
+      normalizeText(options.previousGenerationId || options?.previousGeneration?.id) || null,
+    previousGeneration: options.previousGeneration || null,
+    activeTargetSize: targetUniverseSize
   })
   const universeBuild = await rebuildUniverseFromCatalog(targetUniverseSize, {
     categories: scopedCategories,
@@ -4943,6 +5571,9 @@ module.exports = {
     isFullCatalogScope,
     shouldPreserveExistingUniverseOnEmptyRebuild,
     evaluateZeroSignalContract,
-    splitRowsByZeroSignalContract
+    splitRowsByZeroSignalContract,
+    evaluateReferenceCatalogAdmission,
+    selectReferenceActiveRows,
+    buildReferenceLivenessDiagnostics
   }
 }

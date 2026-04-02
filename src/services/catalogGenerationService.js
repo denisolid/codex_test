@@ -1,4 +1,5 @@
 const AppError = require("../utils/AppError")
+const referenceCatalogRules = require("../config/referenceCatalogRules")
 const catalogGenerationRepo = require("../repositories/catalogGenerationRepository")
 const marketSourceCatalogRepo = require("../repositories/marketSourceCatalogRepository")
 const marketUniverseRepo = require("../repositories/marketUniverseRepository")
@@ -9,13 +10,15 @@ const {
   SCAN_COHORT_CATEGORIES
 } = require("./scanner/config")
 
-const CATALOG_SCOPE_CATEGORIES = Object.freeze([
-  "weapon_skin",
-  "case",
-  "sticker_capsule",
-  "knife",
-  "glove"
-])
+const CATALOG_SCOPE_CATEGORIES = Object.freeze(
+  Array.isArray(referenceCatalogRules?.PRIMARY_GENERATION_CATEGORIES)
+    ? referenceCatalogRules.PRIMARY_GENERATION_CATEGORIES.slice()
+    : ["weapon_skin", "case", "sticker_capsule"]
+)
+const ACTIVE_GENERATION_TARGET_RULES =
+  referenceCatalogRules?.ACTIVE_GENERATION_TARGET || {}
+const HEALTHY_OUTPUT_TARGET_RULES =
+  referenceCatalogRules?.HEALTHY_OUTPUT_TARGET || {}
 const CANDIDATE_STATUS_SET = new Set([
   "candidate",
   "enriching",
@@ -255,11 +258,66 @@ function summarizeUniverseRows(rows = [], generation = null, options = {}) {
   }
 }
 
+function buildCatalogLivenessSummary(summary = {}, options = {}) {
+  const activeGenerationTargets =
+    options?.activeGenerationTargets && typeof options.activeGenerationTargets === "object"
+      ? options.activeGenerationTargets
+      : ACTIVE_GENERATION_TARGET_RULES
+  const healthyOutputTargets =
+    options?.healthyOutputTargets && typeof options.healthyOutputTargets === "object"
+      ? options.healthyOutputTargets
+      : HEALTHY_OUTPUT_TARGET_RULES
+
+  const activeRows = Number(summary?.totalRows || 0)
+  const scannableRows = Number(summary?.scannerSourceSize || 0)
+  const hotUniverseRows = Number(summary?.eligibleTradableRows || 0)
+  const withinTarget = {
+    active_generation:
+      activeRows >= Number(activeGenerationTargets?.min || 600) &&
+      activeRows <= Number(activeGenerationTargets?.max || 900),
+    scannable:
+      scannableRows >= Number(healthyOutputTargets?.scannable?.min || 250) &&
+      scannableRows <= Number(healthyOutputTargets?.scannable?.max || 450),
+    hot_universe:
+      hotUniverseRows >= Number(healthyOutputTargets?.hot_universe?.min || 120) &&
+      hotUniverseRows <= Number(healthyOutputTargets?.hot_universe?.max || 250)
+  }
+
+  let status = "degraded"
+  if (activeRows <= 0 || scannableRows <= 0) {
+    status = "dead"
+  } else if (Object.values(withinTarget).every(Boolean)) {
+    status = "healthy"
+  } else if (
+    activeRows >= Number(activeGenerationTargets?.min || 600) &&
+    scannableRows >= Number(healthyOutputTargets?.scannable?.min || 250) &&
+    hotUniverseRows >= Number(healthyOutputTargets?.hot_universe?.min || 120)
+  ) {
+    status = "recovering"
+  }
+
+  return {
+    status,
+    actuals: {
+      activeRows,
+      scannableRows,
+      hotUniverseRows
+    },
+    targets: {
+      active_generation: activeGenerationTargets,
+      scannable: healthyOutputTargets?.scannable || {},
+      hot_universe: healthyOutputTargets?.hot_universe || {}
+    },
+    withinTarget
+  }
+}
+
 function buildReadinessSummary(summary = {}, options = {}) {
   const universeSummary =
     options?.universeSummary && typeof options.universeSummary === "object"
       ? options.universeSummary
       : {}
+  const liveness = buildCatalogLivenessSummary(summary, options)
   const enforceWeaponSkinReadiness = normalizeBoolean(
     options.enforceWeaponSkinReadiness,
     false
@@ -268,7 +326,7 @@ function buildReadinessSummary(summary = {}, options = {}) {
     minScannerSourceSize: Math.max(
       normalizeInteger(
         options.minScannerSourceSize,
-        1,
+        Number(HEALTHY_OUTPUT_TARGET_RULES?.scannable?.min || 250),
         1
       ),
       1
@@ -276,7 +334,7 @@ function buildReadinessSummary(summary = {}, options = {}) {
     minEligibleRows: Math.max(
       normalizeInteger(
         options.minEligibleRows ?? options.minEligibleTradableRows,
-        1,
+        Number(HEALTHY_OUTPUT_TARGET_RULES?.hot_universe?.min || 120),
         1
       ),
       1
@@ -292,13 +350,17 @@ function buildReadinessSummary(summary = {}, options = {}) {
     minReadyCategories: Math.max(
       normalizeInteger(
         options.minReadyCategories,
-        1,
+        2,
         1
       ),
       1
     ),
     minActiveUniverseRows: Math.max(
-      normalizeInteger(options.minActiveUniverseRows, 1, 1),
+      normalizeInteger(
+        options.minActiveUniverseRows,
+        Number(ACTIVE_GENERATION_TARGET_RULES?.min || 600),
+        1
+      ),
       1
     ),
     minWeaponSkinEligibleRows: Math.max(
@@ -378,6 +440,7 @@ function buildReadinessSummary(summary = {}, options = {}) {
   return {
     thresholds,
     actuals,
+    liveness,
     signals,
     readinessSource,
     weaponSkinReadinessSource,
@@ -754,7 +817,8 @@ async function runCatalogGenerationReset(options = {}) {
       targetUniverseSize,
       categories,
       catalogGeneration: stagedGeneration,
-      generationId: stagedGeneration.id
+      generationId: stagedGeneration.id,
+      previousGeneration
     })
     const nextSummary = await summarizeGeneration(stagedGeneration.id, { categories })
     const nextUniverseSummary = await summarizeUniverseGeneration(stagedGeneration.id, {
@@ -857,6 +921,7 @@ module.exports = {
     summarizeCoverageRows,
     summarizeUniverseRows,
     buildReadinessSummary,
+    buildCatalogLivenessSummary,
     compareGenerationSummaries,
     compareUniverseSummaries,
     buildCategoryFocusComparison,

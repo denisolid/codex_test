@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const path = require("node:path");
 
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || "https://example.supabase.co";
 process.env.SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "anon";
@@ -22,6 +23,66 @@ const {
 const {
   __testables: { normalizeItemsPayload }
 } = require("../src/markets/skinport.market");
+
+const csfloatMarketPath = path.resolve(__dirname, "../src/markets/csfloat.market.js");
+const marketHttpPath = path.resolve(__dirname, "../src/markets/marketHttp.js");
+const envPath = path.resolve(__dirname, "../src/config/env.js");
+
+function unloadModule(modulePath) {
+  delete require.cache[modulePath];
+}
+
+function stubModule(modulePath, exportsValue) {
+  require.cache[modulePath] = {
+    id: modulePath,
+    filename: modulePath,
+    loaded: true,
+    exports: exportsValue
+  };
+}
+
+function loadCsfloatMarketWithStubs({ apiKey = "", responses = [] } = {}) {
+  unloadModule(csfloatMarketPath);
+  unloadModule(marketHttpPath);
+  unloadModule(envPath);
+
+  const calls = [];
+  let responseIndex = 0;
+
+  stubModule(envPath, {
+    csfloatApiUrl: "https://csfloat.com/api/v1",
+    csfloatApiKey: apiKey
+  });
+  stubModule(marketHttpPath, {
+    fetchJsonWithRetry: async (_url, options = {}) => {
+      calls.push(options.headers || {});
+      const nextResponse =
+        responses[responseIndex] || responses[Math.max(responses.length - 1, 0)] || {};
+      responseIndex += 1;
+      if (nextResponse.error) {
+        throw nextResponse.error;
+      }
+      return nextResponse.payload;
+    },
+    mapWithConcurrency: async (items, mapper) => {
+      const rows = [];
+      for (const item of Array.isArray(items) ? items : []) {
+        rows.push(await mapper(item));
+      }
+      return rows;
+    }
+  });
+
+  return {
+    market: require(csfloatMarketPath),
+    calls,
+    cleanup() {
+      unloadModule(csfloatMarketPath);
+      unloadModule(marketHttpPath);
+      unloadModule(envPath);
+    }
+  };
+}
 
 test("csfloat listing extractor uses direct listing URL when provided", () => {
   const payload = {
@@ -53,6 +114,79 @@ test("csfloat listing extractor falls back to id-based listing URL", () => {
   const row = extractBestListing(payload, "Fracture Case");
   assert.ok(row);
   assert.equal(row.url, "https://csfloat.com/item/99887766");
+});
+
+test("csfloat public listing lookup succeeds without an API key", async () => {
+  const { market, calls, cleanup } = loadCsfloatMarketWithStubs({
+    apiKey: "",
+    responses: [
+      {
+        payload: [
+          {
+            price: "1450",
+            currency: "USD",
+            id: "99887766"
+          }
+        ]
+      }
+    ]
+  });
+
+  try {
+    const result = await market.searchItemPrice({
+      marketHashName: "Fracture Case"
+    });
+
+    assert.equal(result.state, "ok");
+    assert.equal(result.price.grossPrice, 14.5);
+    assert.equal(result.price.url, "https://csfloat.com/item/99887766");
+    assert.equal(result.diagnostics.api_key_present, false);
+    assert.equal(result.diagnostics.auth_header_sent, false);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].Authorization, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+test("csfloat listing lookup retries without auth after a rejected API key", async () => {
+  const { market, calls, cleanup } = loadCsfloatMarketWithStubs({
+    apiKey: "badkey",
+    responses: [
+      {
+        error: {
+          upstreamStatus: 401,
+          status: 401
+        }
+      },
+      {
+        payload: [
+          {
+            price: "981",
+            currency: "USD",
+            id: "11223344"
+          }
+        ]
+      }
+    ]
+  });
+
+  try {
+    const result = await market.searchItemPrice({
+      marketHashName: "Fracture Case"
+    });
+
+    assert.equal(result.state, "ok");
+    assert.equal(result.price.grossPrice, 9.81);
+    assert.equal(result.price.url, "https://csfloat.com/item/11223344");
+    assert.equal(result.diagnostics.api_key_present, true);
+    assert.equal(result.diagnostics.auth_header_sent, false);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].Authorization, "badkey");
+    assert.equal(calls[1].Authorization, undefined);
+  } finally {
+    cleanup();
+  }
 });
 
 test("csfloat fetch error mapper returns actionable reason for auth failures", () => {

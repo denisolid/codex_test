@@ -13,7 +13,12 @@ const marketSourceCatalogService = require("../src/services/marketSourceCatalogS
 const catalogGenerationService = require("../src/services/catalogGenerationService")
 
 const {
-  __testables: { summarizeCoverageRows, buildReadinessSummary, buildCategoryFocusComparison }
+  __testables: {
+    summarizeCoverageRows,
+    buildReadinessSummary,
+    buildCategoryFocusComparison,
+    buildCatalogLivenessSummary
+  }
 } = catalogGenerationService
 
 function buildCoverageRows({
@@ -141,7 +146,12 @@ test("buildReadinessSummary unlocks scan on positive mature-pool counts while ke
   const readiness = buildReadinessSummary(summary, {
     universeSummary: {
       totalRows: 12
-    }
+    },
+    minScannerSourceSize: 1,
+    minEligibleRows: 1,
+    minNearEligibleRows: 1,
+    minReadyCategories: 1,
+    minActiveUniverseRows: 1
   })
 
   assert.equal(readiness.signals.scannerSourceNonZero, true)
@@ -430,7 +440,8 @@ test("runCatalogGenerationReset archives the previous generation and enables sca
       minScannerSourceSize: 120,
       minEligibleTradableRows: 80,
       minNearEligibleRows: 20,
-      minReadyCategories: 2
+      minReadyCategories: 2,
+      minActiveUniverseRows: 100
     })
 
     assert.equal(result.previousGeneration.id, "generation-old")
@@ -468,4 +479,21 @@ test("runCatalogGenerationReset archives the previous generation and enables sca
     marketUniverseRepo.listActiveByLiquidityRank = originals.listActiveByLiquidityRank
     marketSourceCatalogService.prepareSourceCatalog = originals.prepareSourceCatalog
   }
+})
+
+test("buildCatalogLivenessSummary reflects healthy reference-sized output", () => {
+  const summary = summarizeCoverageRows([
+    ...buildCoverageRows({ category: "weapon_skin", count: 150, candidateStatus: "eligible" }),
+    ...buildCoverageRows({ category: "weapon_skin", count: 80, candidateStatus: "near_eligible", scanEligible: false }),
+    ...buildCoverageRows({ category: "case", count: 30, candidateStatus: "eligible" }),
+    ...buildCoverageRows({ category: "sticker_capsule", count: 25, candidateStatus: "eligible" }),
+    ...buildCoverageRows({ category: "weapon_skin", count: 435, candidateStatus: "candidate", catalogStatus: "shadow", scanEligible: false })
+  ])
+
+  const liveness = buildCatalogLivenessSummary(summary)
+
+  assert.equal(liveness.status, "healthy")
+  assert.equal(liveness.withinTarget.active_generation, true)
+  assert.equal(liveness.withinTarget.scannable, true)
+  assert.equal(liveness.withinTarget.hot_universe, true)
 })

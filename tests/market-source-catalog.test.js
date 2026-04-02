@@ -27,6 +27,9 @@ const {
     evaluateZeroSignalContract,
     resolveCompatibleCatalogStatusFields,
     resolveQuoteCoverageInputs,
+    evaluateReferenceCatalogAdmission,
+    selectReferenceActiveRows,
+    buildReferenceLivenessDiagnostics,
     shouldBypassSkipForRecovery,
     shouldPreserveExistingUniverseOnEmptyRebuild,
     splitRowsByZeroSignalContract
@@ -36,10 +39,33 @@ const {
   __testables: { resolveConservativeMedian, buildCoverageByItem }
 } = require("../src/repositories/marketQuoteRepository")
 
+function buildReferenceRow(name, category = "weapon_skin", overrides = {}) {
+  return {
+    market_hash_name: name,
+    item_name: name,
+    category,
+    tradable: true,
+    scan_eligible: false,
+    candidate_status: "near_eligible",
+    catalog_status: "shadow",
+    reference_price: 12.5,
+    market_coverage_count: 1,
+    liquidity_rank: 58,
+    volume_7d: 64,
+    priority_tier: null,
+    priority_boost: 0,
+    is_priority_item: false,
+    snapshot_captured_at: new Date().toISOString(),
+    quote_fetched_at: new Date().toISOString(),
+    last_market_signal_at: new Date().toISOString(),
+    ...overrides
+  }
+}
+
 test("source catalog seed expands with scanner-scope categories only", () => {
   assert.equal(Array.isArray(sourceSeed), true)
-  assert.equal(sourceSeed.length >= 2000, true)
-  assert.equal(sourceSeed.length <= 5000, true)
+  assert.equal(sourceSeed.length >= 900, true)
+  assert.equal(sourceSeed.length <= 1200, true)
 
   const categories = new Set(sourceSeed.map((row) => String(row?.category || "").trim()))
   assert.equal(categories.has("weapon_skin"), true)
@@ -65,32 +91,32 @@ test("source catalog seed includes curated cases/capsules and liquid skin varian
   assert.equal(names.has("Souvenir AK-47 | Redline (Field-Tested)"), true)
 })
 
-test("source catalog category quotas preserve 3k distribution", () => {
-  const quotas = buildCategoryQuotas(3000)
+test("source catalog category quotas preserve the 720-row active reference mix", () => {
+  const quotas = buildCategoryQuotas(720)
   const total = Object.values(quotas).reduce((sum, value) => sum + Number(value || 0), 0)
-  assert.equal(total, 3000)
-  assert.equal(Number(quotas.weapon_skin || 0), 2400)
-  assert.equal(Number(quotas.case || 0), 350)
-  assert.equal(Number(quotas.sticker_capsule || 0), 250)
+  assert.equal(total, 720)
+  assert.equal(Number(quotas.weapon_skin || 0), 576)
+  assert.equal(Number(quotas.case || 0), 72)
+  assert.equal(Number(quotas.sticker_capsule || 0), 72)
 
-  const scaled = buildCategoryQuotas(1000)
-  assert.equal(Number(scaled.weapon_skin || 0), 800)
-  assert.equal(Number(scaled.case || 0), 117)
-  assert.equal(Number(scaled.sticker_capsule || 0), 83)
+  const scaled = buildCategoryQuotas(600)
+  assert.equal(Number(scaled.weapon_skin || 0), 480)
+  assert.equal(Number(scaled.case || 0), 60)
+  assert.equal(Number(scaled.sticker_capsule || 0), 60)
 })
 
-test("source catalog quotas preserve 5k composition with category-aware scaling", () => {
-  const quotas = buildSourceCatalogQuotas(5000)
+test("source catalog quotas preserve the 960-row reference seed composition with category-aware scaling", () => {
+  const quotas = buildSourceCatalogQuotas(960)
   const total = Object.values(quotas).reduce((sum, value) => sum + Number(value || 0), 0)
-  assert.equal(total, 5000)
-  assert.equal(Number(quotas.weapon_skin || 0), 4400)
-  assert.equal(Number(quotas.case || 0), 350)
-  assert.equal(Number(quotas.sticker_capsule || 0), 250)
+  assert.equal(total, 960)
+  assert.equal(Number(quotas.weapon_skin || 0), 768)
+  assert.equal(Number(quotas.case || 0), 96)
+  assert.equal(Number(quotas.sticker_capsule || 0), 96)
 
-  const scaled = buildSourceCatalogQuotas(3000)
-  assert.equal(Number(scaled.weapon_skin || 0), 2640)
-  assert.equal(Number(scaled.case || 0), 210)
-  assert.equal(Number(scaled.sticker_capsule || 0), 150)
+  const scaled = buildSourceCatalogQuotas(900)
+  assert.equal(Number(scaled.weapon_skin || 0), 720)
+  assert.equal(Number(scaled.case || 0), 90)
+  assert.equal(Number(scaled.sticker_capsule || 0), 90)
 })
 
 test("scoped catalog quotas zero blocked categories and reallocate healthy categories safely", () => {
@@ -852,6 +878,214 @@ test("zero-signal contract split excludes only rows that fully fail the shared s
   assert.equal(split.diagnostics.rowsExcludedFromUniverseByMissingReference, 1)
   assert.equal(split.diagnostics.rowsExcludedFromUniverseByMissingCoverage, 1)
   assert.equal(split.diagnostics.rowsExcludedFromUniverseByMissingFreshness, 1)
+})
+
+test("reference admission favors usable market support, recent history, and priority freshness while reserving repeated failures", () => {
+  const marketSupported = evaluateReferenceCatalogAdmission({
+    row: buildReferenceRow("AK-47 | Slate (Field-Tested)", "weapon_skin", {
+      catalog_status: "scannable",
+      market_coverage_count: 2,
+      is_priority_item: false
+    }),
+    freshnessState: "fresh"
+  })
+  assert.equal(marketSupported.eligibleForActive, true)
+  assert.equal(marketSupported.basis.includes("usable_market_support"), true)
+
+  const historySupported = evaluateReferenceCatalogAdmission({
+    row: buildReferenceRow("AK-47 | Redline (Field-Tested)", "weapon_skin", {
+      catalog_status: "shadow",
+      market_coverage_count: 1
+    }),
+    historyRow: buildReferenceRow("AK-47 | Redline (Field-Tested)", "weapon_skin", {
+      catalog_status: "scannable",
+      scan_eligible: true,
+      candidate_status: "eligible"
+    }),
+    freshnessState: "aging"
+  })
+  assert.equal(historySupported.eligibleForActive, true)
+  assert.equal(
+    historySupported.basis.includes("recent_scannable_or_eligible_history"),
+    true
+  )
+
+  const prioritySupported = evaluateReferenceCatalogAdmission({
+    row: buildReferenceRow("AWP | Gungnir (Field-Tested)", "weapon_skin", {
+      is_priority_item: true,
+      priority_tier: "tier_a",
+      catalog_status: "shadow",
+      market_coverage_count: 1
+    }),
+    freshnessState: "fresh"
+  })
+  assert.equal(prioritySupported.eligibleForActive, true)
+  assert.equal(
+    prioritySupported.basis.includes("priority_watchlist_with_fresh_evidence"),
+    true
+  )
+
+  const repeatedFailure = evaluateReferenceCatalogAdmission({
+    row: buildReferenceRow("Broken Reference | Test", "weapon_skin", {
+      reference_price: null,
+      market_coverage_count: 0,
+      snapshot_captured_at: null,
+      quote_fetched_at: null,
+      last_market_signal_at: null
+    }),
+    historyRow: buildReferenceRow("Broken Reference | Test", "weapon_skin", {
+      reference_price: null,
+      market_coverage_count: 0,
+      snapshot_captured_at: null,
+      quote_fetched_at: null,
+      last_market_signal_at: null
+    }),
+    freshnessState: "missing"
+  })
+  assert.equal(repeatedFailure.eligibleForActive, false)
+  assert.equal(repeatedFailure.reserveReason, "repeated_no_reference_failure")
+})
+
+test("reference active selection caps the active generation and spills excess rows into reserve overflow", () => {
+  const rows = Array.from({ length: 8 }, (_, index) => ({
+    ...buildReferenceRow(`weapon-${index + 1}`, "weapon_skin", {
+      catalog_status: "scannable",
+      market_coverage_count: 2,
+      candidate_status: "eligible",
+      scan_eligible: true,
+      reference_price: 10 + index,
+      liquidity_rank: 80 - index
+    }),
+    referenceAdmission: {
+      eligibleForActive: true,
+      basis: ["usable_market_support"],
+      marketSupported: true,
+      recentHistorySupported: false,
+      prioritySupported: false
+    },
+    referenceSelectionScore: 100 - index
+  })).concat([
+    {
+      ...buildReferenceRow("case-1", "case", {
+        catalog_status: "scannable",
+        market_coverage_count: 2,
+        candidate_status: "eligible",
+        scan_eligible: true
+      }),
+      referenceAdmission: {
+        eligibleForActive: true,
+        basis: ["usable_market_support"],
+        marketSupported: true,
+        recentHistorySupported: false,
+        prioritySupported: false
+      },
+      referenceSelectionScore: 91
+    },
+    {
+      ...buildReferenceRow("capsule-1", "sticker_capsule", {
+        catalog_status: "scannable",
+        market_coverage_count: 2,
+        candidate_status: "eligible",
+        scan_eligible: true
+      }),
+      referenceAdmission: {
+        eligibleForActive: true,
+        basis: ["usable_market_support"],
+        marketSupported: true,
+        recentHistorySupported: false,
+        prioritySupported: false
+      },
+      referenceSelectionScore: 90
+    },
+    {
+      ...buildReferenceRow("case-2", "case", {
+        catalog_status: "scannable",
+        market_coverage_count: 2,
+        candidate_status: "eligible",
+        scan_eligible: true
+      }),
+      referenceAdmission: {
+        eligibleForActive: true,
+        basis: ["usable_market_support"],
+        marketSupported: true,
+        recentHistorySupported: false,
+        prioritySupported: false
+      },
+      referenceSelectionScore: 89
+    }
+  ])
+
+  const result = selectReferenceActiveRows(rows, 10)
+  assert.equal(result.selectedRows.length, 10)
+  assert.equal(result.overflowRows.length, 1)
+  assert.equal(
+    new Set(result.selectedRows.map((row) => row.category)).has("case"),
+    true
+  )
+  assert.equal(
+    new Set(result.selectedRows.map((row) => row.category)).has("sticker_capsule"),
+    true
+  )
+})
+
+test("reference liveness diagnostics recognize healthy output bands", () => {
+  const activeRows = [
+    ...Array.from({ length: 150 }, (_, index) =>
+      buildReferenceRow(`eligible-skin-${index + 1}`, "weapon_skin", {
+        catalog_status: "scannable",
+        candidate_status: "eligible",
+        scan_eligible: true,
+        market_coverage_count: 2
+      })
+    ),
+    ...Array.from({ length: 120 }, (_, index) =>
+      buildReferenceRow(`near-skin-${index + 1}`, "weapon_skin", {
+        catalog_status: "scannable",
+        candidate_status: "near_eligible",
+        scan_eligible: false,
+        market_coverage_count: 2
+      })
+    ),
+    ...Array.from({ length: 40 }, (_, index) =>
+      buildReferenceRow(`case-${index + 1}`, "case", {
+        catalog_status: "scannable",
+        candidate_status: "eligible",
+        scan_eligible: true,
+        market_coverage_count: 2
+      })
+    ),
+    ...Array.from({ length: 30 }, (_, index) =>
+      buildReferenceRow(`capsule-${index + 1}`, "sticker_capsule", {
+        catalog_status: "scannable",
+        candidate_status: "eligible",
+        scan_eligible: true,
+        market_coverage_count: 2
+      })
+    ),
+    ...Array.from({ length: 310 }, (_, index) =>
+      buildReferenceRow(`shadow-${index + 1}`, "weapon_skin", {
+        catalog_status: "shadow",
+        candidate_status: "candidate",
+        scan_eligible: false,
+        market_coverage_count: 1
+      })
+    )
+  ]
+  const reserveRows = Array.from({ length: 240 }, (_, index) =>
+    buildReferenceRow(`reserve-${index + 1}`, "weapon_skin", {
+      reference_price: null,
+      market_coverage_count: 0,
+      snapshot_captured_at: null,
+      quote_fetched_at: null,
+      last_market_signal_at: null
+    })
+  )
+
+  const result = buildReferenceLivenessDiagnostics(activeRows, reserveRows)
+  assert.equal(result.status, "healthy")
+  assert.equal(result.withinTarget.active_generation, true)
+  assert.equal(result.withinTarget.scannable, true)
+  assert.equal(result.withinTarget.hot_universe, true)
 })
 
 test("skip recovery bypass triggers for collapsed legacy diagnostics", () => {
