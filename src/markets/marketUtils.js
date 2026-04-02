@@ -109,13 +109,16 @@ function buildMarketPriceRecord({
 }) {
   const safeSource = String(source || "").trim().toLowerCase();
   const safeGross = normalizePriceNumber(grossPrice);
-  if (!safeSource || safeGross == null) {
+  if (!safeSource || safeGross == null || safeGross <= 0) {
     return null;
   }
 
   const effectiveFee =
     feePercent == null ? clampPercent(FEE_BY_SOURCE[safeSource], 0) : clampPercent(feePercent, 0);
   const net = computeNetPrice(safeGross, effectiveFee);
+  if (net == null || net <= 0) {
+    return null;
+  }
   const safeUpdatedAt = updatedAt ? new Date(updatedAt).toISOString() : new Date().toISOString();
 
   return {

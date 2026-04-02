@@ -483,11 +483,11 @@ test("runCatalogGenerationReset archives the previous generation and enables sca
 
 test("buildCatalogLivenessSummary reflects healthy reference-sized output", () => {
   const summary = summarizeCoverageRows([
-    ...buildCoverageRows({ category: "weapon_skin", count: 150, candidateStatus: "eligible" }),
+    ...buildCoverageRows({ category: "weapon_skin", count: 140, candidateStatus: "eligible" }),
     ...buildCoverageRows({ category: "weapon_skin", count: 80, candidateStatus: "near_eligible", scanEligible: false }),
-    ...buildCoverageRows({ category: "case", count: 30, candidateStatus: "eligible" }),
-    ...buildCoverageRows({ category: "sticker_capsule", count: 25, candidateStatus: "eligible" }),
-    ...buildCoverageRows({ category: "weapon_skin", count: 435, candidateStatus: "candidate", catalogStatus: "shadow", scanEligible: false })
+    ...buildCoverageRows({ category: "case", count: 45, candidateStatus: "eligible" }),
+    ...buildCoverageRows({ category: "sticker_capsule", count: 35, candidateStatus: "eligible" }),
+    ...buildCoverageRows({ category: "weapon_skin", count: 200, candidateStatus: "candidate", catalogStatus: "shadow", scanEligible: false })
   ])
 
   const liveness = buildCatalogLivenessSummary(summary)

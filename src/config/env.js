@@ -42,6 +42,17 @@ function normalizeEnum(value, allowed, fallback) {
   return fallback;
 }
 
+function normalizeMarketSources(values = []) {
+  const allowed = new Set(["steam", "skinport", "csfloat", "dmarket"]);
+  return Array.from(
+    new Set(
+      (Array.isArray(values) ? values : [])
+        .map((value) => String(value || "").trim().toLowerCase())
+        .filter((value) => allowed.has(value))
+    )
+  );
+}
+
 const frontendOrigins = Array.from(
   new Set([
     ...parseCsv(process.env.FRONTEND_URL),
@@ -148,6 +159,9 @@ module.exports = {
   marketCompareTimeoutMs: Number(process.env.MARKET_COMPARE_TIMEOUT_MS || 9000),
   marketCompareMaxRetries: Number(process.env.MARKET_COMPARE_MAX_RETRIES || 3),
   marketCompareRetryBaseMs: Number(process.env.MARKET_COMPARE_RETRY_BASE_MS || 350),
+  disabledMarketSources: normalizeMarketSources(
+    parseCsv(process.env.MARKET_SOURCES_DISABLED || process.env.DISABLED_MARKET_SOURCES)
+  ),
   marketFeeSteamPercent: Number(process.env.MARKET_FEE_STEAM_PERCENT || 13),
   marketFeeSkinportPercent: Number(process.env.MARKET_FEE_SKINPORT_PERCENT || 12),
   marketFeeCsfloatPercent: Number(process.env.MARKET_FEE_CSFLOAT_PERCENT || 2),

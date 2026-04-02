@@ -5,7 +5,7 @@ process.env.SUPABASE_URL = process.env.SUPABASE_URL || "https://example.supabase
 process.env.SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "anon"
 process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "service-role"
 
-const sourceSeed = require("../src/config/marketSourceCatalogSeed")
+const sourceSeed = require("../src/config/manualPrimaryCatalogSeed")
 const {
   __testables: {
     CATEGORY_AWARE_EVALUATION_REASONS,
@@ -64,8 +64,7 @@ function buildReferenceRow(name, category = "weapon_skin", overrides = {}) {
 
 test("source catalog seed expands with scanner-scope categories only", () => {
   assert.equal(Array.isArray(sourceSeed), true)
-  assert.equal(sourceSeed.length >= 900, true)
-  assert.equal(sourceSeed.length <= 1200, true)
+  assert.equal(sourceSeed.length, 500)
 
   const categories = new Set(sourceSeed.map((row) => String(row?.category || "").trim()))
   assert.equal(categories.has("weapon_skin"), true)
@@ -73,6 +72,22 @@ test("source catalog seed expands with scanner-scope categories only", () => {
   assert.equal(categories.has("sticker_capsule"), true)
   assert.equal(categories.has("knife"), false)
   assert.equal(categories.has("glove"), false)
+})
+
+test("source catalog seed preserves the manual 380/70/50 composition exactly", () => {
+  const counts = sourceSeed.reduce(
+    (result, row) => {
+      const category = String(row?.category || "").trim()
+      if (!category) return result
+      result[category] = Number(result[category] || 0) + 1
+      return result
+    },
+    {}
+  )
+
+  assert.equal(Number(counts.weapon_skin || 0), 380)
+  assert.equal(Number(counts.case || 0), 70)
+  assert.equal(Number(counts.sticker_capsule || 0), 50)
 })
 
 test("source catalog seed excludes obvious junk prefixes", () => {
@@ -84,39 +99,39 @@ test("source catalog seed excludes obvious junk prefixes", () => {
 
 test("source catalog seed includes curated cases/capsules and liquid skin variants", () => {
   const names = new Set(sourceSeed.map((row) => String(row?.marketHashName || "").trim()))
-  assert.equal(names.has("Revolution Case"), true)
+  assert.equal(names.has("Gallery Case"), true)
   assert.equal(names.has("Copenhagen 2024 Legends Sticker Capsule"), true)
-  assert.equal(names.has("AK-47 | Redline (Field-Tested)"), true)
-  assert.equal(names.has("StatTrak™ AK-47 | Redline (Field-Tested)"), true)
-  assert.equal(names.has("Souvenir AK-47 | Redline (Field-Tested)"), true)
+  assert.equal(names.has("AK-47 | Asiimov (Field-Tested)"), true)
+  assert.equal(names.has("StatTrak\u2122 AK-47 | Asiimov (Field-Tested)"), true)
+  assert.equal(names.has("Berlin 2019 Mirage Souvenir Package"), true)
 })
 
-test("source catalog category quotas preserve the 720-row active reference mix", () => {
-  const quotas = buildCategoryQuotas(720)
+test("source catalog category quotas preserve the 500-row active reference mix", () => {
+  const quotas = buildCategoryQuotas(500)
   const total = Object.values(quotas).reduce((sum, value) => sum + Number(value || 0), 0)
-  assert.equal(total, 720)
-  assert.equal(Number(quotas.weapon_skin || 0), 576)
-  assert.equal(Number(quotas.case || 0), 72)
-  assert.equal(Number(quotas.sticker_capsule || 0), 72)
+  assert.equal(total, 500)
+  assert.equal(Number(quotas.weapon_skin || 0), 380)
+  assert.equal(Number(quotas.case || 0), 70)
+  assert.equal(Number(quotas.sticker_capsule || 0), 50)
 
-  const scaled = buildCategoryQuotas(600)
-  assert.equal(Number(scaled.weapon_skin || 0), 480)
-  assert.equal(Number(scaled.case || 0), 60)
-  assert.equal(Number(scaled.sticker_capsule || 0), 60)
+  const scaled = buildCategoryQuotas(250)
+  assert.equal(Number(scaled.weapon_skin || 0), 190)
+  assert.equal(Number(scaled.case || 0), 35)
+  assert.equal(Number(scaled.sticker_capsule || 0), 25)
 })
 
-test("source catalog quotas preserve the 960-row reference seed composition with category-aware scaling", () => {
-  const quotas = buildSourceCatalogQuotas(960)
+test("source catalog quotas preserve the 500-row manual seed composition with category-aware scaling", () => {
+  const quotas = buildSourceCatalogQuotas(500)
   const total = Object.values(quotas).reduce((sum, value) => sum + Number(value || 0), 0)
-  assert.equal(total, 960)
-  assert.equal(Number(quotas.weapon_skin || 0), 768)
-  assert.equal(Number(quotas.case || 0), 96)
-  assert.equal(Number(quotas.sticker_capsule || 0), 96)
+  assert.equal(total, 500)
+  assert.equal(Number(quotas.weapon_skin || 0), 380)
+  assert.equal(Number(quotas.case || 0), 70)
+  assert.equal(Number(quotas.sticker_capsule || 0), 50)
 
-  const scaled = buildSourceCatalogQuotas(900)
-  assert.equal(Number(scaled.weapon_skin || 0), 720)
-  assert.equal(Number(scaled.case || 0), 90)
-  assert.equal(Number(scaled.sticker_capsule || 0), 90)
+  const scaled = buildSourceCatalogQuotas(250)
+  assert.equal(Number(scaled.weapon_skin || 0), 190)
+  assert.equal(Number(scaled.case || 0), 35)
+  assert.equal(Number(scaled.sticker_capsule || 0), 25)
 })
 
 test("scoped catalog quotas zero blocked categories and reallocate healthy categories safely", () => {
@@ -209,9 +224,9 @@ test("source eligibility softens weapon-skin missing liquidity into penalty path
 
 test("source eligibility softens recoverable stale weapon skins into cooldown path", () => {
   const staleIso = new Date(Date.now() - 150 * 60 * 1000).toISOString()
-  const category = normalizeCategory("weapon_skin", "AK-47 | Redline (Field-Tested)")
+  const category = normalizeCategory("weapon_skin", "AK-47 | Asiimov (Field-Tested)")
   const result = evaluateEligibility({
-    marketHashName: "AK-47 | Redline (Field-Tested)",
+    marketHashName: "AK-47 | Asiimov (Field-Tested)",
     category,
     tradable: true,
     referencePrice: 12.5,
@@ -282,9 +297,9 @@ test("source eligibility blocks case items below $2", () => {
 })
 
 test("source eligibility keeps non-weapon low liquidity strict", () => {
-  const category = normalizeCategory("case", "Revolution Case")
+  const category = normalizeCategory("case", "Gallery Case")
   const result = evaluateEligibility({
-    marketHashName: "Revolution Case",
+    marketHashName: "Gallery Case",
     category,
     tradable: true,
     referencePrice: 3.1,
@@ -300,9 +315,9 @@ test("source eligibility keeps non-weapon low liquidity strict", () => {
 })
 
 test("candidate state separates enriching from strict eligible", () => {
-  const category = normalizeCategory("case", "Revolution Case")
+  const category = normalizeCategory("case", "Gallery Case")
   const lowContextState = evaluateCandidateState({
-    marketHashName: "Revolution Case",
+    marketHashName: "Gallery Case",
     category,
     tradable: true,
     eligibility: { eligible: false, reason: "excludedMissingReferenceItems" },
@@ -322,7 +337,7 @@ test("candidate state separates enriching from strict eligible", () => {
   assert.equal(lowContextState.enrichmentPriority > 0, true)
 
   const eligibleState = evaluateCandidateState({
-    marketHashName: "Revolution Case",
+    marketHashName: "Gallery Case",
     category,
     tradable: true,
     eligibility: { eligible: true, reason: "" },
@@ -344,7 +359,7 @@ test("candidate state separates enriching from strict eligible", () => {
 })
 
 test("candidate state promotes partial-ready rows to near-eligible when freshness is usable", () => {
-  const marketHashName = "AK-47 | Redline (Field-Tested)"
+  const marketHashName = "AK-47 | Asiimov (Field-Tested)"
   const category = normalizeCategory("weapon_skin", marketHashName)
   const state = evaluateCandidateState({
     marketHashName,
@@ -475,7 +490,7 @@ test("candidate state surfaces partial snapshot diagnostics for incomplete snaps
 })
 
 test("candidate state keeps zero-coverage weapon skins in enriching", () => {
-  const marketHashName = "AK-47 | Redline (Field-Tested)"
+  const marketHashName = "AK-47 | Asiimov (Field-Tested)"
   const category = normalizeCategory("weapon_skin", marketHashName)
   const state = evaluateCandidateState({
     marketHashName,
@@ -638,7 +653,7 @@ test("catalog-status compatibility still blocks structurally invalid legacy rows
 test("universe backfill blocks zero-coverage weapon-skin enriching rows", () => {
   const recent = new Date().toISOString()
   const blocked = isUniverseBackfillReadyRow({
-    market_hash_name: "AK-47 | Redline (Field-Tested)",
+    market_hash_name: "AK-47 | Asiimov (Field-Tested)",
     category: "weapon_skin",
     candidate_status: "enriching",
     maturity_state: "enriching",
@@ -650,7 +665,7 @@ test("universe backfill blocks zero-coverage weapon-skin enriching rows", () => 
     quote_fetched_at: recent
   })
   const allowed = isUniverseBackfillReadyRow({
-    market_hash_name: "AK-47 | Redline (Field-Tested)",
+    market_hash_name: "AK-47 | Asiimov (Field-Tested)",
     category: "weapon_skin",
     candidate_status: "enriching",
     maturity_state: "enriching",
@@ -893,11 +908,11 @@ test("reference admission favors usable market support, recent history, and prio
   assert.equal(marketSupported.basis.includes("usable_market_support"), true)
 
   const historySupported = evaluateReferenceCatalogAdmission({
-    row: buildReferenceRow("AK-47 | Redline (Field-Tested)", "weapon_skin", {
+    row: buildReferenceRow("AK-47 | Asiimov (Field-Tested)", "weapon_skin", {
       catalog_status: "shadow",
       market_coverage_count: 1
     }),
-    historyRow: buildReferenceRow("AK-47 | Redline (Field-Tested)", "weapon_skin", {
+    historyRow: buildReferenceRow("AK-47 | Asiimov (Field-Tested)", "weapon_skin", {
       catalog_status: "scannable",
       scan_eligible: true,
       candidate_status: "eligible"
@@ -1030,7 +1045,7 @@ test("reference active selection caps the active generation and spills excess ro
 
 test("reference liveness diagnostics recognize healthy output bands", () => {
   const activeRows = [
-    ...Array.from({ length: 150 }, (_, index) =>
+    ...Array.from({ length: 140 }, (_, index) =>
       buildReferenceRow(`eligible-skin-${index + 1}`, "weapon_skin", {
         catalog_status: "scannable",
         candidate_status: "eligible",
@@ -1038,7 +1053,7 @@ test("reference liveness diagnostics recognize healthy output bands", () => {
         market_coverage_count: 2
       })
     ),
-    ...Array.from({ length: 120 }, (_, index) =>
+    ...Array.from({ length: 80 }, (_, index) =>
       buildReferenceRow(`near-skin-${index + 1}`, "weapon_skin", {
         catalog_status: "scannable",
         candidate_status: "near_eligible",
@@ -1046,7 +1061,7 @@ test("reference liveness diagnostics recognize healthy output bands", () => {
         market_coverage_count: 2
       })
     ),
-    ...Array.from({ length: 40 }, (_, index) =>
+    ...Array.from({ length: 45 }, (_, index) =>
       buildReferenceRow(`case-${index + 1}`, "case", {
         catalog_status: "scannable",
         candidate_status: "eligible",
@@ -1054,7 +1069,7 @@ test("reference liveness diagnostics recognize healthy output bands", () => {
         market_coverage_count: 2
       })
     ),
-    ...Array.from({ length: 30 }, (_, index) =>
+    ...Array.from({ length: 35 }, (_, index) =>
       buildReferenceRow(`capsule-${index + 1}`, "sticker_capsule", {
         catalog_status: "scannable",
         candidate_status: "eligible",
@@ -1062,7 +1077,7 @@ test("reference liveness diagnostics recognize healthy output bands", () => {
         market_coverage_count: 2
       })
     ),
-    ...Array.from({ length: 310 }, (_, index) =>
+    ...Array.from({ length: 200 }, (_, index) =>
       buildReferenceRow(`shadow-${index + 1}`, "weapon_skin", {
         catalog_status: "shadow",
         candidate_status: "candidate",
@@ -1133,7 +1148,7 @@ test("skip recovery bypass triggers for collapsed legacy diagnostics", () => {
 test("empty universe rebuild preserves a non-empty active universe by default", () => {
   assert.equal(
     shouldPreserveExistingUniverseOnEmptyRebuild(
-      [{ market_hash_name: "AK-47 | Redline (Field-Tested)" }],
+      [{ market_hash_name: "AK-47 | Asiimov (Field-Tested)" }],
       []
     ),
     true
@@ -1141,7 +1156,7 @@ test("empty universe rebuild preserves a non-empty active universe by default", 
 
   assert.equal(
     shouldPreserveExistingUniverseOnEmptyRebuild(
-      [{ market_hash_name: "AK-47 | Redline (Field-Tested)" }],
+      [{ market_hash_name: "AK-47 | Asiimov (Field-Tested)" }],
       [],
       { allowEmptyUniverseReplace: true }
     ),
@@ -1158,9 +1173,11 @@ test("empty universe rebuild preserves a non-empty active universe by default", 
 
   assert.equal(
     shouldPreserveExistingUniverseOnEmptyRebuild(
-      [{ market_hash_name: "AK-47 | Redline (Field-Tested)" }],
+      [{ market_hash_name: "AK-47 | Asiimov (Field-Tested)" }],
       [{ marketHashName: "AK-47 | Slate (Field-Tested)" }]
     ),
     false
   )
 })
+
+

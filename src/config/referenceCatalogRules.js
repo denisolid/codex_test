@@ -6,44 +6,44 @@ const PRIMARY_GENERATION_CATEGORIES = Object.freeze([
 
 const PRIMARY_CATEGORY_SHARE_RULES = Object.freeze({
   weapon_skin: Object.freeze({
-    min: 0.78,
-    target: 0.8,
-    max: 0.82
+    min: 0.76,
+    target: 0.76,
+    max: 0.76
   }),
   case: Object.freeze({
-    min: 0.1,
-    target: 0.1,
+    min: 0.14,
+    target: 0.14,
     max: 0.14
   }),
   sticker_capsule: Object.freeze({
-    min: 0.06,
+    min: 0.1,
     target: 0.1,
     max: 0.1
   })
 })
 
 const ACTIVE_GENERATION_TARGET = Object.freeze({
-  min: 600,
-  target: 720,
-  max: 900
+  min: 500,
+  target: 500,
+  max: 500
 })
 
 const REFERENCE_SEED_TARGET = Object.freeze({
-  min: 900,
-  target: 960,
-  max: 1200
+  min: 500,
+  target: 500,
+  max: 500
 })
 
 const HEALTHY_OUTPUT_TARGET = Object.freeze({
   scannable: Object.freeze({
     min: 250,
     target: 350,
-    max: 450
+    max: 500
   }),
   hot_universe: Object.freeze({
     min: 120,
     target: 180,
-    max: 250
+    max: 320
   })
 })
 

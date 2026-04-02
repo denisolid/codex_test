@@ -19,7 +19,9 @@ const {
     parseDmarketUsdMinorValue,
     maybeRepairLegacyDmarketGross,
     normalizeSourceState,
-    resolveUnavailableContextForSource
+    resolveUnavailableContextForSource,
+    getCachedRowUpdatedAt,
+    fromCachedRow
   }
 } = require("../src/services/marketComparisonService");
 
@@ -101,6 +103,28 @@ test("legacy dmarket cached rows are repaired from raw USD cents", () => {
     maybeRepairLegacyDmarketGross({ raw: { price: { USD: "100" } } }, "dmarket", "USD", 1),
     1
   );
+});
+
+test("cached rows prefer source_updated_at over fetched_at for freshness display", () => {
+  const sourceUpdatedAt = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+  const fetchedAt = new Date().toISOString();
+  const row = fromCachedRow(
+    {
+      market: "steam",
+      market_hash_name: "Fracture Case",
+      currency: "USD",
+      gross_price: 1.25,
+      net_price: 1.09,
+      fetched_at: fetchedAt,
+      raw: {
+        source_updated_at: sourceUpdatedAt
+      }
+    },
+    "USD"
+  );
+
+  assert.equal(getCachedRowUpdatedAt({ raw: { source_updated_at: sourceUpdatedAt } }), sourceUpdatedAt);
+  assert.equal(row.updatedAt, sourceUpdatedAt);
 });
 
 test("compare item normalization keeps explicit liquidity/volume fields", () => {
@@ -218,8 +242,9 @@ test("compare source-state helper keeps CSFloat auth failures structured", () =>
         },
         diagnosticsByName: {
           "AK-47 | Redline (Field-Tested)": {
-            api_key_present: true,
-            auth_header_sent: true,
+            credentials_present: true,
+            auth_ok: false,
+            request_sent: true,
             response_status: 403,
             source_failure_reason: "auth_failed"
           }
@@ -233,10 +258,20 @@ test("compare source-state helper keeps CSFloat auth failures structured", () =>
   assert.equal(context.unavailableReason, "CSFloat authentication failed. Check CSFLOAT_API_KEY.");
   assert.equal(context.sourceState, "auth_failed");
   assert.deepEqual(context.sourceDiagnostics, {
-    api_key_present: true,
-    auth_header_sent: true,
+    market_enabled: true,
+    credentials_present: true,
+    auth_ok: false,
+    request_sent: true,
     response_status: 403,
-    source_failure_reason: "auth_failed"
+    response_parsed: null,
+    listings_found: null,
+    buy_price_present: null,
+    sell_price_present: null,
+    freshness_present: null,
+    listing_url_present: null,
+    source_failure_reason: "auth_failed",
+    last_success_at: null,
+    last_failure_at: null
   });
   assert.equal(normalizeSourceState("AUTH_FAILED"), "auth_failed");
 });

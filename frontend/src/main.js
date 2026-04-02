@@ -9862,6 +9862,32 @@ function getCompareDrawerInsights(payload = null) {
   return value;
 }
 
+function getCompareMarketStateLabel(state) {
+  const normalized = String(state || "").trim().toLowerCase();
+  if (normalized === "auth_failed") return "Auth Failed";
+  if (normalized === "timeout") return "Timeout";
+  if (normalized === "unavailable") return "Unavailable";
+  if (normalized === "no_listing") return "No Listing";
+  if (normalized === "no_data") return "No Data";
+  if (normalized === "parsing_failed") return "Parse Error";
+  if (normalized === "stale") return "Stale";
+  if (normalized === "disabled") return "Disabled";
+  return "Unavailable";
+}
+
+function getCompareMarketStateTone(state) {
+  const normalized = String(state || "").trim().toLowerCase();
+  if (normalized === "auth_failed") return "is-auth";
+  if (normalized === "timeout") return "is-timeout";
+  if (normalized === "unavailable") return "is-unavailable";
+  if (normalized === "no_listing") return "is-no-listing";
+  if (normalized === "no_data") return "is-no-data";
+  if (normalized === "parsing_failed") return "is-parse";
+  if (normalized === "stale") return "is-stale";
+  if (normalized === "disabled") return "is-disabled";
+  return "is-unavailable";
+}
+
 function getHoldingConditionLabel(item) {
   const direct = String(
     item?.exterior || item?.condition || item?.wearName || item?.wear || "",
@@ -10233,6 +10259,17 @@ function renderCompareDrawerBody() {
           const sourceKey = getMarketSourceKey(
             entry?.sourceKey || entry?.source,
           );
+          const stateLabel = getCompareMarketStateLabel(
+            entry?.sourceState || entry?.sourceFailureReason,
+          );
+          const stateTone = getCompareMarketStateTone(
+            entry?.sourceState || entry?.sourceFailureReason,
+          );
+          const statusText = available
+            ? `Updated ${formatRelativeTime(entry?.updatedAt)}`
+            : entry?.updatedAt
+              ? `${stateLabel} • ${formatRelativeTime(entry.updatedAt)}`
+              : stateLabel;
           const isArbBuyMarket =
             profitableArbitrage &&
             sourceKey !== "market" &&
@@ -10275,7 +10312,16 @@ function renderCompareDrawerBody() {
                     }
                   </div>
                 </div>
-                <small>${escapeHtml(available ? `Updated ${formatRelativeTime(entry?.updatedAt)}` : "No data")}</small>
+                <div class="compare-drawer-market-status-wrap">
+                  ${
+                    !available
+                      ? `<span class="compare-drawer-market-state ${escapeHtml(
+                          stateTone,
+                        )}">${escapeHtml(stateLabel)}</span>`
+                      : ""
+                  }
+                  <small>${escapeHtml(statusText)}</small>
+                </div>
               </div>
               ${
                 !available && entry?.unavailableReason

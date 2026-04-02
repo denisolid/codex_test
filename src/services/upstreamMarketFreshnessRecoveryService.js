@@ -10,6 +10,11 @@ const skinportMarket = require("../markets/skinport.market")
 const csfloatMarket = require("../markets/csfloat.market")
 const dmarketMarket = require("../markets/dmarket.market")
 const {
+  readMarketHealth,
+  buildMarketHealthDiagnostics,
+  normalizeSourceState
+} = require("../markets/marketSourceDiagnostics")
+const {
   arbitrageDefaultUniverseLimit,
   arbitrageMaxConcurrentMarketRequests,
   marketCompareTimeoutMs,
@@ -875,12 +880,36 @@ function mergeAttemptCounters(target = createAttemptCounter(), source = {}) {
     const existing = next.quoteSourceDiagnostics?.[sourceName] || {
       refreshed: 0,
       failed: 0,
-      error: null
+      error: null,
+      stateCounts: {}
     }
     const incoming = source.quoteSourceDiagnostics?.[sourceName] || {}
     existing.refreshed = Number(existing.refreshed || 0) + Number(incoming.refreshed || 0)
     existing.failed = Number(existing.failed || 0) + Number(incoming.failed || 0)
     existing.error = incoming.error || existing.error || null
+    for (const [state, count] of Object.entries(incoming.stateCounts || {})) {
+      existing.stateCounts[state] = Number(existing.stateCounts?.[state] || 0) + Number(count || 0)
+    }
+    for (const key of [
+      "market_enabled",
+      "credentials_present",
+      "auth_ok",
+      "request_sent",
+      "response_status",
+      "response_parsed",
+      "listings_found",
+      "buy_price_present",
+      "sell_price_present",
+      "freshness_present",
+      "listing_url_present",
+      "source_failure_reason",
+      "last_success_at",
+      "last_failure_at"
+    ]) {
+      if (incoming[key] != null) {
+        existing[key] = incoming[key]
+      }
+    }
     next.quoteSourceDiagnostics[sourceName] = existing
   }
 
@@ -1304,8 +1333,39 @@ function extractVolume7dFallback(row = {}, record = {}) {
   )
 }
 
+function pickSourceSpecificRawFields(source = "", raw = {}) {
+  const safeSource = normalizeText(source).toLowerCase()
+  if (!safeSource || !raw || typeof raw !== "object") return {}
+  return Object.fromEntries(
+    Object.entries(raw).filter(([key, value]) => {
+      if (!normalizeText(key).toLowerCase().startsWith(`${safeSource}_`)) return false
+      return (
+        value == null ||
+        typeof value === "string" ||
+        typeof value === "number" ||
+        typeof value === "boolean"
+      )
+    })
+  )
+}
+
 function buildQualityFlags(record = {}, row = {}, fetchedAtIso = null) {
   const raw = record?.raw && typeof record.raw === "object" ? record.raw : {}
+  const source = normalizeText(record?.source).toLowerCase()
+  const marketHealth =
+    readMarketHealth(raw) ||
+    buildMarketHealthDiagnostics({
+      marketEnabled: true,
+      requestSent: false,
+      responseParsed: true,
+      listingsFound: Boolean(record?.url),
+      buyPricePresent: toFiniteOrNull(record?.grossPrice) != null,
+      sellPricePresent: toFiniteOrNull(record?.netPriceAfterFees) != null,
+      freshnessPresent: Boolean(record?.updatedAt),
+      listingUrlPresent: Boolean(record?.url),
+      sourceFailureReason: normalizeSourceState(raw?.source_failure_reason),
+      lastSuccessAt: record?.updatedAt
+    })
   return {
     recovery_refresh: true,
     recovery_category: normalizeText(row?.category || row?.itemCategory).toLowerCase() || null,
@@ -1315,7 +1375,23 @@ function buildQualityFlags(record = {}, row = {}, fetchedAtIso = null) {
       raw?.listing_available == null ? Boolean(record?.url) : Boolean(raw.listing_available),
     source_updated_at: toIsoOrNull(record?.updatedAt || raw?.updated_at || raw?.updatedAt),
     fetched_at: toIsoOrNull(fetchedAtIso),
-    url: normalizeText(record?.url) || null
+    url: normalizeText(record?.url) || null,
+    source_state: normalizeSourceState(marketHealth?.source_failure_reason) || "ok",
+    market_enabled: marketHealth?.market_enabled ?? true,
+    credentials_present: marketHealth?.credentials_present ?? null,
+    auth_ok: marketHealth?.auth_ok ?? null,
+    request_sent: marketHealth?.request_sent ?? null,
+    response_status: marketHealth?.response_status ?? null,
+    response_parsed: marketHealth?.response_parsed ?? null,
+    listings_found: marketHealth?.listings_found ?? null,
+    buy_price_present: marketHealth?.buy_price_present ?? null,
+    sell_price_present: marketHealth?.sell_price_present ?? null,
+    freshness_present: marketHealth?.freshness_present ?? null,
+    listing_url_present: marketHealth?.listing_url_present ?? null,
+    source_failure_reason: marketHealth?.source_failure_reason ?? null,
+    last_success_at: marketHealth?.last_success_at ?? null,
+    last_failure_at: marketHealth?.last_failure_at ?? null,
+    ...pickSourceSpecificRawFields(source, raw)
   }
 }
 
@@ -1699,7 +1775,29 @@ function createAttemptCounter() {
     quoteRowsInserted: 0,
     marketPriceRowsUpserted: 0,
     quoteSourceDiagnostics: Object.fromEntries(
-      RECOVERY_SOURCE_ORDER.map((source) => [source, { refreshed: 0, failed: 0, error: null }])
+      RECOVERY_SOURCE_ORDER.map((source) => [
+        source,
+        {
+          refreshed: 0,
+          failed: 0,
+          error: null,
+          stateCounts: {},
+          market_enabled: true,
+          credentials_present: null,
+          auth_ok: null,
+          request_sent: false,
+          response_status: null,
+          response_parsed: null,
+          listings_found: null,
+          buy_price_present: null,
+          sell_price_present: null,
+          freshness_present: null,
+          listing_url_present: null,
+          source_failure_reason: null,
+          last_success_at: null,
+          last_failure_at: null
+        }
+      ])
     )
   }
 }
@@ -1752,6 +1850,37 @@ async function refreshQuotes(rows = [], options = {}) {
             : {}
         const failuresByName =
           meta && typeof meta.failuresByName === "object" ? meta.failuresByName : {}
+        const stateByName = meta && typeof meta.stateByName === "object" ? meta.stateByName : {}
+        for (const [state, count] of Object.entries(
+          Object.values(stateByName).reduce((acc, state) => {
+            const key = normalizeSourceState(state) || normalizeText(state).toLowerCase() || "unknown"
+            acc[key] = Number(acc[key] || 0) + 1
+            return acc
+          }, {})
+        )) {
+          counters.quoteSourceDiagnostics[source].stateCounts[state] =
+            Number(counters.quoteSourceDiagnostics[source].stateCounts?.[state] || 0) + Number(count || 0)
+        }
+        for (const key of [
+          "market_enabled",
+          "credentials_present",
+          "auth_ok",
+          "request_sent",
+          "response_status",
+          "response_parsed",
+          "listings_found",
+          "buy_price_present",
+          "sell_price_present",
+          "freshness_present",
+          "listing_url_present",
+          "source_failure_reason",
+          "last_success_at",
+          "last_failure_at"
+        ]) {
+          if (meta[key] != null) {
+            counters.quoteSourceDiagnostics[source][key] = meta[key]
+          }
+        }
 
         for (const row of chunk) {
           const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
@@ -3396,7 +3525,23 @@ async function runFreshnessRecovery(options = {}) {
           {
             refreshed: Number(diag?.refreshed || 0),
             failed: Number(diag?.failed || 0),
-            error: diag?.error || null
+            error: diag?.error || null,
+            stateCounts: diag?.stateCounts || {},
+            market_enabled:
+              diag?.market_enabled == null ? true : Boolean(diag?.market_enabled),
+            credentials_present: diag?.credentials_present ?? null,
+            auth_ok: diag?.auth_ok ?? null,
+            request_sent: diag?.request_sent ?? null,
+            response_status: diag?.response_status ?? null,
+            response_parsed: diag?.response_parsed ?? null,
+            listings_found: diag?.listings_found ?? null,
+            buy_price_present: diag?.buy_price_present ?? null,
+            sell_price_present: diag?.sell_price_present ?? null,
+            freshness_present: diag?.freshness_present ?? null,
+            listing_url_present: diag?.listing_url_present ?? null,
+            source_failure_reason: diag?.source_failure_reason ?? null,
+            last_success_at: diag?.last_success_at ?? null,
+            last_failure_at: diag?.last_failure_at ?? null
           }
         ])
       )

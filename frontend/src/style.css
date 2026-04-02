@@ -8173,6 +8173,51 @@ tr.opportunity-row-new td {
   font-size: 0.68rem;
 }
 
+.compare-drawer-market-status-wrap {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+}
+
+.compare-drawer-market-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid rgba(140, 168, 219, 0.36);
+  padding: 2px 7px;
+  font-size: 0.56rem;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #deebff;
+  background: rgba(12, 21, 37, 0.8);
+}
+
+.compare-drawer-market-state.is-auth {
+  border-color: rgba(255, 110, 110, 0.44);
+  background: rgba(70, 23, 27, 0.8);
+  color: #ffd6d6;
+}
+
+.compare-drawer-market-state.is-timeout,
+.compare-drawer-market-state.is-stale {
+  border-color: rgba(255, 191, 87, 0.42);
+  background: rgba(68, 48, 17, 0.78);
+  color: #ffe0a6;
+}
+
+.compare-drawer-market-state.is-no-listing,
+.compare-drawer-market-state.is-no-data,
+.compare-drawer-market-state.is-parse,
+.compare-drawer-market-state.is-disabled,
+.compare-drawer-market-state.is-unavailable {
+  border-color: rgba(150, 172, 214, 0.38);
+  background: rgba(21, 28, 44, 0.8);
+  color: #d6e7ff;
+}
+
 .compare-drawer-market-icon {
   width: 30px;
   height: 30px;

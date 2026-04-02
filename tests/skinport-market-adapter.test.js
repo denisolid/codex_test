@@ -146,3 +146,19 @@ test("normalizeItemsPayload records fallback confirmation mode for search-mapped
   assert.equal(rows[0].priceIntegrityStatus, "confirmed");
   assert.equal(rows[0].priceIntegrityMode, "safe_fallback_market_search");
 });
+
+test("normalizeItemsPayload maps numeric updated_at into an ISO freshness timestamp", () => {
+  const updatedAtSeconds = Math.floor(Date.now() / 1000) - 60;
+  const rows = normalizeItemsPayload([
+    {
+      market_hash_name: "Gamma Case",
+      currency: "USD",
+      min_price: 2.35,
+      updated_at: updatedAtSeconds
+    }
+  ]);
+
+  assert.equal(rows.length, 1);
+  assert.equal(typeof rows[0].observedAt, "string");
+  assert.equal(rows[0].observedAt.endsWith("Z"), true);
+});

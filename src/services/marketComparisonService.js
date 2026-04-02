@@ -29,8 +29,17 @@ const {
   marketCompareCacheTtlMinutes,
   marketCompareConcurrency,
   marketCompareTimeoutMs,
-  marketCompareMaxRetries
+  marketCompareMaxRetries,
+  disabledMarketSources
 } = require("../config/env");
+const {
+  SOURCE_STATES,
+  normalizeSourceState,
+  buildMarketHealthDiagnostics,
+  hasMarketHealthDiagnostics,
+  readMarketHealth,
+  toIsoOrNull: toMarketIsoOrNull
+} = require("../markets/marketSourceDiagnostics");
 
 const SOURCE_ORDER = Object.freeze(["steam", "skinport", "csfloat", "dmarket"]);
 const ADAPTERS = Object.freeze({
@@ -43,13 +52,6 @@ const ADAPTERS = Object.freeze({
 const PRICING_MODES = Object.freeze(["steam", "best_sell_net", "lowest_buy"]);
 const DEFAULT_PRICING_MODE = "lowest_buy";
 const CACHE_TTL_MINUTES = Math.max(Number(marketCompareCacheTtlMinutes || 60), 1);
-const SOURCE_STATE_SET = new Set([
-  "auth_failed",
-  "source_unavailable",
-  "no_listing",
-  "no_quote_data",
-  "ok"
-]);
 
 function normalizeText(value) {
   return String(value || "").trim();
@@ -84,13 +86,6 @@ function isFreshTimestamp(isoValue, ttlMinutes) {
   return Date.now() - ts <= Math.max(Number(ttlMinutes || CACHE_TTL_MINUTES), 1) * 60 * 1000;
 }
 
-function normalizeSourceState(value) {
-  const state = String(value || "")
-    .trim()
-    .toLowerCase();
-  return SOURCE_STATE_SET.has(state) ? state : null;
-}
-
 function resolveUnavailableContextForSource(
   source,
   marketHashName = "",
@@ -121,20 +116,42 @@ function resolveUnavailableContextForSource(
     normalizeSourceState(sourceDiagnostics?.stateByName?.[marketHashName]) ||
     normalizeSourceState(sourceDiagnostics?.sourceFailureReason) ||
     normalizeSourceState(sourceDiagnostics?.source_failure_reason);
-  const diagnostics =
-    itemDiagnostics ||
-    (sourceDiagnostics &&
-    ["api_key_present", "auth_header_sent", "response_status", "source_failure_reason"].some(
-      (key) => Object.prototype.hasOwnProperty.call(sourceDiagnostics, key)
-    )
-      ? {
-          api_key_present: sourceDiagnostics.api_key_present,
-          auth_header_sent: sourceDiagnostics.auth_header_sent,
-          response_status: sourceDiagnostics.response_status ?? null,
-          source_failure_reason:
-            sourceDiagnostics.source_failure_reason || sourceDiagnostics.sourceFailureReason || null
-        }
-      : null);
+  const diagnostics = hasMarketHealthDiagnostics(itemDiagnostics)
+    ? buildMarketHealthDiagnostics({
+        marketEnabled: itemDiagnostics.market_enabled,
+        credentialsPresent: itemDiagnostics.credentials_present,
+        authOk: itemDiagnostics.auth_ok,
+        requestSent: itemDiagnostics.request_sent,
+        responseStatus: itemDiagnostics.response_status,
+        responseParsed: itemDiagnostics.response_parsed,
+        listingsFound: itemDiagnostics.listings_found,
+        buyPricePresent: itemDiagnostics.buy_price_present,
+        sellPricePresent: itemDiagnostics.sell_price_present,
+        freshnessPresent: itemDiagnostics.freshness_present,
+        listingUrlPresent: itemDiagnostics.listing_url_present,
+        sourceFailureReason: itemDiagnostics.source_failure_reason,
+        lastSuccessAt: itemDiagnostics.last_success_at,
+        lastFailureAt: itemDiagnostics.last_failure_at
+      })
+    : hasMarketHealthDiagnostics(sourceDiagnostics)
+      ? buildMarketHealthDiagnostics({
+          marketEnabled: sourceDiagnostics.market_enabled,
+          credentialsPresent: sourceDiagnostics.credentials_present,
+          authOk: sourceDiagnostics.auth_ok,
+          requestSent: sourceDiagnostics.request_sent,
+          responseStatus: sourceDiagnostics.response_status,
+          responseParsed: sourceDiagnostics.response_parsed,
+          listingsFound: sourceDiagnostics.listings_found,
+          buyPricePresent: sourceDiagnostics.buy_price_present,
+          sellPricePresent: sourceDiagnostics.sell_price_present,
+          freshnessPresent: sourceDiagnostics.freshness_present,
+          listingUrlPresent: sourceDiagnostics.listing_url_present,
+          sourceFailureReason:
+            sourceDiagnostics.source_failure_reason || sourceDiagnostics.sourceFailureReason,
+          lastSuccessAt: sourceDiagnostics.last_success_at,
+          lastFailureAt: sourceDiagnostics.last_failure_at
+        })
+      : null;
 
   return {
     unavailableReason: marketReason || sourceReason || null,
@@ -158,8 +175,8 @@ function toUnavailable(source, currency, details = {}) {
     netPriceAfterFees: null,
     feePercent: sourceFeePercent(source),
     currency,
-    url: null,
-    updatedAt: null,
+    url: details?.url || null,
+    updatedAt: details?.updatedAt || null,
     confidence: "low",
     available: false,
     sourceState,
@@ -170,6 +187,29 @@ function toUnavailable(source, currency, details = {}) {
       ? String(unavailableReason || "").trim()
       : null
   };
+}
+
+function isSourceDisabled(source) {
+  return Array.isArray(disabledMarketSources)
+    ? disabledMarketSources.includes(String(source || "").trim().toLowerCase())
+    : false;
+}
+
+function getRecordDiagnostics(record = null) {
+  const direct = readMarketHealth(record?.raw);
+  if (direct) return direct;
+  return null;
+}
+
+function getCachedRowUpdatedAt(row = null) {
+  if (!row || typeof row !== "object") return null;
+  return (
+    toMarketIsoOrNull(row?.raw?.source_updated_at) ||
+    toMarketIsoOrNull(row?.raw?.updated_at) ||
+    toMarketIsoOrNull(row?.raw?.updatedAt) ||
+    readMarketHealth(row?.raw)?.last_success_at ||
+    toIsoStringOrNull(row?.fetched_at || row?.updatedAt)
+  );
 }
 
 function normalizeItems(items = []) {
@@ -338,7 +378,7 @@ function fromCachedRow(row, displayCurrency) {
     grossPrice: gross,
     currency: displayCurrency,
     url: row.url || null,
-    updatedAt: row.fetched_at || row.updatedAt || null,
+    updatedAt: getCachedRowUpdatedAt(row),
     confidence: row?.raw?.confidence || "medium",
     raw: row.raw || null
   });
@@ -446,93 +486,205 @@ async function fetchLiveMarketData(itemsBySource = {}, displayCurrency, options 
   const sourceResults = await Promise.all(
     SOURCE_ORDER.map(async (source) => {
       const adapter = ADAPTERS[source];
+      const sourceItems = Array.isArray(itemsBySource[source]) ? itemsBySource[source] : [];
+      if (!sourceItems.length) {
+        return { source, recordsByName: {}, diagnostics: {} };
+      }
+      if (isSourceDisabled(source)) {
+        const failuresByName = Object.fromEntries(
+          sourceItems.map((item) => [item.marketHashName, `${source} source disabled`])
+        );
+        const stateByName = Object.fromEntries(
+          sourceItems.map((item) => [item.marketHashName, SOURCE_STATES.DISABLED])
+        );
+        const diagnosticsByName = Object.fromEntries(
+          sourceItems.map((item) => [
+            item.marketHashName,
+            buildMarketHealthDiagnostics({
+              marketEnabled: false,
+              requestSent: false,
+              sourceFailureReason: SOURCE_STATES.DISABLED
+            })
+          ])
+        );
+        return {
+          source,
+          recordsByName: {},
+          diagnostics: {
+            failuresByName,
+            stateByName,
+            diagnosticsByName,
+            market_enabled: false,
+            credentials_present: null,
+            auth_ok: null,
+            request_sent: false,
+            response_status: null,
+            response_parsed: null,
+            listings_found: null,
+            buy_price_present: false,
+            sell_price_present: false,
+            freshness_present: null,
+            listing_url_present: false,
+            sourceUnavailableReason: `${source} source disabled`,
+            sourceFailureReason: SOURCE_STATES.DISABLED,
+            source_failure_reason: SOURCE_STATES.DISABLED,
+            last_success_at: null,
+            last_failure_at: new Date().toISOString(),
+            pipeline: null
+          }
+        };
+      }
       if (!adapter?.batchGetPrices) {
         return {
           source,
           recordsByName: {},
-          diagnostics: {}
+          diagnostics: {
+            failuresByName: {},
+            stateByName: {},
+            diagnosticsByName: {},
+            market_enabled: false,
+            request_sent: false,
+            sourceUnavailableReason: `${source} adapter unavailable`,
+            sourceFailureReason: SOURCE_STATES.UNAVAILABLE,
+            source_failure_reason: SOURCE_STATES.UNAVAILABLE
+          }
         };
       }
 
-      const sourceItems = Array.isArray(itemsBySource[source]) ? itemsBySource[source] : [];
-      if (!sourceItems.length) {
+      try {
+        const byName = await adapter.batchGetPrices(sourceItems, {
+          currency: fetchCurrency,
+          concurrency,
+          timeoutMs,
+          maxRetries
+        });
+        const sourceFetchedAt = new Date().toISOString();
+        const adapterMeta = byName && typeof byName === "object" ? byName.__meta : null;
+        const recordsByName = {};
+        const upsertRows = [];
+        for (const [marketHashName, rawRecord] of Object.entries(byName || {})) {
+          const normalized = normalizeLiveRecord(rawRecord, displayCurrency);
+          if (!normalized) continue;
+          recordsByName[marketHashName] = normalized;
+          const row = toUpsertRow(rawRecord, sourceFetchedAt);
+          if (row) upsertRows.push(row);
+        }
+
+        return {
+          source,
+          recordsByName,
+          diagnostics: {
+            failuresByName:
+              adapterMeta?.failuresByName && typeof adapterMeta.failuresByName === "object"
+                ? adapterMeta.failuresByName
+                : {},
+            stateByName:
+              adapterMeta?.stateByName && typeof adapterMeta.stateByName === "object"
+                ? adapterMeta.stateByName
+                : {},
+            diagnosticsByName:
+              adapterMeta?.diagnosticsByName && typeof adapterMeta.diagnosticsByName === "object"
+                ? adapterMeta.diagnosticsByName
+                : {},
+            market_enabled:
+              adapterMeta && Object.prototype.hasOwnProperty.call(adapterMeta, "market_enabled")
+                ? Boolean(adapterMeta.market_enabled)
+                : true,
+            credentials_present:
+              adapterMeta && Object.prototype.hasOwnProperty.call(adapterMeta, "credentials_present")
+                ? adapterMeta.credentials_present
+                : null,
+            auth_ok:
+              adapterMeta && Object.prototype.hasOwnProperty.call(adapterMeta, "auth_ok")
+                ? adapterMeta.auth_ok
+                : null,
+            request_sent:
+              adapterMeta && Object.prototype.hasOwnProperty.call(adapterMeta, "request_sent")
+                ? adapterMeta.request_sent
+                : sourceItems.length > 0,
+            response_status: Number.isFinite(Number(adapterMeta?.response_status))
+              ? Number(adapterMeta.response_status)
+              : null,
+            response_parsed:
+              adapterMeta && Object.prototype.hasOwnProperty.call(adapterMeta, "response_parsed")
+                ? adapterMeta.response_parsed
+                : null,
+            listings_found:
+              adapterMeta && Object.prototype.hasOwnProperty.call(adapterMeta, "listings_found")
+                ? adapterMeta.listings_found
+                : null,
+            buy_price_present:
+              adapterMeta && Object.prototype.hasOwnProperty.call(adapterMeta, "buy_price_present")
+                ? adapterMeta.buy_price_present
+                : null,
+            sell_price_present:
+              adapterMeta && Object.prototype.hasOwnProperty.call(adapterMeta, "sell_price_present")
+                ? adapterMeta.sell_price_present
+                : null,
+            freshness_present:
+              adapterMeta && Object.prototype.hasOwnProperty.call(adapterMeta, "freshness_present")
+                ? adapterMeta.freshness_present
+                : null,
+            listing_url_present:
+              adapterMeta && Object.prototype.hasOwnProperty.call(adapterMeta, "listing_url_present")
+                ? adapterMeta.listing_url_present
+                : null,
+            sourceUnavailableReason: normalizeText(adapterMeta?.sourceUnavailableReason) || null,
+            sourceFailureReason:
+              normalizeSourceState(
+                adapterMeta?.sourceFailureReason || adapterMeta?.source_failure_reason
+              ) || null,
+            source_failure_reason:
+              normalizeSourceState(adapterMeta?.source_failure_reason) ||
+              normalizeSourceState(adapterMeta?.sourceFailureReason) ||
+              null,
+            last_success_at: toMarketIsoOrNull(adapterMeta?.last_success_at),
+            last_failure_at: toMarketIsoOrNull(adapterMeta?.last_failure_at),
+            pipeline:
+              adapterMeta?.pipeline && typeof adapterMeta.pipeline === "object"
+                ? adapterMeta.pipeline
+                : null
+          },
+          upsertRows
+        };
+      } catch (err) {
+        const message = normalizeText(err?.message) || `${source} live fetch failed`;
+        const diagnostics = buildMarketHealthDiagnostics({
+          marketEnabled: true,
+          requestSent: true,
+          responseStatus: err?.status || err?.statusCode || err?.upstreamStatus || null,
+          sourceFailureReason: SOURCE_STATES.UNAVAILABLE,
+          lastFailureAt: new Date().toISOString()
+        });
         return {
           source,
           recordsByName: {},
-          diagnostics: {}
+          diagnostics: {
+            failuresByName: Object.fromEntries(sourceItems.map((item) => [item.marketHashName, message])),
+            stateByName: Object.fromEntries(
+              sourceItems.map((item) => [item.marketHashName, SOURCE_STATES.UNAVAILABLE])
+            ),
+            diagnosticsByName: Object.fromEntries(
+              sourceItems.map((item) => [item.marketHashName, diagnostics])
+            ),
+            market_enabled: true,
+            request_sent: true,
+            response_status: diagnostics.response_status,
+            response_parsed: false,
+            listings_found: null,
+            buy_price_present: false,
+            sell_price_present: false,
+            freshness_present: null,
+            listing_url_present: false,
+            sourceUnavailableReason: message,
+            sourceFailureReason: SOURCE_STATES.UNAVAILABLE,
+            source_failure_reason: SOURCE_STATES.UNAVAILABLE,
+            last_success_at: null,
+            last_failure_at: diagnostics.last_failure_at,
+            pipeline: null
+          }
         };
       }
-
-      const byName = await adapter.batchGetPrices(sourceItems, {
-        currency: fetchCurrency,
-        concurrency,
-        timeoutMs,
-        maxRetries
-      });
-      const sourceFetchedAt = new Date().toISOString();
-      const adapterMeta = byName && typeof byName === "object" ? byName.__meta : null;
-      const recordsByName = {};
-      const upsertRows = [];
-      for (const [marketHashName, rawRecord] of Object.entries(byName || {})) {
-        const normalized = normalizeLiveRecord(rawRecord, displayCurrency);
-        if (!normalized) continue;
-        recordsByName[marketHashName] = normalized;
-        const row = toUpsertRow(rawRecord, sourceFetchedAt);
-        if (row) {
-          upsertRows.push(row);
-        }
-      }
-
-      return {
-        source,
-        recordsByName,
-        diagnostics: {
-          failuresByName:
-            adapterMeta &&
-            adapterMeta.failuresByName &&
-            typeof adapterMeta.failuresByName === "object"
-              ? adapterMeta.failuresByName
-              : {},
-          stateByName:
-            adapterMeta &&
-            adapterMeta.stateByName &&
-            typeof adapterMeta.stateByName === "object"
-              ? adapterMeta.stateByName
-              : {},
-          diagnosticsByName:
-            adapterMeta &&
-            adapterMeta.diagnosticsByName &&
-            typeof adapterMeta.diagnosticsByName === "object"
-              ? adapterMeta.diagnosticsByName
-              : {},
-          sourceUnavailableReason:
-            String(adapterMeta?.sourceUnavailableReason || "").trim() || null,
-          sourceFailureReason:
-            String(
-              adapterMeta?.sourceFailureReason || adapterMeta?.source_failure_reason || ""
-            ).trim() || null,
-          api_key_present:
-            adapterMeta && Object.prototype.hasOwnProperty.call(adapterMeta, "api_key_present")
-              ? Boolean(adapterMeta.api_key_present)
-              : null,
-          auth_header_sent:
-            adapterMeta && Object.prototype.hasOwnProperty.call(adapterMeta, "auth_header_sent")
-              ? Boolean(adapterMeta.auth_header_sent)
-              : null,
-          response_status: Number.isFinite(Number(adapterMeta?.response_status))
-            ? Number(adapterMeta.response_status)
-            : null,
-          source_failure_reason:
-            String(adapterMeta?.source_failure_reason || "").trim() || null,
-          pipeline:
-            adapterMeta &&
-            adapterMeta.pipeline &&
-            typeof adapterMeta.pipeline === "object"
-              ? adapterMeta.pipeline
-              : null
-        },
-        upsertRows
-      };
     })
   );
 
@@ -792,6 +944,10 @@ exports.compareItems = async (items = [], options = {}) => {
   const staleItemsBySource = {};
 
   for (const source of SOURCE_ORDER) {
+    if (isSourceDisabled(source)) {
+      staleItemsBySource[source] = [];
+      continue;
+    }
     const sourceRows = cachedBySource[source] || {};
     staleItemsBySource[source] = normalizedItemsWithCoverage.filter((item) => {
       const cached = sourceRows[item.marketHashName];
@@ -833,29 +989,44 @@ exports.compareItems = async (items = [], options = {}) => {
 
   const enrichedItems = normalizedItemsWithCoverage.map((item) => {
     const perMarket = SOURCE_ORDER.map((source) => {
+      const sourceCachedRow = cachedBySource?.[source]?.[item.marketHashName] || null;
+      const cached = fromCachedRow(sourceCachedRow, displayCurrency);
+      const cachedFresh =
+        Boolean(sourceCachedRow) &&
+        !forceRefresh &&
+        isFreshTimestamp(sourceCachedRow?.fetched_at, options.ttlMinutes || CACHE_TTL_MINUTES);
       const live = liveBySource?.[source]?.[item.marketHashName] || null;
       if (live) {
         return {
           ...live,
           available: true,
-          sourceState: "ok",
+          sourceState: SOURCE_STATES.OK,
           sourceFailureReason: null,
-          sourceDiagnostics: null
+          sourceDiagnostics: getRecordDiagnostics(live)
         };
       }
 
-      const cached = fromCachedRow(
-        cachedBySource?.[source]?.[item.marketHashName] || null,
-        displayCurrency
-      );
-      if (cached) {
+      if (cached && cachedFresh) {
         return {
           ...cached,
           available: true,
-          sourceState: "ok",
+          sourceState: SOURCE_STATES.OK,
           sourceFailureReason: null,
-          sourceDiagnostics: null
+          sourceDiagnostics: getRecordDiagnostics(cached)
         };
+      }
+
+      if (isSourceDisabled(source)) {
+        return toUnavailable(source, displayCurrency, {
+          unavailableReason: `${source} source disabled`,
+          sourceState: SOURCE_STATES.DISABLED,
+          sourceDiagnostics: buildMarketHealthDiagnostics({
+            marketEnabled: false,
+            requestSent: false,
+            sourceFailureReason: SOURCE_STATES.DISABLED,
+            lastFailureAt: new Date().toISOString()
+          })
+        });
       }
 
       if (source === "steam") {
@@ -864,19 +1035,76 @@ exports.compareItems = async (items = [], options = {}) => {
           return {
             ...fallback,
             available: true,
-            sourceState: "ok",
+            sourceState: SOURCE_STATES.OK,
             sourceFailureReason: null,
-            sourceDiagnostics: null
+            sourceDiagnostics: buildMarketHealthDiagnostics({
+              marketEnabled: true,
+              requestSent: false,
+              responseParsed: true,
+              listingsFound: true,
+              buyPricePresent: true,
+              sellPricePresent: true,
+              freshnessPresent: Boolean(fallback.updatedAt),
+              listingUrlPresent: Boolean(fallback.url),
+              lastSuccessAt: fallback.updatedAt
+            })
           };
         }
       }
 
+      const liveFailureContext = resolveUnavailableContextForSource(
+        source,
+        item.marketHashName,
+        liveDiagnosticsBySource
+      );
+      if (liveFailureContext.sourceState || liveFailureContext.unavailableReason) {
+        return toUnavailable(source, displayCurrency, {
+          ...liveFailureContext,
+          updatedAt: cached?.updatedAt || null,
+          url: cached?.url || null
+        });
+      }
+
+      if (cached) {
+        const cachedDiagnostics =
+          getRecordDiagnostics(cached) ||
+          buildMarketHealthDiagnostics({
+            marketEnabled: true,
+            requestSent: false,
+            responseParsed: true,
+            listingsFound: true,
+            buyPricePresent: true,
+            sellPricePresent: true,
+            freshnessPresent: Boolean(cached.updatedAt),
+            listingUrlPresent: Boolean(cached.url),
+            sourceFailureReason: SOURCE_STATES.STALE,
+            lastSuccessAt: cached.updatedAt,
+            lastFailureAt: new Date().toISOString()
+          });
+        return toUnavailable(source, displayCurrency, {
+          unavailableReason: "Market data is stale.",
+          sourceState: SOURCE_STATES.STALE,
+          sourceDiagnostics: cachedDiagnostics,
+          updatedAt: cached.updatedAt,
+          url: cached.url
+        });
+      }
+
       return toUnavailable(source, displayCurrency, {
-        ...resolveUnavailableContextForSource(
-          source,
-          item.marketHashName,
-          liveDiagnosticsBySource
-        )
+        unavailableReason: "No market data available.",
+        sourceState: SOURCE_STATES.NO_DATA,
+        sourceDiagnostics: buildMarketHealthDiagnostics({
+          marketEnabled: true,
+          requestSent: false,
+          responseParsed: null,
+          listingsFound: false,
+          buyPricePresent: false,
+          sellPricePresent: false,
+          freshnessPresent: false,
+          listingUrlPresent: false,
+          sourceFailureReason: SOURCE_STATES.NO_DATA,
+          lastFailureAt: new Date().toISOString()
+        })
       });
     });
 
@@ -1053,5 +1281,7 @@ exports.__testables = {
   parseDmarketUsdMinorValue,
   maybeRepairLegacyDmarketGross,
   normalizeSourceState,
-  resolveUnavailableContextForSource
+  resolveUnavailableContextForSource,
+  getCachedRowUpdatedAt,
+  fromCachedRow
 };

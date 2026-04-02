@@ -140,8 +140,8 @@ test("csfloat public listing lookup succeeds without an API key", async () => {
     assert.equal(result.state, "ok");
     assert.equal(result.price.grossPrice, 14.5);
     assert.equal(result.price.url, "https://csfloat.com/item/99887766");
-    assert.equal(result.diagnostics.api_key_present, false);
-    assert.equal(result.diagnostics.auth_header_sent, false);
+    assert.equal(result.diagnostics.credentials_present, false);
+    assert.equal(result.diagnostics.request_sent, true);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].Authorization, undefined);
   } finally {
@@ -179,8 +179,8 @@ test("csfloat listing lookup retries without auth after a rejected API key", asy
     assert.equal(result.state, "ok");
     assert.equal(result.price.grossPrice, 9.81);
     assert.equal(result.price.url, "https://csfloat.com/item/11223344");
-    assert.equal(result.diagnostics.api_key_present, true);
-    assert.equal(result.diagnostics.auth_header_sent, false);
+    assert.equal(result.diagnostics.credentials_present, true);
+    assert.equal(result.diagnostics.request_sent, true);
     assert.equal(calls.length, 2);
     assert.equal(calls[0].Authorization, "badkey");
     assert.equal(calls[1].Authorization, undefined);
