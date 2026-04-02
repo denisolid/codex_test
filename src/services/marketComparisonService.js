@@ -29,8 +29,7 @@ const {
   marketCompareCacheTtlMinutes,
   marketCompareConcurrency,
   marketCompareTimeoutMs,
-  marketCompareMaxRetries,
-  csfloatApiKey
+  marketCompareMaxRetries
 } = require("../config/env");
 
 const SOURCE_ORDER = Object.freeze(["steam", "skinport", "csfloat", "dmarket"]);
@@ -92,28 +91,11 @@ function normalizeSourceState(value) {
   return SOURCE_STATE_SET.has(state) ? state : null;
 }
 
-function buildMissingCsfloatKeyDiagnostics() {
-  return {
-    api_key_present: false,
-    auth_header_sent: false,
-    response_status: null,
-    source_failure_reason: "auth_failed"
-  };
-}
-
 function resolveUnavailableContextForSource(
   source,
   marketHashName = "",
   liveDiagnosticsBySource = null
 ) {
-  if (source === "csfloat" && !String(csfloatApiKey || "").trim()) {
-    return {
-      unavailableReason: "CSFloat authentication failed. Check CSFLOAT_API_KEY.",
-      sourceState: "auth_failed",
-      sourceDiagnostics: buildMissingCsfloatKeyDiagnostics()
-    };
-  }
-
   const sourceDiagnostics =
     liveDiagnosticsBySource && typeof liveDiagnosticsBySource === "object"
       ? liveDiagnosticsBySource[source]

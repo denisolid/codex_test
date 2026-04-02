@@ -113,8 +113,25 @@ function buildRequestHeaders(apiKey = sanitizeApiKey(csfloatApiKey)) {
   };
 }
 
-function buildHeaderVariantMap() {
-  return [buildRequestHeaders()];
+function buildHeaderVariantMap(apiKey = sanitizeApiKey(csfloatApiKey)) {
+  const safeApiKey = sanitizeApiKey(apiKey);
+  const variants = [];
+
+  if (safeApiKey) {
+    variants.push({
+      headers: buildRequestHeaders(safeApiKey),
+      apiKeyPresent: true,
+      authHeaderSent: true
+    });
+  }
+
+  variants.push({
+    headers: buildRequestHeaders(""),
+    apiKeyPresent: Boolean(safeApiKey),
+    authHeaderSent: false
+  });
+
+  return variants;
 }
 
 function normalizeCsfloatPrice(value) {
@@ -194,7 +211,9 @@ function describeCsfloatFetchError(err) {
 }
 
 function getPayloadListings(payload) {
-  return Array.isArray(payload?.data)
+  return Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.data)
     ? payload.data
     : Array.isArray(payload?.listings)
       ? payload.listings
@@ -277,34 +296,41 @@ async function searchItemPrice(input = {}) {
   if (!marketHashName) return null;
 
   const apiKey = sanitizeApiKey(csfloatApiKey);
-  const apiKeyPresent = Boolean(apiKey);
-  if (!apiKeyPresent) {
-    return buildFailureResult(SOURCE_STATES.AUTH_FAILED, AUTH_FAILURE_MESSAGE, {
-      apiKeyPresent: false,
-      authHeaderSent: false,
-      responseStatus: null,
-      sourceFailureReason: SOURCE_STATES.AUTH_FAILED
-    });
-  }
-
   const url = buildApiUrl(marketHashName);
-  const headers = buildRequestHeaders(apiKey);
+  const headerVariants = buildHeaderVariantMap(apiKey);
   let payload = null;
+  let resolvedVariant = headerVariants[0] || {
+    headers: buildRequestHeaders(""),
+    apiKeyPresent: false,
+    authHeaderSent: false
+  };
 
-  try {
-    payload = await fetchJsonWithRetry(url, {
-      timeoutMs: input.timeoutMs,
-      maxRetries: input.maxRetries,
-      headers
-    });
-  } catch (err) {
-    const failure = classifyCsfloatFetchError(err);
-    return buildFailureResult(failure.state, failure.reason, {
-      apiKeyPresent,
-      authHeaderSent: true,
-      responseStatus: failure.responseStatus,
-      sourceFailureReason: failure.sourceFailureReason
-    });
+  for (let index = 0; index < headerVariants.length; index += 1) {
+    const variant = headerVariants[index];
+    try {
+      payload = await fetchJsonWithRetry(url, {
+        timeoutMs: input.timeoutMs,
+        maxRetries: input.maxRetries,
+        headers: variant.headers
+      });
+      resolvedVariant = variant;
+      break;
+    } catch (err) {
+      const failure = classifyCsfloatFetchError(err);
+      const canRetryPublicLookup =
+        failure.state === SOURCE_STATES.AUTH_FAILED &&
+        variant.authHeaderSent &&
+        index < headerVariants.length - 1;
+      if (canRetryPublicLookup) {
+        continue;
+      }
+      return buildFailureResult(failure.state, failure.reason, {
+        apiKeyPresent: variant.apiKeyPresent,
+        authHeaderSent: variant.authHeaderSent,
+        responseStatus: failure.responseStatus,
+        sourceFailureReason: failure.sourceFailureReason
+      });
+    }
   }
 
   const best = extractBestListing(payload, marketHashName);
@@ -315,8 +341,8 @@ async function searchItemPrice(input = {}) {
       ? NO_QUOTE_DATA_MESSAGE
       : NO_LISTING_MESSAGE;
     return buildFailureResult(state, reason, {
-      apiKeyPresent,
-      authHeaderSent: true,
+      apiKeyPresent: resolvedVariant.apiKeyPresent,
+      authHeaderSent: resolvedVariant.authHeaderSent,
       responseStatus: 200,
       sourceFailureReason: state
     });
@@ -326,8 +352,8 @@ async function searchItemPrice(input = {}) {
     state: SOURCE_STATES.OK,
     reason: null,
     diagnostics: buildDiagnostics({
-      apiKeyPresent,
-      authHeaderSent: true,
+      apiKeyPresent: resolvedVariant.apiKeyPresent,
+      authHeaderSent: resolvedVariant.authHeaderSent,
       responseStatus: 200,
       sourceFailureReason: null
     }),
