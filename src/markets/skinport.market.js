@@ -1,9 +1,18 @@
 const { skinportApiUrl, skinportApiKey } = require("../config/env");
-const { fetchJsonWithRetry, mapWithConcurrency } = require("./marketHttp");
+const { fetchJsonWithRetry } = require("./marketHttp");
 const { buildMarketPriceRecord, normalizePriceNumber } = require("./marketUtils");
+const {
+  SOURCE_STATES,
+  buildMarketHealthDiagnostics,
+  attachMarketHealth,
+  normalizeSourceState,
+  toIsoOrNull
+} = require("./marketSourceDiagnostics");
 
 const SOURCE = "skinport";
 const DEFAULT_API_URL = "https://api.skinport.com/v1";
+const ITEMS_PATH = "/items";
+const ITEMS_CACHE_TTL_MS = 4 * 60 * 1000;
 const SUPPORTED_API_CURRENCIES = new Set(["USD", "EUR"]);
 const LIVE_EXECUTABLE_PRICE_FIELDS = Object.freeze([
   { key: "current_price", label: "current_price" },
@@ -36,10 +45,20 @@ const SKINPORT_PIPELINE_STAGES = Object.freeze({
   LIVE_QUOTE_VALIDATION: "live_quote_validation",
   MAPPING: "mapping"
 });
+const NO_LISTING_MESSAGE = "No Skinport listing found.";
+const NO_DATA_MESSAGE = "Skinport returned no usable quote data.";
+const PARSING_FAILURE_MESSAGE = "Skinport response could not be parsed.";
+const TIMEOUT_MESSAGE = "Skinport request timed out.";
+const UNAVAILABLE_MESSAGE = "Skinport is temporarily unavailable.";
+
+const itemsCacheByCurrency = new Map();
+
+function normalizeText(value) {
+  return String(value || "").trim();
+}
 
 function toApiBaseUrl() {
-  const raw = String(skinportApiUrl || DEFAULT_API_URL).trim();
-  return raw.replace(/\/+$/, "");
+  return normalizeText(skinportApiUrl || DEFAULT_API_URL).replace(/\/+$/, "");
 }
 
 function buildSkinportUrl(path, params = {}) {
@@ -48,29 +67,25 @@ function buildSkinportUrl(path, params = {}) {
     if (value == null || value === "") return;
     qs.set(key, String(value));
   });
+  const query = qs.toString();
+  return `${toApiBaseUrl()}${path}${query ? `?${query}` : ""}`;
+}
 
-  return `${toApiBaseUrl()}${path}?${qs.toString()}`;
+function buildItemsUrl(currency = "USD") {
+  return buildSkinportUrl(ITEMS_PATH, {
+    app_id: 730,
+    currency: resolveApiCurrency(currency),
+    tradable: 1
+  });
 }
 
 function buildListingUrl(marketHashName) {
-  return `https://skinport.com/market?search=${encodeURIComponent(
-    String(marketHashName || "")
-  )}`;
+  return `https://skinport.com/market?search=${encodeURIComponent(normalizeText(marketHashName))}`;
 }
 
 function resolveApiCurrency(input) {
-  const candidate = String(input || "USD")
-    .trim()
-    .toUpperCase();
+  const candidate = normalizeText(input || "USD").toUpperCase();
   return SUPPORTED_API_CURRENCIES.has(candidate) ? candidate : "USD";
-}
-
-function toIsoOrNull(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return null;
-  const ts = new Date(raw).getTime();
-  if (!Number.isFinite(ts)) return null;
-  return new Date(ts).toISOString();
 }
 
 function toAgeHours(isoValue, nowMs = Date.now()) {
@@ -79,98 +94,23 @@ function toAgeHours(isoValue, nowMs = Date.now()) {
   const ts = new Date(safeIso).getTime();
   if (!Number.isFinite(ts)) return null;
   const ageHours = (nowMs - ts) / (60 * 60 * 1000);
-  if (!Number.isFinite(ageHours) || ageHours < 0) return null;
-  return Number(ageHours.toFixed(4));
-}
-
-function incrementCounter(target, key, amount = 1) {
-  if (!target || typeof target !== "object") return;
-  const safeKey = String(key || "").trim();
-  if (!safeKey) return;
-  target[safeKey] = Number(target[safeKey] || 0) + Number(amount || 0);
-}
-
-function createStageCounters() {
-  return {
-    requested: 0,
-    passed: 0,
-    rejected: 0
-  };
+  return Number.isFinite(ageHours) && ageHours >= 0 ? Number(ageHours.toFixed(4)) : null;
 }
 
 function createSkinportPipelineDiagnostics(requestedCount = 0) {
   return {
     requestedItems: Math.max(Number(requestedCount || 0), 0),
     mappedItems: 0,
-    fallbackConfirmed: 0,
     strictConfirmed: 0,
-    stageCounters: {
-      [SKINPORT_PIPELINE_STAGES.RAW_DATA]: {
-        requested: Math.max(Number(requestedCount || 0), 0),
-        chunksRequested: 0,
-        chunksFetched: 0,
-        payloadRows: 0,
-        emptyPayloads: 0,
-        fetchErrors: 0
-      },
-      [SKINPORT_PIPELINE_STAGES.PARSING]: createStageCounters(),
-      [SKINPORT_PIPELINE_STAGES.NORMALIZATION]: createStageCounters(),
-      [SKINPORT_PIPELINE_STAGES.LIVE_QUOTE_VALIDATION]: createStageCounters(),
-      [SKINPORT_PIPELINE_STAGES.MAPPING]: createStageCounters()
-    },
+    fallbackConfirmed: 0,
+    stageCounters: {},
     rejectReasons: {}
   };
 }
 
-function incrementStageCounter(diagnostics, stage, field, amount = 1) {
-  if (!diagnostics || typeof diagnostics !== "object") return;
-  if (!diagnostics.stageCounters || typeof diagnostics.stageCounters !== "object") return;
-  const stageKey = String(stage || "").trim();
-  if (!stageKey) return;
-  if (!diagnostics.stageCounters[stageKey]) {
-    diagnostics.stageCounters[stageKey] = createStageCounters();
-  }
-  const safeField = String(field || "").trim();
-  if (!safeField) return;
-  diagnostics.stageCounters[stageKey][safeField] =
-    Number(diagnostics.stageCounters[stageKey][safeField] || 0) + Number(amount || 0);
-}
-
-function recordRejectReason(diagnostics, stage, reason) {
-  if (!diagnostics || typeof diagnostics !== "object") return;
-  const stageKey = String(stage || "").trim();
-  const reasonKey = String(reason || "").trim();
-  const key =
-    stageKey && reasonKey ? `${stageKey}.${reasonKey}` : reasonKey || stageKey || "unknown";
-  if (!key) return;
-  incrementCounter(diagnostics.rejectReasons, key, 1);
-}
-
-function markFailureByName(failuresByName, marketHashName, stage, reason) {
-  if (!failuresByName || typeof failuresByName !== "object") return;
-  const safeName = String(marketHashName || "").trim();
-  if (!safeName) return;
-  if (String(failuresByName[safeName] || "").trim()) return;
-  const stageKey = String(stage || "").trim();
-  const reasonKey = String(reason || "").trim();
-  const value =
-    stageKey && reasonKey
-      ? `${stageKey}.${reasonKey}`
-      : reasonKey || stageKey || "unknown";
-  failuresByName[safeName] = value;
-}
-
-function pickPrimaryRejectReason(rejectReasons = {}) {
-  return Object.entries(rejectReasons || {})
-    .filter(([, count]) => Number(count || 0) > 0)
-    .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))[0]?.[0] || null;
-}
-
 function readPath(obj, path) {
-  if (!obj || typeof obj !== "object") return null;
-  const keys = Array.isArray(path) ? path : [path];
   let current = obj;
-  for (const key of keys) {
+  for (const key of Array.isArray(path) ? path : [path]) {
     if (current == null || typeof current !== "object") return null;
     current = current[key];
   }
@@ -178,113 +118,77 @@ function readPath(obj, path) {
 }
 
 function pickPriceFromFields(item = {}, fields = []) {
-  for (const field of Array.isArray(fields) ? fields : []) {
-    const candidate = readPath(item, field.key);
-    const parsed = normalizePriceNumber(candidate);
+  for (const field of fields) {
+    const parsed = normalizePriceNumber(readPath(item, field.key));
     if (parsed != null) {
-      return {
-        price: parsed,
-        selectedPriceField: String(field.label || "")
-      };
+      return { price: parsed, selectedPriceField: String(field.label || "") };
     }
   }
-  return {
-    price: null,
-    selectedPriceField: null
-  };
+  return { price: null, selectedPriceField: null };
 }
 
 function extractLiveExecutableQuote(item = {}) {
   const extracted = pickPriceFromFields(item, LIVE_EXECUTABLE_PRICE_FIELDS);
-  if (extracted.price == null) return null;
-  return {
-    price: extracted.price,
-    selectedPriceField: extracted.selectedPriceField,
-    quoteType: "live_executable"
-  };
+  return extracted.price == null
+    ? null
+    : { ...extracted, quoteType: "live_executable" };
 }
 
 function extractHistoricalSummaryQuote(item = {}) {
   const extracted = pickPriceFromFields(item, HISTORY_SUMMARY_PRICE_FIELDS);
-  if (extracted.price == null) return null;
-  return {
-    price: extracted.price,
-    selectedPriceField: extracted.selectedPriceField,
-    quoteType: "historical_summary"
-  };
+  return extracted.price == null
+    ? null
+    : { ...extracted, quoteType: "historical_summary" };
 }
 
 function extractPrice(item = {}) {
-  const live = extractLiveExecutableQuote(item);
-  if (live?.price != null) return live.price;
-  return null;
-}
-
-function resolveObservedAt(row = {}, fallbackIso = null) {
-  const direct = toIsoOrNull(
-    row?.observed_at ||
-      row?.observedAt ||
-      row?.updated_at ||
-      row?.updatedAt ||
-      row?.last_update ||
-      row?.lastUpdate
-  );
-  if (direct) return direct;
-  const fallback = toIsoOrNull(fallbackIso);
-  return fallback || new Date().toISOString();
+  return extractLiveExecutableQuote(item)?.price ?? null;
 }
 
 function toSafeHttpUrl(value) {
-  const raw = String(value || "").trim();
+  const raw = normalizeText(value);
   if (!raw) return null;
   try {
     const parsed = new URL(raw);
-    if (!["http:", "https:"].includes(parsed.protocol)) return null;
-    return parsed.toString();
+    return ["http:", "https:"].includes(parsed.protocol) ? parsed.toString() : null;
   } catch (_err) {
     return null;
   }
 }
 
 function extractSkinportItemSlug(row = {}, itemUrl = "") {
-  const directSlug =
-    String(row?.item_slug || row?.itemSlug || row?.slug || "").trim() || null;
-  if (directSlug) return directSlug;
+  const direct = normalizeText(row?.item_slug || row?.itemSlug || row?.slug);
+  if (direct) return direct;
   const safeUrl = toSafeHttpUrl(itemUrl);
   if (!safeUrl) return null;
   try {
     const parsed = new URL(safeUrl);
     const chunks = parsed.pathname.split("/").filter(Boolean);
-    const itemIdx = chunks.findIndex((part) => String(part).toLowerCase() === "item");
-    if (itemIdx >= 0 && chunks[itemIdx + 1]) {
-      return decodeURIComponent(chunks[itemIdx + 1]);
-    }
+    const itemIndex = chunks.findIndex((part) => part.toLowerCase() === "item");
+    return itemIndex >= 0 && chunks[itemIndex + 1]
+      ? decodeURIComponent(chunks[itemIndex + 1])
+      : null;
   } catch (_err) {
     return null;
   }
-  return null;
 }
 
 function resolveSkinportListingId(row = {}) {
-  const candidates = [
-    row?.listing_id,
-    row?.listingId,
-    row?.id,
-    row?.item_id,
-    row?.itemId
-  ];
-  for (const candidate of candidates) {
-    const text = String(candidate || "").trim();
-    if (text) return text;
-  }
-  return null;
+  return (
+    [
+      row?.listing_id,
+      row?.listingId,
+      row?.id,
+      row?.item_id,
+      row?.itemId
+    ]
+      .map((value) => normalizeText(value))
+      .find(Boolean) || null
+  );
 }
 
 function normalizeComparableText(value) {
-  return String(value || "")
-    .trim()
-    .replace(/\s+/g, " ")
-    .toLowerCase();
+  return normalizeText(value).replace(/\s+/g, " ").toLowerCase();
 }
 
 function urlMatchesExactSkinportSearchItem(itemUrl = "", marketHashName = "") {
@@ -293,11 +197,8 @@ function urlMatchesExactSkinportSearchItem(itemUrl = "", marketHashName = "") {
   if (!safeUrl || !expected) return false;
   try {
     const parsed = new URL(safeUrl);
-    const host = String(parsed.hostname || "").toLowerCase();
-    if (!host.includes("skinport.com")) return false;
-    const searchValue = normalizeComparableText(parsed.searchParams.get("search"));
-    if (!searchValue) return false;
-    return searchValue === expected;
+    if (!String(parsed.hostname || "").toLowerCase().includes("skinport.com")) return false;
+    return normalizeComparableText(parsed.searchParams.get("search")) === expected;
   } catch (_err) {
     return false;
   }
@@ -311,336 +212,158 @@ function resolvePriceIntegrityDecision({
   listingId = null,
   itemUrl = ""
 } = {}) {
-  const safeQuoteType = String(quoteType || "").trim().toLowerCase();
-  const safeMarketHashName = String(marketHashName || "").trim();
-  const safeCurrency = String(currency || "").trim().toUpperCase();
-  const safeItemSlug = String(itemSlug || "").trim();
-  const safeListingId = String(listingId || "").trim();
-
-  if (safeQuoteType !== "live_executable") {
-    return {
-      status: PRICE_INTEGRITY_STATUS_UNCONFIRMED,
-      mode: "none",
-      reason: "quote_not_live_executable"
-    };
+  if (normalizeText(quoteType).toLowerCase() !== "live_executable") {
+    return { status: PRICE_INTEGRITY_STATUS_UNCONFIRMED, mode: "none", reason: "quote_not_live_executable" };
   }
-  if (!safeMarketHashName) {
-    return {
-      status: PRICE_INTEGRITY_STATUS_UNCONFIRMED,
-      mode: "none",
-      reason: "missing_market_hash_name"
-    };
+  if (!normalizeText(marketHashName)) {
+    return { status: PRICE_INTEGRITY_STATUS_UNCONFIRMED, mode: "none", reason: "missing_market_hash_name" };
   }
-  if (!safeCurrency) {
-    return {
-      status: PRICE_INTEGRITY_STATUS_UNCONFIRMED,
-      mode: "none",
-      reason: "missing_currency"
-    };
+  if (!normalizeText(currency).toUpperCase()) {
+    return { status: PRICE_INTEGRITY_STATUS_UNCONFIRMED, mode: "none", reason: "missing_currency" };
   }
-  if (safeItemSlug || safeListingId) {
-    return {
-      status: PRICE_INTEGRITY_STATUS_CONFIRMED,
-      mode: "strict_identity",
-      reason: "confirmed_identity"
-    };
+  if (normalizeText(itemSlug) || normalizeText(listingId)) {
+    return { status: PRICE_INTEGRITY_STATUS_CONFIRMED, mode: "strict_identity", reason: "confirmed_identity" };
   }
-  if (urlMatchesExactSkinportSearchItem(itemUrl, safeMarketHashName)) {
-    return {
-      status: PRICE_INTEGRITY_STATUS_CONFIRMED,
-      mode: "safe_fallback_market_search",
-      reason: "confirmed_safe_market_search"
-    };
+  if (urlMatchesExactSkinportSearchItem(itemUrl, marketHashName)) {
+    return { status: PRICE_INTEGRITY_STATUS_CONFIRMED, mode: "safe_fallback_market_search", reason: "confirmed_safe_market_search" };
   }
-  return {
-    status: PRICE_INTEGRITY_STATUS_UNCONFIRMED,
-    mode: "none",
-    reason: "missing_identity_mapping"
-  };
+  return { status: PRICE_INTEGRITY_STATUS_UNCONFIRMED, mode: "none", reason: "missing_identity_mapping" };
 }
 
-function resolvePriceIntegrityStatus({
-  quoteType = "",
-  marketHashName = "",
-  currency = "",
-  itemSlug = null,
-  listingId = null,
-  itemUrl = ""
-} = {}) {
-  return resolvePriceIntegrityDecision({
-    quoteType,
-    marketHashName,
-    currency,
-    itemSlug,
-    listingId,
-    itemUrl
-  }).status;
+function resolvePriceIntegrityStatus(input = {}) {
+  return resolvePriceIntegrityDecision(input).status;
 }
 
 function validateLiveQuoteForFeed(row = {}, options = {}) {
-  const maxAgeHours = Math.max(
-    Number(options.maxAgeHours || LIVE_QUOTE_STALE_THRESHOLD_HOURS),
-    0
+  if (normalizeText(row?.quoteType).toLowerCase() !== "live_executable") {
+    return { confirmed: false, reason: "quote_type_not_live" };
+  }
+  if (normalizeText(row?.priceIntegrityStatus).toLowerCase() !== PRICE_INTEGRITY_STATUS_CONFIRMED) {
+    return { confirmed: false, reason: normalizeText(row?.priceIntegrityReason) || "integrity_unconfirmed" };
+  }
+  const ageHours = toAgeHours(row?.observedAt);
+  if (ageHours == null) return { confirmed: false, reason: "missing_observed_at" };
+  if (ageHours > Math.max(Number(options.maxAgeHours || LIVE_QUOTE_STALE_THRESHOLD_HOURS), 0)) {
+    return { confirmed: false, reason: "stale_quote" };
+  }
+  return { confirmed: true, reason: "confirmed", ageHours };
+}
+
+function buildHeaders() {
+  return {
+    Accept: "application/json",
+    "Accept-Encoding": "gzip, deflate, br",
+    "User-Agent": "cs2-portfolio-analyzer/1.0"
+  };
+}
+
+function classifySkinportError(err) {
+  const status = Number(err?.upstreamStatus || err?.statusCode || err?.status || 0);
+  const message = normalizeText(err?.message).toLowerCase();
+  if (message.includes("timed out")) return { state: SOURCE_STATES.TIMEOUT, reason: TIMEOUT_MESSAGE, responseStatus: status || 504 };
+  if (status === 429) return { state: SOURCE_STATES.UNAVAILABLE, reason: "Skinport rate limit reached. Retry shortly.", responseStatus: status };
+  return { state: SOURCE_STATES.UNAVAILABLE, reason: UNAVAILABLE_MESSAGE, responseStatus: status || null };
+}
+
+function buildDiagnostics({
+  requestSent = false,
+  responseStatus = null,
+  responseParsed = false,
+  listingsFound = null,
+  buyPricePresent = false,
+  freshnessPresent = false,
+  listingUrlPresent = false,
+  sourceFailureReason = null,
+  lastSuccessAt = null,
+  lastFailureAt = null
+} = {}) {
+  return buildMarketHealthDiagnostics({
+    marketEnabled: true,
+    credentialsPresent: Boolean(skinportApiKey),
+    authOk: null,
+    requestSent,
+    responseStatus,
+    responseParsed,
+    listingsFound,
+    buyPricePresent,
+    sellPricePresent: buyPricePresent,
+    freshnessPresent,
+    listingUrlPresent,
+    sourceFailureReason,
+    lastSuccessAt,
+    lastFailureAt
+  });
+}
+
+function resolveObservedAt(row = {}, fallbackIso = null) {
+  return (
+    toIsoOrNull(
+      row?.observed_at ||
+        row?.observedAt ||
+        row?.updated_at ||
+        row?.updatedAt ||
+        row?.created_at ||
+        row?.createdAt ||
+        row?.last_update ||
+        row?.lastUpdate
+    ) ||
+    toIsoOrNull(fallbackIso) ||
+    new Date().toISOString()
   );
-  if (String(row?.quoteType || "").trim().toLowerCase() !== "live_executable") {
-    return {
-      confirmed: false,
-      reason: "quote_type_not_live"
-    };
-  }
-  if (
-    String(row?.priceIntegrityStatus || "").trim().toLowerCase() !==
-    PRICE_INTEGRITY_STATUS_CONFIRMED
-  ) {
-    return {
-      confirmed: false,
-      reason: String(row?.priceIntegrityReason || "integrity_unconfirmed")
-    };
-  }
-  const observedAt = toIsoOrNull(row?.observedAt);
-  const ageHours = toAgeHours(observedAt);
-  if (ageHours == null) {
-    return {
-      confirmed: false,
-      reason: "missing_observed_at"
-    };
-  }
-  if (ageHours > maxAgeHours) {
-    return {
-      confirmed: false,
-      reason: "stale_quote"
-    };
-  }
-  return {
-    confirmed: true,
-    reason: "confirmed",
-    ageHours
-  };
 }
 
-function isRequestedName(nameSet, value) {
-  const safeValue = String(value || "").trim();
-  return Boolean(safeValue && nameSet instanceof Set && nameSet.has(safeValue));
-}
-
-function selectPreferredRecord(current, next) {
-  if (!current) return next;
-  const currentPrice = Number(current?.grossPrice);
-  const nextPrice = Number(next?.grossPrice);
-  if (!Number.isFinite(currentPrice)) return next;
-  if (!Number.isFinite(nextPrice)) return current;
-  // Prefer lower gross price for executable buy-side parity.
-  return nextPrice < currentPrice ? next : current;
-}
-
-function mergeFailuresByName(target = {}, updates = {}) {
-  for (const [name, reason] of Object.entries(updates || {})) {
-    if (!String(name || "").trim()) continue;
-    if (String(target[name] || "").trim()) continue;
-    target[name] = String(reason || "").trim() || "unknown";
-  }
-}
-
-function applyChunkFailureToNames(failuresByName, namesChunk = [], stage, reason) {
-  for (const name of namesChunk || []) {
-    markFailureByName(failuresByName, name, stage, reason);
-  }
-}
-
-function mergePipelineDiagnostics(target, patch = {}) {
-  if (!target || typeof target !== "object") return;
-  if (!patch || typeof patch !== "object") return;
-  target.requestedItems = Number(target.requestedItems || 0);
-  target.mappedItems = Number(target.mappedItems || 0) + Number(patch.mappedItems || 0);
-  target.fallbackConfirmed =
-    Number(target.fallbackConfirmed || 0) + Number(patch.fallbackConfirmed || 0);
-  target.strictConfirmed = Number(target.strictConfirmed || 0) + Number(patch.strictConfirmed || 0);
-
-  for (const [stage, counters] of Object.entries(patch.stageCounters || {})) {
-    for (const [field, value] of Object.entries(counters || {})) {
-      incrementStageCounter(target, stage, field, Number(value || 0));
-    }
-  }
-
-  for (const [reason, count] of Object.entries(patch.rejectReasons || {})) {
-    incrementCounter(target.rejectReasons, reason, Number(count || 0));
-  }
-}
-
-function buildQuoteAuditRow(row = {}, normalized = {}) {
-  return {
-    marketHashName: normalized.marketHashName || null,
-    selectedPriceField: normalized.selectedPriceField || null,
-    normalizedPrice: normalized.price ?? null,
-    currency: normalized.currency || null,
-    observedAt: normalized.observedAt || null,
-    itemIdentifier:
-      normalized.marketHashName || String(row?.market_hash_name || row?.marketHashName || "").trim() || null,
-    itemSlug: normalized.itemSlug || null,
-    listingId: normalized.listingId || null,
-    quoteType: normalized.quoteType || null,
-    priceIntegrityStatus: normalized.priceIntegrityStatus || null,
-    priceIntegrityMode: normalized.priceIntegrityMode || null,
-    priceIntegrityReason: normalized.priceIntegrityReason || null,
-    rawPayload: row
-  };
+function resolveItemUrl(row = {}, marketHashName = "") {
+  return (
+    toSafeHttpUrl(
+      row?.item_page || row?.itemPage || row?.market_page || row?.marketPage || row?.url
+    ) || buildListingUrl(marketHashName)
+  );
 }
 
 function normalizeItemsPayload(payload, options = {}) {
-  const diagnostics =
-    options?.diagnostics && typeof options.diagnostics === "object"
-      ? options.diagnostics
-      : null;
-  const failuresByName =
-    options?.failuresByName && typeof options.failuresByName === "object"
-      ? options.failuresByName
-      : null;
-  if (!Array.isArray(payload)) {
-    recordRejectReason(
-      diagnostics,
-      SKINPORT_PIPELINE_STAGES.RAW_DATA,
-      "invalid_payload_shape"
-    );
-    return [];
-  }
+  if (!Array.isArray(payload)) return [];
+  const requestedNamesSet =
+    options?.requestedNamesSet instanceof Set ? options.requestedNamesSet : null;
   const observedFallbackIso = toIsoOrNull(options.observedAt) || new Date().toISOString();
   const rows = [];
-  for (const row of payload) {
-    incrementStageCounter(
-      diagnostics,
-      SKINPORT_PIPELINE_STAGES.PARSING,
-      "requested",
-      1
-    );
-    const marketHashName = String(row?.market_hash_name || row?.marketHashName || "").trim();
-    if (!marketHashName) {
-      incrementStageCounter(
-        diagnostics,
-        SKINPORT_PIPELINE_STAGES.PARSING,
-        "rejected",
-        1
-      );
-      recordRejectReason(
-        diagnostics,
-        SKINPORT_PIPELINE_STAGES.PARSING,
-        "missing_market_hash_name"
-      );
-      continue;
-    }
 
-    incrementStageCounter(
-      diagnostics,
-      SKINPORT_PIPELINE_STAGES.PARSING,
-      "passed",
-      1
-    );
-    incrementStageCounter(
-      diagnostics,
-      SKINPORT_PIPELINE_STAGES.NORMALIZATION,
-      "requested",
-      1
-    );
+  for (const row of payload) {
+    const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName);
+    if (!marketHashName) continue;
+    if (requestedNamesSet && !requestedNamesSet.has(marketHashName)) continue;
+
     const liveQuote = extractLiveExecutableQuote(row);
     const historicalQuote = extractHistoricalSummaryQuote(row);
     const selectedQuote = liveQuote || historicalQuote;
-    if (selectedQuote?.price == null) {
-      incrementStageCounter(
-        diagnostics,
-        SKINPORT_PIPELINE_STAGES.NORMALIZATION,
-        "rejected",
-        1
-      );
-      recordRejectReason(
-        diagnostics,
-        SKINPORT_PIPELINE_STAGES.NORMALIZATION,
-        "missing_price_field"
-      );
-      markFailureByName(
-        failuresByName,
-        marketHashName,
-        SKINPORT_PIPELINE_STAGES.NORMALIZATION,
-        "missing_price_field"
-      );
-      continue;
-    }
+    if (selectedQuote?.price == null) continue;
 
-    const itemUrl =
-      String(row?.item_page || row?.itemPage || row?.market_page || row?.marketPage || "").trim() ||
-      null;
-    const currency = String(row?.currency || "").trim().toUpperCase() || null;
-    if (!currency) {
-      incrementStageCounter(
-        diagnostics,
-        SKINPORT_PIPELINE_STAGES.NORMALIZATION,
-        "rejected",
-        1
-      );
-      recordRejectReason(
-        diagnostics,
-        SKINPORT_PIPELINE_STAGES.NORMALIZATION,
-        "missing_currency"
-      );
-      markFailureByName(
-        failuresByName,
-        marketHashName,
-        SKINPORT_PIPELINE_STAGES.NORMALIZATION,
-        "missing_currency"
-      );
-      continue;
-    }
+    const currency = normalizeText(row?.currency).toUpperCase();
+    if (!currency) continue;
 
+    const url = resolveItemUrl(row, marketHashName);
     const observedAt = resolveObservedAt(row, observedFallbackIso);
-    if (!observedAt) {
-      incrementStageCounter(
-        diagnostics,
-        SKINPORT_PIPELINE_STAGES.NORMALIZATION,
-        "rejected",
-        1
-      );
-      recordRejectReason(
-        diagnostics,
-        SKINPORT_PIPELINE_STAGES.NORMALIZATION,
-        "missing_observed_at"
-      );
-      markFailureByName(
-        failuresByName,
-        marketHashName,
-        SKINPORT_PIPELINE_STAGES.NORMALIZATION,
-        "missing_observed_at"
-      );
-      continue;
-    }
-
     const listingId = resolveSkinportListingId(row);
-    const itemSlug = extractSkinportItemSlug(row, itemUrl || "");
-    const quoteType = selectedQuote?.quoteType || "unavailable";
-    const priceIntegrityDecision = resolvePriceIntegrityDecision({
-      quoteType,
+    const itemSlug = extractSkinportItemSlug(row, url);
+    const integrity = resolvePriceIntegrityDecision({
+      quoteType: selectedQuote.quoteType,
       marketHashName,
       currency,
       itemSlug,
       listingId,
-      itemUrl
+      itemUrl: url
     });
-
-    incrementStageCounter(
-      diagnostics,
-      SKINPORT_PIPELINE_STAGES.NORMALIZATION,
-      "passed",
-      1
-    );
 
     rows.push({
       marketHashName,
       price: selectedQuote.price,
-      selectedPriceField: selectedQuote?.selectedPriceField || null,
-      quoteType,
-      priceIntegrityStatus: priceIntegrityDecision.status,
-      priceIntegrityMode: priceIntegrityDecision.mode,
-      priceIntegrityReason: priceIntegrityDecision.reason,
+      selectedPriceField: selectedQuote.selectedPriceField || null,
+      quoteType: selectedQuote.quoteType,
+      priceIntegrityStatus: integrity.status,
+      priceIntegrityMode: integrity.mode,
+      priceIntegrityReason: integrity.reason,
       observedAt,
       currency,
-      url: itemUrl,
+      url,
       itemSlug,
       listingId,
       raw: row
@@ -650,275 +373,226 @@ function normalizeItemsPayload(payload, options = {}) {
   return rows;
 }
 
-function splitIntoChunks(items = [], chunkSize = 35) {
-  const chunks = [];
-  for (let index = 0; index < items.length; index += chunkSize) {
-    chunks.push(items.slice(index, index + chunkSize));
+async function fetchCachedItemsPayload(apiCurrency, options = {}) {
+  const cacheKey = resolveApiCurrency(apiCurrency);
+  const existing = itemsCacheByCurrency.get(cacheKey);
+  const nowMs = Date.now();
+  if (
+    existing &&
+    Array.isArray(existing.payload) &&
+    Number.isFinite(existing.fetchedAtMs) &&
+    nowMs - existing.fetchedAtMs < ITEMS_CACHE_TTL_MS
+  ) {
+    return existing.payload;
   }
-  return chunks;
-}
+  if (existing?.pending && typeof existing.pending.then === "function") {
+    return existing.pending;
+  }
 
-function buildHeaders() {
-  const headers = {
-    Accept: "application/json",
-    "Accept-Encoding": "gzip, deflate, br",
-    "User-Agent": "cs2-portfolio-analyzer/1.0"
-  };
-  if (skinportApiKey) {
-    headers.Authorization = `Bearer ${skinportApiKey}`;
-  }
-  return headers;
+  const pending = fetchJsonWithRetry(buildItemsUrl(cacheKey), {
+    timeoutMs: options.timeoutMs,
+    maxRetries: options.maxRetries,
+    headers: buildHeaders()
+  })
+    .then((payload) => {
+      itemsCacheByCurrency.set(cacheKey, {
+        payload,
+        fetchedAtMs: Date.now()
+      });
+      return payload;
+    })
+    .finally(() => {
+      const current = itemsCacheByCurrency.get(cacheKey);
+      if (current?.pending === pending) delete current.pending;
+    });
+
+  itemsCacheByCurrency.set(cacheKey, {
+    payload: Array.isArray(existing?.payload) ? existing.payload : null,
+    fetchedAtMs: Number(existing?.fetchedAtMs || 0),
+    pending
+  });
+
+  return pending;
 }
 
 async function searchItemPrice(input = {}) {
-  const marketHashName = String(input.marketHashName || "").trim();
+  const marketHashName = normalizeText(input.marketHashName);
   if (!marketHashName) return null;
-
   const rows = await batchGetPrices([{ marketHashName }], input);
   return rows[marketHashName] || null;
 }
 
 async function batchGetPrices(items = [], options = {}) {
-  const normalizedNames = Array.from(
+  const requestedNames = Array.from(
     new Set(
       (Array.isArray(items) ? items : [])
-        .map((item) => String(item?.marketHashName || "").trim())
+        .map((item) => normalizeText(item?.marketHashName))
         .filter(Boolean)
     )
   );
+  if (!requestedNames.length) return {};
 
-  if (!normalizedNames.length) {
-    return {};
+  const requestedNamesSet = new Set(requestedNames);
+  const apiCurrency = resolveApiCurrency(options.currency || "USD");
+  const requestStartedAt = new Date().toISOString();
+  const failuresByName = {};
+  const stateByName = {};
+  const diagnosticsByName = {};
+  const pipeline = createSkinportPipelineDiagnostics(requestedNames.length);
+  let payload = null;
+
+  try {
+    payload = await fetchCachedItemsPayload(apiCurrency, options);
+  } catch (err) {
+    const failure = classifySkinportError(err);
+    for (const name of requestedNames) {
+      failuresByName[name] = failure.reason;
+      stateByName[name] = failure.state;
+      diagnosticsByName[name] = buildDiagnostics({
+        requestSent: true,
+        responseStatus: failure.responseStatus,
+        sourceFailureReason: failure.state,
+        lastFailureAt: requestStartedAt
+      });
+    }
+    const failed = {};
+    Object.defineProperty(failed, "__meta", {
+      value: {
+        failuresByName,
+        stateByName,
+        diagnosticsByName,
+        market_enabled: true,
+        credentials_present: Boolean(skinportApiKey),
+        request_sent: true,
+        response_status: failure.responseStatus,
+        response_parsed: false,
+        listings_found: null,
+        buy_price_present: false,
+        sell_price_present: false,
+        freshness_present: false,
+        listing_url_present: false,
+        sourceUnavailableReason: failure.reason,
+        sourceFailureReason: failure.state,
+        source_failure_reason: failure.state,
+        last_success_at: null,
+        last_failure_at: requestStartedAt,
+        pipeline
+      },
+      enumerable: false
+    });
+    return failed;
   }
 
-  const currency = String(options.currency || "USD").trim().toUpperCase();
-  const apiCurrency = resolveApiCurrency(currency);
-  const requestedNamesSet = new Set(normalizedNames);
-  const failuresByName = {};
-  const pipelineDiagnostics = createSkinportPipelineDiagnostics(normalizedNames.length);
-  const chunks = splitIntoChunks(normalizedNames);
-  const concurrency = Math.max(
-    Math.min(Number(options.concurrency || 2), 6),
-    1
-  );
-  const chunkResults = await mapWithConcurrency(
-    chunks,
-    async (namesChunk) => {
-      const chunkDiagnostics = createSkinportPipelineDiagnostics(0);
-      incrementStageCounter(
-        chunkDiagnostics,
-        SKINPORT_PIPELINE_STAGES.RAW_DATA,
-        "chunksRequested",
-        1
-      );
-      const url = buildSkinportUrl("/sales/history", {
-        app_id: 730,
-        currency: apiCurrency,
-        market_hash_name: namesChunk.join(",")
+  if (!Array.isArray(payload)) {
+    for (const name of requestedNames) {
+      failuresByName[name] = PARSING_FAILURE_MESSAGE;
+      stateByName[name] = SOURCE_STATES.PARSING_FAILED;
+      diagnosticsByName[name] = buildDiagnostics({
+        requestSent: true,
+        responseStatus: 200,
+        sourceFailureReason: SOURCE_STATES.PARSING_FAILED,
+        lastFailureAt: requestStartedAt
       });
+    }
+    const failed = {};
+    Object.defineProperty(failed, "__meta", {
+      value: {
+        failuresByName,
+        stateByName,
+        diagnosticsByName,
+        market_enabled: true,
+        credentials_present: Boolean(skinportApiKey),
+        request_sent: true,
+        response_status: 200,
+        response_parsed: false,
+        listings_found: null,
+        buy_price_present: false,
+        sell_price_present: false,
+        freshness_present: false,
+        listing_url_present: false,
+        sourceUnavailableReason: PARSING_FAILURE_MESSAGE,
+        sourceFailureReason: SOURCE_STATES.PARSING_FAILED,
+        source_failure_reason: SOURCE_STATES.PARSING_FAILED,
+        last_success_at: null,
+        last_failure_at: requestStartedAt,
+        pipeline
+      },
+      enumerable: false
+    });
+    return failed;
+  }
 
-      try {
-        const payload = await fetchJsonWithRetry(url, {
-          timeoutMs: options.timeoutMs,
-          maxRetries: options.maxRetries,
-          headers: buildHeaders()
-        });
-        incrementStageCounter(
-          chunkDiagnostics,
-          SKINPORT_PIPELINE_STAGES.RAW_DATA,
-          "chunksFetched",
-          1
-        );
-        if (!Array.isArray(payload)) {
-          incrementStageCounter(
-            chunkDiagnostics,
-            SKINPORT_PIPELINE_STAGES.RAW_DATA,
-            "emptyPayloads",
-            1
-          );
-          recordRejectReason(
-            chunkDiagnostics,
-            SKINPORT_PIPELINE_STAGES.RAW_DATA,
-            "invalid_payload_shape"
-          );
-          applyChunkFailureToNames(
-            failuresByName,
-            namesChunk,
-            SKINPORT_PIPELINE_STAGES.RAW_DATA,
-            "invalid_payload_shape"
-          );
-          return {
-            rows: [],
-            diagnostics: chunkDiagnostics,
-            failuresByName: {}
-          };
-        }
-        if (!payload.length) {
-          incrementStageCounter(
-            chunkDiagnostics,
-            SKINPORT_PIPELINE_STAGES.RAW_DATA,
-            "emptyPayloads",
-            1
-          );
-          recordRejectReason(
-            chunkDiagnostics,
-            SKINPORT_PIPELINE_STAGES.RAW_DATA,
-            "empty_payload"
-          );
-          applyChunkFailureToNames(
-            failuresByName,
-            namesChunk,
-            SKINPORT_PIPELINE_STAGES.RAW_DATA,
-            "empty_payload"
-          );
-        }
-        incrementStageCounter(
-          chunkDiagnostics,
-          SKINPORT_PIPELINE_STAGES.RAW_DATA,
-          "payloadRows",
-          payload.length
-        );
-        const chunkFailuresByName = {};
-        const rows = normalizeItemsPayload(payload, {
-          observedAt: new Date().toISOString(),
-          diagnostics: chunkDiagnostics,
-          failuresByName: chunkFailuresByName
-        });
-        return {
-          rows,
-          diagnostics: chunkDiagnostics,
-          failuresByName: chunkFailuresByName
-        };
-      } catch (_err) {
-        incrementStageCounter(
-          chunkDiagnostics,
-          SKINPORT_PIPELINE_STAGES.RAW_DATA,
-          "fetchErrors",
-          1
-        );
-        recordRejectReason(
-          chunkDiagnostics,
-          SKINPORT_PIPELINE_STAGES.RAW_DATA,
-          "fetch_error"
-        );
-        applyChunkFailureToNames(
-          failuresByName,
-          namesChunk,
-          SKINPORT_PIPELINE_STAGES.RAW_DATA,
-          "fetch_error"
-        );
-        return {
-          rows: [],
-          diagnostics: chunkDiagnostics,
-          failuresByName: {}
-        };
-      }
-    },
-    concurrency
-  );
+  const normalizedRows = normalizeItemsPayload(payload, {
+    observedAt: requestStartedAt,
+    requestedNamesSet
+  });
+  const rowsByName = {};
+  for (const row of normalizedRows) {
+    const current = rowsByName[row.marketHashName];
+    if (!current || Number(row.price || 0) < Number(current.price || Number.POSITIVE_INFINITY)) {
+      rowsByName[row.marketHashName] = row;
+    }
+  }
 
   const byName = {};
-  for (const chunkResult of chunkResults) {
-    const rows = Array.isArray(chunkResult?.rows) ? chunkResult.rows : [];
-    mergePipelineDiagnostics(pipelineDiagnostics, chunkResult?.diagnostics || {});
-    mergeFailuresByName(failuresByName, chunkResult?.failuresByName || {});
-
-    for (const row of rows) {
-      if (!isRequestedName(requestedNamesSet, row.marketHashName)) {
-        incrementStageCounter(
-          pipelineDiagnostics,
-          SKINPORT_PIPELINE_STAGES.MAPPING,
-          "rejected",
-          1
-        );
-        recordRejectReason(
-          pipelineDiagnostics,
-          SKINPORT_PIPELINE_STAGES.MAPPING,
-          "not_requested_item"
-        );
-        continue;
-      }
-      const auditRow = buildQuoteAuditRow(row.raw, row);
-      if (options.auditSkinportQuotes !== false) {
-        console.info("[skinport-audit]", JSON.stringify(auditRow));
-      }
-      incrementStageCounter(
-        pipelineDiagnostics,
-        SKINPORT_PIPELINE_STAGES.LIVE_QUOTE_VALIDATION,
-        "requested",
-        1
-      );
-      if (row.quoteType !== "live_executable") {
-        incrementStageCounter(
-          pipelineDiagnostics,
-          SKINPORT_PIPELINE_STAGES.LIVE_QUOTE_VALIDATION,
-          "rejected",
-          1
-        );
-        recordRejectReason(
-          pipelineDiagnostics,
-          SKINPORT_PIPELINE_STAGES.LIVE_QUOTE_VALIDATION,
-          "quote_type_not_live"
-        );
-        markFailureByName(
-          failuresByName,
-          row.marketHashName,
-          SKINPORT_PIPELINE_STAGES.LIVE_QUOTE_VALIDATION,
-          "quote_type_not_live"
-        );
-        continue;
-      }
-      const liveValidation = validateLiveQuoteForFeed(row, {
-        maxAgeHours: options.maxQuoteAgeHours
+  for (const marketHashName of requestedNames) {
+    const row = rowsByName[marketHashName] || null;
+    if (!row) {
+      failuresByName[marketHashName] = NO_LISTING_MESSAGE;
+      stateByName[marketHashName] = SOURCE_STATES.NO_LISTING;
+      diagnosticsByName[marketHashName] = buildDiagnostics({
+        requestSent: true,
+        responseStatus: 200,
+        responseParsed: true,
+        listingsFound: false,
+        sourceFailureReason: SOURCE_STATES.NO_LISTING,
+        lastFailureAt: requestStartedAt
       });
-      if (!liveValidation.confirmed) {
-        incrementStageCounter(
-          pipelineDiagnostics,
-          SKINPORT_PIPELINE_STAGES.LIVE_QUOTE_VALIDATION,
-          "rejected",
-          1
-        );
-        recordRejectReason(
-          pipelineDiagnostics,
-          SKINPORT_PIPELINE_STAGES.LIVE_QUOTE_VALIDATION,
-          liveValidation.reason
-        );
-        markFailureByName(
-          failuresByName,
-          row.marketHashName,
-          SKINPORT_PIPELINE_STAGES.LIVE_QUOTE_VALIDATION,
-          liveValidation.reason
-        );
-        continue;
-      }
-      incrementStageCounter(
-        pipelineDiagnostics,
-        SKINPORT_PIPELINE_STAGES.LIVE_QUOTE_VALIDATION,
-        "passed",
-        1
-      );
-      if (row.priceIntegrityMode === "strict_identity") {
-        pipelineDiagnostics.strictConfirmed = Number(pipelineDiagnostics.strictConfirmed || 0) + 1;
-      } else {
-        pipelineDiagnostics.fallbackConfirmed =
-          Number(pipelineDiagnostics.fallbackConfirmed || 0) + 1;
-      }
+      continue;
+    }
 
-      incrementStageCounter(
-        pipelineDiagnostics,
-        SKINPORT_PIPELINE_STAGES.MAPPING,
-        "requested",
-        1
-      );
-      const nextRecord = buildMarketPriceRecord({
-        source: SOURCE,
-        marketHashName: row.marketHashName,
-        grossPrice: row.price,
-        currency: row.currency || apiCurrency,
-        url: row.url || buildListingUrl(row.marketHashName),
-        updatedAt: row.observedAt || new Date().toISOString(),
-        confidence: "high",
-        raw: {
+    const liveValidation = validateLiveQuoteForFeed(row, {
+      maxAgeHours: options.maxQuoteAgeHours
+    });
+    if (!liveValidation.confirmed) {
+      const failureState =
+        liveValidation.reason === "stale_quote" ? SOURCE_STATES.STALE : SOURCE_STATES.NO_DATA;
+      failuresByName[marketHashName] =
+        failureState === SOURCE_STATES.STALE ? "Skinport quote is stale." : NO_DATA_MESSAGE;
+      stateByName[marketHashName] = failureState;
+      diagnosticsByName[marketHashName] = buildDiagnostics({
+        requestSent: true,
+        responseStatus: 200,
+        responseParsed: true,
+        listingsFound: true,
+        freshnessPresent: Boolean(row.observedAt),
+        listingUrlPresent: Boolean(row.url),
+        sourceFailureReason: failureState,
+        lastFailureAt: requestStartedAt
+      });
+      continue;
+    }
+
+    const successDiagnostics = buildDiagnostics({
+      requestSent: true,
+      responseStatus: 200,
+      responseParsed: true,
+      listingsFound: true,
+      buyPricePresent: true,
+      freshnessPresent: Boolean(row.observedAt),
+      listingUrlPresent: Boolean(row.url),
+      lastSuccessAt: requestStartedAt
+    });
+    const record = buildMarketPriceRecord({
+      source: SOURCE,
+      marketHashName,
+      grossPrice: row.price,
+      currency: row.currency || apiCurrency,
+      url: row.url || buildListingUrl(marketHashName),
+      updatedAt: row.observedAt || requestStartedAt,
+      confidence: row.priceIntegrityMode === "strict_identity" ? "high" : "medium",
+      raw: attachMarketHealth(
+        {
           ...(row.raw || {}),
           skinport_quote_price: row.price,
           skinport_quote_currency: row.currency || apiCurrency,
@@ -929,67 +603,80 @@ async function batchGetPrices(items = [], options = {}) {
           skinport_price_integrity_status: row.priceIntegrityStatus,
           skinport_price_integrity_mode: row.priceIntegrityMode || null,
           skinport_price_integrity_reason: row.priceIntegrityReason || null
-        }
+        },
+        successDiagnostics
+      )
+    });
+    if (!record) {
+      failuresByName[marketHashName] = NO_DATA_MESSAGE;
+      stateByName[marketHashName] = SOURCE_STATES.NO_DATA;
+      diagnosticsByName[marketHashName] = buildDiagnostics({
+        requestSent: true,
+        responseStatus: 200,
+        responseParsed: true,
+        listingsFound: true,
+        freshnessPresent: Boolean(row.observedAt),
+        listingUrlPresent: Boolean(row.url),
+        sourceFailureReason: SOURCE_STATES.NO_DATA,
+        lastFailureAt: requestStartedAt
       });
-      if (!nextRecord) {
-        incrementStageCounter(
-          pipelineDiagnostics,
-          SKINPORT_PIPELINE_STAGES.MAPPING,
-          "rejected",
-          1
-        );
-        recordRejectReason(
-          pipelineDiagnostics,
-          SKINPORT_PIPELINE_STAGES.MAPPING,
-          "invalid_record"
-        );
-        markFailureByName(
-          failuresByName,
-          row.marketHashName,
-          SKINPORT_PIPELINE_STAGES.MAPPING,
-          "invalid_record"
-        );
-        continue;
-      }
-      const selectedRecord = selectPreferredRecord(byName[row.marketHashName], nextRecord);
-      byName[row.marketHashName] = selectedRecord;
-      incrementStageCounter(
-        pipelineDiagnostics,
-        SKINPORT_PIPELINE_STAGES.MAPPING,
-        "passed",
-        1
-      );
-      delete failuresByName[row.marketHashName];
+      continue;
     }
+
+    byName[marketHashName] = record;
+    stateByName[marketHashName] = SOURCE_STATES.OK;
+    diagnosticsByName[marketHashName] = successDiagnostics;
+    pipeline.mappedItems += 1;
+    if (row.priceIntegrityMode === "strict_identity") pipeline.strictConfirmed += 1;
+    else pipeline.fallbackConfirmed += 1;
   }
 
-  for (const name of normalizedNames) {
-    if (byName[name]) continue;
-    if (!String(failuresByName[name] || "").trim()) {
-      failuresByName[name] = `${SKINPORT_PIPELINE_STAGES.MAPPING}.missing_requested_item`;
-      recordRejectReason(
-        pipelineDiagnostics,
-        SKINPORT_PIPELINE_STAGES.MAPPING,
-        "missing_requested_item"
-      );
-      incrementStageCounter(
-        pipelineDiagnostics,
-        SKINPORT_PIPELINE_STAGES.MAPPING,
-        "rejected",
-        1
-      );
-    }
-  }
-  pipelineDiagnostics.mappedItems = Object.keys(byName).length;
-  byName.__meta = {
-    failuresByName,
-    sourceUnavailableReason:
-      Object.keys(byName).length > 0
-        ? null
-        : pickPrimaryRejectReason(pipelineDiagnostics.rejectReasons) ||
-          `${SKINPORT_PIPELINE_STAGES.RAW_DATA}.no_results`,
-    pipeline: pipelineDiagnostics
-  };
+  const failedStates = Array.from(
+    new Set(
+      Object.values(stateByName)
+        .map((value) => normalizeSourceState(value))
+        .filter((value) => value && value !== SOURCE_STATES.OK)
+    )
+  );
+  const failureMessages = Array.from(new Set(Object.values(failuresByName).filter(Boolean)));
+  Object.defineProperty(byName, "__meta", {
+    value: {
+      failuresByName,
+      stateByName,
+      diagnosticsByName,
+      market_enabled: true,
+      credentials_present: Boolean(skinportApiKey),
+      request_sent: true,
+      response_status: 200,
+      response_parsed: true,
+      listings_found:
+        Object.values(diagnosticsByName).some((value) => value?.listings_found === true) || null,
+      buy_price_present:
+        Object.values(diagnosticsByName).some((value) => value?.buy_price_present === true) ||
+        null,
+      sell_price_present:
+        Object.values(diagnosticsByName).some((value) => value?.sell_price_present === true) ||
+        null,
+      freshness_present:
+        Object.values(diagnosticsByName).some((value) => value?.freshness_present === true) ||
+        null,
+      listing_url_present:
+        Object.values(diagnosticsByName).some((value) => value?.listing_url_present === true) ||
+        null,
+      sourceUnavailableReason:
+        failedStates.length === 1 && failureMessages.length === 1 ? failureMessages[0] : null,
+      sourceFailureReason: failedStates.length === 1 ? failedStates[0] : null,
+      source_failure_reason: failedStates.length === 1 ? failedStates[0] : null,
+      last_success_at:
+        Object.values(diagnosticsByName).map((value) => value?.last_success_at).filter(Boolean).sort().slice(-1)[0] ||
+        null,
+      last_failure_at:
+        Object.values(diagnosticsByName).map((value) => value?.last_failure_at).filter(Boolean).sort().slice(-1)[0] ||
+        null,
+      pipeline
+    },
+    enumerable: false
+  });
 
   return byName;
 }
@@ -1010,6 +697,8 @@ module.exports = {
     resolvePriceIntegrityDecision,
     validateLiveQuoteForFeed,
     urlMatchesExactSkinportSearchItem,
-    createSkinportPipelineDiagnostics
+    createSkinportPipelineDiagnostics,
+    classifySkinportError,
+    buildItemsUrl
   }
 };

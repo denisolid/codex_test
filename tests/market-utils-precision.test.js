@@ -22,3 +22,14 @@ test("buildMarketPriceRecord keeps sub-cent precision for compare", () => {
   assert.equal(row.grossPrice, 0.03);
   assert.equal(row.netPriceAfterFees, 0.0261);
 });
+
+test("buildMarketPriceRecord rejects zero-value market rows", () => {
+  const row = buildMarketPriceRecord({
+    source: "steam",
+    marketHashName: "Fracture Case",
+    grossPrice: 0,
+    currency: "USD"
+  });
+
+  assert.equal(row, null);
+});

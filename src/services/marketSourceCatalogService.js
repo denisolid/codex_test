@@ -6,7 +6,7 @@ const {
   marketSnapshotTtlMinutes
 } = require("../config/env")
 const referenceCatalogRules = require("../config/referenceCatalogRules")
-const sourceCatalogSeed = require("../config/marketSourceCatalogSeed")
+const manualPrimaryCatalogSeed = require("../config/manualPrimaryCatalogSeed")
 const catalogGenerationRepo = require("../repositories/catalogGenerationRepository")
 const marketSourceCatalogRepo = require("../repositories/marketSourceCatalogRepository")
 const marketUniverseRepo = require("../repositories/marketUniverseRepository")
@@ -208,19 +208,19 @@ const LIQUID_WEAPON_KEYWORDS = Object.freeze([
 ])
 const SOURCE_CATALOG_QUOTA_RULES = Object.freeze({
   [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({
-    min: 749,
-    target: 768,
-    max: 787
+    min: 380,
+    target: 380,
+    max: 380
   }),
   [ITEM_CATEGORIES.CASE]: Object.freeze({
-    min: 96,
-    target: 96,
-    max: 134
+    min: 70,
+    target: 70,
+    max: 70
   }),
   [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
-    min: 58,
-    target: 96,
-    max: 96
+    min: 50,
+    target: 50,
+    max: 50
   }),
   [ITEM_CATEGORIES.KNIFE]: Object.freeze({
     min: 0,
@@ -271,19 +271,19 @@ const SOURCE_CANDIDATE_HARD_FLOOR = Object.freeze({
 
 const CATEGORY_QUOTA_RULES = Object.freeze({
   [ITEM_CATEGORIES.WEAPON_SKIN]: Object.freeze({
-    min: 562,
-    target: 576,
-    max: 590
+    min: 380,
+    target: 380,
+    max: 380
   }),
   [ITEM_CATEGORIES.CASE]: Object.freeze({
-    min: 72,
-    target: 72,
-    max: 101
+    min: 70,
+    target: 70,
+    max: 70
   }),
   [ITEM_CATEGORIES.STICKER_CAPSULE]: Object.freeze({
-    min: 43,
-    target: 72,
-    max: 72
+    min: 50,
+    target: 50,
+    max: 50
   }),
   [ITEM_CATEGORIES.KNIFE]: Object.freeze({
     min: 0,
@@ -2903,11 +2903,10 @@ function pickSourceCatalogRowsByQuota(
   }
 }
 
-function resolveSeedBuilder(limit = SOURCE_CATALOG_LIMIT) {
-  if (typeof sourceCatalogSeed?.buildSourceCatalogSeed === "function") {
-    return sourceCatalogSeed.buildSourceCatalogSeed(limit)
-  }
-  return Array.isArray(sourceCatalogSeed) ? sourceCatalogSeed.slice(0, limit) : []
+function resolveManualSeedRows(limit = SOURCE_CATALOG_LIMIT) {
+  return Array.isArray(manualPrimaryCatalogSeed)
+    ? manualPrimaryCatalogSeed.slice(0, limit)
+    : []
 }
 
 async function ingestSourceCatalogSeeds(options = {}) {
@@ -2918,8 +2917,8 @@ async function ingestSourceCatalogSeeds(options = {}) {
   const scopedCategorySet = new Set(scopedCategories)
   const ingestExclusions = { ...BASE_INGEST_EXCLUDED_REASON_COUNTER }
   const curatedSeedRows = toSourceCatalogSeedRows(
-    resolveSeedBuilder(SOURCE_CATALOG_LIMIT),
-    "curated_seed",
+    resolveManualSeedRows(SOURCE_CATALOG_LIMIT),
+    "manual_primary_seed",
     20,
     ingestExclusions
   ).filter((row) => scopedCategorySet.has(normalizeCategory(row?.category, row?.marketHashName)))

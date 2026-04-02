@@ -5,16 +5,15 @@ const {
   normalizePriceFromMinorUnits,
   normalizePriceNumber
 } = require("./marketUtils");
+const {
+  SOURCE_STATES,
+  buildMarketHealthDiagnostics,
+  attachMarketHealth,
+  normalizeSourceState
+} = require("./marketSourceDiagnostics");
 
 const SOURCE = "csfloat";
 const DEFAULT_API_URL = "https://csfloat.com/api/v1";
-const SOURCE_STATES = Object.freeze({
-  AUTH_FAILED: "auth_failed",
-  SOURCE_UNAVAILABLE: "source_unavailable",
-  NO_LISTING: "no_listing",
-  NO_QUOTE_DATA: "no_quote_data",
-  OK: "ok"
-});
 const AUTH_FAILURE_MESSAGE = "CSFloat authentication failed. Check CSFLOAT_API_KEY.";
 const SOURCE_UNAVAILABLE_MESSAGE = "CSFloat data unavailable.";
 const NO_LISTING_MESSAGE = "No CSFloat listing found.";
@@ -148,19 +147,34 @@ function normalizeCsfloatPrice(value) {
 
 function buildDiagnostics({
   apiKeyPresent = false,
+  authOk = null,
   authHeaderSent = false,
+  requestSent = false,
   responseStatus = null,
-  sourceFailureReason = null
+  responseParsed = false,
+  listingsFound = null,
+  buyPricePresent = false,
+  listingUrlPresent = false,
+  sourceFailureReason = null,
+  lastSuccessAt = null,
+  lastFailureAt = null
 } = {}) {
-  const parsedStatus = Number(responseStatus);
-  return {
-    api_key_present: Boolean(apiKeyPresent),
-    auth_header_sent: Boolean(authHeaderSent),
-    response_status: Number.isFinite(parsedStatus) ? parsedStatus : null,
-    source_failure_reason: sourceFailureReason
-      ? String(sourceFailureReason || "").trim()
-      : null
-  };
+  return buildMarketHealthDiagnostics({
+    marketEnabled: true,
+    credentialsPresent: Boolean(apiKeyPresent),
+    authOk,
+    requestSent,
+    responseStatus,
+    responseParsed,
+    listingsFound,
+    buyPricePresent,
+    sellPricePresent: buyPricePresent,
+    freshnessPresent: true,
+    listingUrlPresent,
+    sourceFailureReason,
+    lastSuccessAt,
+    lastFailureAt
+  });
 }
 
 function classifyCsfloatFetchError(err) {
@@ -175,34 +189,34 @@ function classifyCsfloatFetchError(err) {
   }
   if (status === 429) {
     return {
-      state: SOURCE_STATES.SOURCE_UNAVAILABLE,
+      state: SOURCE_STATES.UNAVAILABLE,
       reason: "CSFloat rate limit reached. Retry shortly.",
       responseStatus: status,
-      sourceFailureReason: SOURCE_STATES.SOURCE_UNAVAILABLE
+      sourceFailureReason: SOURCE_STATES.UNAVAILABLE
     };
   }
   if (status >= 500) {
     return {
-      state: SOURCE_STATES.SOURCE_UNAVAILABLE,
+      state: SOURCE_STATES.UNAVAILABLE,
       reason: "CSFloat is temporarily unavailable.",
       responseStatus: status,
-      sourceFailureReason: SOURCE_STATES.SOURCE_UNAVAILABLE
+      sourceFailureReason: SOURCE_STATES.UNAVAILABLE
     };
   }
   const message = String(err?.message || "").toLowerCase();
   if (message.includes("timed out")) {
     return {
-      state: SOURCE_STATES.SOURCE_UNAVAILABLE,
+      state: SOURCE_STATES.TIMEOUT,
       reason: "CSFloat request timed out.",
       responseStatus: status || 504,
-      sourceFailureReason: SOURCE_STATES.SOURCE_UNAVAILABLE
+      sourceFailureReason: SOURCE_STATES.TIMEOUT
     };
   }
   return {
-    state: SOURCE_STATES.SOURCE_UNAVAILABLE,
+    state: SOURCE_STATES.UNAVAILABLE,
     reason: SOURCE_UNAVAILABLE_MESSAGE,
     responseStatus: status || null,
-    sourceFailureReason: SOURCE_STATES.SOURCE_UNAVAILABLE
+    sourceFailureReason: SOURCE_STATES.UNAVAILABLE
   };
 }
 
@@ -284,7 +298,7 @@ function extractBestListing(payload, marketHashName = "") {
 
 function buildFailureResult(state, reason, diagnostics = {}) {
   return {
-    state,
+    state: normalizeSourceState(state) || SOURCE_STATES.UNAVAILABLE,
     price: null,
     reason: String(reason || "").trim() || null,
     diagnostics: buildDiagnostics(diagnostics)
@@ -295,6 +309,7 @@ async function searchItemPrice(input = {}) {
   const marketHashName = String(input.marketHashName || "").trim();
   if (!marketHashName) return null;
 
+  const requestStartedAt = new Date().toISOString();
   const apiKey = sanitizeApiKey(csfloatApiKey);
   const url = buildApiUrl(marketHashName);
   const headerVariants = buildHeaderVariantMap(apiKey);
@@ -326,9 +341,16 @@ async function searchItemPrice(input = {}) {
       }
       return buildFailureResult(failure.state, failure.reason, {
         apiKeyPresent: variant.apiKeyPresent,
+        authOk: variant.authHeaderSent ? false : null,
         authHeaderSent: variant.authHeaderSent,
+        requestSent: true,
         responseStatus: failure.responseStatus,
-        sourceFailureReason: failure.sourceFailureReason
+        responseParsed: false,
+        listingsFound: null,
+        buyPricePresent: false,
+        listingUrlPresent: false,
+        sourceFailureReason: failure.sourceFailureReason,
+        lastFailureAt: requestStartedAt
       });
     }
   }
@@ -336,27 +358,42 @@ async function searchItemPrice(input = {}) {
   const best = extractBestListing(payload, marketHashName);
   if (!best) {
     const listings = getPayloadListings(payload);
-    const state = listings.length ? SOURCE_STATES.NO_QUOTE_DATA : SOURCE_STATES.NO_LISTING;
-    const reason = state === SOURCE_STATES.NO_QUOTE_DATA
+    const state = listings.length ? SOURCE_STATES.NO_DATA : SOURCE_STATES.NO_LISTING;
+    const reason = state === SOURCE_STATES.NO_DATA
       ? NO_QUOTE_DATA_MESSAGE
       : NO_LISTING_MESSAGE;
     return buildFailureResult(state, reason, {
       apiKeyPresent: resolvedVariant.apiKeyPresent,
+      authOk: resolvedVariant.authHeaderSent ? true : null,
       authHeaderSent: resolvedVariant.authHeaderSent,
+      requestSent: true,
       responseStatus: 200,
-      sourceFailureReason: state
+      responseParsed: true,
+      listingsFound: Boolean(listings.length),
+      buyPricePresent: false,
+      listingUrlPresent: false,
+      sourceFailureReason: state,
+      lastFailureAt: requestStartedAt
     });
   }
 
+  const successDiagnostics = buildDiagnostics({
+    apiKeyPresent: resolvedVariant.apiKeyPresent,
+    authOk: resolvedVariant.authHeaderSent ? true : null,
+    authHeaderSent: resolvedVariant.authHeaderSent,
+    requestSent: true,
+    responseStatus: 200,
+    responseParsed: true,
+    listingsFound: true,
+    buyPricePresent: true,
+    listingUrlPresent: Boolean(best.url),
+    sourceFailureReason: null,
+    lastSuccessAt: requestStartedAt
+  });
   return {
     state: SOURCE_STATES.OK,
     reason: null,
-    diagnostics: buildDiagnostics({
-      apiKeyPresent: resolvedVariant.apiKeyPresent,
-      authHeaderSent: resolvedVariant.authHeaderSent,
-      responseStatus: 200,
-      sourceFailureReason: null
-    }),
+    diagnostics: successDiagnostics,
     price: buildMarketPriceRecord({
       source: SOURCE,
       marketHashName,
@@ -364,7 +401,14 @@ async function searchItemPrice(input = {}) {
       currency: best.currency || "USD",
       url: best.url || buildListingUrl(marketHashName),
       confidence: "medium",
-      raw: best.raw
+      raw: attachMarketHealth(
+        {
+          ...(best.raw || {}),
+          csfloat_listing_id:
+            best.raw?.id || best.raw?.listing_id || best.raw?.listingId || null
+        },
+        successDiagnostics
+      )
     })
   };
 }
@@ -418,9 +462,12 @@ async function batchGetPrices(items = [], options = {}) {
         stateByName[marketHashName] = failure.state;
         diagnosticsByName[marketHashName] = buildDiagnostics({
           apiKeyPresent,
+          authOk: apiKeyPresent ? false : null,
           authHeaderSent: apiKeyPresent,
+          requestSent: true,
           responseStatus: failure.responseStatus,
-          sourceFailureReason: failure.sourceFailureReason
+          sourceFailureReason: failure.sourceFailureReason,
+          lastFailureAt: new Date().toISOString()
         });
         failuresByName[marketHashName] = failure.reason;
         return null;
@@ -437,7 +484,7 @@ async function batchGetPrices(items = [], options = {}) {
 
   const sourceLevelStates = Object.entries(stateByName)
     .filter(([, value]) =>
-      [SOURCE_STATES.AUTH_FAILED, SOURCE_STATES.SOURCE_UNAVAILABLE].includes(value)
+      [SOURCE_STATES.AUTH_FAILED, SOURCE_STATES.UNAVAILABLE, SOURCE_STATES.TIMEOUT].includes(value)
     )
     .map(([, value]) => value);
   const uniqueSourceLevelStates = Array.from(new Set(sourceLevelStates));
@@ -445,7 +492,7 @@ async function batchGetPrices(items = [], options = {}) {
     new Set(
       Object.entries(failuresByName)
         .filter(([marketHashName]) =>
-          [SOURCE_STATES.AUTH_FAILED, SOURCE_STATES.SOURCE_UNAVAILABLE].includes(
+          [SOURCE_STATES.AUTH_FAILED, SOURCE_STATES.UNAVAILABLE, SOURCE_STATES.TIMEOUT].includes(
             stateByName[marketHashName]
           )
         )
@@ -471,11 +518,33 @@ async function batchGetPrices(items = [], options = {}) {
           : null,
       sourceFailureReason:
         uniqueSourceLevelStates.length === 1 ? uniqueSourceLevelStates[0] : null,
-      api_key_present: apiKeyPresent,
-      auth_header_sent: apiKeyPresent,
+      market_enabled: true,
+      credentials_present: apiKeyPresent,
+      auth_ok: null,
+      request_sent: list.length > 0,
       response_status: uniqueResponseStatuses.length === 1 ? uniqueResponseStatuses[0] : null,
+      response_parsed:
+        Object.values(diagnosticsByName).some((value) => value?.response_parsed === true) || null,
+      listings_found:
+        Object.values(diagnosticsByName).some((value) => value?.listings_found === true) || null,
+      buy_price_present:
+        Object.values(diagnosticsByName).some((value) => value?.buy_price_present === true) ||
+        null,
+      sell_price_present:
+        Object.values(diagnosticsByName).some((value) => value?.sell_price_present === true) ||
+        null,
+      freshness_present: true,
+      listing_url_present:
+        Object.values(diagnosticsByName).some((value) => value?.listing_url_present === true) ||
+        null,
       source_failure_reason:
         uniqueSourceLevelStates.length === 1 ? uniqueSourceLevelStates[0] : null,
+      last_success_at:
+        Object.values(diagnosticsByName).map((value) => value?.last_success_at).filter(Boolean).sort().slice(-1)[0] ||
+        null,
+      last_failure_at:
+        Object.values(diagnosticsByName).map((value) => value?.last_failure_at).filter(Boolean).sort().slice(-1)[0] ||
+        null,
       pipeline: {
         auth_header_format: AUTH_HEADER_FORMAT
       }
