@@ -10,6 +10,7 @@ const skinportMarket = require("../markets/skinport.market")
 const csfloatMarket = require("../markets/csfloat.market")
 const dmarketMarket = require("../markets/dmarket.market")
 const {
+  SOURCE_STATES,
   readMarketHealth,
   buildMarketHealthDiagnostics,
   normalizeSourceState
@@ -17,9 +18,18 @@ const {
 const {
   arbitrageDefaultUniverseLimit,
   arbitrageMaxConcurrentMarketRequests,
+  marketCompareCacheTtlMinutes,
   marketCompareTimeoutMs,
-  marketCompareMaxRetries
+  marketCompareMaxRetries,
+  marketPriceRateLimitPerSecond
 } = require("../config/env")
+const {
+  buildScannerMarketPolicyDiagnostics,
+  getScannerCoverageMarkets,
+  getScannerMarketPolicy,
+  isScannerMarketDisabled,
+  shouldUseFreshCacheOnRateLimit
+} = require("./scanner/marketReliabilityPolicy")
 
 const RECOVERY_CATEGORIES = Object.freeze(["weapon_skin", "case", "sticker_capsule"])
 const RECOVERY_SOURCE_ORDER = Object.freeze(["steam", "skinport", "csfloat", "dmarket"])
@@ -45,6 +55,10 @@ const DEFAULT_WEAPON_SKIN_VERIFICATION_COOLDOWN_MS = 30 * 60 * 1000
 const DEFAULT_HEALTH_WINDOW_HOURS = 2
 const DEFAULT_QUOTE_LOOKBACK_HOURS = 24 * 14
 const DEFAULT_REFRESH_CONCURRENCY = Math.max(Number(arbitrageMaxConcurrentMarketRequests || 4), 1)
+const DEFAULT_STEAM_SCANNER_LIVE_REQUEST_BUDGET = Math.max(
+  Math.min(Number(marketPriceRateLimitPerSecond || 2), 2),
+  1
+)
 const CATEGORY_REFRESH_TARGETS = Object.freeze({
   weapon_skin: Object.freeze({ share: 0.8, min: 120 }),
   case: Object.freeze({ share: 0.1, min: 25 }),
@@ -82,6 +96,13 @@ const WEAPON_SKIN_VERIFICATION_PRIORITY_BUCKETS = Object.freeze({
   high: 110,
   medium: 85
 })
+const STEAM_SCANNER_STATUS = Object.freeze({
+  RATE_LIMITED: "steam_rate_limited",
+  CACHED_FALLBACK: "steam_cached_fallback",
+  UNAVAILABLE: "steam_unavailable"
+})
+const STEAM_SCANNER_BUDGET_EXHAUSTED_REASON =
+  "Steam scanner live budget exhausted. Fresh cache unavailable."
 const WEAPON_SKIN_STRUCTURAL_BLOCK_REASON_PATTERN =
   /(invalid|unusable|anti[_\s-]?fake|below[_\s-]?min|impossible|unsupported|not[_\s-]?tradable|structural|economics)/i
 
@@ -107,6 +128,131 @@ function toIntegerOrNull(value, min = 0) {
   const parsed = toFiniteOrNull(value)
   if (parsed == null) return null
   return Math.max(Math.round(parsed), min)
+}
+
+function isFreshMarketPriceCacheRow(row = {}, ttlMinutes = marketCompareCacheTtlMinutes, nowMs = Date.now()) {
+  const fetchedAt = toIsoOrNull(row?.fetched_at || row?.fetchedAt)
+  if (!fetchedAt) return false
+  const fetchedAtMs = new Date(fetchedAt).getTime()
+  if (!Number.isFinite(fetchedAtMs)) return false
+  const ageMs = Number(nowMs || Date.now()) - fetchedAtMs
+  if (!Number.isFinite(ageMs) || ageMs < 0) return false
+  return ageMs <= Math.max(Number(ttlMinutes || 0), 1) * 60 * 1000
+}
+
+function isRateLimitReason(value = "") {
+  const text = normalizeText(value).toLowerCase()
+  if (!text) return false
+  return text.includes("rate limit") || text.includes("too many requests") || text.includes("429")
+}
+
+function incrementFailureReasonCount(target = {}, source = "", reason = "", amount = 1) {
+  const safeSource = normalizeText(source).toLowerCase()
+  const safeReason = normalizeText(reason)
+  const safeAmount = Math.max(Number(amount || 0), 0)
+  if (!safeSource || !safeReason || !safeAmount) return
+  const key = `${safeSource}:${safeReason}`
+  target[key] = Number(target[key] || 0) + safeAmount
+}
+
+function incrementQuoteSourceStateCount(sourceDiagnostics = {}, state = "", amount = 1) {
+  const safeState = normalizeSourceState(state) || normalizeText(state).toLowerCase()
+  const safeAmount = Math.max(Number(amount || 0), 0)
+  if (!safeState || !safeAmount) return
+  sourceDiagnostics.stateCounts = sourceDiagnostics.stateCounts || {}
+  sourceDiagnostics.stateCounts[safeState] =
+    Number(sourceDiagnostics.stateCounts?.[safeState] || 0) + safeAmount
+}
+
+function incrementQuoteSourceScannerStatusCount(sourceDiagnostics = {}, status = "", amount = 1) {
+  const safeStatus = normalizeText(status)
+  const safeAmount = Math.max(Number(amount || 0), 0)
+  if (!safeStatus || !safeAmount) return
+  sourceDiagnostics.scanner_status_counts = sourceDiagnostics.scanner_status_counts || {}
+  sourceDiagnostics.scanner_status_counts[safeStatus] =
+    Number(sourceDiagnostics.scanner_status_counts?.[safeStatus] || 0) + safeAmount
+}
+
+function recordQuoteRowOutcome(counters = {}, outcome = {}) {
+  if (!counters?.quoteRowOutcomesByKey || typeof counters.quoteRowOutcomesByKey !== "object") {
+    return
+  }
+  const source = normalizeText(outcome?.source).toLowerCase()
+  const marketHashName = normalizeText(outcome?.marketHashName)
+  if (!source || !marketHashName) return
+  const key = `${source}::${marketHashName}`
+  counters.quoteRowOutcomesByKey[key] = {
+    source,
+    marketHashName,
+    available: Boolean(outcome?.available),
+    sourceState:
+      normalizeSourceState(outcome?.sourceState) ||
+      (Boolean(outcome?.available) ? SOURCE_STATES.OK : SOURCE_STATES.NO_DATA),
+    reason: normalizeText(outcome?.reason) || null,
+    scannerStatus: normalizeText(outcome?.scannerStatus) || null,
+    usedFreshCache: Boolean(outcome?.usedFreshCache),
+    requestSent:
+      outcome?.requestSent == null ? null : Boolean(outcome.requestSent)
+  }
+}
+
+function buildRecordFromCachedMarketPriceRow(row = {}, source = "", fetchedAtIso = null) {
+  const market = normalizeText(source || row?.market || row?.source).toLowerCase()
+  const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
+  const grossPrice = toFiniteOrNull(row?.gross_price ?? row?.grossPrice)
+  const netPriceAfterFees = toFiniteOrNull(row?.net_price ?? row?.netPriceAfterFees)
+  if (!market || !marketHashName || grossPrice == null || netPriceAfterFees == null) {
+    return null
+  }
+  const raw = row?.raw && typeof row.raw === "object" ? row.raw : {}
+  const cachedFallbackRaw = {
+    ...raw,
+    scanner_cached_fallback_used: true
+  }
+  if (market === "steam") {
+    cachedFallbackRaw.steam_scanner_status = STEAM_SCANNER_STATUS.CACHED_FALLBACK
+  }
+  return {
+    source: market,
+    marketHashName,
+    grossPrice,
+    netPriceAfterFees,
+    currency: normalizeText(row?.currency).toUpperCase() || "USD",
+    url: normalizeText(row?.url) || null,
+    updatedAt:
+      toIsoOrNull(raw?.source_updated_at || raw?.updated_at || raw?.updatedAt) ||
+      toIsoOrNull(row?.fetched_at || row?.fetchedAt) ||
+      toIsoOrNull(fetchedAtIso) ||
+      new Date().toISOString(),
+    confidence: normalizeText(raw?.confidence).toLowerCase() || "medium",
+    raw: cachedFallbackRaw
+  }
+}
+
+function withSourceSpecificScannerStatus(record = {}, source = "", scannerStatus = null) {
+  const safeSource = normalizeText(source || record?.source).toLowerCase()
+  const safeStatus = normalizeText(scannerStatus)
+  if (!record || typeof record !== "object" || !safeSource || !safeStatus) {
+    return record
+  }
+  return {
+    ...record,
+    raw: {
+      ...(record?.raw && typeof record.raw === "object" ? record.raw : {}),
+      [`${safeSource}_scanner_status`]: safeStatus
+    }
+  }
+}
+
+function getSteamScannerLiveRequestBudget(options = {}) {
+  const explicitBudget = toIntegerOrNull(
+    options?.steamLiveRequestBudget ?? options?.scannerSteamLiveRequestBudget,
+    1
+  )
+  if (explicitBudget != null) {
+    return explicitBudget
+  }
+  return DEFAULT_STEAM_SCANNER_LIVE_REQUEST_BUDGET
 }
 
 function chunkArray(values = [], chunkSize = 100) {
@@ -875,22 +1021,55 @@ function mergeAttemptCounters(target = createAttemptCounter(), source = {}) {
     Number(next.quoteRowsInserted || 0) + Number(source.quoteRowsInserted || 0)
   next.marketPriceRowsUpserted =
     Number(next.marketPriceRowsUpserted || 0) + Number(source.marketPriceRowsUpserted || 0)
+  next.steam_rate_limited_count =
+    Number(next.steam_rate_limited_count || 0) + Number(source.steam_rate_limited_count || 0)
+  next.steam_cached_fallback_count =
+    Number(next.steam_cached_fallback_count || 0) +
+    Number(source.steam_cached_fallback_count || 0)
+  next.steam_unavailable_count =
+    Number(next.steam_unavailable_count || 0) + Number(source.steam_unavailable_count || 0)
+  for (const [reasonKey, count] of Object.entries(source.market_failure_reason_counts || {})) {
+    next.market_failure_reason_counts[reasonKey] =
+      Number(next.market_failure_reason_counts?.[reasonKey] || 0) + Number(count || 0)
+  }
+  if (
+    next.quoteRowOutcomesByKey &&
+    typeof next.quoteRowOutcomesByKey === "object" &&
+    source.quoteRowOutcomesByKey &&
+    typeof source.quoteRowOutcomesByKey === "object"
+  ) {
+    Object.assign(next.quoteRowOutcomesByKey, source.quoteRowOutcomesByKey)
+  }
 
   for (const sourceName of RECOVERY_SOURCE_ORDER) {
     const existing = next.quoteSourceDiagnostics?.[sourceName] || {
+      scanner_market_mode: getScannerMarketPolicy(sourceName)?.mode || null,
       refreshed: 0,
       failed: 0,
       error: null,
-      stateCounts: {}
+      stateCounts: {},
+      scanner_status_counts: {},
+      live_request_budget: null,
+      live_request_attempted: 0,
+      live_request_skipped_due_to_budget: 0
     }
     const incoming = source.quoteSourceDiagnostics?.[sourceName] || {}
+    existing.scanner_market_mode =
+      incoming.scanner_market_mode || existing.scanner_market_mode || null
     existing.refreshed = Number(existing.refreshed || 0) + Number(incoming.refreshed || 0)
     existing.failed = Number(existing.failed || 0) + Number(incoming.failed || 0)
     existing.error = incoming.error || existing.error || null
     for (const [state, count] of Object.entries(incoming.stateCounts || {})) {
       existing.stateCounts[state] = Number(existing.stateCounts?.[state] || 0) + Number(count || 0)
     }
+    for (const [status, count] of Object.entries(incoming.scanner_status_counts || {})) {
+      existing.scanner_status_counts[status] =
+        Number(existing.scanner_status_counts?.[status] || 0) + Number(count || 0)
+    }
     for (const key of [
+      "live_request_budget",
+      "live_request_attempted",
+      "live_request_skipped_due_to_budget",
       "market_enabled",
       "credentials_present",
       "auth_ok",
@@ -1352,6 +1531,7 @@ function pickSourceSpecificRawFields(source = "", raw = {}) {
 function buildQualityFlags(record = {}, row = {}, fetchedAtIso = null) {
   const raw = record?.raw && typeof record.raw === "object" ? record.raw : {}
   const source = normalizeText(record?.source).toLowerCase()
+  const scannerPolicy = getScannerMarketPolicy(source)
   const marketHealth =
     readMarketHealth(raw) ||
     buildMarketHealthDiagnostics({
@@ -1377,6 +1557,8 @@ function buildQualityFlags(record = {}, row = {}, fetchedAtIso = null) {
     fetched_at: toIsoOrNull(fetchedAtIso),
     url: normalizeText(record?.url) || null,
     source_state: normalizeSourceState(marketHealth?.source_failure_reason) || "ok",
+    scanner_market_mode: scannerPolicy?.mode || null,
+    scanner_market_primary: Boolean(scannerPolicy?.primary),
     market_enabled: marketHealth?.market_enabled ?? true,
     credentials_present: marketHealth?.credentials_present ?? null,
     auth_ok: marketHealth?.auth_ok ?? null,
@@ -1751,8 +1933,10 @@ function summarizeSnapshotReasonCounts(reasonCounts = {}) {
   }
 }
 
-function createAttemptCounter() {
+function createAttemptCounter(options = {}) {
+  const captureQuoteRowOutcomes = options.captureQuoteRowOutcomes === true
   return {
+    ...buildScannerMarketPolicyDiagnostics(),
     quoteAttemptedByCategory: emptyCategoryNumberMap(0),
     quoteRefreshedNamesByCategory: Object.fromEntries(
       RECOVERY_CATEGORIES.map((category) => [category, new Set()])
@@ -1774,14 +1958,24 @@ function createAttemptCounter() {
     snapshotRetryBudgetExhaustedByCategory: emptyCategoryNumberMap(0),
     quoteRowsInserted: 0,
     marketPriceRowsUpserted: 0,
+    market_failure_reason_counts: {},
+    steam_rate_limited_count: 0,
+    steam_cached_fallback_count: 0,
+    steam_unavailable_count: 0,
+    quoteRowOutcomesByKey: captureQuoteRowOutcomes ? {} : null,
     quoteSourceDiagnostics: Object.fromEntries(
       RECOVERY_SOURCE_ORDER.map((source) => [
         source,
         {
+          scanner_market_mode: getScannerMarketPolicy(source)?.mode || null,
           refreshed: 0,
           failed: 0,
           error: null,
           stateCounts: {},
+          scanner_status_counts: {},
+          live_request_budget: null,
+          live_request_attempted: 0,
+          live_request_skipped_due_to_budget: 0,
           market_enabled: true,
           credentials_present: null,
           auth_ok: null,
@@ -1807,9 +2001,15 @@ async function refreshQuotes(rows = [], options = {}) {
   const concurrency = Math.max(Number(options.concurrency || DEFAULT_REFRESH_CONCURRENCY), 1)
   const timeoutMs = Math.max(Number(options.timeoutMs || marketCompareTimeoutMs || 9000), 500)
   const maxRetries = Math.max(Number(options.maxRetries || marketCompareMaxRetries || 3), 1)
+  const cacheTtlMinutes = Math.max(
+    Number(options.cacheTtlMinutes || marketCompareCacheTtlMinutes || 60),
+    1
+  )
   const logProgress = options.logProgress
   const batchMeta = options.batchMeta && typeof options.batchMeta === "object" ? options.batchMeta : {}
-  const counters = createAttemptCounter()
+  const counters = createAttemptCounter({
+    captureQuoteRowOutcomes: options.collectQuoteRowOutcomes === true
+  })
   const rowsByName = Object.fromEntries(
     (Array.isArray(rows) ? rows : []).map((row) => [
       normalizeText(row?.market_hash_name || row?.marketHashName),
@@ -1832,17 +2032,165 @@ async function refreshQuotes(rows = [], options = {}) {
     const chunkMarketPriceRows = []
     const chunkQuoteRows = []
     const chunkFetchedAt = new Date().toISOString()
+    const sourceItemNames = sourceItems
+      .map((item) => normalizeText(item?.marketHashName))
+      .filter(Boolean)
+    let cachedRowsBySource = {}
+    if (sourceItemNames.length) {
+      cachedRowsBySource = await marketPriceRepo
+        .getLatestByMarketHashNames(sourceItemNames, {
+          sources: RECOVERY_SOURCE_ORDER.filter((source) => shouldUseFreshCacheOnRateLimit(source))
+        })
+        .catch(() => ({}))
+    }
+
+    const appendCachedFallbackRecords = (source, marketHashNames = [], scannerStatus = null) => {
+      if (!shouldUseFreshCacheOnRateLimit(source)) return 0
+      const cachedRows = cachedRowsBySource?.[source] || {}
+      let recoveredCount = 0
+      for (const marketHashName of Array.from(
+        new Set(marketHashNames.map((value) => normalizeText(value)).filter(Boolean))
+      )) {
+        const cachedRow = cachedRows?.[marketHashName]
+        if (!cachedRow || !isFreshMarketPriceCacheRow(cachedRow, cacheTtlMinutes)) {
+          continue
+        }
+        const cachedRecord = withSourceSpecificScannerStatus(
+          buildRecordFromCachedMarketPriceRow(cachedRow, source, chunkFetchedAt),
+          source,
+          scannerStatus
+        )
+        if (!cachedRecord) continue
+        const row = rowsByName[marketHashName] || {}
+        const category = normalizeText(row?.category || row?.itemCategory).toLowerCase()
+        const quoteRow = buildQuoteInsertRow(cachedRecord, row, chunkFetchedAt)
+        if (!quoteRow) continue
+        chunkQuoteRows.push(quoteRow)
+        if (counters.quoteRefreshedNamesByCategory[category] instanceof Set) {
+          counters.quoteRefreshedNamesByCategory[category].add(marketHashName)
+        }
+        counters.quoteSourceDiagnostics[source].refreshed += 1
+        incrementQuoteSourceStateCount(
+          counters.quoteSourceDiagnostics[source],
+          SOURCE_STATES.OK,
+          1
+        )
+        if (scannerStatus) {
+          incrementQuoteSourceScannerStatusCount(
+            counters.quoteSourceDiagnostics[source],
+            scannerStatus,
+            1
+          )
+        }
+        if (source === "steam" && scannerStatus === STEAM_SCANNER_STATUS.CACHED_FALLBACK) {
+          counters.steam_cached_fallback_count += 1
+        }
+        recordQuoteRowOutcome(counters, {
+          source,
+          marketHashName,
+          available: true,
+          sourceState: SOURCE_STATES.OK,
+          scannerStatus,
+          requestSent: false,
+          usedFreshCache: true
+        })
+        recoveredCount += 1
+      }
+      return recoveredCount
+    }
 
     for (const source of RECOVERY_SOURCE_ORDER) {
       const adapter = RECOVERY_SOURCES[source]
       if (!adapter?.batchGetPrices) continue
+      const sourceDiagnostics = counters.quoteSourceDiagnostics[source]
+      const scannerPolicy = getScannerMarketPolicy(source)
+      sourceDiagnostics.scanner_market_mode = scannerPolicy?.mode || null
+      if (isScannerMarketDisabled(source)) {
+        sourceDiagnostics.error = "scanner_policy_disabled"
+        sourceDiagnostics.request_sent = false
+        sourceDiagnostics.source_failure_reason = "disabled"
+        incrementQuoteSourceStateCount(sourceDiagnostics, SOURCE_STATES.DISABLED, sourceItems.length)
+        continue
+      }
+
+      let requestedSourceItems = sourceItems
+      let requestedItemNames = sourceItemNames
+
+      if (source === "steam" && shouldUseFreshCacheOnRateLimit(source)) {
+        const steamLiveRequestBudget = getSteamScannerLiveRequestBudget(options)
+        sourceDiagnostics.live_request_budget = steamLiveRequestBudget
+        const freshCachedNames = []
+        const liveEligibleItems = []
+
+        for (const item of sourceItems) {
+          const marketHashName = normalizeText(item?.marketHashName)
+          const cachedRow = cachedRowsBySource?.[source]?.[marketHashName]
+          if (cachedRow && isFreshMarketPriceCacheRow(cachedRow, cacheTtlMinutes)) {
+            freshCachedNames.push(marketHashName)
+          } else {
+            liveEligibleItems.push(item)
+          }
+        }
+
+        if (freshCachedNames.length) {
+          appendCachedFallbackRecords(
+            source,
+            freshCachedNames,
+            STEAM_SCANNER_STATUS.CACHED_FALLBACK
+          )
+        }
+
+        requestedSourceItems = liveEligibleItems.slice(0, steamLiveRequestBudget)
+        requestedItemNames = requestedSourceItems
+          .map((item) => normalizeText(item?.marketHashName))
+          .filter(Boolean)
+        const skippedItems = liveEligibleItems.slice(requestedSourceItems.length)
+        sourceDiagnostics.live_request_attempted += requestedSourceItems.length
+        sourceDiagnostics.live_request_skipped_due_to_budget += skippedItems.length
+
+        if (skippedItems.length) {
+          sourceDiagnostics.failed += skippedItems.length
+          sourceDiagnostics.error = sourceDiagnostics.error || STEAM_SCANNER_BUDGET_EXHAUSTED_REASON
+          incrementFailureReasonCount(
+            counters.market_failure_reason_counts,
+            source,
+            STEAM_SCANNER_BUDGET_EXHAUSTED_REASON,
+            skippedItems.length
+          )
+          incrementQuoteSourceStateCount(sourceDiagnostics, SOURCE_STATES.UNAVAILABLE, skippedItems.length)
+          incrementQuoteSourceScannerStatusCount(
+            sourceDiagnostics,
+            STEAM_SCANNER_STATUS.UNAVAILABLE,
+            skippedItems.length
+          )
+          counters.steam_unavailable_count += skippedItems.length
+          for (const skippedItem of skippedItems) {
+            recordQuoteRowOutcome(counters, {
+              source,
+              marketHashName: skippedItem.marketHashName,
+              available: false,
+              sourceState: SOURCE_STATES.UNAVAILABLE,
+              reason: STEAM_SCANNER_BUDGET_EXHAUSTED_REASON,
+              scannerStatus: STEAM_SCANNER_STATUS.UNAVAILABLE,
+              requestSent: false,
+              usedFreshCache: false
+            })
+          }
+        }
+
+        if (!requestedSourceItems.length) {
+          sourceDiagnostics.request_sent = false
+          continue
+        }
+      }
 
       try {
-        const sourceResult = await adapter.batchGetPrices(sourceItems, {
+        const sourceResult = await adapter.batchGetPrices(requestedSourceItems, {
           currency: "USD",
-          concurrency,
+          concurrency: source === "steam" ? 1 : concurrency,
           timeoutMs,
-          maxRetries
+          maxRetries,
+          stopOnRateLimit: source === "steam"
         })
         const meta =
           sourceResult && typeof sourceResult === "object" && sourceResult.__meta
@@ -1851,6 +2199,11 @@ async function refreshQuotes(rows = [], options = {}) {
         const failuresByName =
           meta && typeof meta.failuresByName === "object" ? meta.failuresByName : {}
         const stateByName = meta && typeof meta.stateByName === "object" ? meta.stateByName : {}
+        const diagnosticsByName =
+          meta && typeof meta.diagnosticsByName === "object" ? meta.diagnosticsByName : {}
+        const rateLimitedNames = []
+        const failedNames = new Set()
+        const successfulNames = new Set()
         for (const [state, count] of Object.entries(
           Object.values(stateByName).reduce((acc, state) => {
             const key = normalizeSourceState(state) || normalizeText(state).toLowerCase() || "unknown"
@@ -1858,8 +2211,7 @@ async function refreshQuotes(rows = [], options = {}) {
             return acc
           }, {})
         )) {
-          counters.quoteSourceDiagnostics[source].stateCounts[state] =
-            Number(counters.quoteSourceDiagnostics[source].stateCounts?.[state] || 0) + Number(count || 0)
+          incrementQuoteSourceStateCount(sourceDiagnostics, state, count)
         }
         for (const key of [
           "market_enabled",
@@ -1882,17 +2234,61 @@ async function refreshQuotes(rows = [], options = {}) {
           }
         }
 
-        for (const row of chunk) {
-          const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName)
+        for (const item of requestedSourceItems) {
+          const marketHashName = normalizeText(item?.marketHashName)
           if (!marketHashName) continue
-          if (failuresByName[marketHashName]) {
-            counters.quoteSourceDiagnostics[source].failed += 1
+          const failureReason = normalizeText(failuresByName[marketHashName])
+          if (failureReason) {
+            sourceDiagnostics.failed += 1
+            failedNames.add(marketHashName)
+            incrementFailureReasonCount(
+              counters.market_failure_reason_counts,
+              source,
+              failureReason
+            )
+            const isRateLimitedFailure = source === "steam" && isRateLimitReason(failureReason)
+            if (isRateLimitedFailure) {
+              counters.steam_rate_limited_count += 1
+              rateLimitedNames.push(marketHashName)
+              incrementQuoteSourceScannerStatusCount(
+                sourceDiagnostics,
+                STEAM_SCANNER_STATUS.RATE_LIMITED,
+                1
+              )
+            } else if (source === "steam") {
+              counters.steam_unavailable_count += 1
+              incrementQuoteSourceScannerStatusCount(
+                sourceDiagnostics,
+                STEAM_SCANNER_STATUS.UNAVAILABLE,
+                1
+              )
+            }
+            recordQuoteRowOutcome(counters, {
+              source,
+              marketHashName,
+              available: false,
+              sourceState:
+                normalizeSourceState(stateByName[marketHashName]) || SOURCE_STATES.UNAVAILABLE,
+              reason: failureReason,
+              scannerStatus:
+                source === "steam"
+                  ? isRateLimitedFailure
+                    ? STEAM_SCANNER_STATUS.RATE_LIMITED
+                    : STEAM_SCANNER_STATUS.UNAVAILABLE
+                  : null,
+              requestSent:
+                diagnosticsByName?.[marketHashName]?.request_sent == null
+                  ? true
+                  : Boolean(diagnosticsByName[marketHashName].request_sent),
+              usedFreshCache: false
+            })
           }
         }
 
         for (const [marketHashName, record] of Object.entries(sourceResult || {})) {
           if (marketHashName === "__meta") continue
           if (!record || typeof record !== "object") continue
+          successfulNames.add(marketHashName)
           const row = rowsByName[marketHashName] || {}
           const category = normalizeText(row?.category || row?.itemCategory).toLowerCase()
           chunkMarketPriceRows.push(buildMarketPriceUpsertRow(record, chunkFetchedAt))
@@ -1900,17 +2296,140 @@ async function refreshQuotes(rows = [], options = {}) {
           if (counters.quoteRefreshedNamesByCategory[category] instanceof Set) {
             counters.quoteRefreshedNamesByCategory[category].add(marketHashName)
           }
-          counters.quoteSourceDiagnostics[source].refreshed += 1
+          sourceDiagnostics.refreshed += 1
+          recordQuoteRowOutcome(counters, {
+            source,
+            marketHashName,
+            available: true,
+            sourceState: SOURCE_STATES.OK,
+            scannerStatus:
+              source === "steam"
+                ? normalizeText(record?.raw?.steam_scanner_status) || null
+                : null,
+            requestSent: true,
+            usedFreshCache: false
+          })
         }
 
         const sourceUnavailableReason = normalizeText(meta?.sourceUnavailableReason)
         if (sourceUnavailableReason) {
-          counters.quoteSourceDiagnostics[source].error = sourceUnavailableReason
+          sourceDiagnostics.error = sourceUnavailableReason
+          if (!Object.keys(failuresByName).length) {
+            incrementFailureReasonCount(
+              counters.market_failure_reason_counts,
+              source,
+              sourceUnavailableReason,
+              requestedSourceItems.length
+            )
+            if (source === "steam" && isRateLimitReason(sourceUnavailableReason)) {
+              counters.steam_rate_limited_count += requestedSourceItems.length
+              incrementQuoteSourceScannerStatusCount(
+                sourceDiagnostics,
+                STEAM_SCANNER_STATUS.RATE_LIMITED,
+                requestedSourceItems.length
+              )
+            } else if (source === "steam") {
+              counters.steam_unavailable_count += requestedSourceItems.length
+              incrementQuoteSourceScannerStatusCount(
+                sourceDiagnostics,
+                STEAM_SCANNER_STATUS.UNAVAILABLE,
+                requestedSourceItems.length
+              )
+            }
+          }
+        }
+
+        if (sourceUnavailableReason) {
+          for (const item of requestedSourceItems) {
+            const marketHashName = normalizeText(item?.marketHashName)
+            if (!marketHashName || successfulNames.has(marketHashName) || failedNames.has(marketHashName)) {
+              continue
+            }
+            recordQuoteRowOutcome(counters, {
+              source,
+              marketHashName,
+              available: false,
+              sourceState:
+                normalizeSourceState(meta?.sourceFailureReason || meta?.source_failure_reason) ||
+                SOURCE_STATES.UNAVAILABLE,
+              reason: sourceUnavailableReason,
+              scannerStatus:
+                source === "steam"
+                  ? isRateLimitReason(sourceUnavailableReason)
+                    ? STEAM_SCANNER_STATUS.RATE_LIMITED
+                    : STEAM_SCANNER_STATUS.UNAVAILABLE
+                  : null,
+              requestSent: true,
+              usedFreshCache: false
+            })
+          }
+        }
+
+        if (rateLimitedNames.length) {
+          appendCachedFallbackRecords(
+            source,
+            rateLimitedNames,
+            source === "steam" ? STEAM_SCANNER_STATUS.CACHED_FALLBACK : null
+          )
+        } else if (
+          sourceUnavailableReason &&
+          isRateLimitReason(sourceUnavailableReason)
+        ) {
+          appendCachedFallbackRecords(
+            source,
+            requestedItemNames,
+            source === "steam" ? STEAM_SCANNER_STATUS.CACHED_FALLBACK : null
+          )
         }
       } catch (err) {
-        counters.quoteSourceDiagnostics[source].error =
-          normalizeText(err?.message) || "quote_refresh_failed"
-        counters.quoteSourceDiagnostics[source].failed += sourceItems.length
+        const errorMessage = normalizeText(err?.message) || "quote_refresh_failed"
+        sourceDiagnostics.error = errorMessage
+        sourceDiagnostics.failed += requestedSourceItems.length
+        incrementFailureReasonCount(
+          counters.market_failure_reason_counts,
+          source,
+          errorMessage,
+          requestedSourceItems.length
+        )
+        if (source === "steam" && isRateLimitReason(errorMessage)) {
+          counters.steam_rate_limited_count += requestedSourceItems.length
+          incrementQuoteSourceScannerStatusCount(
+            sourceDiagnostics,
+            STEAM_SCANNER_STATUS.RATE_LIMITED,
+            requestedSourceItems.length
+          )
+        } else if (source === "steam") {
+          counters.steam_unavailable_count += requestedSourceItems.length
+          incrementQuoteSourceScannerStatusCount(
+            sourceDiagnostics,
+            STEAM_SCANNER_STATUS.UNAVAILABLE,
+            requestedSourceItems.length
+          )
+        }
+        for (const item of requestedSourceItems) {
+          recordQuoteRowOutcome(counters, {
+            source,
+            marketHashName: item.marketHashName,
+            available: false,
+            sourceState: SOURCE_STATES.UNAVAILABLE,
+            reason: errorMessage,
+            scannerStatus:
+              source === "steam"
+                ? isRateLimitReason(errorMessage)
+                  ? STEAM_SCANNER_STATUS.RATE_LIMITED
+                  : STEAM_SCANNER_STATUS.UNAVAILABLE
+                : null,
+            requestSent: true,
+            usedFreshCache: false
+          })
+        }
+        if (isRateLimitReason(errorMessage)) {
+          appendCachedFallbackRecords(
+            source,
+            requestedItemNames,
+            source === "steam" ? STEAM_SCANNER_STATUS.CACHED_FALLBACK : null
+          )
+        }
       }
     }
 
@@ -2233,7 +2752,9 @@ async function repairCatalogRows(rows = [], options = {}) {
       attemptedRows: 0,
       quoteRowsSelected: 0,
       snapshotRowsSelected: 0,
-      quoteRefresh: createAttemptCounter(),
+      quoteRefresh: createAttemptCounter({
+        captureQuoteRowOutcomes: options.collectQuoteRowOutcomes === true
+      }),
       snapshotRefresh: {
         ...createAttemptCounter(),
         blocked: false,
@@ -2266,7 +2787,9 @@ async function repairCatalogRows(rows = [], options = {}) {
             ...((options?.batchMeta && typeof options.batchMeta === "object") ? options.batchMeta : {})
           }
         })
-      : createAttemptCounter()
+      : createAttemptCounter({
+          captureQuoteRowOutcomes: options.collectQuoteRowOutcomes === true
+        })
 
   let snapshotRefresh = {
     ...createAttemptCounter(),
@@ -2650,7 +3173,8 @@ async function processRecoveryBatch(rows = [], options = {}) {
     },
     async () =>
       marketQuoteRepo.getLatestCoverageByItemNames(marketHashNames, {
-        lookbackHours: DEFAULT_QUOTE_LOOKBACK_HOURS
+        lookbackHours: DEFAULT_QUOTE_LOOKBACK_HOURS,
+        markets: getScannerCoverageMarkets()
       })
   )
   const snapshotMap = await runLoggedStage(
@@ -2757,7 +3281,8 @@ async function processRecoveryBatch(rows = [], options = {}) {
     },
     async () =>
       marketQuoteRepo.getLatestCoverageByItemNames(marketHashNames, {
-        lookbackHours: DEFAULT_QUOTE_LOOKBACK_HOURS
+        lookbackHours: DEFAULT_QUOTE_LOOKBACK_HOURS,
+        markets: getScannerCoverageMarkets()
       })
   )
   const postSnapshotMap = await runLoggedStage(
@@ -3519,14 +4044,43 @@ async function runFreshnessRecovery(options = {}) {
       rowsMissing: Number(postRefresh?.quote?.missingRows || 0),
       quoteRowsInserted: Number(aggregateQuoteRefresh.quoteRowsInserted || 0),
       marketPriceRowsUpserted: Number(aggregateQuoteRefresh.marketPriceRowsUpserted || 0),
+      markets_enabled_for_scanner: Array.isArray(
+        aggregateQuoteRefresh.markets_enabled_for_scanner
+      )
+        ? aggregateQuoteRefresh.markets_enabled_for_scanner
+        : [],
+      markets_degraded_for_scanner: Array.isArray(
+        aggregateQuoteRefresh.markets_degraded_for_scanner
+      )
+        ? aggregateQuoteRefresh.markets_degraded_for_scanner
+        : [],
+      markets_disabled_for_scanner: Array.isArray(
+        aggregateQuoteRefresh.markets_disabled_for_scanner
+      )
+        ? aggregateQuoteRefresh.markets_disabled_for_scanner
+        : [],
+      market_failure_reason_counts:
+        aggregateQuoteRefresh.market_failure_reason_counts || {},
+      steam_rate_limited_count: Number(aggregateQuoteRefresh.steam_rate_limited_count || 0),
+      steam_cached_fallback_count: Number(
+        aggregateQuoteRefresh.steam_cached_fallback_count || 0
+      ),
+      steam_unavailable_count: Number(aggregateQuoteRefresh.steam_unavailable_count || 0),
       bySource: Object.fromEntries(
         Object.entries(aggregateQuoteRefresh.quoteSourceDiagnostics || {}).map(([source, diag]) => [
           source,
           {
+            scanner_market_mode: diag?.scanner_market_mode || null,
             refreshed: Number(diag?.refreshed || 0),
             failed: Number(diag?.failed || 0),
             error: diag?.error || null,
             stateCounts: diag?.stateCounts || {},
+            scanner_status_counts: diag?.scanner_status_counts || {},
+            live_request_budget: diag?.live_request_budget ?? null,
+            live_request_attempted: Number(diag?.live_request_attempted || 0),
+            live_request_skipped_due_to_budget: Number(
+              diag?.live_request_skipped_due_to_budget || 0
+            ),
             market_enabled:
               diag?.market_enabled == null ? true : Boolean(diag?.market_enabled),
             credentials_present: diag?.credentials_present ?? null,

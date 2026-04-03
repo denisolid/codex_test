@@ -25,6 +25,11 @@ const {
 } = require("../src/markets/skinport.market");
 
 const csfloatMarketPath = path.resolve(__dirname, "../src/markets/csfloat.market.js");
+const steamMarketPath = path.resolve(__dirname, "../src/markets/steam.market.js");
+const steamMarketPriceServicePath = path.resolve(
+  __dirname,
+  "../src/services/steamMarketPriceService.js"
+);
 const marketHttpPath = path.resolve(__dirname, "../src/markets/marketHttp.js");
 const envPath = path.resolve(__dirname, "../src/config/env.js");
 
@@ -78,6 +83,53 @@ function loadCsfloatMarketWithStubs({ apiKey = "", responses = [] } = {}) {
     calls,
     cleanup() {
       unloadModule(csfloatMarketPath);
+      unloadModule(marketHttpPath);
+      unloadModule(envPath);
+    }
+  };
+}
+
+function loadSteamMarketWithStubs({ responses = [] } = {}) {
+  unloadModule(steamMarketPath);
+  unloadModule(steamMarketPriceServicePath);
+  unloadModule(marketHttpPath);
+  unloadModule(envPath);
+
+  const calls = [];
+  let responseIndex = 0;
+
+  stubModule(envPath, {
+    steamMarketCurrency: 1,
+    steamMarketTimeoutMs: 10000
+  });
+  stubModule(steamMarketPriceServicePath, {
+    getPriceOverview: async (marketHashName) => {
+      calls.push(marketHashName);
+      const nextResponse =
+        responses[responseIndex] || responses[Math.max(responses.length - 1, 0)] || {};
+      responseIndex += 1;
+      if (nextResponse.error) {
+        throw nextResponse.error;
+      }
+      return nextResponse.payload;
+    }
+  });
+  stubModule(marketHttpPath, {
+    mapWithConcurrency: async (items, mapper) => {
+      const rows = [];
+      for (const item of Array.isArray(items) ? items : []) {
+        rows.push(await mapper(item));
+      }
+      return rows;
+    }
+  });
+
+  return {
+    market: require(steamMarketPath),
+    calls,
+    cleanup() {
+      unloadModule(steamMarketPath);
+      unloadModule(steamMarketPriceServicePath);
       unloadModule(marketHttpPath);
       unloadModule(envPath);
     }
@@ -325,4 +377,46 @@ test("skinport payload normalization prefers item_page over market_page", () => 
 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].url, "https://skinport.com/item/ak-47-redline-field-tested");
+});
+
+test("steam batch lookup stops after the first scanner rate limit when requested", async () => {
+  const rateLimitError = new Error("Steam market rate limited");
+  rateLimitError.code = "STEAM_MARKET_RATE_LIMITED";
+  rateLimitError.statusCode = 429;
+
+  const { market, calls, cleanup } = loadSteamMarketWithStubs({
+    responses: [
+      { error: rateLimitError },
+      {
+        payload: {
+          lowestPrice: 1.25,
+          medianPrice: 1.31,
+          volume: 12,
+          rawPayload: {
+            lowest_price: "$1.25"
+          }
+        }
+      }
+    ]
+  });
+
+  try {
+    const result = await market.batchGetPrices(
+      [{ marketHashName: "Case A" }, { marketHashName: "Case B" }],
+      {
+        currency: "USD",
+        concurrency: 1,
+        stopOnRateLimit: true
+      }
+    );
+
+    assert.deepEqual(calls, ["Case A"]);
+    assert.equal(result["Case B"], undefined);
+    assert.equal(result.__meta.failuresByName["Case B"], "Steam rate limit reached. Retry shortly.");
+    assert.equal(result.__meta.stateByName["Case B"], "unavailable");
+    assert.equal(result.__meta.diagnosticsByName["Case B"].request_sent, false);
+    assert.equal(result.__meta.diagnosticsByName["Case B"].response_status, 429);
+  } finally {
+    cleanup();
+  }
 });

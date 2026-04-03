@@ -247,9 +247,28 @@ async function batchGetPrices(items = [], options = {}) {
   const failuresByName = {};
   const stateByName = {};
   const diagnosticsByName = {};
+  const stopOnRateLimit = options.stopOnRateLimit === true;
+  let stopAfterRateLimit = false;
   const rows = await mapWithConcurrency(
     list,
     async (marketHashName) => {
+      if (stopAfterRateLimit) {
+        const skippedDiagnostics = buildDiagnostics({
+          requestSent: false,
+          responseStatus: 429,
+          responseParsed: false,
+          listingsFound: null,
+          buyPricePresent: false,
+          listingUrlPresent: false,
+          sourceFailureReason: SOURCE_STATES.UNAVAILABLE,
+          lastFailureAt: new Date().toISOString()
+        });
+        stateByName[marketHashName] = SOURCE_STATES.UNAVAILABLE;
+        diagnosticsByName[marketHashName] = skippedDiagnostics;
+        failuresByName[marketHashName] = "Steam rate limit reached. Retry shortly.";
+        return null;
+      }
+
       const result = await searchItemPrice({
         marketHashName,
         steamCurrency: options.steamCurrency,
@@ -265,6 +284,12 @@ async function batchGetPrices(items = [], options = {}) {
       }
       if (!result?.price) {
         failuresByName[marketHashName] = result?.reason || NO_DATA_MESSAGE;
+        if (
+          stopOnRateLimit &&
+          Number(result?.diagnostics?.response_status || 0) === 429
+        ) {
+          stopAfterRateLimit = true;
+        }
         return null;
       }
       return {

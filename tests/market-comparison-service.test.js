@@ -6,6 +6,10 @@ process.env.SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "anon";
 process.env.SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY || "service-role";
 
+const marketComparisonService = require("../src/services/marketComparisonService");
+const marketPriceRepo = require("../src/repositories/marketPriceRepository");
+const marketQuoteRepo = require("../src/repositories/marketQuoteRepository");
+
 const {
   __testables: {
     normalizePricingMode,
@@ -274,4 +278,109 @@ test("compare source-state helper keeps CSFloat auth failures structured", () =>
     last_failure_at: null
   });
   assert.equal(normalizeSourceState("AUTH_FAILED"), "auth_failed");
+});
+
+test("compareItems does not synthesize Steam fallback when no real Steam data exists", async () => {
+  const originals = {
+    getLatestCoverageByItemNames: marketQuoteRepo.getLatestCoverageByItemNames,
+    getLatestByMarketHashNames: marketPriceRepo.getLatestByMarketHashNames
+  };
+
+  marketQuoteRepo.getLatestCoverageByItemNames = async () => ({});
+  marketPriceRepo.getLatestByMarketHashNames = async () => ({});
+
+  try {
+    const result = await marketComparisonService.compareItems(
+      [
+        {
+          marketHashName: "Revolution Case",
+          quantity: 1,
+          steamPrice: 1.45,
+          steamCurrency: "USD",
+          steamRecordedAt: "2026-04-03T12:00:00.000Z"
+        }
+      ],
+      {
+        allowLiveFetch: false,
+        planTier: "alpha_access"
+      }
+    );
+
+    const steam = result.items[0].perMarket.find((row) => row.source === "steam");
+    assert.equal(steam.available, false);
+    assert.equal(steam.sourceState, "no_data");
+    assert.equal(result.items[0].selectedPricingSource, null);
+  } finally {
+    marketQuoteRepo.getLatestCoverageByItemNames = originals.getLatestCoverageByItemNames;
+    marketPriceRepo.getLatestByMarketHashNames = originals.getLatestByMarketHashNames;
+  }
+});
+
+test("compareItems disables DMarket in scanner baseline policy even when cached rows exist", async () => {
+  const nowIso = new Date().toISOString();
+  const originals = {
+    getLatestCoverageByItemNames: marketQuoteRepo.getLatestCoverageByItemNames,
+    getLatestByMarketHashNames: marketPriceRepo.getLatestByMarketHashNames
+  };
+
+  marketQuoteRepo.getLatestCoverageByItemNames = async () => ({});
+  marketPriceRepo.getLatestByMarketHashNames = async () => ({
+    dmarket: {
+      "Revolution Case": {
+        market: "dmarket",
+        market_hash_name: "Revolution Case",
+        currency: "USD",
+        gross_price: 0.9,
+        net_price: 0.82,
+        url: "https://dmarket.example/revolution-case",
+        fetched_at: nowIso,
+        raw: {
+          source_updated_at: nowIso
+        }
+      }
+    },
+    skinport: {
+      "Revolution Case": {
+        market: "skinport",
+        market_hash_name: "Revolution Case",
+        currency: "USD",
+        gross_price: 1.05,
+        net_price: 0.91,
+        url: "https://skinport.example/revolution-case",
+        fetched_at: nowIso,
+        raw: {
+          source_updated_at: nowIso
+        }
+      }
+    }
+  });
+  try {
+    const result = await marketComparisonService.compareItems(
+      [
+        {
+          marketHashName: "Revolution Case",
+          quantity: 1
+        }
+      ],
+      {
+        allowLiveFetch: false,
+        planTier: "alpha_access",
+        marketReliabilityPolicy: "scanner_baseline"
+      }
+    );
+
+    const item = result.items[0];
+    const dmarket = item.perMarket.find((row) => row.source === "dmarket");
+    assert.equal(dmarket.available, false);
+    assert.equal(dmarket.sourceState, "disabled");
+    assert.equal(item.bestBuy.source, "skinport");
+    assert.deepEqual(result.diagnostics.scannerPolicy, {
+      markets_enabled_for_scanner: ["skinport", "csfloat"],
+      markets_degraded_for_scanner: ["steam"],
+      markets_disabled_for_scanner: ["dmarket"]
+    });
+  } finally {
+    marketQuoteRepo.getLatestCoverageByItemNames = originals.getLatestCoverageByItemNames;
+    marketPriceRepo.getLatestByMarketHashNames = originals.getLatestByMarketHashNames;
+  }
 });

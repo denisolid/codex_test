@@ -178,97 +178,180 @@ function buildCompareRows(result = null) {
   return byMarket;
 }
 
-async function runScannerPath(items = []) {
-  const adapters = {
-    steam: require("../src/markets/steam.market"),
-    skinport: require("../src/markets/skinport.market"),
-    csfloat: require("../src/markets/csfloat.market"),
-    dmarket: require("../src/markets/dmarket.market")
-  };
-  const {
-    __testables: { buildQuoteInsertRow }
-  } = require("../src/services/upstreamMarketFreshnessRecoveryService");
-
-  const byMarket = Object.fromEntries(MARKET_SOURCES.map((source) => [source, []]));
-  const summaries = {};
-  const fetchedAtIso = new Date().toISOString();
-
-  for (const source of MARKET_SOURCES) {
-    const adapter = adapters[source];
-    const byName = await adapter.batchGetPrices(items, {
-      currency: "USD",
-      timeoutMs: 10000,
-      maxRetries: 2,
-      concurrency: 4,
-      auditSkinportQuotes: false
-    });
-    const meta = toJsonObject(byName?.__meta);
-    summaries[source] = meta;
-
-    for (const item of items) {
-      const record = byName?.[item.marketHashName] || null;
-      const quoteRow = record ? buildQuoteInsertRow(record, item, fetchedAtIso) : null;
-      const state =
-        normalizeSourceState(meta?.stateByName?.[item.marketHashName]) ||
-        (record ? SOURCE_STATES.OK : SOURCE_STATES.NO_DATA);
-      const diagnostics =
-        record
-          ? readMarketHealth(record?.raw) ||
-            buildFallbackDiagnostics({
-              marketEnabled: true,
-              requestSent: true,
-              buyPricePresent: true,
-              sellPricePresent: true,
-              freshnessPresent: Boolean(record?.updatedAt),
-              listingUrlPresent: Boolean(record?.url),
-              lastSuccessAt: record?.updatedAt
-            })
-          : hasMarketHealthDiagnostics(meta?.diagnosticsByName?.[item.marketHashName])
-            ? meta.diagnosticsByName[item.marketHashName]
-            : buildFallbackDiagnostics({
-                marketEnabled:
-                  meta?.market_enabled == null ? true : Boolean(meta.market_enabled),
-                credentialsPresent: meta?.credentials_present,
-                authOk: meta?.auth_ok,
-                requestSent: meta?.request_sent,
-                responseStatus: meta?.response_status,
-                responseParsed: meta?.response_parsed,
-                listingsFound: meta?.listings_found,
-                buyPricePresent: meta?.buy_price_present,
-                sellPricePresent: meta?.sell_price_present,
-                freshnessPresent: meta?.freshness_present,
-                listingUrlPresent: meta?.listing_url_present,
-                sourceFailureReason: state,
-                lastSuccessAt: meta?.last_success_at,
-                lastFailureAt: meta?.last_failure_at
-              });
-
-      byMarket[source].push({
-        itemName: item.marketHashName,
-        source,
-        path: "scanner",
-        state,
-        available: Boolean(quoteRow),
-        diagnostics,
-        buyPrice: toFiniteOrNull(quoteRow?.best_buy),
-        sellPrice: toFiniteOrNull(quoteRow?.best_sell_net),
-        url: normalizeText(record?.url) || null,
-        feePercent: sourceFeePercent(source),
-        reason: normalizeText(meta?.failuresByName?.[item.marketHashName]) || null
-      });
+function groupLatestMarketPriceRows(rows = []) {
+  const grouped = {};
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const source = normalizeText(row?.market || row?.source).toLowerCase();
+    const marketHashName = normalizeText(row?.market_hash_name || row?.marketHashName);
+    if (!source || !marketHashName) continue;
+    if (!grouped[source]) grouped[source] = {};
+    const existing = grouped[source][marketHashName];
+    const nextFetchedAt = Date.parse(String(row?.fetched_at || ""));
+    const prevFetchedAt = Date.parse(String(existing?.fetched_at || ""));
+    if (!existing || !Number.isFinite(prevFetchedAt) || nextFetchedAt >= prevFetchedAt) {
+      grouped[source][marketHashName] = row;
     }
   }
+  return grouped;
+}
 
-  return { byMarket, summaries };
+function buildDiagnosticsFromQuoteQualityFlags(flags = {}, source = "") {
+  return buildFallbackDiagnostics({
+    marketEnabled:
+      flags?.market_enabled == null ? !disabledMarketSources.includes(source) : flags.market_enabled,
+    credentialsPresent: flags?.credentials_present,
+    authOk: flags?.auth_ok,
+    requestSent: flags?.request_sent,
+    responseStatus: flags?.response_status,
+    responseParsed: flags?.response_parsed,
+    listingsFound: flags?.listings_found,
+    buyPricePresent: flags?.buy_price_present,
+    sellPricePresent: flags?.sell_price_present,
+    freshnessPresent: flags?.freshness_present,
+    listingUrlPresent: flags?.listing_url_present,
+    sourceFailureReason: flags?.source_failure_reason || flags?.source_state,
+    lastSuccessAt: flags?.last_success_at || flags?.source_updated_at,
+    lastFailureAt: flags?.last_failure_at
+  });
+}
+
+async function runScannerPath(items = [], compareCacheRows = []) {
+  const marketQuoteRepo = require("../src/repositories/marketQuoteRepository");
+  const marketPriceRepo = require("../src/repositories/marketPriceRepository");
+  const skinRepo = require("../src/repositories/skinRepository");
+  const marketService = require("../src/services/marketService");
+  const upstreamMarketFreshnessRecoveryService = require("../src/services/upstreamMarketFreshnessRecoveryService");
+  const compareCacheBySource = groupLatestMarketPriceRows(compareCacheRows);
+  const originals = {
+    insertRows: marketQuoteRepo.insertRows,
+    upsertRows: marketPriceRepo.upsertRows,
+    getLatestByMarketHashNames: marketPriceRepo.getLatestByMarketHashNames,
+    getByMarketHashNames: skinRepo.getByMarketHashNames,
+    refreshSnapshotsForSkins: marketService.refreshSnapshotsForSkins
+  };
+
+  const insertedQuoteRows = [];
+  const scannerMarketPriceRows = [];
+
+  marketQuoteRepo.insertRows = async (rows = []) => {
+    insertedQuoteRows.push(...rows);
+    return rows.length;
+  };
+  marketPriceRepo.upsertRows = async (rows = []) => {
+    scannerMarketPriceRows.push(...rows);
+    return rows.length;
+  };
+  marketPriceRepo.getLatestByMarketHashNames = async (names = [], options = {}) => {
+    const requestedNames = new Set((Array.isArray(names) ? names : []).map((name) => normalizeText(name)));
+    const sources = Array.isArray(options?.sources) && options.sources.length
+      ? options.sources.map((source) => normalizeText(source).toLowerCase())
+      : Object.keys(compareCacheBySource);
+    return Object.fromEntries(
+      sources.map((source) => [
+        source,
+        Object.fromEntries(
+          Object.entries(compareCacheBySource?.[source] || {}).filter(([marketHashName]) =>
+            requestedNames.has(normalizeText(marketHashName))
+          )
+        )
+      ])
+    );
+  };
+  skinRepo.getByMarketHashNames = async () => [];
+  marketService.refreshSnapshotsForSkins = async () => [];
+
+  try {
+    const repairResult = await upstreamMarketFreshnessRecoveryService.repairCatalogRows(items, {
+      quoteBatchSize: items.length,
+      snapshotBatchSize: 1,
+      collectQuoteRowOutcomes: true,
+      timeoutMs: 10000,
+      maxRetries: 2,
+      concurrency: 4
+    });
+
+    const byMarket = Object.fromEntries(MARKET_SOURCES.map((source) => [source, []]));
+    const summaries = Object.fromEntries(
+      MARKET_SOURCES.map((source) => [
+        source,
+        toJsonObject(repairResult?.quoteRefresh?.quoteSourceDiagnostics?.[source])
+      ])
+    );
+    const quoteRowsByKey = new Map(
+      insertedQuoteRows.map((row) => [`${normalizeText(row?.market).toLowerCase()}::${normalizeText(row?.item_name)}`, row])
+    );
+    const outcomeByKey = toJsonObject(repairResult?.quoteRefresh?.quoteRowOutcomesByKey);
+
+    for (const source of MARKET_SOURCES) {
+      for (const item of items) {
+        const key = `${source}::${item.marketHashName}`;
+        const quoteRow = quoteRowsByKey.get(key) || null;
+        const outcome = toJsonObject(outcomeByKey[key]);
+        const qualityFlags = toJsonObject(quoteRow?.quality_flags);
+        const state =
+          normalizeSourceState(qualityFlags?.source_state || outcome?.sourceState) ||
+          (quoteRow ? SOURCE_STATES.OK : SOURCE_STATES.NO_DATA);
+        const diagnostics = quoteRow
+          ? buildDiagnosticsFromQuoteQualityFlags(qualityFlags, source)
+          : outcome && Object.keys(outcome).length
+            ? buildFallbackDiagnostics({
+                marketEnabled: !disabledMarketSources.includes(source),
+                requestSent: outcome.requestSent,
+                sourceFailureReason: outcome.sourceState,
+                lastFailureAt: new Date().toISOString()
+              })
+            : buildFallbackDiagnostics({
+                marketEnabled: !disabledMarketSources.includes(source),
+                requestSent: false,
+                sourceFailureReason: state,
+                lastFailureAt: new Date().toISOString()
+              });
+
+        byMarket[source].push({
+          itemName: item.marketHashName,
+          source,
+          path: "scanner",
+          state,
+          available: Boolean(quoteRow),
+          diagnostics,
+          buyPrice: toFiniteOrNull(quoteRow?.best_buy),
+          sellPrice: toFiniteOrNull(quoteRow?.best_sell_net),
+          url: normalizeText(qualityFlags?.url) || null,
+          feePercent: sourceFeePercent(source),
+          reason: normalizeText(outcome?.reason) || null,
+          scannerStatus:
+            normalizeText(qualityFlags?.steam_scanner_status || outcome?.scannerStatus) || null
+        });
+      }
+    }
+
+    return {
+      byMarket,
+      summaries,
+      repairDiagnostics: repairResult?.quoteRefresh || {},
+      scannerMarketPriceRows
+    };
+  } finally {
+    marketQuoteRepo.insertRows = originals.insertRows;
+    marketPriceRepo.upsertRows = originals.upsertRows;
+    marketPriceRepo.getLatestByMarketHashNames = originals.getLatestByMarketHashNames;
+    skinRepo.getByMarketHashNames = originals.getByMarketHashNames;
+    marketService.refreshSnapshotsForSkins = originals.refreshSnapshotsForSkins;
+  }
 }
 
 function computePathSummary(rows = []) {
   const total = rows.length || 1;
   const statusDistribution = {};
+  const sourceSpecificStatusDistribution = {};
   const reasonBuckets = {};
   for (const row of rows) {
     const state = row.state || SOURCE_STATES.NO_DATA;
     statusDistribution[state] = Number(statusDistribution[state] || 0) + 1;
+    if (row.scannerStatus) {
+      sourceSpecificStatusDistribution[row.scannerStatus] =
+        Number(sourceSpecificStatusDistribution[row.scannerStatus] || 0) + 1;
+    }
     if (!row.available) {
       const key = row.reason || row.state || "unknown";
       reasonBuckets[key] = Number(reasonBuckets[key] || 0) + 1;
@@ -304,6 +387,7 @@ function computePathSummary(rows = []) {
     ),
     feeCoverage: ratio(count((row) => Number.isFinite(Number(row.feePercent)))),
     statusDistribution,
+    sourceSpecificStatusDistribution,
     reasonBuckets
   };
 }
@@ -329,7 +413,8 @@ function buildMismatchReport(compareRows = [], scannerRows = []) {
       compareReason: entry.compare?.reason || null,
       scannerAvailable: Boolean(entry.scanner?.available),
       scannerState: entry.scanner?.state || null,
-      scannerReason: entry.scanner?.reason || null
+      scannerReason: entry.scanner?.reason || null,
+      scannerStatus: entry.scanner?.scannerStatus || null
     }));
 }
 
@@ -384,7 +469,7 @@ async function main() {
     compareCleanup.reverse().forEach((restore) => restore());
 
     const compareByMarket = buildCompareRows(compareResult);
-    const scannerResult = await runScannerPath(COHORT);
+    const scannerResult = await runScannerPath(COHORT, capturedMarketPriceRows);
 
     const perMarket = {};
     const mismatches = [];
