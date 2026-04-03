@@ -70,6 +70,9 @@ const {
   revalidateOpportunitiesForEmit,
   buildEmitRevalidationMetadata
 } = require("./scanner/emitRevalidationService")
+const {
+  buildScannerMarketPolicyDiagnostics
+} = require("./scanner/marketReliabilityPolicy")
 
 const MAX_API_LIMIT = 200
 const FEED_PAGE_SIZE = 200
@@ -1438,6 +1441,7 @@ async function compareCandidates(candidates = []) {
   const skinportPipeline = createSkinportPipelineSummary()
   skinportPipeline.enabled = allowLiveFetch
   const diagnostics = {
+    ...buildScannerMarketPolicyDiagnostics(),
     batchesAttempted: 0,
     batchesCompleted: 0,
     batchesTimedOut: 0,
@@ -1445,7 +1449,10 @@ async function compareCandidates(candidates = []) {
     chunkSize: SCAN_CHUNK_SIZE,
     allowLiveFetch,
     forceRefresh: allowLiveFetch,
-    skinportPipeline
+    skinportPipeline,
+    market_failure_reason_counts: {},
+    steam_rate_limited_count: 0,
+    candidates_surviving_without_steam: 0
   }
   for (const chunk of chunkArray(candidates, SCAN_CHUNK_SIZE)) {
     diagnostics.batchesAttempted += 1
@@ -1454,6 +1461,7 @@ async function compareCandidates(candidates = []) {
         marketComparisonService.compareItems(chunk.map((row) => buildCompareInput(row)), {
           planTier: "alpha_access",
           entitlements: scannerEntitlements,
+          marketReliabilityPolicy: "scanner_baseline",
           allowLiveFetch,
           forceRefresh: allowLiveFetch
         }),
@@ -1469,6 +1477,7 @@ async function compareCandidates(candidates = []) {
         const name = normalizeText(row?.marketHashName)
         if (name) byName[name] = row
       }
+      mergeScannerMarketDiagnostics(diagnostics, rows)
       diagnostics.batchesCompleted += 1
     } catch (err) {
       if (String(err?.code || "").trim() === "SCANNER_BATCH_TIMEOUT") {
@@ -1488,6 +1497,7 @@ function summarizeEvaluations(rows = []) {
     nearEligibleFound: 0,
     candidateFound: 0,
     rejectedFound: 0,
+    candidatesSurvivingWithoutSteam: 0,
     opportunitiesByCategory: emptyCategoryMap(),
     rejectedByCategory: emptyCategoryMap(),
     rejectedByReason: {},
@@ -1609,6 +1619,32 @@ function summarizeEvaluations(rows = []) {
     }
   }
   return summary
+}
+
+function countCandidatesSurvivingWithoutSteam(rows = [], comparedByName = {}) {
+  let count = 0
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (row?.tier === OPPORTUNITY_TIERS.REJECTED) continue
+    const marketHashName = normalizeText(
+      row?.marketHashName || row?.itemName || row?.item_name
+    )
+    if (!marketHashName) continue
+    const comparedItem = comparedByName?.[marketHashName]
+    const perMarket = Array.isArray(comparedItem?.perMarket) ? comparedItem.perMarket : []
+    const steamRow = perMarket.find(
+      (entry) => normalizeText(entry?.source || entry?.market).toLowerCase() === "steam"
+    )
+    const steamUnavailable = steamRow && !steamRow.available
+    const viableWithoutSteam = perMarket.some(
+      (entry) =>
+        normalizeText(entry?.source || entry?.market).toLowerCase() !== "steam" &&
+        Boolean(entry?.available)
+    )
+    if (steamUnavailable && viableWithoutSteam) {
+      count += 1
+    }
+  }
+  return count
 }
 
 function buildFeedKey(row = {}) {
@@ -1841,6 +1877,53 @@ function buildPublishValidationMetadata(validation = {}) {
       freshness_contract_diagnostics: freshnessContractDiagnostics
     }
   }
+}
+
+function normalizeMarketFailureReason(row = {}) {
+  return (
+    normalizeText(row?.unavailableReason) ||
+    normalizeText(row?.sourceDiagnostics?.source_failure_reason) ||
+    normalizeText(row?.sourceFailureReason) ||
+    normalizeText(row?.sourceState) ||
+    "unknown_failure"
+  )
+}
+
+function mergeScannerMarketDiagnostics(target = {}, comparedRows = []) {
+  const diagnostics = target
+  if (!diagnostics.market_failure_reason_counts) {
+    diagnostics.market_failure_reason_counts = {}
+  }
+  for (const comparedItem of Array.isArray(comparedRows) ? comparedRows : []) {
+    const perMarket = Array.isArray(comparedItem?.perMarket) ? comparedItem.perMarket : []
+    const steamRow = perMarket.find(
+      (row) => normalizeText(row?.source || row?.market).toLowerCase() === "steam"
+    )
+    const steamUnavailable = steamRow && !steamRow.available
+    const viableWithoutSteam = perMarket.some(
+      (row) =>
+        normalizeText(row?.source || row?.market).toLowerCase() !== "steam" &&
+        Boolean(row?.available)
+    )
+    if (steamUnavailable && viableWithoutSteam) {
+      diagnostics.candidates_surviving_without_steam =
+        Number(diagnostics.candidates_surviving_without_steam || 0) + 1
+    }
+    for (const row of perMarket) {
+      if (row?.available) continue
+      const source = normalizeText(row?.source || row?.market).toLowerCase()
+      const reason = normalizeMarketFailureReason(row)
+      if (!source || !reason) continue
+      const key = `${source}:${reason}`
+      diagnostics.market_failure_reason_counts[key] =
+        Number(diagnostics.market_failure_reason_counts?.[key] || 0) + 1
+      if (source === "steam" && /rate limit/i.test(reason)) {
+        diagnostics.steam_rate_limited_count =
+          Number(diagnostics.steam_rate_limited_count || 0) + 1
+      }
+    }
+  }
+  return diagnostics
 }
 
 function resolvePublishValidationContextForOpportunity(opportunity = {}, nowMs = Date.now(), nowIso = null) {
@@ -2272,6 +2355,22 @@ function mergeDiagnostics({
     loaded_scanner_source_rows: loadedScannerSourceRows,
     rows_dropped_before_alpha: rowsDroppedBeforeAlpha,
     final_items_scanned: finalItemsScanned,
+    markets_enabled_for_scanner: Array.isArray(compare?.markets_enabled_for_scanner)
+      ? compare.markets_enabled_for_scanner
+      : [],
+    markets_degraded_for_scanner: Array.isArray(compare?.markets_degraded_for_scanner)
+      ? compare.markets_degraded_for_scanner
+      : [],
+    markets_disabled_for_scanner: Array.isArray(compare?.markets_disabled_for_scanner)
+      ? compare.markets_disabled_for_scanner
+      : [],
+    market_failure_reason_counts: compare?.market_failure_reason_counts || {},
+    steam_rate_limited_count: Number(compare?.steam_rate_limited_count || 0),
+    candidates_surviving_without_steam: Number(
+      evaluations?.candidatesSurvivingWithoutSteam ??
+        compare?.candidates_surviving_without_steam ??
+        0
+    ),
     scanStateCounts: {
       eligible: Number(selectionDiag.eligible || 0),
       nearEligible: Number(selectionDiag.nearEligible || 0),
@@ -2549,6 +2648,14 @@ async function runOpportunityJob({ scanRunId = null } = {}) {
     evaluateCandidateOpportunity(candidate, compared.byName?.[candidate.marketHashName] || {})
   )
   const evaluationSummary = summarizeEvaluations(evaluated)
+  evaluationSummary.candidatesSurvivingWithoutSteam = countCandidatesSurvivingWithoutSteam(
+    evaluated,
+    compared.byName
+  )
+  if (compared?.diagnostics && typeof compared.diagnostics === "object") {
+    compared.diagnostics.candidates_surviving_without_steam =
+      evaluationSummary.candidatesSurvivingWithoutSteam
+  }
   const opportunities = rebalanceSelectionForFeedDiversity(
     evaluated.filter((row) => row.rejected !== true),
     {
@@ -2845,6 +2952,7 @@ exports.__testables = {
   selectScanCandidates,
   evaluateCandidateOpportunity,
   summarizeEvaluations,
+  countCandidatesSurvivingWithoutSteam,
   buildOpportunityFingerprint,
   buildMaterialChangeHash,
   classifyOpportunityFeedEvent,

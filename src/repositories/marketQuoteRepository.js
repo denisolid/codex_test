@@ -266,6 +266,7 @@ exports.getLatestCoverageByItemNames = async (itemNames = [], options = {}) => {
   const lookbackHours = Math.max(Math.round(Number(options.lookbackHours || 72)), 1)
   const maxRowsPerChunk = Math.max(Math.round(Number(options.maxRowsPerChunk || 5000)), 200)
   const lookbackIso = new Date(Date.now() - lookbackHours * 60 * 60 * 1000).toISOString()
+  const allowedMarkets = normalizeMarkets(options.markets)
   const latestByItemMarket = {}
   let rpcAvailable = true
 
@@ -299,6 +300,7 @@ exports.getLatestCoverageByItemNames = async (itemNames = [], options = {}) => {
       const itemName = normalizeText(row?.item_name)
       const market = normalizeSource(row?.market)
       if (!itemName || !market) continue
+      if (allowedMarkets.length && !allowedMarkets.includes(market)) continue
       const signature = `${itemName}::${market}`
       if (!latestByItemMarket[signature]) {
         latestByItemMarket[signature] = row

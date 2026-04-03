@@ -1557,3 +1557,273 @@ test("runFreshnessRecovery surfaces snapshot retry budget exhaustion clearly", a
     dmarketMarket.batchGetPrices = originals.dmarketBatchGetPrices
   }
 })
+
+test("repairCatalogRows falls back to fresh Steam cache on rate limit and skips DMarket", async () => {
+  const nowIso = new Date().toISOString()
+  const row = {
+    market_hash_name: "Revolution Case",
+    category: "case",
+    tradable: true,
+    is_active: true,
+    market_coverage_count: 0,
+    reference_price: null,
+    quote_fetched_at: null
+  }
+
+  const originals = {
+    insertRows: marketQuoteRepo.insertRows,
+    upsertRows: marketPriceRepo.upsertRows,
+    getLatestByMarketHashNames: marketPriceRepo.getLatestByMarketHashNames,
+    getByMarketHashNames: skinRepo.getByMarketHashNames,
+    refreshSnapshotsForSkins: marketService.refreshSnapshotsForSkins,
+    steamBatchGetPrices: steamMarket.batchGetPrices,
+    skinportBatchGetPrices: skinportMarket.batchGetPrices,
+    csfloatBatchGetPrices: csfloatMarket.batchGetPrices,
+    dmarketBatchGetPrices: dmarketMarket.batchGetPrices
+  }
+
+  const insertedQuoteRows = []
+  let dmarketCalls = 0
+  let steamCalls = 0
+
+  marketQuoteRepo.insertRows = async (rows = []) => {
+    insertedQuoteRows.push(...rows)
+    return rows.length
+  }
+  marketPriceRepo.upsertRows = async () => 0
+  marketPriceRepo.getLatestByMarketHashNames = async () => ({
+    steam: {
+      "Revolution Case": {
+        market: "steam",
+        market_hash_name: "Revolution Case",
+        currency: "USD",
+        gross_price: 1.1,
+        net_price: 0.96,
+        url: "https://steam.example/revolution-case",
+        fetched_at: nowIso,
+        raw: {
+          source_updated_at: nowIso,
+          confidence: "high"
+        }
+      }
+    }
+  })
+  skinRepo.getByMarketHashNames = async () => []
+  marketService.refreshSnapshotsForSkins = async () => []
+  steamMarket.batchGetPrices = async () => {
+    steamCalls += 1
+    return {
+      __meta: {
+        failuresByName: {
+          "Revolution Case": "Steam rate limit reached. Retry shortly."
+        },
+        stateByName: {
+          "Revolution Case": "unavailable"
+        },
+        sourceUnavailableReason: "Steam rate limit reached. Retry shortly.",
+        source_failure_reason: "unavailable"
+      }
+    }
+  }
+  skinportMarket.batchGetPrices = async () => ({})
+  csfloatMarket.batchGetPrices = async () => ({})
+  dmarketMarket.batchGetPrices = async () => {
+    dmarketCalls += 1
+    return {}
+  }
+
+  try {
+    const result = await upstreamMarketFreshnessRecoveryService.repairCatalogRows([row], {
+      quoteBatchSize: 1,
+      snapshotBatchSize: 1
+    })
+
+    assert.equal(dmarketCalls, 0)
+    assert.equal(steamCalls, 0)
+    assert.equal(
+      result.quoteRefresh.market_failure_reason_counts[
+        "steam:Steam rate limit reached. Retry shortly."
+      ] || 0,
+      0
+    )
+    assert.equal(result.quoteRefresh.steam_rate_limited_count, 0)
+    assert.equal(result.quoteRefresh.steam_cached_fallback_count, 1)
+    assert.deepEqual(result.quoteRefresh.markets_enabled_for_scanner, [
+      "skinport",
+      "csfloat"
+    ])
+    assert.deepEqual(result.quoteRefresh.markets_degraded_for_scanner, ["steam"])
+    assert.deepEqual(result.quoteRefresh.markets_disabled_for_scanner, ["dmarket"])
+    assert.equal(
+      insertedQuoteRows.some(
+        (quoteRow) => quoteRow.market === "steam" && quoteRow.item_name === "Revolution Case"
+      ),
+      true
+    )
+  } finally {
+    marketQuoteRepo.insertRows = originals.insertRows
+    marketPriceRepo.upsertRows = originals.upsertRows
+    marketPriceRepo.getLatestByMarketHashNames = originals.getLatestByMarketHashNames
+    skinRepo.getByMarketHashNames = originals.getByMarketHashNames
+    marketService.refreshSnapshotsForSkins = originals.refreshSnapshotsForSkins
+    steamMarket.batchGetPrices = originals.steamBatchGetPrices
+    skinportMarket.batchGetPrices = originals.skinportBatchGetPrices
+    csfloatMarket.batchGetPrices = originals.csfloatBatchGetPrices
+    dmarketMarket.batchGetPrices = originals.dmarketBatchGetPrices
+  }
+})
+
+test("repairCatalogRows prefills fresh Steam cache and caps live Steam requests to scanner budget", async () => {
+  const nowIso = new Date().toISOString()
+  const rows = ["Case A", "Case B", "Case C", "Case D"].map((marketHashName) => ({
+    market_hash_name: marketHashName,
+    category: "case",
+    tradable: true,
+    is_active: true,
+    market_coverage_count: 0,
+    reference_price: null,
+    quote_fetched_at: null
+  }))
+
+  const originals = {
+    insertRows: marketQuoteRepo.insertRows,
+    upsertRows: marketPriceRepo.upsertRows,
+    getLatestByMarketHashNames: marketPriceRepo.getLatestByMarketHashNames,
+    getByMarketHashNames: skinRepo.getByMarketHashNames,
+    refreshSnapshotsForSkins: marketService.refreshSnapshotsForSkins,
+    steamBatchGetPrices: steamMarket.batchGetPrices,
+    skinportBatchGetPrices: skinportMarket.batchGetPrices,
+    csfloatBatchGetPrices: csfloatMarket.batchGetPrices,
+    dmarketBatchGetPrices: dmarketMarket.batchGetPrices
+  }
+
+  const insertedQuoteRows = []
+  const steamCalls = []
+
+  marketQuoteRepo.insertRows = async (quoteRows = []) => {
+    insertedQuoteRows.push(...quoteRows)
+    return quoteRows.length
+  }
+  marketPriceRepo.upsertRows = async () => 0
+  marketPriceRepo.getLatestByMarketHashNames = async () => ({
+    steam: {
+      "Case A": {
+        market: "steam",
+        market_hash_name: "Case A",
+        currency: "USD",
+        gross_price: 1.01,
+        net_price: 0.88,
+        url: "https://steam.example/case-a",
+        fetched_at: nowIso,
+        raw: {
+          source_updated_at: nowIso,
+          confidence: "high"
+        }
+      },
+      "Case B": {
+        market: "steam",
+        market_hash_name: "Case B",
+        currency: "USD",
+        gross_price: 1.11,
+        net_price: 0.97,
+        url: "https://steam.example/case-b",
+        fetched_at: nowIso,
+        raw: {
+          source_updated_at: nowIso,
+          confidence: "high"
+        }
+      }
+    }
+  })
+  skinRepo.getByMarketHashNames = async () => []
+  marketService.refreshSnapshotsForSkins = async () => []
+  steamMarket.batchGetPrices = async (items = []) => {
+    steamCalls.push(items.map((item) => item.marketHashName))
+    return {
+      "Case C": {
+        source: "steam",
+        marketHashName: "Case C",
+        grossPrice: 1.21,
+        netPriceAfterFees: 1.05,
+        currency: "USD",
+        url: "https://steam.example/case-c",
+        updatedAt: nowIso,
+        confidence: "high",
+        raw: {}
+      }
+    }
+  }
+  skinportMarket.batchGetPrices = async () => ({})
+  csfloatMarket.batchGetPrices = async () => ({})
+  dmarketMarket.batchGetPrices = async () => ({})
+
+  try {
+    const result = await upstreamMarketFreshnessRecoveryService.repairCatalogRows(rows, {
+      quoteBatchSize: 4,
+      snapshotBatchSize: 1,
+      steamLiveRequestBudget: 1,
+      collectQuoteRowOutcomes: true
+    })
+
+    assert.deepEqual(steamCalls, [["Case C"]])
+    assert.equal(result.quoteRefresh.steam_cached_fallback_count, 2)
+    assert.equal(result.quoteRefresh.steam_unavailable_count, 1)
+    assert.equal(result.quoteRefresh.quoteSourceDiagnostics.steam.live_request_budget, 1)
+    assert.equal(result.quoteRefresh.quoteSourceDiagnostics.steam.live_request_attempted, 1)
+    assert.equal(
+      result.quoteRefresh.quoteSourceDiagnostics.steam.live_request_skipped_due_to_budget,
+      1
+    )
+    assert.equal(
+      result.quoteRefresh.quoteSourceDiagnostics.steam.scanner_status_counts
+        .steam_cached_fallback,
+      2
+    )
+    assert.equal(
+      result.quoteRefresh.quoteSourceDiagnostics.steam.scanner_status_counts.steam_unavailable,
+      1
+    )
+    assert.equal(
+      result.quoteRefresh.market_failure_reason_counts[
+        "steam:Steam scanner live budget exhausted. Fresh cache unavailable."
+      ],
+      1
+    )
+    assert.equal(
+      insertedQuoteRows.filter(
+        (quoteRow) =>
+          quoteRow.market === "steam" &&
+          ["Case A", "Case B"].includes(quoteRow.item_name) &&
+          quoteRow.quality_flags?.steam_scanner_status === "steam_cached_fallback"
+      ).length,
+      2
+    )
+    assert.equal(
+      insertedQuoteRows.some(
+        (quoteRow) =>
+          quoteRow.market === "steam" &&
+          quoteRow.item_name === "Case C" &&
+          !quoteRow.quality_flags?.steam_scanner_status
+      ),
+      true
+    )
+    assert.equal(
+      result.quoteRefresh.quoteRowOutcomesByKey["steam::Case D"]?.scannerStatus,
+      "steam_unavailable"
+    )
+    assert.equal(
+      result.quoteRefresh.quoteRowOutcomesByKey["steam::Case D"]?.reason,
+      "Steam scanner live budget exhausted. Fresh cache unavailable."
+    )
+  } finally {
+    marketQuoteRepo.insertRows = originals.insertRows
+    marketPriceRepo.upsertRows = originals.upsertRows
+    marketPriceRepo.getLatestByMarketHashNames = originals.getLatestByMarketHashNames
+    skinRepo.getByMarketHashNames = originals.getByMarketHashNames
+    marketService.refreshSnapshotsForSkins = originals.refreshSnapshotsForSkins
+    steamMarket.batchGetPrices = originals.steamBatchGetPrices
+    skinportMarket.batchGetPrices = originals.skinportBatchGetPrices
+    csfloatMarket.batchGetPrices = originals.csfloatBatchGetPrices
+    dmarketMarket.batchGetPrices = originals.dmarketBatchGetPrices
+  }
+})

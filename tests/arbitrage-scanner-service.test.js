@@ -16,6 +16,7 @@ const {
     mapFeedRowToCard,
     dedupeFeedCards,
     countScannableRowsByScannerCategory,
+    countCandidatesSurvivingWithoutSteam,
     persistFeedRows,
     mergeDiagnostics,
     isScannerRunOverdue,
@@ -179,6 +180,38 @@ test("countScannableRowsByScannerCategory counts eligible and near_eligible rows
   assert.equal(counts.case, 1)
 })
 
+test("countCandidatesSurvivingWithoutSteam tracks viable scanner rows without Steam", () => {
+  const count = countCandidatesSurvivingWithoutSteam(
+    [
+      {
+        marketHashName: "Revolution Case",
+        tier: "candidate"
+      },
+      {
+        marketHashName: "Fracture Case",
+        tier: "rejected"
+      }
+    ],
+    {
+      "Revolution Case": {
+        perMarket: [
+          { source: "steam", available: false, unavailableReason: "Steam rate limit reached. Retry shortly." },
+          { source: "skinport", available: true, grossPrice: 1.1 },
+          { source: "csfloat", available: true, grossPrice: 1.12 }
+        ]
+      },
+      "Fracture Case": {
+        perMarket: [
+          { source: "steam", available: false, unavailableReason: "Steam rate limit reached. Retry shortly." },
+          { source: "skinport", available: true, grossPrice: 0.9 }
+        ]
+      }
+    }
+  )
+
+  assert.equal(count, 1)
+})
+
 test("persistFeedRows routes the active pipeline through globalFeedPublisher only", async () => {
   const originalPublishBatch = globalFeedPublisher.publishBatch
   let callPayload = null
@@ -242,12 +275,23 @@ test("persistFeedRows routes the active pipeline through globalFeedPublisher onl
 
 test("mergeDiagnostics adds one consolidated scanner_v2 summary and bounded tuning surface", () => {
   const diagnostics = mergeDiagnostics({
+    compare: {
+      markets_enabled_for_scanner: ["skinport", "csfloat"],
+      markets_degraded_for_scanner: ["steam"],
+      markets_disabled_for_scanner: ["dmarket"],
+      market_failure_reason_counts: {
+        "steam:Steam rate limit reached. Retry shortly.": 3
+      },
+      steam_rate_limited_count: 3,
+      candidates_surviving_without_steam: 2
+    },
     evaluations: {
       scannedItems: 8,
       eligibleFound: 2,
       nearEligibleFound: 1,
       candidateFound: 1,
       rejectedFound: 4,
+      candidatesSurvivingWithoutSteam: 2,
       rejectedByReason: {
         low_profit: 3,
         low_spread: 1
@@ -368,6 +412,11 @@ test("mergeDiagnostics adds one consolidated scanner_v2 summary and bounded tuni
   assert.equal(diagnostics.loaded_scanner_source_rows, 122)
   assert.equal(diagnostics.rows_dropped_before_alpha, 50)
   assert.equal(diagnostics.final_items_scanned, 8)
+  assert.deepEqual(diagnostics.markets_enabled_for_scanner, ["skinport", "csfloat"])
+  assert.deepEqual(diagnostics.markets_degraded_for_scanner, ["steam"])
+  assert.deepEqual(diagnostics.markets_disabled_for_scanner, ["dmarket"])
+  assert.equal(diagnostics.steam_rate_limited_count, 3)
+  assert.equal(diagnostics.candidates_surviving_without_steam, 2)
   assert.deepEqual(diagnostics.sourceCatalogSummary, {
     loaded_scanner_source_rows: 122,
     rows_dropped_before_alpha: 50

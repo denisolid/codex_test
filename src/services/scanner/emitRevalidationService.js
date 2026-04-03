@@ -700,6 +700,7 @@ async function revalidateOpportunitiesForEmit(opportunities = [], options = {}) 
         marketComparisonService.compareItems(chunk, {
           planTier: "full_access",
           entitlements: emitRevalidationEntitlements,
+          marketReliabilityPolicy: "scanner_baseline",
           allowLiveFetch: false,
           forceRefresh: false
         }),

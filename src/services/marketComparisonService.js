@@ -40,6 +40,11 @@ const {
   readMarketHealth,
   toIsoOrNull: toMarketIsoOrNull
 } = require("../markets/marketSourceDiagnostics");
+const {
+  buildScannerMarketPolicyDiagnostics,
+  getScannerCoverageMarkets,
+  isScannerMarketDisabled
+} = require("./scanner/marketReliabilityPolicy");
 
 const SOURCE_ORDER = Object.freeze(["steam", "skinport", "csfloat", "dmarket"]);
 const ADAPTERS = Object.freeze({
@@ -193,6 +198,14 @@ function isSourceDisabled(source) {
   return Array.isArray(disabledMarketSources)
     ? disabledMarketSources.includes(String(source || "").trim().toLowerCase())
     : false;
+}
+
+function isScannerBaselinePolicyActive(options = {}) {
+  return (
+    String(options?.marketReliabilityPolicy || "")
+      .trim()
+      .toLowerCase() === "scanner_baseline"
+  );
 }
 
 function getRecordDiagnostics(record = null) {
@@ -476,6 +489,7 @@ async function fetchLiveMarketData(itemsBySource = {}, displayCurrency, options 
   const result = {};
   const diagnosticsBySource = {};
   const rowsToStore = [];
+  const scannerBaselinePolicy = isScannerBaselinePolicyActive(options);
   const fetchCurrency = String(options.fetchCurrency || "USD")
     .trim()
     .toUpperCase();
@@ -489,6 +503,50 @@ async function fetchLiveMarketData(itemsBySource = {}, displayCurrency, options 
       const sourceItems = Array.isArray(itemsBySource[source]) ? itemsBySource[source] : [];
       if (!sourceItems.length) {
         return { source, recordsByName: {}, diagnostics: {} };
+      }
+      if (scannerBaselinePolicy && isScannerMarketDisabled(source)) {
+        const failuresByName = Object.fromEntries(
+          sourceItems.map((item) => [item.marketHashName, "Market disabled for scanner policy."])
+        );
+        const stateByName = Object.fromEntries(
+          sourceItems.map((item) => [item.marketHashName, SOURCE_STATES.DISABLED])
+        );
+        const diagnosticsByName = Object.fromEntries(
+          sourceItems.map((item) => [
+            item.marketHashName,
+            buildMarketHealthDiagnostics({
+              marketEnabled: true,
+              requestSent: false,
+              sourceFailureReason: SOURCE_STATES.DISABLED
+            })
+          ])
+        );
+        return {
+          source,
+          recordsByName: {},
+          diagnostics: {
+            failuresByName,
+            stateByName,
+            diagnosticsByName,
+            market_enabled: true,
+            credentials_present: null,
+            auth_ok: null,
+            request_sent: false,
+            response_status: null,
+            response_parsed: null,
+            listings_found: null,
+            buy_price_present: false,
+            sell_price_present: false,
+            freshness_present: null,
+            listing_url_present: false,
+            sourceUnavailableReason: "Market disabled for scanner policy.",
+            sourceFailureReason: SOURCE_STATES.DISABLED,
+            source_failure_reason: SOURCE_STATES.DISABLED,
+            last_success_at: null,
+            last_failure_at: new Date().toISOString(),
+            pipeline: null
+          }
+        };
       }
       if (isSourceDisabled(source)) {
         const failuresByName = Object.fromEntries(
@@ -862,6 +920,7 @@ exports.compareItems = async (items = [], options = {}) => {
   const truncatedByPlan = Math.max(comparedItemsRequested - comparedItemsProcessed, 0);
   const blockedPremiumItems = blockedPremiumItemNames.length;
   const displayCurrency = resolveCurrency(options.currency || "USD");
+  const scannerBaselinePolicy = isScannerBaselinePolicyActive(options);
   const modeResolution = await resolvePricingMode(
     options.userId,
     options.pricingMode,
@@ -913,6 +972,7 @@ exports.compareItems = async (items = [], options = {}) => {
         arbitrageOpportunitiesCount: 0
       },
       diagnostics: {
+        scannerPolicy: scannerBaselinePolicy ? buildScannerMarketPolicyDiagnostics() : null,
         liveFetch: {
           enabled: false,
           forceRefresh: false,
@@ -926,7 +986,9 @@ exports.compareItems = async (items = [], options = {}) => {
   const marketHashNames = normalizedItems.map((item) => item.marketHashName);
   let quoteCoverageByItemName = {};
   try {
-    quoteCoverageByItemName = await marketQuoteRepo.getLatestCoverageByItemNames(marketHashNames);
+    quoteCoverageByItemName = await marketQuoteRepo.getLatestCoverageByItemNames(marketHashNames, {
+      markets: scannerBaselinePolicy ? getScannerCoverageMarkets() : undefined
+    });
   } catch (_err) {
     quoteCoverageByItemName = {};
   }
@@ -944,7 +1006,7 @@ exports.compareItems = async (items = [], options = {}) => {
   const staleItemsBySource = {};
 
   for (const source of SOURCE_ORDER) {
-    if (isSourceDisabled(source)) {
+    if ((scannerBaselinePolicy && isScannerMarketDisabled(source)) || isSourceDisabled(source)) {
       staleItemsBySource[source] = [];
       continue;
     }
@@ -968,6 +1030,7 @@ exports.compareItems = async (items = [], options = {}) => {
     );
     if (hasPending) {
       const liveData = await fetchLiveMarketData(staleItemsBySource, displayCurrency, {
+        ...options,
         fetchCurrency: "USD",
         concurrency: options.concurrency,
         timeoutMs: options.timeoutMs,
@@ -996,6 +1059,18 @@ exports.compareItems = async (items = [], options = {}) => {
         !forceRefresh &&
         isFreshTimestamp(sourceCachedRow?.fetched_at, options.ttlMinutes || CACHE_TTL_MINUTES);
       const live = liveBySource?.[source]?.[item.marketHashName] || null;
+      if (scannerBaselinePolicy && isScannerMarketDisabled(source)) {
+        return toUnavailable(source, displayCurrency, {
+          unavailableReason: "Market disabled for scanner policy.",
+          sourceState: SOURCE_STATES.DISABLED,
+          sourceDiagnostics: buildMarketHealthDiagnostics({
+            marketEnabled: true,
+            requestSent: false,
+            sourceFailureReason: SOURCE_STATES.DISABLED,
+            lastFailureAt: new Date().toISOString()
+          })
+        });
+      }
       if (live) {
         return {
           ...live,
@@ -1029,7 +1104,7 @@ exports.compareItems = async (items = [], options = {}) => {
         });
       }
 
-      if (source === "steam") {
+      if (source === "steam" && options.allowSyntheticSteamFallback === true) {
         const fallback = buildSteamFallback(item, displayCurrency);
         if (fallback) {
           return {
@@ -1256,6 +1331,7 @@ exports.compareItems = async (items = [], options = {}) => {
       totalValueLowestBuy: round2(summary.totalValueLowestBuy)
     },
     diagnostics: {
+      scannerPolicy: scannerBaselinePolicy ? buildScannerMarketPolicyDiagnostics() : null,
       liveFetch: {
         enabled: allowLiveFetch,
         forceRefresh,

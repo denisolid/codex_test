@@ -14,6 +14,7 @@ const marketSnapshotRepo = require("../repositories/marketSnapshotRepository")
 const marketQuoteRepo = require("../repositories/marketQuoteRepository")
 const skinRepo = require("../repositories/skinRepository")
 const catalogPriorityCoverageService = require("./catalogPriorityCoverageService")
+const { getScannerCoverageMarkets } = require("./scanner/marketReliabilityPolicy")
 
 const ITEM_CATEGORIES = Object.freeze({
   WEAPON_SKIN: "weapon_skin",
@@ -3889,7 +3890,9 @@ async function enrichSourceCatalog(options = {}) {
   )
   const [skinsResult, quoteCoverageResult] = await Promise.allSettled([
     ensureSkinsForCatalogNames(marketNames),
-    marketQuoteRepo.getLatestCoverageByItemNames(marketNames)
+    marketQuoteRepo.getLatestCoverageByItemNames(marketNames, {
+      markets: getScannerCoverageMarkets()
+    })
   ])
 
   const skins =
